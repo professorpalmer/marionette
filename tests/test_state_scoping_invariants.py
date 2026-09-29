@@ -725,3 +725,53 @@ def test_srv_sessions_create_cold_does_not_mutate_live_durable(tmp_path, monkeyp
     finally:
         srv._sessions = old
     assert durable.read_bytes() == before
+
+
+def _delete_svc(tmp_path, store):
+    from threading import RLock
+    from harness.session_runners import SessionRunnerRegistry
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    return SimpleNamespace(
+        sessions=store,
+        runners=SessionRunnerRegistry(),
+        pilot_swap_lock=RLock(),
+        sessions_state_dir=lambda: str(state_dir),
+        get_pilot=lambda: SimpleNamespace(load_history=lambda _h: None),
+        attach_view=lambda *_a, **_k: None,
+        sync_pilot_session_id=lambda: None,
+        clear_active_pilot=lambda: None,
+        diag=lambda *_a, **_k: None,
+    )
+
+
+class _TurnRunner:
+    def __init__(self, busy):
+        import threading
+
+        self._busy = threading.Lock()
+        if busy:
+            self._busy.acquire()
+        self.interrupts = 0
+
+    def is_turn_busy(self):
+        return self._busy.locked()
+
+    def interrupt(self, **_k):
+        self.interrupts += 1
+
+
+@pytest.mark.parametrize("busy, expected", [(True, 1), (False, 0)])
+def test_deleting_a_session_stops_its_running_turn(tmp_path, busy, expected):
+    """Delete retires the runner, which only blocks the next turn; a turn in
+    flight must be interrupted or it keeps spending with nothing to Stop it."""
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    sid = store.create("Busy", repo=str(tmp_path), workspace_root=str(tmp_path))["id"]
+    svc = _delete_svc(tmp_path, store)
+    runner = _TurnRunner(busy)
+    svc.runners.get_or_create(sid, lambda: runner)
+    code, _ = handle_session_delete(sid, svc)
+    assert code == 200
+    assert runner.interrupts == expected
+    assert svc.runners.get(sid) is None

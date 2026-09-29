@@ -2320,7 +2320,7 @@ export default function LeftRail({
           <div className="border-t border-edge my-1" />
           {confirmDeleteId === contextMenu.sessionId ? (
             <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
-              <span className="text-muted font-medium">Delete?</span>
+              <span className="text-muted font-medium">{contextMenu.running ? "Stop and delete?" : "Delete?"}</span>
               <div className="flex gap-2">
                 <button
                   onClick={async () => {

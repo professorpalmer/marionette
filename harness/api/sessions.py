@@ -139,6 +139,24 @@ def remove_session_transcript(
         diag("server.session_delete_stream_performance", e, msg=f"sid={safe_sid}")
 
 
+def _drop_runner(sid: str, svc: SessionServices, diag_key: str) -> None:
+    """Remove a deleted session's runner, stopping a turn still in flight.
+
+    Retirement only blocks the next turn; without an interrupt a running turn
+    keeps spending tokens and editing files with no session left to Stop it.
+    """
+    runner = svc.runners.get(sid)
+    if runner is not None and svc.runners.status(sid) == "running":
+        try:
+            runner.interrupt()
+        except Exception as e:
+            svc.diag(f"{diag_key}_interrupt", e)
+    try:
+        svc.runners.drop(sid)
+    except Exception as e:
+        svc.diag(diag_key, e)
+
+
 def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
     if not sid:
         return 400, {"error": "missing session id"}
@@ -155,10 +173,7 @@ def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
             remove_session_transcript(sid, state_dir=svc.sessions_state_dir(), diag=svc.diag)
     from ..hooks import run_hooks
     run_hooks("sessionEnd", {"session_id": sid})
-    try:
-        svc.runners.drop(sid)
-    except Exception as e:
-        svc.diag("server.session_delete_drop_runner", e)
+    _drop_runner(sid, svc, "server.session_delete_drop_runner")
     if is_active:
         svc.clear_active_pilot()
         if new_active:
@@ -490,10 +505,7 @@ def post_sessions_clear(svc: SessionServices) -> tuple[int, dict]:
     for sid in deleted_ids:
         run_hooks("sessionEnd", {"session_id": sid})
         remove_session_transcript(sid, state_dir=state_dir, diag=svc.diag)
-        try:
-            svc.runners.drop(sid)
-        except Exception as e:
-            svc.diag("server.session_clear_drop_runner", e)
+        _drop_runner(sid, svc, "server.session_clear_drop_runner")
     if prior_active in deleted_ids:
         svc.clear_active_pilot()
         if new_active:
