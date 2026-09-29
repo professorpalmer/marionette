@@ -1487,13 +1487,13 @@ export const TranscriptList = memo(function TranscriptList({
   editingIndex,
   auto,
   plan,
-  busyElapsedMs = null,
-  modelLabel = "",
-  waitHint = null,
-  providerElapsedMs = null,
-  turnOpen = false,
-  holdSwarmAwait = false,
-  feedSettled = true,
+  busyElapsedMs: busyElapsedMsProp,
+  modelLabel: modelLabelProp,
+  waitHint: waitHintProp,
+  providerElapsedMs: providerElapsedMsProp,
+  turnOpen: turnOpenProp,
+  holdSwarmAwait: holdSwarmAwaitProp,
+  feedSettled: feedSettledProp,
   scrollContainerRef,
   scrollToEndRef,
   viewportRef,
@@ -1507,6 +1507,13 @@ export const TranscriptList = memo(function TranscriptList({
   onAuthFailureRetry,
   sessionId,
 }: TranscriptListProps) {
+  const busyElapsedMs = busyElapsedMsProp ?? null;
+  const modelLabel = modelLabelProp ?? "";
+  const waitHint = waitHintProp ?? null;
+  const providerElapsedMs = providerElapsedMsProp ?? null;
+  const turnOpen = turnOpenProp ?? false;
+  const holdSwarmAwait = holdSwarmAwaitProp ?? false;
+  const feedSettled = feedSettledProp ?? true;
   // Match Conversation's latch — awaiting_swarm plus holdSwarmAwait so
   // Investigating / mid-turn absorption / footer stay armed through idle flaps.
   useEffect(() => {
@@ -2397,10 +2404,10 @@ function ActivityGroup({
   items,
   onToggleCard,
   groupId,
-  loopOpen = false,
-  pausePoint = false,
-  isLiveFold = false,
-  busyElapsedMs = null,
+  loopOpen: loopOpenProp,
+  pausePoint: pausePointProp,
+  isLiveFold: isLiveFoldProp,
+  busyElapsedMs: busyElapsedMsProp,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -2417,6 +2424,10 @@ function ActivityGroup({
   /** Wall-clock ms for the live busy turn — seeds Worked for when sealing. */
   busyElapsedMs?: number | null;
 }) {
+  const loopOpen = loopOpenProp ?? false;
+  const pausePoint = pausePointProp ?? false;
+  const isLiveFold = isLiveFoldProp ?? false;
+  const busyElapsedMs = busyElapsedMsProp ?? null;
   // Investigation chrome stays collapsed by default (Cursor/Hermes). The
   // headline still tracks Investigating / Explored while closed; the user
   // opens the fold when they want the step list. Seed from the module map so
@@ -3068,15 +3079,17 @@ export function normalizePlainTextNarration(text: string): string {
 
 function ThinkingBlock({
   text,
-  live = false,
+  live: liveProp,
   blockId,
-  durationMs = null,
+  durationMs: durationMsProp,
 }: {
   text: string;
   live?: boolean;
   blockId: string;
   durationMs?: number | null;
 }) {
+  const live = liveProp ?? false;
+  const durationMs = durationMsProp ?? null;
   // Cursor/Hermes-style compression: reasoning stays a single header line
   // by default (faint first-line preview). Expand is user-driven and sticky;
   // live streaming must not auto-open the body. Expanded bodies strip Markdown
@@ -3211,7 +3224,8 @@ function lookupLiveCommand(command: string, indexVersion: number) {
   return indexVersion >= 0 ? lookupAgentCommandSession(command) : null;
 }
 
-function FencedCodeBlock({ className, children, commandIndexVersion = 0, ...props }: any) {
+function FencedCodeBlock({ className, children, commandIndexVersion: commandIndexVersionProp, ...props }: any) {
+  const commandIndexVersion = commandIndexVersionProp ?? 0;
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
   const lines = codeText.split("\n");
@@ -3502,11 +3516,12 @@ function StreamingMarkdown({ text }: { text: string }) {
 // added. Restores formatted-while-streaming without the old ~40% CPU cost.
 const Markdown = memo(function Markdown({
   text,
-  streaming = false,
+  streaming: streamingProp,
 }: {
   text: string;
   streaming?: boolean;
 }) {
+  const streaming = streamingProp ?? false;
   if (streaming) return <StreamingMarkdown text={text} />;
   return <PrettyMarkdown text={text} />;
 });
@@ -3719,9 +3734,9 @@ function Bubble({
 function ActionCard({
   card,
   onToggle,
-  duplicateCount = 1,
-  activityGroupOpen = false,
-  ranLine = false,
+  duplicateCount: duplicateCountProp,
+  activityGroupOpen: activityGroupOpenProp,
+  ranLine: ranLineProp,
 }: {
   card: Card;
   onToggle: () => void;
@@ -3736,6 +3751,9 @@ function ActionCard({
   /** Inside Ran N fold: paint as `Ran {goal}` instead of tool-kind chrome. */
   ranLine?: boolean;
 }) {
+  const duplicateCount = duplicateCountProp ?? 1;
+  const activityGroupOpen = activityGroupOpenProp ?? false;
+  const ranLine = ranLineProp ?? false;
   const openSwarmJob = useOpenSwarmJob();
   const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
@@ -4339,7 +4357,7 @@ function SwarmJobIdButton({
   );
 }
 
-function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, artifacts, artifactDelivery, duplicateCount = 1 }: {
+function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd, heldForReview, analysisOk, reuseStatus, sourceJobId, reuseReason, invalidatedPaths, artifacts, artifactDelivery, duplicateCount: duplicateCountProp }: {
   jobId?: string;
   applied: boolean;
   files: string[];
@@ -4357,6 +4375,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
   artifactDelivery?: SwarmArtifactDelivery;
   duplicateCount?: number;
 }) {
+  const duplicateCount = duplicateCountProp ?? 1;
   const [open, setOpen] = useState(false);
   const openSwarmJob = useOpenSwarmJob();
   const [artifactsOpen, setArtifactsOpen] = useState(false);
