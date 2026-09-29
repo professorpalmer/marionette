@@ -76,6 +76,8 @@ def run_doctor(argv) -> int:
         env = getattr(driver, "api_key_env", None)
         if env is None:
             _line("ok", f"driver {cfg.driver}", "no key required (stub/offline)")
+        elif not getattr(driver, "requires_api_key", True):
+            _line("ok", f"driver {cfg.driver}", "no key required (local endpoint)")
         elif os.environ.get(env, "").strip():
             _line("ok", f"driver {cfg.driver}", f"{env} present")
         else:

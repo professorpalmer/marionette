@@ -59,6 +59,8 @@ def _build_checks(svc: DoctorServices) -> list[dict[str, str]]:
         env = getattr(built, "api_key_env", None)
         if env is None:
             checks.append(_check_row("ok", f"driver {driver}", "no key required (stub/offline)"))
+        elif not getattr(built, "requires_api_key", True):
+            checks.append(_check_row("ok", f"driver {driver}", "no key required (local endpoint)"))
         elif os.environ.get(env, "").strip():
             checks.append(_check_row("ok", f"driver {driver}", f"{env} present"))
         else:

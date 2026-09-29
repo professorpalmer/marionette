@@ -706,7 +706,7 @@ class OpenAICompatDriver:
         if not key:
             # Synthesize only for actual loopback or an explicit trusted-LAN
             # opt-in. Vendor/name llama.cpp on a public host is not keyless.
-            if self.allow_keyless or self._is_loopback_base():
+            if not self.requires_api_key:
                 return "local"
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
@@ -718,6 +718,11 @@ class OpenAICompatDriver:
             return True
         name = str(self.name or "")
         return name.startswith("llama-cpp")
+
+    @property
+    def requires_api_key(self) -> bool:
+        """False for loopback or an explicit keyless (trusted-LAN) endpoint."""
+        return not (self.allow_keyless or self._is_loopback_base())
 
     def _is_loopback_base(self) -> bool:
         try:

@@ -99,3 +99,33 @@ def test_get_diagnostics_openrouter_slug_warns_without_key(monkeypatch):
     assert "failed" not in driver_checks[0]["detail"].lower()
     assert payload["diagnostic"] is not None
     assert "failed" not in str(payload["diagnostic"].get("summary", "")).lower()
+
+
+def _compat(base_url: str, **kwargs):
+    from pmharness.drivers.openai_compat import OpenAICompatDriver
+
+    return OpenAICompatDriver("local:e/m", "m", base_url, "LOCAL_E_API_KEY", **kwargs)
+
+
+def test_keyless_driver_classification():
+    assert _compat("http://127.0.0.1:8080/v1").requires_api_key is False
+    assert _compat("http://192.168.1.5:8080/v1", allow_keyless=True).requires_api_key is False
+    assert _compat("https://api.example.com/v1").requires_api_key is True
+
+
+def test_doctor_does_not_demand_a_key_from_a_keyless_local_endpoint(monkeypatch):
+    # A loopback llama.cpp / LM Studio server needs no key; the false
+    # "API key not set" warning became a backend diagnostic that replaced
+    # panel content across the app.
+    monkeypatch.delenv("LOCAL_E_API_KEY", raising=False)
+    monkeypatch.setattr("harness.providers.build_doctor_driver", lambda spec, reach="": _compat("http://127.0.0.1:8080/v1"))
+    svc = DoctorServices(get_driver=lambda: "local:e/m", get_reach=lambda: "", get_repo=lambda: "")
+    status, payload = get_diagnostics(svc)
+    row = next(c for c in payload["checks"] if c["name"] == "driver local:e/m")
+    assert row["status"] == "ok"
+    assert "no key required" in row["detail"]
+
+    monkeypatch.setattr("harness.providers.build_doctor_driver", lambda spec, reach="": _compat("https://api.example.com/v1"))
+    status, payload = get_diagnostics(svc)
+    row = next(c for c in payload["checks"] if c["name"] == "driver local:e/m")
+    assert row["status"] == "warn"
