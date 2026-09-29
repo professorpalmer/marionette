@@ -524,7 +524,7 @@ class SendLoopMixin:
             if not stale and self._busy_since and self._state in (
                 "thinking", "executing", "streaming",
             ):
-                driver_spec = str(getattr(getattr(self, "cfg", None), "driver", "") or "")
+                driver_spec = str(getattr(getattr(self, "config", None), "driver", "") or "")
                 send_stale_s = local_send_stale_seconds(driver_spec)
                 if send_stale_s > 0 and inactive_for > send_stale_s:
                     try:
