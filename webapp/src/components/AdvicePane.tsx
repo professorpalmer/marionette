@@ -8,21 +8,39 @@ export default function AdvicePane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     let active = true;
     let loading = false;
+    let timer: number | undefined;
     setReceipts([]);
     setError("");
+    // Fast only while a consultation is in flight; slow otherwise (a new
+    // /advise still shows up), and never while the window is hidden.
+    const schedule = (inFlight: boolean) => {
+      window.clearTimeout(timer);
+      if (!active || document.hidden) return;
+      timer = window.setTimeout(() => void load(), inFlight ? 1000 : 10000);
+    };
     const load = async () => {
       if (loading) return;
       loading = true;
+      let inFlight = false;
       try {
         const result = await api.getAdvice(sessionId);
+        inFlight = result.receipts.some(r => r.status === "pending" || r.status === "running" || r.status === "cancelling");
         if (active && result.session_id === sessionId) { setReceipts(result.receipts); setError(""); }
       } catch (err) {
         if (active) setError(err instanceof Error ? err.message : "Could not load advice");
-      } finally { loading = false; }
+      } finally {
+        loading = false;
+        schedule(inFlight);
+      }
     };
+    const onVisible = () => { if (!document.hidden) void load(); };
     void load();
-    const timer = window.setInterval(() => void load(), 1000);
-    return () => { active = false; window.clearInterval(timer); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [sessionId]);
   return <section aria-label="Advice history" className="space-y-3 text-txt">
     <p className="text-sm text-muted">Each consultation makes one request with tools disabled. Use /advise followed by an optional question to request another opinion.</p>
