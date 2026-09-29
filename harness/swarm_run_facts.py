@@ -656,6 +656,9 @@ def _environment_payload(cwd: str) -> dict[str, Any]:
     result = dict(payload or {})
     if not payload:
         result = {"probe_error": reason or "environment_probe_failed"}
+    # Expired entries are dead weight: each job worktree is a distinct key.
+    for stale in [k for k, (at, _) in _probe_cache.items() if now - at >= _PROBE_TTL_SECONDS]:
+        del _probe_cache[stale]
     _probe_cache[key] = (now, result)
     return result
 
