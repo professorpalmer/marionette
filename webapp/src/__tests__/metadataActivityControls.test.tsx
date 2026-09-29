@@ -152,7 +152,8 @@ it('opens a finished hire from a pending Jobs deep-link even when the group is c
 });
 it('hides only expanded lifecycle groups that are displayed and preserves other terminal rows', async () => {
   await start(); mount(); fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
-  fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));
+  // Collapsed: Clear is not offered, so hidden groups cannot be cleared.
+  expect(screen.queryByText('Clear')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: /^Finished/ }));
   expect(toggle('older-complete')).toBeVisible();
   filter('failed'); fireEvent.click(screen.getByRole('button', { name: 'Hide finished' }));

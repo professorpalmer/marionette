@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { JobMetadataStore, metadataTerminalProjection, useJobMetadata } from './useJobMetadata';
 import type { JobMetadataState } from './useJobMetadata';
@@ -55,6 +55,28 @@ export function JobMetadataOwner({ repo, sessionId, children }: { repo: string; 
 export function useSharedJobMetadata() {
   const store = useContext(JobMetadataContext);
   return { store, state: useJobMetadata(store) };
+}
+
+/** What metadataJobs() reads. */
+export const METADATA_JOBS_FIELDS = ['view', 'observations', 'local', 'localDetail', 'pins', 'detail', 'canonicalTerminal', 'detailCache'] as const;
+export type MetadataJobsState = Pick<JobMetadataState, (typeof METADATA_JOBS_FIELDS)[number]>;
+
+/** Subscribe to named top-level fields only. The store publishes around every
+ * request and tick (working flag, schedule counters); a large consumer such as
+ * Conversation re-rendered on each one. Pass a module-level key array. */
+export function useSharedJobMetadataFields<K extends keyof JobMetadataState>(keys: readonly K[]) {
+  const store = useContext(JobMetadataContext);
+  const cache = useRef<{ store: JobMetadataStore; picked: Pick<JobMetadataState, K> } | null>(null);
+  const getSnapshot = useCallback(() => {
+    const full = store.getSnapshot();
+    const prev = cache.current;
+    if (prev && prev.store === store && keys.every(k => prev.picked[k] === full[k])) return prev.picked;
+    const picked = {} as Pick<JobMetadataState, K>;
+    for (const k of keys) picked[k] = full[k];
+    cache.current = { store, picked };
+    return picked;
+  }, [store, keys]);
+  return { store, state: useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot) };
 }
 /** Leaf provider workers and command jobs stay off the Jobs list. */
 export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapter">): boolean {
@@ -119,7 +141,7 @@ function terminalLifecycle(projection: NonNullable<JobMetadataState['canonicalTe
   return terminal && terminal.revision >= revision ? terminal.lifecycle : null;
 }
 /** Presentation only: missing bodies/economics remain explicitly unavailable. No identity inference. */
-export function metadataJobs(state: JobMetadataState): Job[] {
+export function metadataJobs(state: MetadataJobsState): Job[] {
   if (state.view.kind !== 'view' && !state.observations.length && !state.local.observations.length) return [];
   const terminal = metadataTerminalProjection(state);
   const sources = state.view.kind === 'view' ? state.view.view.sources : [];

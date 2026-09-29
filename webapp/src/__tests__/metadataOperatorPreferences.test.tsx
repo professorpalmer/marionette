@@ -297,3 +297,31 @@ it('keeps dismissal on a stale running observation and removes it only after a l
   await observe();
   expect(preference().dismissed).toEqual([]);
 });
+it('Clear is offered only while the Finished section is open (it clears what is shown)', async () => {
+  pm[0] = { ...pm[0], lifecycle: 'complete' };
+  await start(); mount();
+  expect(screen.getByRole('button', { name: 'Hide finished' })).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { expanded: true, name: /Finished/ }));
+  expect(screen.queryByText('Clear')).toBeNull();
+});
+it('the header check counts only completed runs, not failed ones', async () => {
+  pm = [{ ...summary(), lifecycle: 'complete' }, { ...summary(2), lifecycle: 'failed' }];
+  const { container } = (await start(), mount());
+  const check = container.querySelector('.text-good\\/80');
+  expect(check?.textContent?.trim()).toBe('1');
+});
+it('a finished job offers no Stop control', async () => {
+  pm[0] = { ...pm[0], lifecycle: 'complete' };
+  await start(); mount();
+  fireEvent.click(row('job_1').getByRole('button', { name: /complete/ }));
+  expect(screen.queryByRole('button', { name: 'Stop selected workers' })).toBeNull();
+  expect(screen.queryByText(/Stop unavailable/)).toBeNull();
+});
+it('says when every job belongs to another session and offers to show them', async () => {
+  pm = [{ ...summary(), lifecycle: 'running', ownership: { ...summary().ownership, session_id: 'other' } }];
+  await start(); mount();
+  fireEvent.click(screen.getByRole('button', { name: 'This session' }));
+  expect(await screen.findByText('No jobs in this session')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Show 1 job from other sessions' }));
+  expect(row('job_1').getByRole('button', { name: /running/ })).toBeVisible();
+});

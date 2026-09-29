@@ -17,8 +17,10 @@ function publish(key: string, attempt: Attempt) {
   listeners.forEach(listener => listener());
 }
 
-export default function JobCancellationControl({ job, repo, sessionId, disabled = false }: {
+export default function JobCancellationControl({ job, repo, sessionId, disabled = false, finished = false }: {
   job: Job; repo: string; sessionId: string; disabled?: boolean;
+  /** Terminal job: nothing to stop, so no control unless a stop is on record. */
+  finished?: boolean;
 }) {
   const key = jobControlKey(job, repo, sessionId);
   const attempt = useSyncExternalStore(subscribe, () => attempts.get(key), () => undefined);
@@ -67,6 +69,7 @@ export default function JobCancellationControl({ job, repo, sessionId, disabled 
         message: error instanceof Error ? error.message : 'Acknowledgement unavailable. Stop is unconfirmed.' });
     }
   };
+  if (finished && !attempt) return null;
   const unavailable = !selection && !attempt;
   const busy = attempt?.kind === 'pending';
   const settled = attempt?.kind === 'receipt';
