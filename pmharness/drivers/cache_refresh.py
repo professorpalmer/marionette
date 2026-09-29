@@ -15,7 +15,6 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 from functools import wraps
 
-from . import http_pool
 from .request_boundary import http_request
 
 
@@ -237,7 +236,9 @@ class CacheRefreshDriver:
                 raise RefreshCancelled()
             request = http_request(self, snapshot.endpoint + path, data=json.dumps(body).encode(),
                                    headers=dict(snapshot.headers), method="POST")
-            with http_pool.urlopen(request, timeout=REFRESH_TIMEOUT) as response:
+            # Not pooled: cancel() shuts the socket from another thread and may
+            # land after the response closes, so the connection is never shared.
+            with urllib.request.urlopen(request, timeout=REFRESH_TIMEOUT) as response:
                 attempt.attach(response)
                 status = response.status
                 data = response.read(MAX_RESPONSE_BYTES + 1)
