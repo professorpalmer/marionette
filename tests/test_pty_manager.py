@@ -530,3 +530,13 @@ def test_conpty_create_write_read_resize_kill(monkeypatch):
     assert _wait_until(lambda: not s.alive(), timeout=3.0)
     assert not s.alive()
     assert m.get(s.id) is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX child reaping")
+def test_killed_terminal_leaves_no_zombie(tmp_path):
+    from harness.pty_manager import PtySession
+    sess = PtySession(cwd=str(tmp_path))
+    pid = sess.pid
+    sess.kill()
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pid, os.WNOHANG)
