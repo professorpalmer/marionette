@@ -31,6 +31,7 @@ import {
   dismissAgentCommandSession,
   getAgentCommandIndexVersion,
   lookupAgentCommandSession,
+  lookupAgentCommandSessionById,
   registerAgentCommandSession,
   subscribeAgentCommandIndex,
 } from "../lib/agentCommandIndex";
@@ -1331,7 +1332,8 @@ const VirtualTranscriptRow = memo(
 );
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
-function indexCardCommandSession(card: Card, sessionId?: string): void {
+/** Registers a command card; returns the index id, or null for non-command cards. */
+function indexCardCommandSession(card: Card, sessionId?: string): string | null {
   const cliInput = resolveCardCliInput(card);
   const resultCommand = String(card.result?.command || "").trim();
   const inputKey = toolInputFieldKey(card.kind || "");
@@ -1341,7 +1343,7 @@ function indexCardCommandSession(card: Card, sessionId?: string): void {
   const jobId = String(card.result?.job_id || "").trim();
   const cardId = String(card.id || "").trim();
   const id = jobId || cardId;
-  if (linkKind !== "command" || !id || !value) return;
+  if (linkKind !== "command" || !id || !value) return null;
   if (jobId && cardId && jobId !== cardId) dismissAgentCommandSession(cardId);
   const rawStatus = String(card.result?.status || "").trim().toLowerCase();
   const exitCode =
@@ -1368,11 +1370,21 @@ function indexCardCommandSession(card: Card, sessionId?: string): void {
     state,
     sessionId,
   });
+  return id;
 }
 
+// Cards are replaced, never mutated, on update. The effect below runs on every
+// stream frame, so skip a card already indexed for this session unless the
+// index has since evicted or dismissed it (re-registering restores it).
+const indexedCards = new WeakMap<Card, { scope: string; id: string | null }>();
+
 function indexTranscriptCommandSessions(items: Item[], sessionId?: string): void {
+  const scope = sessionId ?? "";
   for (const it of items) {
-    if (it.kind === "card") indexCardCommandSession(it.card, sessionId);
+    if (it.kind !== "card") continue;
+    const seen = indexedCards.get(it.card);
+    if (seen && seen.scope === scope && (seen.id === null || lookupAgentCommandSessionById(seen.id))) continue;
+    indexedCards.set(it.card, { scope, id: indexCardCommandSession(it.card, sessionId) });
   }
 }
 
