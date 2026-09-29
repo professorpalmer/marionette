@@ -117,7 +117,8 @@ class _ClaimLeaseHeartbeat:
 
     def _loop(self) -> None:
         next_renew = time.monotonic() + self._interval
-        while not self._stop.wait(min(0.1, self._interval)):
+        # Set() wakes the wait at once; the timeout only paces cancel checks.
+        while not self._stop.wait(min(1.0, self._interval)):
             if self._cancel is not None and not self.cancelled:
                 try:
                     requested = self._ownership_lost or self._store.cancel_requested(self._schedule_id)

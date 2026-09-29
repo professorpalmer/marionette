@@ -739,3 +739,22 @@ def test_add_and_update_persist_missed_policy(tmp_path):
     closed = store.update_fields(s.id, missed_policy="nope")
     assert closed is not None
     assert closed.missed_policy == "once"
+
+
+def test_lease_heartbeat_checks_cancel_about_once_a_second():
+    import time as _time
+    from harness.scheduler import _ClaimLeaseHeartbeat
+
+    class _Store:
+        checks = 0
+        def cancel_requested(self, _sid):
+            _Store.checks += 1
+            return False
+        def renew_claim(self, *_a):
+            return True
+
+    hb = _ClaimLeaseHeartbeat(_Store(), 's', 'r', 600, interval=30, cancel=lambda: None)
+    hb.start()
+    _time.sleep(1.5)
+    hb.stop()
+    assert _Store.checks <= 2
