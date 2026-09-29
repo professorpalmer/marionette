@@ -123,17 +123,31 @@ def _mutate_path_error_status(msg: str) -> int:
     return 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
 
 
-# Documents a chat link may preview read-only outside the workspace (a report
-# the pilot wrote to ~/Downloads). Rendered from /api/file/read content only.
-_EXTERNAL_PREVIEW_EXTS = frozenset({".md", ".markdown", ".txt", ".json", ".csv", ".log"})
+# Outside the workspace, a clicked link previews read-only in the harness
+# whenever the editor can render it: any text, or a binary with a viewer.
+# Only unrenderable binaries fall back to the desktop opener.
+_EXTERNAL_BINARY_VIEWERS = frozenset({
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico",
+    ".db", ".sqlite", ".sqlite3",
+})
+
+
+def _external_preview_roots() -> list[str]:
+    import tempfile
+
+    roots = [os.path.realpath(os.path.expanduser("~")), os.path.realpath(tempfile.gettempdir())]
+    if os.name != "nt":
+        roots.append(os.path.realpath("/tmp"))
+    return roots
 
 
 def external_preview_path(user_path: str) -> str | None:
-    """Absolute path of a read-only previewable document outside the workspace.
+    """Absolute path of a file outside the workspace to preview read-only.
 
-    Only explicit absolute (or ``~/``) paths to document files under the
-    user's home qualify; hidden directories, ``~/Library`` and every other
-    extension stay with the desktop opener. Never used by a write endpoint.
+    Only explicit absolute (or ``~/``) paths under the user's home or the
+    temp directory qualify. Hidden directories (``.ssh``, ``.aws``...) and
+    ``~/Library`` never do, nor binaries the editor cannot render. Never
+    used by a write endpoint.
     """
     raw = (user_path or "").strip()
     if raw.startswith("~/"):
@@ -141,18 +155,29 @@ def external_preview_path(user_path: str) -> str | None:
     if not os.path.isabs(raw):
         return None
     full = os.path.realpath(raw)
+    if not os.path.isfile(full):
+        return None
     home = os.path.realpath(os.path.expanduser("~"))
+    for root in _external_preview_roots():
+        try:
+            rel = os.path.relpath(full, root)
+        except ValueError:
+            continue
+        parts = rel.replace("\\", "/").split("/")
+        if parts[0] == ".." or rel == ".":
+            continue
+        if any(p.startswith(".") for p in parts) or (root == home and parts[0] == "Library"):
+            return None
+        break
+    else:
+        return None
+    if os.path.splitext(full)[1].lower() in _EXTERNAL_BINARY_VIEWERS:
+        return full
     try:
-        rel = os.path.relpath(full, home)
-    except ValueError:
+        with open(full, "rb") as f:
+            return None if b"\x00" in f.read(1024) else full
+    except OSError:
         return None
-    parts = rel.replace("\\", "/").split("/")
-    if rel == "." or parts[0] in ("..", "Library") or any(p.startswith(".") for p in parts):
-        return None
-    if os.path.splitext(full)[1].lower() not in _EXTERNAL_PREVIEW_EXTS:
-        return None
-    return full if os.path.isfile(full) else None
-
 
 def _read_path_error_status(msg: str) -> int:
     return 403 if "Access denied" in msg else 400
@@ -690,8 +715,8 @@ def get_file_raw(
     Returns ``(status, body_or_error_dict, content_type)``. Error dicts use
     ``application/json``; success uses the guessed/preview MIME.
     """
-    # Same path gates as /api/file/read — never an arbitrary-file read outside
-    # the workspace.
+    # Same path gates as /api/file/read: the workspace, or a read-only
+    # external preview (external_preview_path).
     repo, err = _repo_or_error(svc)
     if err is not None:
         return err[0], err[1], "application/json"
@@ -701,8 +726,11 @@ def get_file_raw(
     try:
         full_path, rel_posix = resolve_editor_path(repo, rel_path)
     except ValueError as e:
-        msg = str(e)
-        return _read_path_error_status(msg), {"error": msg}, "application/json"
+        external = external_preview_path(rel_path)
+        if not external:
+            msg = str(e)
+            return _read_path_error_status(msg), {"error": msg}, "application/json"
+        full_path, rel_posix = external, external
     if not os.path.isfile(full_path):
         return 404, {"error": "File not found", "path": rel_posix}, "application/json"
     try:
