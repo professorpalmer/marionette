@@ -93,27 +93,22 @@ def test_export_json_and_md(tmp_path):
         httpd.shutdown()
 
 
-def test_export_unknown_session_does_not_500(tmp_path):
+def test_export_unknown_session_is_404_not_an_empty_download(tmp_path):
+    """A stale menu after a delete must not download an empty file that the
+    UI reports as Exported."""
     httpd, port, srv = _server()
     srv._cfg.state_dir = str(tmp_path)
     srv._sessions.path = str(tmp_path / "harness_sessions.json")
     srv._sessions._sessions = []
-    
+
     try:
-        url_json = f"/api/sessions/export?session=unknown-id&format=json"
-        resp = _get(port, url_json, headers={"X-Harness-Token": srv._TOKEN})
-        assert resp.status == 200
-        
-        content_disp = resp.headers.get("Content-Disposition")
-        assert content_disp == 'attachment; filename="Unknown_Session-unknown-id.json"'
-        
-        data = json.loads(resp.read().decode("utf-8"))
-        assert data["transcript_id"] == "unknown-id"
-        assert data["session_id"] == "unknown-id"
-        assert data["transcript_relpath"] == "transcripts/unknown-id.json"
-        assert data["title"] == "Unknown Session"
-        assert data["messages"] == []
-        
+        try:
+            _get(port, "/api/sessions/export?session=unknown-id&format=json",
+                 headers={"X-Harness-Token": srv._TOKEN})
+            assert False, "expected 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+            assert json.loads(e.read().decode("utf-8"))["error"] == "session not found"
     finally:
         httpd.shutdown()
 

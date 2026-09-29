@@ -293,17 +293,9 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
   }, [networkEnabled]);
   usePolling(refreshMcp, 4000, { enabled: networkEnabled });
 
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | null = null;
-    if (networkEnabled && cg?.status === "indexing") {
-      timer = setInterval(() => {
-        void revalidateCg();
-      }, 2000);
-    }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [networkEnabled, cg?.status, revalidateCg]);
+  // While indexing: single-flight, paused in hidden windows (a raw 2s
+  // setInterval kept firing and could stack behind a slow index).
+  usePolling(revalidateCg, 2000, { enabled: networkEnabled && cg?.status === "indexing" });
 
   const handleReindex = async () => {
     setReindexing(true);

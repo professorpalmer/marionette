@@ -136,9 +136,11 @@ export default function CheckpointsPane() {
       }
       void refreshScope();
     };
+    // Config events fire at every turn end, when the agent has just written
+    // checkpoints. Refetch in place; the scopeKey effect clears the list only
+    // when the project or session really changed.
     const onSessionOrConfig = () => {
-      clearLocalState();
-      void refreshScope();
+      void refreshScope().then(() => fetchCheckpoints());
     };
     const onMutated = () => { invalidateDiffs(); void fetchCheckpoints(); };
     const onVisible = () => { if (!document.hidden) fetchCheckpoints(); };

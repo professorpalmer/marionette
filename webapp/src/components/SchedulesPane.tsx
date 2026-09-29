@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ScheduleInfo, type ScheduleRun, type ScheduleWrite } from "../lib/api";
+import { usePolling } from "../lib/usePolling";
 import ScheduleEditor, { scheduleButton } from "./ScheduleEditor";
 
 type Editor = { kind: "closed" } | { kind: "create" } | { kind: "edit"; schedule: ScheduleInfo };
@@ -28,6 +29,7 @@ export default function SchedulesPane() {
   const loadGeneration = useRef(0);
   const historyGeneration = useRef(0);
   const createButton = useRef<HTMLButtonElement>(null);
+  const lastLoadAt = useRef(0);
   const restoreFocus = useRef(false);
   useEffect(() => {
     if (editor.kind === "closed" && pending === null && restoreFocus.current) {
@@ -37,6 +39,7 @@ export default function SchedulesPane() {
   }, [editor.kind, pending]);
 
   const load = useCallback(async () => {
+    lastLoadAt.current = Date.now();
     const generation = ++loadGeneration.current;
     setLoading(true);
     try {
@@ -54,9 +57,11 @@ export default function SchedulesPane() {
   useEffect(() => {
     mounted.current = true;
     void load();
-    const timer = window.setInterval(() => { if (!busy.current) void load(); }, 3000);
-    return () => { window.clearInterval(timer); mounted.current = false; loadGeneration.current++; historyGeneration.current++; };
+    return () => { mounted.current = false; loadGeneration.current++; historyGeneration.current++; };
   }, [load]);
+  // Schedules change on a scale of minutes and every mutation reloads, so a
+  // slow single-flight poll that pauses in hidden windows is enough.
+  usePolling(() => (busy.current || Date.now() - lastLoadAt.current < 5_000 ? undefined : load()), 10_000);
 
   const mutate = async (id: string, action: () => Promise<string>) => {
     if (busy.current) return;

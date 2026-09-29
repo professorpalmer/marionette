@@ -44,6 +44,11 @@ describe("deriveSessionTitle", () => {
 });
 
 describe("displaySessionListTitle", () => {
+  it("shows a title the user typed even when it reads like activity", () => {
+    expect(displaySessionListTitle("Planning Q4 launch", true)).toBe("Planning Q4 launch");
+    expect(displaySessionListTitle("Planning Q4 launch")).toBe("Untitled");
+  });
+
   it("hides activity headlines and Stopped. from the session list", () => {
     expect(displaySessionListTitle("Explored 1 search")).toBe("Untitled");
     expect(displaySessionListTitle("Stopped.")).toBe("Untitled");

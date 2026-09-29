@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from harness.api.sessions import SessionServices, post_session_fork, post_sessions_rename
 from harness.sessions import (
     SessionStore,
@@ -127,17 +129,18 @@ def test_post_sessions_rename_missing_is_404(tmp_path):
     assert payload.get("ok") is not True
 
 
-def test_post_sessions_rename_activity_headline_is_400(tmp_path):
+@pytest.mark.parametrize("title", ["Planning Q4 launch", "Looking into auth bug", "Thinking about caching"])
+def test_post_sessions_rename_keeps_user_titles_that_read_like_activity(tmp_path, title):
+    """The activity-headline filter guards auto-titles; a typed rename that
+    starts with Planning / Looking / Thinking used to 400 and silently revert."""
     store = SessionStore(str(tmp_path / "harness_sessions.json"))
     row = store.create(title="Keep me", repo=str(tmp_path), workspace_root=str(tmp_path))
     svc = _session_svc(store, str(tmp_path))
-    code, payload = post_sessions_rename(
-        {"session": row["id"], "title": "Investigating"}, svc
-    )
-    assert code == 400
-    assert "invalid" in str(payload.get("error", "")).lower()
+    code, _ = post_sessions_rename({"session": row["id"], "title": title}, svc)
+    assert code == 200
     kept = next(s for s in store.rows() if s["id"] == row["id"])
-    assert kept["title"] == "Keep me"
+    assert kept["title"] == title
+    assert kept["title_user"] is True
 
 
 def test_post_session_fork_peel_404_and_400(tmp_path):
@@ -284,3 +287,35 @@ def test_fork_persistence_failure_does_not_publish_child(tmp_path, monkeypatch):
     assert code == 500
     assert len(store.rows()) == 1
     assert "forked_to" not in store.rows()[0]
+
+
+def test_export_includes_turns_that_compaction_folded_out_of_history(tmp_path):
+    from harness.api.sessions import get_sessions_export
+    from harness.sessions import save_transcript
+    import json as _json
+
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = store.create(title="Long chat", repo=str(tmp_path), workspace_root=str(tmp_path))
+    svc = _session_svc(store, str(tmp_path))
+    svc.cfg = SimpleNamespace(state_dir=str(tmp_path))
+    svc.runners = SimpleNamespace(get=lambda _sid: None)
+    save_transcript(str(tmp_path), row["id"], {
+        "history": [{"role": "user", "content": "[compacted summary]"}],
+        "display": [
+            {"type": "message", "role": "user", "text": "first ask"},
+            {"type": "card", "card": {"kind": "run_command"}},
+            {"type": "message", "role": "assistant", "text": "first answer"},
+            {"type": "message", "role": "user", "text": "second ask"},
+        ],
+    })
+    att = get_sessions_export({"session": [row["id"]], "format": ["json"]}, svc)
+    messages = _json.loads(att.data)["messages"]
+    assert [m["content"] for m in messages] == ["first ask", "first answer", "second ask"]
+
+
+def test_export_of_an_unknown_session_is_not_an_empty_success(tmp_path):
+    from harness.api.sessions import get_sessions_export
+
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    svc = _session_svc(store, str(tmp_path))
+    assert get_sessions_export({"session": ["gone"], "format": ["json"]}, svc) is None

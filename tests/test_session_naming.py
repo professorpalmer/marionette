@@ -66,8 +66,14 @@ def test_set_title_if_default_rejects_activity_headlines(tmp_path):
     assert store.list()[0]["title"] == "New session"
     store.set_title_if_default(sid, "Fix the redirect bug")
     assert store.list()[0]["title"] == "Fix the redirect bug"
-    assert store.rename(sid, "Investigating…") is False
-    assert store.list()[0]["title"] == "Fix the redirect bug"
+    # A typed rename is the user's call, even when it reads like activity.
+    assert store.rename(sid, "Planning Q4 launch") is True
+    row = store.list()[0]
+    assert row["title"] == "Planning Q4 launch"
+    assert row["title_user"] is True
+    # Auto-titling never overrides it.
+    store.set_title_if_default(sid, "Fix the redirect bug again")
+    assert store.list()[0]["title"] == "Planning Q4 launch"
 
 
 def test_set_title_if_default(tmp_path):

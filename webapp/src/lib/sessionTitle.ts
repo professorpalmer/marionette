@@ -62,9 +62,11 @@ export function isDefaultSessionTitle(title: string | undefined | null): boolean
  * One session row = one human title. Activity headlines / Stopped. never
  * paint as the list title (fall back to Untitled).
  */
-export function displaySessionListTitle(title: string | undefined | null): string {
+export function displaySessionListTitle(title: string | undefined | null, userTitled = false): string {
   const trimmed = (title || "").trim();
-  if (!trimmed || isActivityHeadlineText(trimmed)) return "Untitled";
+  if (!trimmed) return "Untitled";
+  // A title the user typed is shown as typed, even "Planning Q4 launch".
+  if (!userTitled && isActivityHeadlineText(trimmed)) return "Untitled";
   return trimmed;
 }
 

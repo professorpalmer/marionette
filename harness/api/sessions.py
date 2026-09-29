@@ -18,11 +18,10 @@ import time
 from dataclasses import dataclass
 from contextlib import nullcontext, ExitStack
 from ..pilot_replacement import replacement_gate
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from ..prompt_queue import ORIGINAL_TEXT_UNSET
 from ..diag import note as _diag_default
 from ..sessions import (
-    is_activity_headline_text,
     load_transcript,
     session_stored_root,
     session_visible_for_workspace,
@@ -139,6 +138,24 @@ def remove_session_transcript(
         diag("server.session_delete_stream_performance", e, msg=f"sid={safe_sid}")
 
 
+def _drop_runner(sid: str, svc: SessionServices, diag_key: str) -> None:
+    """Remove a deleted session's runner, stopping a turn still in flight.
+
+    Retirement only blocks the next turn; without an interrupt a running turn
+    keeps spending tokens and editing files with no session left to Stop it.
+    """
+    runner = svc.runners.get(sid)
+    if runner is not None and svc.runners.status(sid) == "running":
+        try:
+            runner.interrupt()
+        except Exception as e:
+            svc.diag(f"{diag_key}_interrupt", e)
+    try:
+        svc.runners.drop(sid)
+    except Exception as e:
+        svc.diag(diag_key, e)
+
+
 def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
     if not sid:
         return 400, {"error": "missing session id"}
@@ -155,10 +172,7 @@ def handle_session_delete(sid: str, svc: SessionServices) -> tuple[int, dict]:
             remove_session_transcript(sid, state_dir=svc.sessions_state_dir(), diag=svc.diag)
     from ..hooks import run_hooks
     run_hooks("sessionEnd", {"session_id": sid})
-    try:
-        svc.runners.drop(sid)
-    except Exception as e:
-        svc.diag("server.session_delete_drop_runner", e)
+    _drop_runner(sid, svc, "server.session_delete_drop_runner")
     if is_active:
         svc.clear_active_pilot()
         if new_active:
@@ -490,10 +504,7 @@ def post_sessions_clear(svc: SessionServices) -> tuple[int, dict]:
     for sid in deleted_ids:
         run_hooks("sessionEnd", {"session_id": sid})
         remove_session_transcript(sid, state_dir=state_dir, diag=svc.diag)
-        try:
-            svc.runners.drop(sid)
-        except Exception as e:
-            svc.diag("server.session_clear_drop_runner", e)
+        _drop_runner(sid, svc, "server.session_clear_drop_runner")
     if prior_active in deleted_ids:
         svc.clear_active_pilot()
         if new_active:
@@ -554,8 +565,6 @@ def post_sessions_rename(body: dict, svc: SessionServices) -> tuple[int, dict]:
     cleaned = (title or "").strip()
     if not cleaned:
         return 400, {"error": "missing title"}
-    if is_activity_headline_text(cleaned):
-        return 400, {"error": "invalid title"}
     ok = svc.sessions.rename(sid, cleaned)
     if not ok:
         return 404, {"error": "session not found"}
@@ -725,16 +734,39 @@ def format_session_export_markdown(payload):
     return "\n".join(md_lines)
 
 
-def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachment:
+def _export_messages(data: Any) -> list:
+    """Every visible turn: ``display`` keeps the full record, while ``history``
+    is the model context and after compaction holds only the residual."""
+    if not isinstance(data, dict):
+        return list(data or [])
+    display = [
+        {"role": row.get("role"), "content": row.get("text", "")}
+        for row in data.get("display") or []
+        if isinstance(row, dict)
+        and row.get("type", "message") == "message"
+        and row.get("role") in ("user", "assistant")
+    ]
+    return display or list(data.get("history") or [])
+
+
+def get_sessions_export(qs: dict, svc: SessionServices) -> Optional[SessionExportAttachment]:
+    """Build the export, or None when the session does not exist."""
     sid = qs.get("session", [None])[0] or svc.sessions.active or ""
     fmt = qs.get("format", ["json"])[0]
 
     meta = next((s for s in svc.sessions._sessions if s["id"] == sid), None)
-    data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
-    if isinstance(data, dict):
-        history = data.get("history", [])
-    else:
-        history = data
+    if meta is None:
+        return None
+    data = None
+    try:
+        live = svc.runners.get(sid)
+        if live is not None and hasattr(live, "export_transcript_data"):
+            data = live.export_transcript_data()
+    except Exception as e:
+        svc.diag("server.session_export_live", e)
+    if data is None:
+        data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
+    history = _export_messages(data)
 
     title = meta.get("title", "Unknown Session") if meta else "Unknown Session"
     created = meta.get("created") if meta else None
@@ -767,6 +799,15 @@ def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachme
 def write_sessions_export(handler: Any, qs: dict, svc: SessionServices) -> None:
     """Write the export attachment onto a BaseHTTPRequestHandler-like object."""
     att = get_sessions_export(qs, svc)
+    if att is None:
+        body = json.dumps({"error": "session not found"}).encode("utf-8")
+        handler.send_response(404)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler._cors()
+        handler.end_headers()
+        handler.wfile.write(body)
+        return
     handler.send_response(200)
     handler.send_header("Content-Type", att.content_type)
     handler.send_header("Content-Length", str(len(att.data)))

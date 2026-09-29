@@ -1,4 +1,4 @@
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SchedulesPane from "../components/SchedulesPane";
 import { api } from "../lib/api";
@@ -148,4 +148,24 @@ describe("SchedulesPane", () => {
     expect(screen.getByText(/Monitor continuity/)).toBeInTheDocument();
     expect(screen.getByText(/Failure notifications suppressed/)).toBeInTheDocument();
   });
+});
+
+it("polls schedules at most every 10s and not while the window is hidden", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: false });
+  try {
+    vi.mocked(api.getSchedules).mockResolvedValue({ schedules: [] });
+    render(<SchedulesPane />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const afterMount = vi.mocked(api.getSchedules).mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    // Old raw 3s interval: ~10 more reads in 30s.
+    expect(vi.mocked(api.getSchedules).mock.calls.length - afterMount).toBeLessThanOrEqual(3);
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    const hiddenStart = vi.mocked(api.getSchedules).mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(vi.mocked(api.getSchedules).mock.calls.length).toBe(hiddenStart);
+  } finally {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    vi.useRealTimers();
+  }
 });

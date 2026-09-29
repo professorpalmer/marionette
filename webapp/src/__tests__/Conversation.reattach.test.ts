@@ -38,6 +38,7 @@ import {
   shouldApplyStoreStreamAfterLive,
   storeCursorAfterBatch,
   STORE_EVENTS_POLL_MS,
+  storePollDelayMs,
 } from "../components/conversation/storeEvents";
 
 /**
@@ -1114,6 +1115,30 @@ describe("mid-turn store-event cursor reattach", () => {
     expect(deps.chatEventsLiveCancelRef.current).not.toBeNull();
     expect(deps.chatEventsPollTimerRef.current).toBeNull();
     expectExclusiveChatEventsOwner(deps);
+  });
+
+  it("store poll delay is 1s while busy or progressing and doubles to 8s idle", () => {
+    expect([0, 1, 2, 3, 4, 9].map(storePollDelayMs)).toEqual([1000, 2000, 4000, 8000, 8000, 8000]);
+  });
+
+  it("an idle store poll backs off instead of asking every second", async () => {
+    vi.useFakeTimers();
+    const deps = reattachDeps();
+    deps.detachedBusyRef.current = false;
+    const readEventsSince = vi.spyOn(api, "readEventsSince").mockResolvedValue({
+      ok: true, session_id: "sess-live", cursor: 5, events: [],
+    });
+    // Arm the poll the same way a settled turn hands off to the store.
+    const { startChatEventsReattach } = createChatEventsReattach(deps);
+    vi.spyOn(api, "getSessionState").mockResolvedValue({ state: "idle", pending_swarms: false, runners: { "sess-live": "idle" } } as never);
+    await startChatEventsReattach();
+    await vi.advanceTimersByTimeAsync(30_000);
+    // 1Hz would be ~30 reads; 1,2,4,8,8,... gives about 6.
+    expect(readEventsSince.mock.calls.length).toBeLessThanOrEqual(7);
+    expect(readEventsSince.mock.calls.length).toBeGreaterThanOrEqual(4);
+
+    deps.clearChatEventsPoll();
+    vi.useRealTimers();
   });
 
   it("live and poll ownership never overlap across open-miss fallback", async () => {

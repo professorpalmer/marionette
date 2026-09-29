@@ -143,13 +143,16 @@ def test_sensitive_gets_require_token():
         except urllib.error.HTTPError as e:
             assert e.code == 403
 
-        # GET /api/sessions/export with token -> 200
-        resp = _get(
-            port,
-            "/api/sessions/export?session=foo",
-            headers={"X-Harness-Token": srv._TOKEN},
-        )
-        assert resp.status == 200
+        # GET /api/sessions/export with token -> past auth (unknown id is 404)
+        try:
+            _get(
+                port,
+                "/api/sessions/export?session=foo",
+                headers={"X-Harness-Token": srv._TOKEN},
+            )
+            assert False, "unknown session should be 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
     finally:
         httpd.shutdown()
 

@@ -248,3 +248,37 @@ it("a same-project session switch does not reload git status", async () => {
   });
   expect(nativeGit.status).toHaveBeenCalled();
 });
+it("a turn-end config event on the same repo keeps the draft commit message", async () => {
+  await mount();
+  const box = screen.getByRole("textbox");
+  fireEvent.change(box, { target: { value: "wip: halfway" } });
+  vi.mocked(nativeGit.status).mockClear();
+  await act(async () => {
+    window.dispatchEvent(new Event("harness-config-changed"));
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(screen.getByRole("textbox")).toHaveValue("wip: halfway");
+  // Still refreshed: the turn may have changed files.
+  expect(nativeGit.status).toHaveBeenCalledWith("/a");
+});
+it("a config event that changes the repo does clear the draft", async () => {
+  await mount();
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "for repo a" } });
+  vi.mocked(api.config).mockResolvedValue({ repo: "/b" });
+  await act(async () => {
+    window.dispatchEvent(new Event("harness-config-changed"));
+    await vi.advanceTimersByTimeAsync(300);
+  });
+  expect(screen.getByRole("textbox")).toHaveValue("");
+});
+it("a huge diff paints a capped number of lines until Show more", async () => {
+  const body = Array.from({ length: 5000 }, (_, i) => `+generated ${i}`).join("\n");
+  vi.mocked(nativeGit.diff).mockResolvedValue({ ok: true, out: `diff --git a/big.ts b/big.ts\n--- a/big.ts\n+++ b/big.ts\n@@ -0,0 +1,5000 @@\n${body}` });
+  vi.mocked(nativeGit.status).mockResolvedValue({ ...status, files: [{ status: " M", path: "big.ts" }] });
+  await mount();
+  await act(async () => { fireEvent.click(screen.getByText("big.ts").closest("button")!); });
+  expect(screen.getByText("+generated 2999")).toBeInTheDocument();
+  expect(screen.queryByText("+generated 3000")).toBeNull();
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: /Show 2,000 more lines/ })); });
+  expect(screen.getByText("+generated 4999")).toBeInTheDocument();
+});

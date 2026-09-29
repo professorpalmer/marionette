@@ -151,3 +151,19 @@ it("paints Loading, never the empty state, before the first load", async () => {
   expect(html).not.toContain("No restore points");
   expect(html).toContain("Loading restore points");
 });
+
+it("keeps the list through a turn-end config event and shows the new checkpoint", async () => {
+  apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
+  apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
+  apiMocks.getCheckpoints.mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+  render(<CheckpointsPane />);
+  await screen.findByText("before edits");
+  apiMocks.getCheckpoints.mockResolvedValue([
+    { id: "cp-2", label: "after turn", timestamp: 2, files: [] },
+    { id: "cp-1", label: "before edits", timestamp: 1, files: [] },
+  ]);
+  window.dispatchEvent(new Event("harness-config-changed"));
+  expect(screen.queryByText("No restore points available yet.")).toBeNull();
+  await screen.findByText("after turn");
+  expect(screen.getByText("before edits")).toBeTruthy();
+});

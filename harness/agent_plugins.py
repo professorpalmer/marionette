@@ -81,6 +81,9 @@ class AgentPluginPackage:
     diagnostics: Tuple[AgentPluginDiagnostic, ...]
 
 
+_content_sha_cache: Dict[str, Tuple[tuple, str]] = {}
+
+
 def compute_plugin_content_sha256(plugin_root: Path) -> str:
     """Canonical sha256 over regular files under the installed package root.
 
@@ -103,11 +106,25 @@ def compute_plugin_content_sha256(plugin_root: Path) -> str:
         )
     except OSError as exc:
         raise AgentPluginError(f"cannot hash plugin contents: {exc}") from exc
+    files = []
     for path in paths:
         rel = path.relative_to(root).as_posix()
         parts = rel.split("/")
         if STAMP_FILENAME in parts or ".git" in parts:
             continue
+        try:
+            st = path.stat()
+        except OSError as exc:
+            raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
+        files.append((rel, path, (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)))
+    # /api/mcp and /api/plugins poll every few seconds and verify every plugin.
+    # Reuse the digest while no file was added, removed or touched; ctime
+    # changes on any write and cannot be set back, so edits still re-hash.
+    signature = tuple((rel, meta) for rel, _path, meta in files)
+    cached = _content_sha_cache.get(str(root))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    for rel, path, _meta in files:
         hasher.update(rel.encode("utf-8"))
         hasher.update(b"\0")
         try:
@@ -115,7 +132,9 @@ def compute_plugin_content_sha256(plugin_root: Path) -> str:
         except OSError as exc:
             raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
         hasher.update(b"\0")
-    return hasher.hexdigest()
+    digest = hasher.hexdigest()
+    _content_sha_cache[str(root)] = (signature, digest)
+    return digest
 
 
 compute_package_sha256 = compute_plugin_content_sha256

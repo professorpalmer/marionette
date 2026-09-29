@@ -211,12 +211,32 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
+  // Branch label: keyed on the repo, not the config object (which is rebuilt
+  // on every config retry and event), and read from /api/workspace rather
+  // than the full worktree listing. A burst of config events (turn end,
+  // pilot change) refreshes it once, so a checkout still shows.
+  const repo = config?.repo ?? "";
   useEffect(() => {
-    api.workspaces().then((ws) => {
-      const active = ws.find((w) => w.active);
-      if (active) setBranch(active.name);
-    }).catch(() => {});
-  }, [config]);
+    let gen = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => {
+      const mine = ++gen;
+      api.getWorkspace().then((ws) => {
+        if (mine === gen) setBranch(ws?.is_git ? ws.branch || "" : "");
+      }).catch(() => {});
+    };
+    const onConfig = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(load, 300);
+    };
+    load();
+    window.addEventListener("harness-config-changed", onConfig);
+    return () => {
+      gen += 1;
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("harness-config-changed", onConfig);
+    };
+  }, [repo]);
 
   // Poll runner/pilot liveness (and sticky GOAL) so the footer reflects real
   // busy state. LeftRail uses the same endpoint on the same cadence for dots.
