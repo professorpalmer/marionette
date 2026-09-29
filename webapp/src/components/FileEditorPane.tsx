@@ -328,12 +328,14 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           const detected = detectEditorKind(path, false);
           setKind(detected);
           if (!softReload) {
-            // HTML defaults to preview; markdown stays in code until toggled.
-            setTextMode(detected === "html" ? "preview" : "code");
+            // HTML defaults to preview; markdown stays in code until toggled,
+            // except a read-only document outside the workspace, which is
+            // opened to be read.
+            setTextMode(detected === "html" || (res.read_only && detected === "markdown") ? "preview" : "code");
           }
           setContent(res.content || "");
           setOriginalContent(res.content || "");
-          setReadOnly(!!res.truncated);
+          setReadOnly(!!res.truncated || !!res.read_only);
           setContentTruncated(!!res.truncated);
           setIsDirty(false);
           setDiskConflict(false);

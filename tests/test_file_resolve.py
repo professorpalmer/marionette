@@ -60,9 +60,15 @@ def test_home_links_resolve_exactly_without_expanding_workspace_access(tmp_path,
     repo.mkdir()
     (repo / "inside.txt").write_text("fixture", encoding="utf-8")
     (tmp_path / "outside.txt").write_text("fixture", encoding="utf-8")
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "outside.txt").write_text("fixture", encoding="utf-8")
     status, payload = get_file_resolve("~/repo/inside.txt", _services(repo))
     assert status == 200
     assert payload == {"ok": True, "path": "inside.txt", "exact": True}
+    # A home document previews read-only; it never becomes a workspace path.
     status, payload = get_file_resolve("~/outside.txt", _services(repo))
+    assert status == 200
+    assert payload["read_only"] is True
+    status, payload = get_file_resolve("~/.ssh/outside.txt", _services(repo))
     assert status == 403
     assert payload.get("ok") is not True

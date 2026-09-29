@@ -20,3 +20,10 @@ it("other conflicts still surface", () => {
   publishTransportFailure(httpError(409, { code: "pilot_not_ready", error: "not ready" }), { operation: "getJSON", path: "/api/x" });
   expect(getActiveDiagnostic()?.severity).toBe("error");
 });
+
+it("a lookup's HTTP answer is a result, not a header error", () => {
+  publishTransportFailure(httpError(403, { error: "Access denied: path escapes workspace" }), { operation: "getJSONSoft", path: "/api/file/resolve", failureKind: "lookup" });
+  expect(getActiveDiagnostic()).toBeNull();
+  publishTransportFailure(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }), { operation: "getJSONSoft", path: "/api/file/resolve", failureKind: "lookup" });
+  expect(getActiveDiagnostic()).not.toBeNull();
+});
