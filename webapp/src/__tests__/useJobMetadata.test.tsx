@@ -469,3 +469,26 @@ it('a raced lifecycle remains stale and eligible for refresh', async () => {
   expect(await store.hydrateListedDetails({ retryErrors: true, includePM: true })).toBe('applied');
   expect(metadataActivity(store.getSnapshot()).count).toBe(0);
 });
+
+it('a stale roster with an observation re-reads on the 4s cadence, not back-to-back', async () => {
+  await open(); await store.advance();
+  request.mockResolvedValue(response(detail()));
+  expect(await store.hydrateListedDetails({ includePM: true })).toBe('applied');
+  const now = Date.now();
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(now + 5000);
+  try {
+    request.mockResolvedValue(response({ ...detail(), lifecycle: null }));
+    await store.hydrateListedDetails({ includePM: true });
+    const cached = Object.values(store.getSnapshot().detailCache);
+    expect(cached.some(entry => entry.freshness === 'stale' && entry.error === null && entry.observation)).toBe(true);
+    request.mockClear();
+    spy.mockReturnValue(now + 6000);
+    await store.hydrateListedDetails({ includePM: true });
+    expect(request).not.toHaveBeenCalled();
+    spy.mockReturnValue(now + 10000);
+    await store.hydrateListedDetails({ includePM: true });
+    expect(request).toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
+});

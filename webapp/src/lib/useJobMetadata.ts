@@ -12,6 +12,9 @@ import type {
   MetadataRemoval, MetadataSelection, MetadataStream, MetadataStreamState, MetadataTarget, MetadataView, Traversal,
 } from './jobMetadata';
 
+/** Minimum gap between re-reads of one job detail (live or stale). */
+const DETAIL_REFRESH_MS = 4000;
+
 type ViewState =
   | { kind: 'idle' }
   | { kind: 'target'; target: MetadataTarget; reason: 'not_opened' | 'invalidated' | MetadataErrorCode }
@@ -44,7 +47,7 @@ export type JobMetadataState = {
   pins: { selection: MetadataSelection; observation: MetadataObservation | null; result: MetadataPinResult['result'] | null }[];
   detail: DetailState; detailCache: Record<string, Extract<DetailState, { kind: 'selected' }>>; displayLimited: boolean;
 };
-export function metadataTerminalProjection(state: Pick<JobMetadataState, "canonicalTerminal" | "detailCache">): NonNullable<JobMetadataState['canonicalTerminal']> {
+export function metadataTerminalProjection(state: Pick<JobMetadataState, "canonicalTerminal" | "detailCache" | "observations" | "pins">): NonNullable<JobMetadataState['canonicalTerminal']> {
   const canonicalTerminal = { ...state.canonicalTerminal };
   for (const cached of Object.values(state.detailCache)) {
     const detail = cached.observation;
@@ -814,14 +817,21 @@ export class JobMetadataStore {
         if (retryErrors) out.push(selection);
         return;
       }
-      if (!cached || !cached.observation || cached.freshness === 'stale') {
+      if (!cached || !cached.observation) {
         out.push(selection);
+        return;
+      }
+      // A stale roster that is still shown re-reads on the live cadence. Its
+      // hydrate effect re-runs on every publish, so without this gate an
+      // incomplete read looped back-to-back.
+      if (cached.freshness === 'stale') {
+        if (Date.now() - (cached.refreshedAt ?? 0) >= DETAIL_REFRESH_MS) out.push(selection);
         return;
       }
       const hydrated = Math.max(cached.observation.tasks.page.revision, cached.observation.artifacts.page.revision);
       if (listedRevision > hydrated || (live && cached.observation.lifecycle !== null
         && pmActiveStatuses.some(status => status === cached.observation?.lifecycle)
-        && Date.now() - (cached.refreshedAt ?? 0) >= 4000)) out.push(selection);
+        && Date.now() - (cached.refreshedAt ?? 0) >= DETAIL_REFRESH_MS)) out.push(selection);
     };
     for (const observation of this.state.local.observations) {
       const canonical = observation.row.canonical;
