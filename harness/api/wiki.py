@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -295,151 +296,91 @@ def get_wiki_config_payload() -> tuple[int, dict]:
     return 200, get_wiki_config()
 
 
+_NOT_CONFIGURED = {"configured": False, "status": "not_configured", "nodes": [], "edges": [], "base_url": ""}
+WIKI_ERROR_TTL = 5.0  # seconds; a down wiki is re-probed at most this often
+_graph_fetch_locks: dict = {}
+_graph_fetch_locks_guard = threading.Lock()
+
+
+def _graph_payload(client) -> dict:
+    """The State pane graph payload, cached per wiki identity.
+
+    Errors are cached briefly and concurrent callers share one fetch, so a
+    hung or down backend costs one request per window, not one per caller.
+    """
+    ck = wiki_cache_key(client)
+    with _graph_fetch_locks_guard:
+        lock = _graph_fetch_locks.setdefault(ck, threading.Lock())
+    with lock:
+        cached = wiki_graph_cache.get(ck)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        try:
+            res = client.graph()
+        except Exception as e:
+            res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
+        if res.get("error"):
+            # An unreachable host (connection refused, DNS, timeout) reads as a
+            # retryable NOT CONNECTED, not a scary red API error, and a transient
+            # failure must never wipe a configured connection.
+            unreachable = _wiki_unreachable(res.get("error", ""))
+            payload = {
+                "configured": True,
+                "status": "error",
+                "nodes": [],
+                "edges": [],
+                "error": ("Wiki temporarily unreachable -- click Refresh to retry."
+                          if unreachable else res["error"]),
+                "retryable": True,
+                "base_url": client.base_url,
+            }
+            ttl = WIKI_ERROR_TTL
+        else:
+            payload = {
+                "configured": True,
+                "status": "ok",
+                "nodes": res.get("nodes") or [],
+                "edges": res.get("edges") or [],
+                "base_url": client.base_url,
+            }
+            payload.update(wiki_status_extras(client, res))
+            ttl = WIKI_GRAPH_TTL
+        wiki_graph_cache[ck] = (time.monotonic() + ttl, payload)
+        return payload
+
+
 def get_wiki_graph(svc: WikiServices) -> tuple[int, dict]:
     """WikiClient graph payload for the State pane (auth already applied)."""
     client, _client_err = _make_wiki_client(svc)
     if client is None or not client.base_url:
-        return 200, {
-            "configured": False,
-            "status": "not_configured",
-            "nodes": [],
-            "edges": [],
-            "base_url": "",
-        }
-    ck = wiki_cache_key(client)
-    cached = wiki_graph_cache.get(ck)
-    if cached and cached[0] > time.monotonic():
-        return 200, cached[1]
-    try:
-        res = client.graph()
-    except Exception as e:
-        res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
-    if res.get("error"):
-        # Distinguish "wiki host unreachable / not actually set up" from a real
-        # API error. An unreachable host (connection refused, DNS failure, timeout)
-        # should look like NOT CONNECTED -- neutral -- not a scary red ERROR, so a
-        # user who never set up a wiki is not confused by a broken-looking panel.
-        unreachable = _wiki_unreachable(res.get("error", ""))
-        # If the wiki was NEVER configured (no base_url/token), an
-        # unreachable result is just "not set up" -> neutral. But if a
-        # base_url IS configured, a transient failure must NOT wipe the
-        # connection -- keep configured + base_url and report a retryable
-        # error so Refresh recovers instead of showing "not connected".
-        is_configured = bool(client.base_url)
-        if unreachable and not is_configured:
-            return 200, {
-                "configured": False,
-                "status": "not_configured",
-                "nodes": [],
-                "edges": [],
-                "base_url": "",
-            }
-        return 200, {
-            "configured": True,
-            "status": "error",
-            "nodes": [],
-            "edges": [],
-            "error": ("Wiki temporarily unreachable -- click Refresh to retry."
-                      if unreachable else res["error"]),
-            "retryable": True,
-            "base_url": client.base_url,
-        }
-    payload = {
-        "configured": True,
-        "status": "ok",
-        "nodes": res.get("nodes") or [],
-        "edges": res.get("edges") or [],
-        "base_url": client.base_url,
-    }
-    payload.update(wiki_status_extras(client, res))
-    wiki_graph_cache[wiki_cache_key(client)] = (
-        time.monotonic() + WIKI_GRAPH_TTL, payload)
-    return 200, payload
+        return 200, dict(_NOT_CONFIGURED)
+    return 200, _graph_payload(client)
 
 
 def get_wiki_status(svc: WikiServices) -> tuple[int, dict]:
     """Lightweight summary for the State pane strip — counts only.
 
-    Reuses the same graph cache as ``/api/wiki/graph``.
+    Shares the graph fetch and cache with ``/api/wiki/graph``.
     """
     client, _ = _make_wiki_client(svc)
     if client is None or not client.base_url:
-        return 200, {
-            "configured": False,
-            "status": "not_configured",
-            "page_count": 0,
-            "link_count": 0,
-            "base_url": "",
-        }
-    ck = wiki_cache_key(client)
-    cached_entry = wiki_graph_cache.get(ck)
-    if cached_entry and cached_entry[0] > time.monotonic():
-        cached = cached_entry[1]
-        page_count = cached.get("page_count")
-        if page_count is None:
-            page_count = len(cached.get("nodes") or [])
-        return 200, {
-            "configured": cached.get("configured", True),
-            "status": cached.get("status", "ok"),
-            "page_count": page_count,
-            "link_count": len(cached.get("edges") or []),
-            "error": cached.get("error"),
-            "retryable": cached.get("retryable"),
-            "base_url": cached.get("base_url") or client.base_url,
-            "hint": cached.get("hint"),
-            "viewer_tier": cached.get("viewer_tier"),
-            "viewer_is_owner": cached.get("viewer_is_owner"),
-            "needs_owner_token": cached.get("needs_owner_token"),
-        }
-    try:
-        res = client.graph()
-    except Exception as e:
-        res = {"error": f"Unexpected error: {str(e)}", "nodes": [], "edges": []}
-    if res.get("error"):
-        unreachable = _wiki_unreachable(res.get("error", ""))
-        is_configured = bool(client.base_url)
-        if unreachable and not is_configured:
-            return 200, {
-                "configured": False,
-                "status": "not_configured",
-                "page_count": 0,
-                "link_count": 0,
-                "base_url": "",
-            }
-        return 200, {
-            "configured": True,
-            "status": "error",
-            "page_count": 0,
-            "link_count": 0,
-            "error": ("Wiki temporarily unreachable -- click Refresh to retry."
-                      if unreachable else res["error"]),
-            "retryable": True,
-            "base_url": client.base_url,
-        }
-    nodes = res.get("nodes") or []
-    edges = res.get("edges") or []
-    extras = wiki_status_extras(client, res)
-    payload = {
-        "configured": True,
-        "status": "ok",
-        "nodes": nodes,
-        "edges": edges,
-        "base_url": client.base_url,
-    }
-    payload.update(extras)
-    wiki_graph_cache[wiki_cache_key(client)] = (
-        time.monotonic() + WIKI_GRAPH_TTL, payload)
-    page_count = extras.get("page_count")
+        return 200, {"configured": False, "status": "not_configured",
+                     "page_count": 0, "link_count": 0, "base_url": ""}
+    graph = _graph_payload(client)
+    page_count = graph.get("page_count")
     if page_count is None:
-        page_count = len(nodes)
+        page_count = len(graph.get("nodes") or [])
     return 200, {
-        "configured": True,
-        "status": payload.get("status", "ok"),
+        "configured": graph.get("configured", True),
+        "status": graph.get("status", "ok"),
         "page_count": page_count,
-        "link_count": len(edges),
-        "base_url": client.base_url,
-        "hint": extras.get("hint"),
-        "viewer_tier": extras.get("viewer_tier"),
-        "viewer_is_owner": extras.get("viewer_is_owner"),
-        "needs_owner_token": extras.get("needs_owner_token"),
+        "link_count": len(graph.get("edges") or []),
+        "error": graph.get("error"),
+        "retryable": graph.get("retryable"),
+        "base_url": graph.get("base_url") or client.base_url,
+        "hint": graph.get("hint"),
+        "viewer_tier": graph.get("viewer_tier"),
+        "viewer_is_owner": graph.get("viewer_is_owner"),
+        "needs_owner_token": graph.get("needs_owner_token"),
     }
+

@@ -561,3 +561,35 @@ def test_maybe_ingest_clears_graph_cache(monkeypatch):
         assert not srv._wiki_graph_cache
     finally:
         httpd.shutdown()
+
+
+def test_down_wiki_is_fetched_once_per_error_window(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    import harness.wiki as wiki_mod
+    from harness.api import wiki as api_wiki
+
+    calls = []
+
+    class _Down:
+        def __init__(self, *a, **k):
+            self.base_url = "http://127.0.0.1:65009"
+            self.token = ""
+        def graph(self):
+            calls.append(1)
+            __import__("time").sleep(0.1)
+            return {"error": "connection refused", "nodes": [], "edges": []}
+
+    monkeypatch.setattr(wiki_mod, "WikiClient", _Down)
+    monkeypatch.setattr(api_wiki, "wiki_graph_cache", {})
+    svc = SimpleNamespace(cfg=SimpleNamespace(wiki_url="http://127.0.0.1:65009"))
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(api_wiki.get_wiki_status(svc)))
+               for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out.append(api_wiki.get_wiki_graph(svc))
+    assert calls == [1]
+    assert all(body["status"] == "error" and body["retryable"] for _, body in out)
