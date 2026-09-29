@@ -317,3 +317,11 @@ it('a finished job offers no Stop control', async () => {
   expect(screen.queryByRole('button', { name: 'Stop selected workers' })).toBeNull();
   expect(screen.queryByText(/Stop unavailable/)).toBeNull();
 });
+it('says when every job belongs to another session and offers to show them', async () => {
+  pm = [{ ...summary(), lifecycle: 'running', ownership: { ...summary().ownership, session_id: 'other' } }];
+  await start(); mount();
+  fireEvent.click(screen.getByRole('button', { name: 'This session' }));
+  expect(await screen.findByText('No jobs in this session')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Show 1 job from other sessions' }));
+  expect(row('job_1').getByRole('button', { name: /running/ })).toBeVisible();
+});

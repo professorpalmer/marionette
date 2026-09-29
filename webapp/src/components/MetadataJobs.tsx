@@ -548,6 +548,8 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     includeJobIds: pending?.jobId ? [pending.jobId] : undefined,
   });
   const hidden = scoped.filter(j => !isActive(j) && !isNativeActivity(j) && preferences.dismissed.includes(j.metadata_key ?? ''));
+  // A new session while another's swarm runs: say where the jobs are.
+  const otherSessionsOnly = jobScope === 'session' && jobs.length > 0 && scoped.length === 0;
   const createdAt = new Map(state.local.observations.map(o => [localKey(o.row.local_ref), o.row.created_at]));
   for (const job of jobs) {
     const listedLocal = job.local_ref
@@ -762,10 +764,12 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
           ? <><span>Loading jobs...</span> Waiting for job metadata; no lifecycle result is known yet.</>
           : hidden.length && filter === 'all' ? 'Observed finished jobs are hidden. Show hidden jobs to restore them.'
             : !jobs.length ? 'No jobs yet'
-              : 'No jobs match this filter'}</span>
+              : otherSessionsOnly ? 'No jobs in this session'
+                : 'No jobs match this filter'}</span>
       {failedRead ? <span className="text-[10.5px] text-faint">Retry updates; an empty view does not establish no work.</span>
         : filter !== 'all' && (jobs.length > 0 || hidden.length > 0) ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setFilter('all')}>Clear filter</button>
         : hidden.length > 0 ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>
+        : otherSessionsOnly ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => saveJobScope('all', activeSessionId)}>Show {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'} from other sessions</button>
         : !failedRead && state.view.kind === 'view' && !jobs.length && !state.working && (
         <span className="text-[10.5px] text-faint leading-relaxed">
           Every dispatched worker lands here -- run_implement, run_parallel,
