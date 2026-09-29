@@ -2375,7 +2375,11 @@ class ConversationalSession(
         return {"ok": True, "reloaded": True, "servers": report}
 
     def _build_visible_tools_schema(self) -> list:
-        from .tool_discovery import discovery_enabled
+        from .tool_discovery import (
+            _profile_compacts_descriptions,
+            core_visible_names,
+            discovery_enabled,
+        )
 
         enabled = discovery_enabled()
         delegation_available = self._worker_delegation_available()
@@ -2383,6 +2387,16 @@ class ConversationalSession(
             activated = frozenset(self._tool_catalog.activated)
         except Exception:
             activated = frozenset()
+        profile = getattr(self, "_task_profile", None) or None
+        # The task profile decides which core tools are visible. Keyed on the
+        # visible shape (not the profile name) so the snapshot, and the prompt
+        # cache behind it, only changes when the toolset does: a MICRO first
+        # turn used to freeze an 11-tool set without run_swarm for the rest
+        # of the conversation.
+        shape = (
+            frozenset(core_visible_names(getattr(self.config, "no_delegation", False), profile)),
+            _profile_compacts_descriptions(profile),
+        )
         snap = getattr(self, "_tools_schema_snapshot", None)
         if snap is not None:
             if (
@@ -2391,6 +2405,7 @@ class ConversationalSession(
                 and getattr(
                     self, "_tools_schema_delegation_available", None
                 ) == delegation_available
+                and getattr(self, "_tools_schema_shape", None) == shape
             ):
                 return snap
             self._invalidate_tools_schema()
@@ -2399,7 +2414,7 @@ class ConversationalSession(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
             browser_enabled=getattr(self.config, "browser_enabled", True),
-            profile=getattr(self, "_task_profile", None) or None,
+            profile=profile,
         )
         if schema and not delegation_available:
             delegation_names = {"run_swarm", "run_implement", "run_parallel"}
@@ -2421,6 +2436,7 @@ class ConversationalSession(
             self._tools_schema_discovery = enabled
             self._tools_schema_activated = activated
             self._tools_schema_delegation_available = delegation_available
+            self._tools_schema_shape = shape
         return schema
 
     def _context_usage_prefix_tokens(self) -> dict:
