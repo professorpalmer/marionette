@@ -287,3 +287,35 @@ def test_fork_persistence_failure_does_not_publish_child(tmp_path, monkeypatch):
     assert code == 500
     assert len(store.rows()) == 1
     assert "forked_to" not in store.rows()[0]
+
+
+def test_export_includes_turns_that_compaction_folded_out_of_history(tmp_path):
+    from harness.api.sessions import get_sessions_export
+    from harness.sessions import save_transcript
+    import json as _json
+
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    row = store.create(title="Long chat", repo=str(tmp_path), workspace_root=str(tmp_path))
+    svc = _session_svc(store, str(tmp_path))
+    svc.cfg = SimpleNamespace(state_dir=str(tmp_path))
+    svc.runners = SimpleNamespace(get=lambda _sid: None)
+    save_transcript(str(tmp_path), row["id"], {
+        "history": [{"role": "user", "content": "[compacted summary]"}],
+        "display": [
+            {"type": "message", "role": "user", "text": "first ask"},
+            {"type": "card", "card": {"kind": "run_command"}},
+            {"type": "message", "role": "assistant", "text": "first answer"},
+            {"type": "message", "role": "user", "text": "second ask"},
+        ],
+    })
+    att = get_sessions_export({"session": [row["id"]], "format": ["json"]}, svc)
+    messages = _json.loads(att.data)["messages"]
+    assert [m["content"] for m in messages] == ["first ask", "first answer", "second ask"]
+
+
+def test_export_of_an_unknown_session_is_not_an_empty_success(tmp_path):
+    from harness.api.sessions import get_sessions_export
+
+    store = SessionStore(str(tmp_path / "harness_sessions.json"))
+    svc = _session_svc(store, str(tmp_path))
+    assert get_sessions_export({"session": ["gone"], "format": ["json"]}, svc) is None

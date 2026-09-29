@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass
 from contextlib import nullcontext, ExitStack
 from ..pilot_replacement import replacement_gate
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from ..prompt_queue import ORIGINAL_TEXT_UNSET
 from ..diag import note as _diag_default
 from ..sessions import (
@@ -734,16 +734,39 @@ def format_session_export_markdown(payload):
     return "\n".join(md_lines)
 
 
-def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachment:
+def _export_messages(data: Any) -> list:
+    """Every visible turn: ``display`` keeps the full record, while ``history``
+    is the model context and after compaction holds only the residual."""
+    if not isinstance(data, dict):
+        return list(data or [])
+    display = [
+        {"role": row.get("role"), "content": row.get("text", "")}
+        for row in data.get("display") or []
+        if isinstance(row, dict)
+        and row.get("type", "message") == "message"
+        and row.get("role") in ("user", "assistant")
+    ]
+    return display or list(data.get("history") or [])
+
+
+def get_sessions_export(qs: dict, svc: SessionServices) -> Optional[SessionExportAttachment]:
+    """Build the export, or None when the session does not exist."""
     sid = qs.get("session", [None])[0] or svc.sessions.active or ""
     fmt = qs.get("format", ["json"])[0]
 
     meta = next((s for s in svc.sessions._sessions if s["id"] == sid), None)
-    data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
-    if isinstance(data, dict):
-        history = data.get("history", [])
-    else:
-        history = data
+    if meta is None:
+        return None
+    data = None
+    try:
+        live = svc.runners.get(sid)
+        if live is not None and hasattr(live, "export_transcript_data"):
+            data = live.export_transcript_data()
+    except Exception as e:
+        svc.diag("server.session_export_live", e)
+    if data is None:
+        data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
+    history = _export_messages(data)
 
     title = meta.get("title", "Unknown Session") if meta else "Unknown Session"
     created = meta.get("created") if meta else None
@@ -776,6 +799,15 @@ def get_sessions_export(qs: dict, svc: SessionServices) -> SessionExportAttachme
 def write_sessions_export(handler: Any, qs: dict, svc: SessionServices) -> None:
     """Write the export attachment onto a BaseHTTPRequestHandler-like object."""
     att = get_sessions_export(qs, svc)
+    if att is None:
+        body = json.dumps({"error": "session not found"}).encode("utf-8")
+        handler.send_response(404)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler._cors()
+        handler.end_headers()
+        handler.wfile.write(body)
+        return
     handler.send_response(200)
     handler.send_header("Content-Type", att.content_type)
     handler.send_header("Content-Length", str(len(att.data)))
