@@ -21,6 +21,7 @@ import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
 import { moveMenuFocus } from "../lib/overlayFocus";
+import { REVIEWS_COUNT_EVENT } from "../lib/inFileReview";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -184,6 +185,7 @@ export default function RightDock({
       });
       return requestPromise;
     };
+    if (panelsOpen) return () => { active = false; };
     let initial: Promise<unknown> | undefined = load();
     reviewPoll.current = () => {
       const first = initial;
@@ -198,8 +200,17 @@ export default function RightDock({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("harness-reviews-refresh", load);
     };
-  }, [swarmRepo, activitySessionId, scopeEpoch]);
-  usePolling(() => reviewPoll.current(), 5000, { scopeKey: scopeEpoch });
+  }, [swarmRepo, activitySessionId, scopeEpoch, panelsOpen]);
+  // While the board is open it already polls reviews and publishes the count.
+  usePolling(() => reviewPoll.current(), 5000, { scopeKey: scopeEpoch, enabled: !panelsOpen });
+  useEffect(() => {
+    const onCount = (e: Event) => {
+      const n = (e as CustomEvent<unknown>).detail;
+      if (typeof n === "number") setReviewCount(n);
+    };
+    window.addEventListener(REVIEWS_COUNT_EVENT, onCount);
+    return () => window.removeEventListener(REVIEWS_COUNT_EVENT, onCount);
+  }, []);
 
   return (
     <aside

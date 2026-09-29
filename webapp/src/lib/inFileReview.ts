@@ -10,6 +10,9 @@ import {
   reviewHunkDecisionKey,
 } from "./reviewDecisions";
 
+/** Pending review count published by the open board for the dock badge. */
+export const REVIEWS_COUNT_EVENT = "harness-reviews-count";
+
 export type HunkLineKind = "context" | "add" | "del" | "meta";
 
 export type ParsedHunkGeometry = {
