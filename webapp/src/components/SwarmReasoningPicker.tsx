@@ -58,6 +58,8 @@ export default function SwarmReasoningPicker({ config, sessionId = "" }: { confi
     <div ref={rootRef} className="relative shrink-0" data-testid="swarm-reasoning-picker">
       <button
         type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
         title="Worker reasoning for swarms and implement (not the chat pilot)"
         className="flex items-center gap-1 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"

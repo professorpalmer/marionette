@@ -146,9 +146,9 @@ describe("PilotPicker initial session model", () => {
     const { rerender } = render(<PilotPicker config={sonnetConfig} onPendingReasoningChange={onPendingReasoningChange} />);
 
     fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
-    const high = screen.getByRole("menuitemradio", { name: "High" });
+    const high = screen.getByRole("radio", { name: "High" });
     expect(high.tagName).toBe("BUTTON");
-    expect(screen.getByRole("menuitemradio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(high);
 
     expect(onPendingReasoningChange).toHaveBeenCalledExactlyOnceWith("high", "anthropic:claude-sonnet-4-6");
@@ -185,21 +185,25 @@ describe("PilotPicker initial session model", () => {
 describe("Reasoning menus from the keyboard", () => {
   it("opens on the current level and moves with arrow keys", async () => {
     render(<PilotPicker config={{ ...sonnetConfig, reasoning_effort: "medium" }} />);
-    fireEvent.click(screen.getByTitle("Reasoning effort (Medium)"));
-    const medium = screen.getByRole("menuitemradio", { name: "Medium" });
+    const trigger = screen.getByTitle("Reasoning effort (Medium)");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("radiogroup", { name: "Reasoning level" })).toBeTruthy();
+    const medium = screen.getByRole("radio", { name: "Medium" });
     await waitFor(() => expect(medium).toHaveFocus());
     fireEvent.keyDown(medium, { key: "ArrowDown" });
-    expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "High" }), { key: "Home" });
-    expect(screen.getByRole("menuitemradio", { name: "None" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "None" }), { key: "ArrowUp" });
-    expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveFocus();
+    expect(screen.getByRole("radio", { name: "High" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("radio", { name: "High" }), { key: "Home" });
+    expect(screen.getByRole("radio", { name: "None" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("radio", { name: "None" }), { key: "ArrowUp" });
+    expect(screen.getByRole("radio", { name: "Max" })).toHaveFocus();
   });
 
   it("gives the worker picker the same keyboard rows", async () => {
     render(<SwarmReasoningPicker config={{ ...sonnetConfig, swarm_reasoning_effort: "low" }} sessionId="s1" />);
     fireEvent.click(screen.getByTitle(/Worker reasoning/));
-    const low = screen.getByRole("menuitemradio", { name: "Low" });
+    const low = screen.getByRole("radio", { name: "Low" });
     expect(low.tagName).toBe("BUTTON");
     await waitFor(() => expect(low).toHaveFocus());
   });

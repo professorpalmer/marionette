@@ -19,14 +19,14 @@ export default function ReasoningLevelOptions({
     if (moveMenuFocus(e.currentTarget.parentElement, e.key)) e.preventDefault();
   };
 
-  return REASONING_LEVELS.map(({ value: level, label }) => {
+  const rows = REASONING_LEVELS.map(({ value: level, label }) => {
     const isSelected = level === value;
     return (
       <button
         type="button"
         key={level}
         ref={isSelected ? selectedRef : undefined}
-        role="menuitemradio"
+        role="radio"
         aria-checked={isSelected}
         onClick={() => onSelect(level)}
         onKeyDown={moveFocus}
@@ -39,4 +39,5 @@ export default function ReasoningLevelOptions({
       </button>
     );
   });
+  return <div role="radiogroup" aria-label="Reasoning level">{rows}</div>;
 }

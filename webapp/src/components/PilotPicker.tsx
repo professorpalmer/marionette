@@ -277,6 +277,8 @@ export default function PilotPicker({
         <button
           ref={modelTriggerRef}
           disabled={modelSelectionDisabled}
+          aria-haspopup="dialog"
+          aria-expanded={modelOpen}
           onClick={() => {
             setReasonOpen(false);
             setModelOpen((prev) => !prev);
@@ -348,6 +350,8 @@ export default function PilotPicker({
       {showReasoning && (
         <div className="relative shrink-0">
           <button
+            aria-haspopup="dialog"
+            aria-expanded={reasonOpen}
             onClick={() => {
               setModelOpen(false);
               setReasonOpen((prev) => !prev);

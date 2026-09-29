@@ -1118,6 +1118,8 @@ export default function ComposerDock({
                 }
               }}
               title="View context window usage breakdown"
+              aria-label="Context window usage"
+              aria-expanded={showContextPanel}
               className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 shrink-0 transition
                 ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
             >
