@@ -26,8 +26,9 @@ export type StreamEvent = {
   kind: string;
   data?: any;
   turn?: number;
-  /** Present on live chatEvents ``?watch=1`` ring frames (not classic /api/chat). */
+  /** Server ring identity on primary chat and live reattach frames. */
   cursor?: number;
+  generation?: number;
 };
 
 /** One retained SSE frame from GET /api/chat/events (mid-turn reattach). */

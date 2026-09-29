@@ -80,7 +80,13 @@ import {
   type TurnSettle,
 } from "../../lib/turnTerminal";
 
-export type StreamEvent = { kind: string; data?: any; turn?: number; cursor?: number };
+export type StreamEvent = {
+  kind: string;
+  data?: any;
+  turn?: number;
+  cursor?: number;
+  generation?: number;
+};
 
 export type MemoryProposal = {
   id: string;
