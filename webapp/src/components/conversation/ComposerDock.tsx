@@ -1030,19 +1030,27 @@ export default function ComposerDock({
                   key={idx}
                   className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none animate-in fade-in zoom-in duration-150"
                 >
-                  <ImageResource
-                    src={img.previewUrl.startsWith("blob:") ? img.previewUrl : imagePath(img.path)}
-                    alt={img.name}
-                    onClick={() => onSetLightboxUrl(imagePath(img.path))}
-                    className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                  />
                   <button
+                    type="button"
+                    aria-label={`Preview ${img.name}`}
+                    onClick={() => onSetLightboxUrl(imagePath(img.path))}
+                    className="block w-full h-full focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                  >
+                    <ImageResource
+                      src={img.previewUrl.startsWith("blob:") ? img.previewUrl : imagePath(img.path)}
+                      alt={img.name}
+                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
+                    />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${img.name}`}
                     onClick={() => {
                       onSetAttachedImages((prev) => prev.filter((_, i) => i !== idx));
                       URL.revokeObjectURL(img.previewUrl);
                       onSetUploadError(null);
                     }}
-                    className="absolute top-0 right-0 p-0.5 bg-black/60 text-txt hover:text-risk opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition rounded-bl"
+                    className="absolute top-0 right-0 p-0.5 bg-black/60 text-txt hover:text-risk opacity-0 group-hover/thumb:opacity-100 focus-visible:opacity-100 flex items-center justify-center transition rounded-bl"
                     title="Remove image"
                   >
                     <X size={11} />

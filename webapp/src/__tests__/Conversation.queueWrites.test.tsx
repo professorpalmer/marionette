@@ -159,6 +159,9 @@ it('keeps the composer intact and refreshes a loading queue on the runner-ready 
     },
   });
   await screen.findByTitle('Remove image');
+  // Both thumbnail controls are reachable by keyboard and named for the file.
+  expect(screen.getByRole('button', { name: 'Remove keep.png' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Preview keep.png' })).toBeTruthy();
   await waitFor(() => expect(queueRead).toHaveBeenCalledWith('queue-ui'));
   expect(screen.queryByText('No project session is ready yet. Open a workspace or pick a project session.')).toBeNull();
 
