@@ -5,6 +5,7 @@
  */
 import { api } from "../../lib/api";
 import {
+  isShownTranscriptSession,
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "./transcriptCache";
@@ -16,14 +17,15 @@ const inFlight = new Map<string, Promise<boolean>>();
 export function prefetchSessionTranscript(sessionId: string): Promise<boolean> {
   const id = (sessionId || "").trim();
   if (!id) return Promise.resolve(false);
-  if (peekTranscriptCacheEntry(id)) return Promise.resolve(false);
+  if (peekTranscriptCacheEntry(id) || isShownTranscriptSession(id)) return Promise.resolve(false);
   const existing = inFlight.get(id);
   if (existing) return existing;
   const work = (async () => {
     try {
       const res = await api.sessionTranscript(id);
-      // Another path may have filled the cache while we were in flight.
-      if (peekTranscriptCacheEntry(id)) return false;
+      // Another path may have filled the cache, or opened this session, while
+      // we were in flight; the shown session's own hydrate owns its entry.
+      if (peekTranscriptCacheEntry(id) || isShownTranscriptSession(id)) return false;
       writeTranscriptCache(id, transcriptResponseToItems(res, id));
       return true;
     } catch {

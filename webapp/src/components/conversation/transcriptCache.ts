@@ -90,6 +90,19 @@ export function writeTranscriptCache(
   });
 }
 
+// The session on screen owns its cache entry (its hydrate and live stream write
+// it). Warmers skip it: a prefetch write mid-hydrate changed the entry under
+// captureTranscriptRead and left the session stale with Send disabled.
+let shownSessionId: string | null = null;
+
+export function setShownTranscriptSession(sessionId: string | null): void {
+  shownSessionId = sessionId;
+}
+
+export function isShownTranscriptSession(sessionId: string): boolean {
+  return shownSessionId === sessionId;
+}
+
 /** A disk response may replace rows only while its local baseline still owns them. */
 export function captureTranscriptRead(
   sessionId: string,

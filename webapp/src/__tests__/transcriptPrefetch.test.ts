@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import {
   clearTranscriptCache,
+  captureTranscriptRead,
   peekTranscriptCache,
+  setShownTranscriptSession,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
 import {
@@ -17,6 +19,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 
 beforeEach(() => {
   clearTranscriptCache();
+  setShownTranscriptSession(null);
   vi.clearAllMocks();
 });
 
@@ -36,6 +39,26 @@ describe("prefetchSessionTranscript", () => {
     ] as any);
     await expect(prefetchSessionTranscript("sess-b")).resolves.toBe(false);
     expect(api.sessionTranscript).not.toHaveBeenCalled();
+  });
+});
+
+describe("shown session ownership", () => {
+  it("never writes the session on screen, even when opened mid-flight", async () => {
+    // Opened with no cache entry: its hydrate captured "no entry" as baseline.
+    setShownTranscriptSession("sess-open");
+    const read = captureTranscriptRead("sess-open", { current: [] }, { current: 0 });
+    await expect(prefetchSessionTranscript("sess-open")).resolves.toBe(false);
+    expect(api.sessionTranscript).not.toHaveBeenCalled();
+
+    let resolve!: (v: unknown) => void;
+    vi.mocked(api.sessionTranscript).mockReturnValue(new Promise(r => { resolve = r; }) as any);
+    const inFlight = prefetchSessionTranscript("sess-next");
+    setShownTranscriptSession("sess-next");
+    resolve({ display: [{ type: "msg", role: "user", text: "hi" }] });
+    await expect(inFlight).resolves.toBe(false);
+    expect(peekTranscriptCache("sess-next")).toBeUndefined();
+    // The hydrate's baseline stays valid, so its load can clear the stale flag.
+    expect(read()).toBe(true);
   });
 });
 
