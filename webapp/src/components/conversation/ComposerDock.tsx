@@ -7,7 +7,7 @@ import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
-import type { RefObject } from "react";
+import { useId, type RefObject } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -282,6 +282,17 @@ export default function ComposerDock({
     slashSearch !== null
       ? filterSlashCommands(allSlashCommands, slashSearch)
       : [];
+  // Screen readers follow the highlighted suggestion while focus stays in
+  // the textarea (the listbox pattern for an inline autocomplete).
+  const suggestId = useId();
+  const mentionCount =
+    (showCodebaseMention ? 1 : 0) + filteredFiles.length + filteredFolders.length + symbolResults.length;
+  const activeSuggestionId =
+    mentionSearch !== null && selectedFileIndex >= 0 && selectedFileIndex < mentionCount
+      ? `${suggestId}-m-${selectedFileIndex}`
+      : slashSearch !== null && matchingSlash.length > 0
+        ? `${suggestId}-s-${Math.min(Math.max(selectedSlashIndex, 0), matchingSlash.length - 1)}`
+        : undefined;
 
   // Defense in depth: usage is validated upstream (normalizeContextUsage),
   // but a malformed payload must degrade to an empty breakdown, not a crash.
@@ -838,7 +849,7 @@ export default function ComposerDock({
           )}
 
           {mentionSearch !== null && (
-            <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
+            <div id={`${suggestId}-mentions`} role="listbox" aria-label="Mentions" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
               {!showCodebaseMention
                 && filteredFiles.length === 0
                 && filteredFolders.length === 0
@@ -853,10 +864,13 @@ export default function ComposerDock({
               )}
               {showCodebaseMention && (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
                     Scope
                   </div>
                   <div
+                    id={`${suggestId}-m-0`}
+                    role="option"
+                    aria-selected={selectedFileIndex === 0}
                     onClick={() => insertCodebase()}
                     onMouseEnter={() => onSetSelectedFileIndex(0)}
                     className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
@@ -874,7 +888,7 @@ export default function ComposerDock({
 
               {filteredFiles.length > 0 && (
                 <>
-                  <div className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none ${showCodebaseMention ? "mt-1" : ""}`}>
+                  <div aria-hidden="true" className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none ${showCodebaseMention ? "mt-1" : ""}`}>
                     Files
                   </div>
                   {filteredFiles.map((file, idx) => {
@@ -883,6 +897,9 @@ export default function ComposerDock({
                     return (
                       <div
                         key={file}
+                        id={`${suggestId}-m-${globalIdx}`}
+                        role="option"
+                        aria-selected={isSelected}
                         onClick={() => insertMention(file)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
                         className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
@@ -899,7 +916,7 @@ export default function ComposerDock({
 
               {filteredFolders.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none">
                     Folders
                   </div>
                   {filteredFolders.map((folder, idx) => {
@@ -909,6 +926,9 @@ export default function ComposerDock({
                     return (
                       <div
                         key={`folder:${folder}`}
+                        id={`${suggestId}-m-${globalIdx}`}
+                        role="option"
+                        aria-selected={isSelected}
                         onClick={() => insertFolder(folder)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
                         className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
@@ -928,7 +948,7 @@ export default function ComposerDock({
 
               {symbolResults.length > 0 && (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
                     <span>Symbols</span>
                     {codegraphStatus === "indexing" && (
                       <span className="text-[9px] text-muted normal-case font-normal animate-pulse">indexing...</span>
@@ -944,6 +964,9 @@ export default function ComposerDock({
                     return (
                       <div
                         key={`${sym.path}:${sym.line}:${sym.name}`}
+                        id={`${suggestId}-m-${globalIdx}`}
+                        role="option"
+                        aria-selected={isSelected}
                         onClick={() => insertSymbol(sym.name)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
                         className={`flex flex-col gap-0.5 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
@@ -981,7 +1004,7 @@ export default function ComposerDock({
           )}
 
           {slashSearch !== null && (
-            <div className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
+            <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
               {matchingSlash.length === 0 ? (
                 <div
                   className="px-3 py-2 text-[11px] text-muted select-none"
@@ -991,7 +1014,7 @@ export default function ComposerDock({
                 </div>
               ) : (
                 <>
-                  <div className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
                     Commands
                   </div>
                   {matchingSlash.map((s, idx) => {
@@ -999,6 +1022,9 @@ export default function ComposerDock({
                     return (
                       <div
                         key={s.cmd}
+                        id={`${suggestId}-s-${idx}`}
+                        role="option"
+                        aria-selected={isSelected}
                         onClick={() => insertSlashCommand(s.cmd)}
                         onMouseEnter={() => onSetSelectedSlashIndex(idx)}
                         className={`flex flex-col px-3 py-1.5 cursor-pointer transition select-none ${
@@ -1072,6 +1098,10 @@ export default function ComposerDock({
           )}
 
           <textarea ref={taRef} value={input} disabled={editBusy}
+            aria-label="Message"
+            aria-autocomplete="list"
+            aria-controls={mentionSearch !== null ? `${suggestId}-mentions` : slashSearch !== null ? `${suggestId}-commands` : undefined}
+            aria-activedescendant={activeSuggestionId}
             onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
