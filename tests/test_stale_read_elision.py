@@ -100,3 +100,15 @@ def test_repeated_identical_slice_is_elided_other_slices_kept(tmp_path):
     assert out[1]["content"] == "slice two"
     assert out[2]["content"] == "slice one v2"
 
+
+def test_path_spelling_alone_is_not_reported_as_a_change(tmp_path):
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "s"), repo=str(tmp_path))
+    s = ConversationalSession(cfg)
+    body = "\n".join(f"line_{i}" for i in range(20))
+    msgs = [
+        {"role": "tool", "tool_call_id": "a", "content": f"(read_file ./x.py returned)\n{body}", "_read_path": "x.py"},
+        {"role": "tool", "tool_call_id": "b", "content": f"(read_file {tmp_path}/x.py returned)\n{body}", "_read_path": "x.py"},
+    ]
+    pointer = s._elide_stale_reads(msgs)[0]["content"]
+    assert pointer.startswith("[earlier read of x.py")
+    assert "changed since" not in pointer
