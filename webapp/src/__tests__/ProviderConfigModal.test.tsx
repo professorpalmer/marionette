@@ -79,34 +79,44 @@ describe("ProviderConfigModal", () => {
     expect(screen.getByPlaceholderText("sk-or-••••abcd")).toBeTruthy();
   });
 
-  it("submits only edited fields", async () => {
-    const { onSubmit } = renderModal();
-    const display = await screen.findByTestId("provider-config-field-display_name");
-    fireEvent.change(display, { target: { value: "OR" } });
-    fireEvent.click(screen.getByTestId("provider-config-submit"));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ display_name: "OR" }));
+  it("shows descriptive fields read-only so Save cannot drop an edit", async () => {
+    renderModal();
+    for (const id of ["name", "display_name", "base_url", "api_mode"]) {
+      expect((await screen.findByTestId(`provider-config-field-${id}`)).hasAttribute("readonly")).toBe(true);
+    }
+    expect(screen.getByTestId("provider-config-submit")).toBeDisabled();
   });
 
-  it("omits an untouched secret and includes it only after retype", async () => {
+  it("submits a retyped key only", async () => {
     const { onSubmit } = renderModal();
-    const url = await screen.findByTestId("provider-config-field-base_url");
-    fireEvent.change(url, { target: { value: "https://example.test/v1" } });
-    fireEvent.click(screen.getByTestId("provider-config-submit"));
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({ base_url: "https://example.test/v1" }),
-    );
-    onSubmit.mockClear();
-
-    fireEvent.change(screen.getByTestId("provider-config-field-api_key"), {
+    fireEvent.change(await screen.findByTestId("provider-config-field-api_key"), {
       target: { value: "sk-retyped" },
     });
     fireEvent.click(screen.getByTestId("provider-config-submit"));
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith({
-        api_key: "sk-retyped",
-        base_url: "https://example.test/v1",
-      }),
-    );
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ api_key: "sk-retyped" }));
+  });
+
+  it("stays open with the error when saving fails", async () => {
+    const { onSubmit, onClose } = renderModal();
+    onSubmit.mockRejectedValueOnce(new Error("Unknown provider: acme"));
+    fireEvent.change(await screen.findByTestId("provider-config-field-api_key"), {
+      target: { value: "sk-new" },
+    });
+    fireEvent.click(screen.getByTestId("provider-config-submit"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unknown provider: acme");
+    expect(screen.getByTestId("provider-config-modal")).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("adds a key for a known provider chosen from a list", async () => {
+    const { onSubmit } = renderModal({ manual: true, provider: null, providerNames: ["openai", "openrouter"] });
+    const name = await screen.findByTestId("provider-config-field-name");
+    expect(name.tagName).toBe("SELECT");
+    expect(screen.queryByTestId("provider-config-field-base_url")).toBeNull();
+    fireEvent.change(name, { target: { value: "openai" } });
+    fireEvent.change(screen.getByTestId("provider-config-field-api_key"), { target: { value: "sk-o" } });
+    fireEvent.click(screen.getByTestId("provider-config-submit"));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ name: "openai", api_key: "sk-o" }));
   });
 
   it("opens Add provider with manual=true and empty identity", async () => {

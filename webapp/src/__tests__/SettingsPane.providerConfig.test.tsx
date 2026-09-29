@@ -77,4 +77,15 @@ describe("SettingsPane Accounts provider config", () => {
     expect(dialog.getAttribute("data-manual")).toBe("false");
     expect((screen.getByTestId("provider-config-field-name") as HTMLInputElement).value).toBe("openrouter");
   });
+
+  it("keeps the modal open when the key is rejected", async () => {
+    vi.mocked(api.setProviderKey).mockRejectedValueOnce(new Error("Provider rejected the key"));
+    render(<SettingsPane onOpenWizard={vi.fn()} section="providers" />);
+    fireEvent.click(await screen.findByTestId("provider-account-drilldown"));
+    await screen.findByRole("dialog", { name: /Configure OpenRouter/ });
+    fireEvent.change(screen.getByTestId("provider-config-field-api_key"), { target: { value: "sk-bad" } });
+    fireEvent.click(screen.getByTestId("provider-config-submit"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Provider rejected the key");
+    expect(screen.getByRole("dialog", { name: /Configure OpenRouter/ })).toBeTruthy();
+  });
 });

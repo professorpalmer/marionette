@@ -951,20 +951,19 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       || (providerConfig && !providerConfig.manual ? providerConfig.provider.name : "")
       || ""
     ).trim();
-    if (changed.api_key && name) {
-      setProvBusy(name);
-      try {
-        await api.setProviderKey(name, changed.api_key);
-        setProvKeyInput((p) => ({ ...p, [name]: "" }));
-        await refreshProviders();
-        window.dispatchEvent(new Event("harness-config-changed"));
-      } catch (e) {
-        console.error("Failed to set provider key", e);
-      } finally {
-        setProvBusy("");
-      }
+    if (!name) throw new Error("Choose a provider.");
+    if (!changed.api_key) throw new Error("Enter an API key.");
+    setProvBusy(name);
+    try {
+      await api.setProviderKey(name, changed.api_key);
+    } finally {
+      setProvBusy("");
     }
+    // Close only once the key is stored; a failure stays in the modal.
     setProviderConfig(null);
+    setProvKeyInput((p) => ({ ...p, [name]: "" }));
+    window.dispatchEvent(new Event("harness-config-changed"));
+    void refreshProviders();
   };
 
   const handleSetProviderKey = async (name: string) => {
@@ -1573,6 +1572,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             open
             manual={providerConfig.manual}
             provider={providerConfig.manual ? null : providerConfig.provider}
+            providerNames={providers.map((p) => p.name)}
             busy={!!provBusy}
             onClose={() => setProviderConfig(null)}
             onSubmit={handleProviderConfigSubmit}
