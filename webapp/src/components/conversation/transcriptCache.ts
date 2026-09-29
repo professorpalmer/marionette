@@ -43,7 +43,24 @@ export type CachedTranscript = {
   seededEmpty?: boolean;
 };
 
+// Bounded LRU (Map insertion order = recency of write). Unbounded, the idle
+// prefetcher walked every session of every recent project into memory over a
+// long day. 12 comfortably exceeds the 3 dormant mounted panes plus the shown
+// session, which is never evicted (its hydrate guard watches its entry).
+export const TRANSCRIPT_CACHE_MAX = 12;
 const transcriptCacheBySessionId = new Map<string, CachedTranscript>();
+
+function evictOverCap(): void {
+  for (const id of transcriptCacheBySessionId.keys()) {
+    if (transcriptCacheBySessionId.size <= TRANSCRIPT_CACHE_MAX) return;
+    if (id !== shownSessionId) transcriptCacheBySessionId.delete(id);
+  }
+}
+
+/** Warmers (prefetch) only fill free room; they never evict visited sessions. */
+export function transcriptCacheHasRoom(): boolean {
+  return transcriptCacheBySessionId.size < TRANSCRIPT_CACHE_MAX;
+}
 
 /** Test helper: drop all warm-cache entries. */
 export function clearTranscriptCache() {
@@ -84,10 +101,12 @@ export function writeTranscriptCache(
   opts?: WriteTranscriptCacheOpts,
 ) {
   const seededEmpty = opts?.seededEmpty === true && items.length === 0;
+  transcriptCacheBySessionId.delete(sessionId);
   transcriptCacheBySessionId.set(sessionId, {
     items: opts?.retainRef ? items : [...items],
     ...(seededEmpty ? { seededEmpty: true } : {}),
   });
+  evictOverCap();
 }
 
 // The session on screen owns its cache entry (its hydrate and live stream write
