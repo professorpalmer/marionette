@@ -3788,6 +3788,11 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
         threading.Thread(target=_boot_dashboard, name="pm-dashboard-warm", daemon=True).start()
         def _boot_archive():
             try:
+                from .api.sessions import sweep_orphan_session_files
+                sweep_orphan_session_files(_sessions_state_dir(), [s["id"] for s in _sessions.rows()])
+            except Exception as e:
+                _diag("server.boot_orphan_session_sweep", e)
+            try:
                 from .chat_archive import maybe_boot_ingest
                 maybe_boot_ingest(_sessions_state_dir(), _sessions.rows())
             except Exception:
