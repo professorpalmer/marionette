@@ -58,7 +58,7 @@ export function useSharedJobMetadata() {
 }
 
 /** What metadataJobs() reads. */
-export const METADATA_JOBS_FIELDS = ['view', 'observations', 'local', 'pins', 'canonicalTerminal', 'detailCache'] as const;
+export const METADATA_JOBS_FIELDS = ['view', 'observations', 'local', 'localDetail', 'pins', 'detail', 'canonicalTerminal', 'detailCache'] as const;
 export type MetadataJobsState = Pick<JobMetadataState, (typeof METADATA_JOBS_FIELDS)[number]>;
 
 /** Subscribe to named top-level fields only. The store publishes around every
