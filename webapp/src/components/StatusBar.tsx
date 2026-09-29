@@ -24,7 +24,12 @@ import {
 } from "../lib/taskProfileChrome";
 import { toastDurationMs } from "../lib/harnessToast";
 import { isDesktop } from "../lib/transport";
-import { usePolling } from "../lib/usePolling";
+import {
+  refreshSessionStateFeed,
+  sessionStateFeedSequence,
+  setSessionStateFeedSession,
+  useSessionStateFeed,
+} from "../lib/sessionStateFeed";
 
 import {
   cacheHitDisplay,
@@ -104,17 +109,24 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const stateRequestRef = useRef(0);
   const mutationBusyRef = useRef(false);
 
-  const refreshSessionState = () => {
-    const owner = sessionOwnerRef.current;
-    const request = ++stateRequestRef.current;
-    return api.getSessionState(owner.id ? { sessionId: owner.id } : undefined)
-      .then((stateRes) => {
-        if (!stateRes || owner !== sessionOwnerRef.current || request !== stateRequestRef.current) return;
-        if (!owner.id) owner.id = stateRes.active_view_id || "";
-        setSessionState(stateRes);
-      })
-      .catch(() => {});
+  const refreshSessionState = (fresh = false) => {
+    setSessionStateFeedSession(sessionOwnerRef.current.id);
+    return refreshSessionStateFeed(fresh);
   };
+
+  // Runner/pilot liveness and sticky GOAL come from the shared session-state
+  // feed (LeftRail reads the same replies for its dots). The footer owns which
+  // session the feed asks about, starting from its own owner on mount.
+  useEffect(() => { setSessionStateFeedSession(sessionOwnerRef.current.id); }, []);
+  useSessionStateFeed((stateRes, requestedFor, seq) => {
+    const owner = sessionOwnerRef.current;
+    if (requestedFor !== owner.id || seq <= stateRequestRef.current) return;
+    if (!owner.id) {
+      owner.id = stateRes.active_view_id || "";
+      setSessionStateFeedSession(owner.id);
+    }
+    setSessionState(stateRes);
+  });
 
   const applyGoalMutation = (
     action: (sessionId: string) => Promise<{ ok: boolean; goal: SessionGoal }>,
@@ -122,14 +134,15 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     const owner = sessionOwnerRef.current;
     if (mutationBusyRef.current || !owner.id) return;
     mutationBusyRef.current = true;
-    ++stateRequestRef.current;
+    // Replies to requests issued before this mutation carry the old GOAL.
+    stateRequestRef.current = sessionStateFeedSequence();
     setGoalBusy(true);
     action(owner.id)
       .then((res) => {
         if (owner !== sessionOwnerRef.current) return;
-        ++stateRequestRef.current;
+        stateRequestRef.current = sessionStateFeedSequence();
         if (!res?.goal) {
-          void refreshSessionState();
+          void refreshSessionState(true);
           return;
         }
         setSessionState((prev) => prev ? { ...prev, goal: res.goal } : prev);
@@ -237,10 +250,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       window.removeEventListener("harness-config-changed", onConfig);
     };
   }, [repo]);
-
-  // Poll runner/pilot liveness (and sticky GOAL) so the footer reflects real
-  // busy state. LeftRail uses the same endpoint on the same cadence for dots.
-  usePolling(() => refreshSessionState(), 4000);
 
   const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
   const runtimeReady = runtimeStatus === "ready";

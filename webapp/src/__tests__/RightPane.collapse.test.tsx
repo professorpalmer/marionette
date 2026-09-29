@@ -141,6 +141,15 @@ describe("RightPane collapse placement", () => {
     expect(screen.getByTestId("floating-dock-pill")).toHaveClass("shell-inset-glass");
   });
 
+  it("dock reads the open board's review count instead of polling reviews itself", async () => {
+    vi.mocked(api.getReviews).mockClear();
+    render(<RightDock panelsOpen onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
+    await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    expect(api.getReviews).not.toHaveBeenCalled();
+    act(() => { window.dispatchEvent(new CustomEvent("harness-reviews-count", { detail: 3 })); });
+    expect(within(screen.getByTitle("Pending review / apply")).getByText("3")).toBeInTheDocument();
+  });
+
   it("omits the idle swarm-tracker holder and only paints a live dot", () => {
     render(<RightDock onOpenTab={vi.fn()} onExpand={vi.fn()} onCollapse={baseProps.onCollapse} />);
     const swarm = screen.getByRole("button", { name: "Jobs" });

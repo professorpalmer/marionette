@@ -1809,6 +1809,29 @@ def _platform_services():
     )
 
 
+def _resource_counts() -> dict:
+    """Sizes of what the backend holds (counts only; see api/resources)."""
+    from .api import wiki as _wiki_mod
+    from . import pm_dashboard as _dash, swarm_run_facts as _facts
+    runners = list(getattr(_runners, "_runners", {}).values())
+    return {
+        "session_runners": len(runners),
+        "local_job_rows": sum(len(getattr(r, "_local_jobs", {}) or {}) for r in runners),
+        "foreign_job_rows": sum(len(getattr(r, "_foreign_local_jobs", {}) or {}) for r in runners),
+        "terminals": len(getattr(_pty, "_sessions", {})),
+        "sse_rings": len(_sse_rings),
+        "mcp_clients": len(getattr(_mcp, "_clients", {})),
+        "owned_dashboards": len(_dash._owned),
+        "wiki_graph_cache": len(_wiki_mod.wiki_graph_cache),
+        "env_probe_cache": len(_facts._probe_cache),
+    }
+
+
+def _resource_services():
+    from .api.resources import ResourceServices
+    return ResourceServices(counts=_resource_counts)
+
+
 def _doctor_services():
     """Build DoctorServices from live server module globals (call-time lookup)."""
     from .api.doctor import DoctorServices
@@ -2738,6 +2761,7 @@ def _route_services():
         terminal_services=_terminal_services,
         platform_services=_platform_services,
         doctor_services=_doctor_services,
+        resource_services=_resource_services,
         settings_services=_settings_services,
         registry_services=_registry_services,
         worktree_services=_worktree_services,

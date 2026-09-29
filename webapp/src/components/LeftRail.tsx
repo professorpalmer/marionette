@@ -15,7 +15,7 @@ import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } 
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
 import { displaySessionListTitle } from "../lib/sessionTitle";
-import { usePolling } from "../lib/usePolling";
+import { useSessionStateFeed } from "../lib/sessionStateFeed";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import {
   copyTranscriptId,
@@ -1403,7 +1403,9 @@ export default function LeftRail({
 
   // Poll runner statuses so session rows can show running/idle without opening
   // a conversation. Same endpoint Conversation already uses for resume/swarm.
-  usePolling(() => api.getSessionState().then((res) => {
+  // Runner statuses are global in every reply, so the rail reads the shared
+  // feed the footer drives instead of polling the same endpoint itself.
+  useSessionStateFeed((res) => {
     if (!res?.runners) return;
     const next = res.runners as Record<string, RunnerStatus>;
     const finished = collectUnreadFinishedSessionIds(
@@ -1420,7 +1422,7 @@ export default function LeftRail({
         return merged;
       });
     }
-  }), 4000);
+  });
 
   useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
 

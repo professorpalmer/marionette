@@ -377,14 +377,19 @@ def start_command_batch(
         })
         launch_plan.append((child_id, command))
 
-    batch = register_batch(
-        batch_id,
-        action_id=aid,
-        children=children_meta,
-        child_job_ids=child_ids,
-        cwd=repo,
-        max_concurrency=concurrency,
-    )
+    try:
+        batch = register_batch(
+            batch_id,
+            action_id=aid,
+            children=children_meta,
+            child_job_ids=child_ids,
+            cwd=repo,
+            max_concurrency=concurrency,
+        )
+    except BaseException:
+        # Raw command text is deliberately kept off disk; never strand it here.
+        _forget_child_commands(launch_plan)
+        raise
     with _BATCH_STOP_LOCK:
         _BATCH_STOP_EVENTS[batch_id] = threading.Event()
 
@@ -524,6 +529,12 @@ def _replay_command_batch(
     return receipt
 
 
+def _forget_child_commands(launch_plan: List[Tuple[str, str]]) -> None:
+    with _CHILD_COMMAND_LOCK:
+        for job_id, _cmd in launch_plan:
+            _CHILD_COMMAND_TEXT.pop(job_id, None)
+
+
 def _start_batch_supervisor(
     session: Any,
     batch_id: str,
@@ -617,14 +628,12 @@ def _start_batch_supervisor(
         sync = getattr(session, "_sync_command_batch_from_children", None)
         if callable(sync):
             sync(batch_id)
-        with _CHILD_COMMAND_LOCK:
-            for job_id, _cmd in launch_plan:
-                _CHILD_COMMAND_TEXT.pop(job_id, None)
 
     def _owned_supervise() -> None:
         try:
             _supervise()
         finally:
+            _forget_child_commands(launch_plan)
             with _BATCH_SUPERVISOR_LOCK:
                 _BATCH_SUPERVISORS.discard(owner)
 

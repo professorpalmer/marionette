@@ -66,6 +66,7 @@ import {
   stackRowTemplateN,
 } from "../lib/stackSplit";
 import { JOBS_DASHBOARD_CHROME_EVENT } from "../lib/jobsDashboard";
+import { REVIEWS_COUNT_EVENT } from "../lib/inFileReview";
 
 function startPointerResize(
   handle: HTMLSpanElement,
@@ -706,6 +707,9 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
         if (Array.isArray(data)) {
           setReviews(data);
           setReviewsLoadError(null);
+          // The dock badge reads this while the board is open instead of
+          // polling the same endpoint on its own timer.
+          window.dispatchEvent(new CustomEvent(REVIEWS_COUNT_EVENT, { detail: data.length }));
         }
       } catch {
         if (current() && request === reviewRequest) {

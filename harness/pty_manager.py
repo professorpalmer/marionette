@@ -405,6 +405,17 @@ class PtySession:
             os.close(self.fd)
         except OSError:
             pass
+        # kill() clears _alive, so _alive_unix never waits on this pid again:
+        # reap it here or every closed terminal stays a zombie for good.
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                pid, _ = os.waitpid(self.pid, os.WNOHANG)
+            except OSError:
+                return
+            if pid == self.pid or time.monotonic() >= deadline:
+                return
+            time.sleep(0.01)
 
     def _alive_unix(self) -> bool:
         try:
