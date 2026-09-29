@@ -535,6 +535,8 @@ export default function Conversation({
   // the elapsed label honest without re-rendering the whole app on a fast interval.
   const [busyStartedAt, setBusyStartedAt] = useState<number | null>(null);
   const [busyNow, setBusyNow] = useState(() => Date.now());
+  const busyStartedAtRef = useRef(busyStartedAt);
+  busyStartedAtRef.current = busyStartedAt;
   // busyStartedAt tracks status phases; holdSwarmAwait is folded into
   // agentLoopOpen below once pendingJobIds/backendPendingSwarms exist.
   useEffect(() => {
@@ -548,23 +550,35 @@ export default function Conversation({
       setBusyNow(now);
       setBusyStartedAt((prev) => prev ?? now);
     } else {
+      // Keep the settled duration so a just-sealed Worked for row still has a
+      // real value. Recorded once here, not copied from every tick (that cost
+      // a second commit of the whole conversation each second).
+      const startedAt = busyStartedAtRef.current;
+      if (startedAt != null) setLastBusyElapsedMs(Math.max(0, Date.now() - startedAt));
       setBusyStartedAt(null);
     }
   }, [status]);
   useEffect(() => {
     if (busyStartedAt == null) return;
-    setBusyNow(Date.now());
-    const id = window.setInterval(() => setBusyNow(Date.now()), 1000);
-    return () => window.clearInterval(id);
+    // A hidden window shows no clock: pause the 1s re-render until it returns.
+    let id: number | undefined;
+    const sync = () => {
+      window.clearInterval(id);
+      id = undefined;
+      if (document.hidden) return;
+      setBusyNow(Date.now());
+      id = window.setInterval(() => setBusyNow(Date.now()), 1000);
+    };
+    sync();
+    document.addEventListener("visibilitychange", sync);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", sync);
+    };
   }, [busyStartedAt]);
   const busyElapsedMs = busyStartedAt != null ? Math.max(0, busyNow - busyStartedAt) : null;
   const waitingPhaseStartedAtRef = useRef<number | null>(null);
-  // status idle/done/error clears busyStartedAt; keep the last tick so a
-  // just-sealed Worked for row still has a real duration.
   const [lastBusyElapsedMs, setLastBusyElapsedMs] = useState<number | null>(null);
-  useEffect(() => {
-    if (busyElapsedMs != null && busyElapsedMs > 0) setLastBusyElapsedMs(busyElapsedMs);
-  }, [busyElapsedMs]);
   // Sticky until assistant_done / error / Stop — never infer end-of-turn from
   // transcript shape (mid-turn narration after tools looks like a final answer).
   // awaiting_swarm: model turn closed after background dispatch, but workers
