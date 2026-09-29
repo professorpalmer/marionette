@@ -914,6 +914,19 @@ def _write_transcript(state_dir: str, safe_sid: str, messages: Any) -> None:
         _invalidate_preview_cache(path)
 
 
+# (state_dir, session) -> (content digest, file signature, indexed) of this
+# process's last transcript write; lets an unchanged save skip disk and FTS.
+_LAST_SAVED: dict = {}
+
+
+def _file_signature(path: str) -> Optional[tuple]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
 def save_transcript(state_dir: str, session_id: str, messages: Any, *, index: bool = True) -> None:
     """Write the transcript; ``index=False`` skips the search-index rebuild
     (mid-turn checkpoints: the end-of-turn save indexes once)."""
@@ -928,10 +941,28 @@ def save_transcript(state_dir: str, session_id: str, messages: Any, *, index: bo
     )
     from .native_publication import native_publication
 
+    path = os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
+    key = (os.path.realpath(state_dir), safe_sid)
+    try:
+        digest = hashlib.sha1(json.dumps(messages, default=str).encode("utf-8")).hexdigest()
+    except Exception:
+        digest = None
     try:
         with native_publication(state_dir):
             recover_compaction_commit(state_dir, safe_sid)
-            _write_transcript(state_dir, safe_sid, messages)
+            prev = _LAST_SAVED.get(key)
+            # Unchanged since this process wrote it (same content, file not
+            # touched by another writer): every session switch saves the
+            # outgoing transcript, and rewriting plus re-indexing an idle long
+            # session made switches slower as it grew.
+            if digest and prev and prev[0] == digest and prev[1] == _file_signature(path):
+                if prev[2] or not index:
+                    return
+                unchanged = True
+            else:
+                unchanged = False
+                _write_transcript(state_dir, safe_sid, messages)
+            _LAST_SAVED[key] = (digest, _file_signature(path), index or (unchanged and prev[2]))
     except Exception:
         return
     if not index:
