@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { History, Play, ShieldAlert, Check, RefreshCw, Eye, EyeOff } from "lucide-react";
 import { api, type Checkpoint, type CheckpointDiff } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
+import { isTransientHarnessConnError } from "../lib/transport";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export default function CheckpointsPane() {
@@ -34,8 +35,12 @@ export default function CheckpointsPane() {
     setIsRestoring(null);
   }, []);
 
-  const fetchCheckpoints = useCallback(async () => {
+  const retryTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(retryTimerRef.current), []);
+
+  const fetchCheckpoints = useCallback(async (attempt = 0) => {
     const gen = ++fetchGenRef.current;
+    window.clearTimeout(retryTimerRef.current);
     setIsLoading(true);
     setError(null);
     try {
@@ -46,15 +51,16 @@ export default function CheckpointsPane() {
       setCheckpoints(sorted);
     } catch (err: any) {
       if (gen !== fetchGenRef.current) return;
-      const raw = err?.message || "Failed to fetch checkpoints";
-      // Soften the common boot/respawn race (backend briefly not listening).
-      const soft = /ECONNREFUSED|ECONNRESET|socket hang up/i.test(raw)
-        ? "Harness is starting up — retrying…"
-        : raw;
-      setError(soft);
-    } finally {
-      if (gen === fetchGenRef.current) setIsLoading(false);
+      const transient = isTransientHarnessConnError(err);
+      // The boot/respawn race (backend briefly not listening) is expected:
+      // stay in the loading state and retry with the FileTree backoff.
+      if (transient && attempt < 5) {
+        retryTimerRef.current = window.setTimeout(() => { void fetchCheckpoints(attempt + 1); }, 350 * (attempt + 1));
+        return;
+      }
+      setError(transient ? "Harness briefly unavailable — click refresh" : err?.message || "Failed to fetch checkpoints");
     }
+    if (gen === fetchGenRef.current) setIsLoading(false);
   }, []);
 
   const refreshScope = useCallback(async () => {
@@ -246,7 +252,7 @@ export default function CheckpointsPane() {
           </button>
         </form>
         <button
-          onClick={fetchCheckpoints}
+          onClick={() => void fetchCheckpoints()}
           disabled={isLoading}
           title="Refresh checkpoints"
           className="p-0.5 hover:bg-edge/50 rounded text-faint hover:text-muted transition-colors shrink-0"

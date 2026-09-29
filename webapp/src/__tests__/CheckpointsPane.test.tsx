@@ -89,3 +89,31 @@ describe("CheckpointsPane diff badges", () => {
     expect(screen.getByText("src/gone.ts")).toBeTruthy();
   });
 });
+
+describe("CheckpointsPane startup race", () => {
+  beforeEach(() => {
+    apiMocks.getCheckpoints.mockReset();
+    apiMocks.getWorkspace.mockReset();
+    apiMocks.sessions.mockReset();
+    apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
+    apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
+  });
+
+  const refused = () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8799"), { code: "ECONNREFUSED" });
+
+  it("retries a refused connection quietly instead of showing a red banner", async () => {
+    apiMocks.getCheckpoints
+      .mockRejectedValueOnce(refused())
+      .mockRejectedValueOnce(refused())
+      .mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+    render(<CheckpointsPane />);
+    expect(await screen.findByText("before edits", {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.queryByText(/retrying|unavailable|ECONNREFUSED/i)).toBeNull();
+  });
+
+  it("asks for a manual refresh once the retries are spent", async () => {
+    apiMocks.getCheckpoints.mockRejectedValue(refused());
+    render(<CheckpointsPane />);
+    expect(await screen.findByText(/briefly unavailable/i, {}, { timeout: 8000 })).toBeTruthy();
+  }, 10000);
+});
