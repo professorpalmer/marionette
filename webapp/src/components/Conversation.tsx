@@ -3597,10 +3597,14 @@ export default function Conversation({
       itemsRef.current = [];
       transcriptFpRef.current = "";
       if (activeSessionId) writeTranscriptCache(activeSessionId, []);
-      setTurnOpen(false);
-      setWaitHint(null);
-      setStatus("idle");
-      setCompactingStatus(null);
+      // /clear does not stop the backend: mid-turn, keep the live turn's
+      // chrome (Stop, busy status) so the next Enter still steers it.
+      if (!composerBusy) {
+        setTurnOpen(false);
+        setWaitHint(null);
+        setStatus("idle");
+        setCompactingStatus(null);
+      }
       return;
     }
     if (chrome === "new_session") {

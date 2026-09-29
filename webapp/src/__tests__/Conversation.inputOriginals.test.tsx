@@ -415,3 +415,16 @@ it('a local command reply stays in the session it was typed in', async () => {
   await act(async () => { resolve({ ok: true, stripped: 2 }); });
   expect(screen.queryByText(/Removed image attachments/)).toBeNull();
 });
+
+it('/clear mid-turn keeps the live turn stoppable', async () => {
+  const stream = streamMock();
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: 'start turn' } }); await send(); await stream.accept();
+  expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeInTheDocument();
+  fireEvent.change(input, { target: { value: '/clear' } });
+  fireEvent.keyDown(input, { key: 'Escape' });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText('start turn')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeInTheDocument();
+});
