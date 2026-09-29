@@ -9,6 +9,7 @@ import urllib.request
 from typing import Any, Dict, Optional
 
 from .questions import ENDPOINT, MODEL, TIMEOUT_SECONDS
+from pmharness.drivers import http_pool
 
 
 def resolve_openrouter_key() -> str:
@@ -73,7 +74,7 @@ def decide(state: Any, questions: Dict[str, Any], key: str = "") -> Optional[dic
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
+        with http_pool.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError):
         return None
