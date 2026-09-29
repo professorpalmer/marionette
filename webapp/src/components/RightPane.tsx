@@ -1,5 +1,6 @@
 import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
-import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { X, GripVertical } from "lucide-react";
 import StatePane from "./StatePane";
 import BrowserPane from "./BrowserPane";
@@ -305,6 +306,18 @@ function readInitialOpenCards(): Tab[] {
       CANONICAL_ORDER.includes(tab as Tab) && tab !== PINNED_LAST && list.indexOf(tab) === index);
 }
 
+/** Shows the dock's single terminal host inside a card; parks it on unmount.
+ * Moving the DOM node (not remounting TerminalPane) keeps the shell, its
+ * running process and scrollback alive across close, reopen and moves. */
+function TerminalSlot({ host, parkRef }: { host: HTMLElement; parkRef: RefObject<HTMLElement | null> }) {
+  const slotRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    slotRef.current?.appendChild(host);
+    return () => { parkRef.current?.appendChild(host); };
+  }, [host, parkRef]);
+  return <div ref={slotRef} className="h-full w-full" />;
+}
+
 export default function RightPane({ visible, sessionId = "", artifacts, onOpenWizard, initialTab, onEmpty, onRequestMinWidth }: {
   visible: boolean;
   sessionId?: string;
@@ -314,6 +327,17 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
   onEmpty?: () => void;
   onRequestMinWidth?: (minPx: number) => void;
 }) {
+  // One TerminalPane for the dock's lifetime, portaled into a host node that
+  // TerminalSlot moves between a card body and the hidden park.
+  const [terminalHost] = useState(() => {
+    const el = document.createElement("div");
+    el.className = "h-full w-full";
+    return el;
+  });
+  const terminalParkRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!terminalHost.isConnected) terminalParkRef.current?.appendChild(terminalHost);
+  });
   const tabVisibilityRef = useRef<RightPaneTabVisibility>(loadRightPaneTabVisibility());
   const [cardLayouts, setCardLayouts] = useState<CardLayouts>(() => readCardLayouts());
   const cardLayoutsRef = useRef(cardLayouts);
@@ -745,7 +769,7 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
       case "git":
         return <SourceControl />;
       case "terminal":
-        return <TerminalPane />;
+        return <TerminalSlot host={terminalHost} parkRef={terminalParkRef} />;
       case "worktrees":
         return <WorktreesPane />;
       case "settings":
@@ -942,6 +966,7 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
             </div>
         </div>
       )}
+      {createPortal(<TerminalPane />, terminalHost)}
       {/* Keep the expensive interactive panes alive when users close their cards. */}
       <div className="hidden" aria-hidden>
         {!openCards.includes("state") && (
@@ -949,11 +974,7 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
             <StatePane artifacts={artifacts} embedded networkEnabled={false} />
           </div>
         )}
-        {!openCards.includes("terminal") && (
-          <div data-testid="terminal-pane-slot">
-            <TerminalPane />
-          </div>
-        )}
+        <div data-testid="terminal-pane-slot" ref={terminalParkRef} />
         {!openCards.includes("swarm") && (
           <div data-testid="swarm-pane-slot">
             <SwarmPane enabled={false} />

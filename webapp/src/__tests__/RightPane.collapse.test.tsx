@@ -33,9 +33,19 @@ vi.mock("../components/SettingsShell", () => ({
     </div>
   ),
 }));
-vi.mock("../components/TerminalPane", () => ({
-  default: () => <div data-testid="terminal-pane" />,
-}));
+const terminalLife = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+vi.mock("../components/TerminalPane", async () => {
+  const { useEffect } = await import("react");
+  return {
+    default: () => {
+      useEffect(() => {
+        terminalLife.mounts += 1;
+        return () => { terminalLife.unmounts += 1; };
+      }, []);
+      return <div data-testid="terminal-pane" />;
+    },
+  };
+});
 vi.mock("../components/CheckpointsPane", () => ({ default: () => <div /> }));
 vi.mock("../components/DiffReviewPane", () => ({
   default: ({ loadError }: { loadError?: string | null }) =>
@@ -663,6 +673,22 @@ describe("RightPane keeps TerminalPane mounted across tab switches", () => {
     const slot = screen.getByTestId("terminal-pane-slot");
     expect(within(slot).getByTestId("terminal-pane")).toBeTruthy();
     expect(slot.closest("[aria-hidden='true']")).toBeTruthy();
+  });
+
+  it("closing and reopening the Terminal card never remounts the shell", () => {
+    terminalLife.mounts = 0;
+    terminalLife.unmounts = 0;
+    const { rerender } = render(<RightPane {...baseProps} />);
+    expect(within(screen.getByRole("region", { name: "Terminal panel" })).getByTestId("terminal-pane")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close Terminal panel" }));
+    expect(screen.queryByRole("region", { name: "Terminal panel" })).toBeNull();
+    rerender(<RightPane {...baseProps} initialTab="terminal" />);
+    expect(within(screen.getByRole("region", { name: "Terminal panel" })).getByTestId("terminal-pane")).toBeTruthy();
+    // One TerminalPane (one PTY) for the dock's lifetime: an unmount would
+    // have posted /api/terminal/kill and a remount a fresh shell.
+    expect(terminalLife.unmounts).toBe(0);
+    expect(terminalLife.mounts).toBe(1);
+    expect(screen.getAllByTestId("terminal-pane")).toHaveLength(1);
   });
 });
 
