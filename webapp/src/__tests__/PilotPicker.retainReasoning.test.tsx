@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PilotPicker from "../components/PilotPicker";
+import SwarmReasoningPicker from "../components/SwarmReasoningPicker";
 import { api } from "../lib/api";
 import { getSessionCache, updateSessionCache, type SessionCache } from "../lib/sessionCache";
 
@@ -145,7 +146,10 @@ describe("PilotPicker initial session model", () => {
     const { rerender } = render(<PilotPicker config={sonnetConfig} onPendingReasoningChange={onPendingReasoningChange} />);
 
     fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
-    fireEvent.click(within(screen.getByRole("dialog", { name: "Reasoning effort picker" })).getByText("High"));
+    const high = screen.getByRole("menuitemradio", { name: "High" });
+    expect(high.tagName).toBe("BUTTON");
+    expect(screen.getByRole("menuitemradio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(high);
 
     expect(onPendingReasoningChange).toHaveBeenCalledExactlyOnceWith("high", "anthropic:claude-sonnet-4-6");
     expect(screen.getByTitle("Reasoning effort (High)")).toBeInTheDocument();
@@ -175,5 +179,28 @@ describe("PilotPicker initial session model", () => {
       "local:mlx-community/Bonsai2-27B",
     ));
     expect(api.swapPilot).not.toHaveBeenCalled();
+  });
+});
+
+describe("Reasoning menus from the keyboard", () => {
+  it("opens on the current level and moves with arrow keys", async () => {
+    render(<PilotPicker config={{ ...sonnetConfig, reasoning_effort: "medium" }} />);
+    fireEvent.click(screen.getByTitle("Reasoning effort (Medium)"));
+    const medium = screen.getByRole("menuitemradio", { name: "Medium" });
+    await waitFor(() => expect(medium).toHaveFocus());
+    fireEvent.keyDown(medium, { key: "ArrowDown" });
+    expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "High" }), { key: "Home" });
+    expect(screen.getByRole("menuitemradio", { name: "None" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "None" }), { key: "ArrowUp" });
+    expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveFocus();
+  });
+
+  it("gives the worker picker the same keyboard rows", async () => {
+    render(<SwarmReasoningPicker config={{ ...sonnetConfig, swarm_reasoning_effort: "low" }} sessionId="s1" />);
+    fireEvent.click(screen.getByTitle(/Worker reasoning/));
+    const low = screen.getByRole("menuitemradio", { name: "Low" });
+    expect(low.tagName).toBe("BUTTON");
+    await waitFor(() => expect(low).toHaveFocus());
   });
 });
