@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { GitBranch, FileCode, RefreshCw, X, Plus, Minus } from "lucide-react";
 import { nativeGit, gitWritesAvailable } from "../lib/transport";
 import { api } from "../lib/api";
@@ -17,6 +17,56 @@ interface ChangedFile {
 interface Branch {
   name: string;
   active: boolean;
+}
+
+type DiffHunk = { header: string; lines: string[] };
+
+/** Lines painted before "Show more": a generated or vendored diff can be MBs. */
+export const DIFF_RENDER_LINE_CAP = 3000;
+
+export function parseDiffHunks(diffText: string | null) {
+  const lines = diffText ? diffText.split("\n") : [];
+  const firstHunkIndex = lines.findIndex((l) => l.startsWith("@@"));
+  if (firstHunkIndex === -1) {
+    return { headerLines: [] as string[], hunks: [] as DiffHunk[], hasHunks: false, plainLines: lines, totalLines: lines.length };
+  }
+  const hunks: DiffHunk[] = [];
+  let current: DiffHunk | null = null;
+  for (let i = firstHunkIndex; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith("@@")) {
+      if (current) hunks.push(current);
+      current = { header: line, lines: [line] };
+    } else if (current) {
+      current.lines.push(line);
+    }
+  }
+  if (current) hunks.push(current);
+  return {
+    headerLines: lines.slice(0, firstHunkIndex),
+    hunks,
+    hasHunks: true,
+    plainLines: lines,
+    totalLines: hunks.reduce((n, h) => n + h.lines.length - 1, 0),
+  };
+}
+
+/** First hunks up to ``cap`` body lines; the last one is truncated to fit. */
+export function capDiffHunks(hunks: DiffHunk[], cap: number): DiffHunk[] {
+  const out: DiffHunk[] = [];
+  let budget = cap;
+  for (const hunk of hunks) {
+    if (budget <= 0) break;
+    const body = hunk.lines.length - 1;
+    if (body <= budget) {
+      out.push(hunk);
+      budget -= body;
+    } else {
+      out.push({ header: hunk.header, lines: hunk.lines.slice(0, budget + 1) });
+      budget = 0;
+    }
+  }
+  return out;
 }
 
 export default function SourceControl() {
@@ -433,37 +483,16 @@ export default function SourceControl() {
     }
   });
 
-  // Hunk parser
-  let headerLines: string[] = [];
-  let hunks: { header: string; lines: string[] }[] = [];
-  let hasHunks = false;
-
-  if (diffText) {
-    const lines = diffText.split("\n");
-    const firstHunkIndex = lines.findIndex((l) => l.startsWith("@@"));
-    if (firstHunkIndex !== -1) {
-      hasHunks = true;
-      headerLines = lines.slice(0, firstHunkIndex);
-      let currentHunk: { header: string; lines: string[] } | null = null;
-      for (let i = firstHunkIndex; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.startsWith("@@")) {
-          if (currentHunk) {
-            hunks.push(currentHunk);
-          }
-          currentHunk = {
-            header: line,
-            lines: [line],
-          };
-        } else if (currentHunk) {
-          currentHunk.lines.push(line);
-        }
-      }
-      if (currentHunk) {
-        hunks.push(currentHunk);
-      }
-    }
-  }
+  // Parsed once per diff: the panel re-renders on every commit-message
+  // keystroke, and a large diff was re-split and re-painted each time.
+  const parsedDiff = useMemo(() => parseDiffHunks(diffText), [diffText]);
+  const [showFullDiff, setShowFullDiff] = useState(false);
+  useEffect(() => setShowFullDiff(false), [diffText]);
+  const { headerLines, hasHunks, plainLines, totalLines } = parsedDiff;
+  const hunks = showFullDiff ? parsedDiff.hunks : capDiffHunks(parsedDiff.hunks, DIFF_RENDER_LINE_CAP);
+  const hiddenDiffLines = showFullDiff
+    ? 0
+    : totalLines - Math.min(totalLines, DIFF_RENDER_LINE_CAP);
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
@@ -690,7 +719,7 @@ export default function SourceControl() {
           
           {!diffLoading && !diffNotice && diffText !== null && !hasHunks && (
             <div className="space-y-0.5 select-text">
-              {diffText.split("\n").map((line, idx) => renderDiffLine(line, idx))}
+              {(showFullDiff ? plainLines : plainLines.slice(0, DIFF_RENDER_LINE_CAP)).map((line, idx) => renderDiffLine(line, idx))}
             </div>
           )}
 
@@ -725,6 +754,16 @@ export default function SourceControl() {
                 </div>
               ))}
             </div>
+          )}
+
+          {!diffLoading && !diffNotice && diffText !== null && hiddenDiffLines > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowFullDiff(true)}
+              className="mt-2 text-[11px] text-accent hover:underline"
+            >
+              Show {hiddenDiffLines.toLocaleString()} more lines
+            </button>
           )}
 
           {!diffLoading && !diffNotice && diffText === null && (
