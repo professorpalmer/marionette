@@ -242,18 +242,31 @@ class LocalJobsStore:
                 changed = True
             if not changed:
                 return
-            body = ", ".join(p.text for p in parts.values() if p.text)
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                f.write('{"jobs": [' + body + "]}")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, self.path)
-            self._parts = parts
-            self._signature = self._stat()
-            self._dirty = False
-            self.status = "ok"
-            self.malformed = False
+            self._commit_locked(parts)
+
+    def drop_session(self, session_id: str) -> None:
+        """Remove a deleted session's partition from the file and the cache."""
+        with self.lock:
+            self._sync_locked()
+            if session_id not in self._parts:
+                return
+            parts = dict(self._parts)
+            del parts[session_id]
+            self._commit_locked(parts)
+
+    def _commit_locked(self, parts: Dict[str, "_Partition"]) -> None:
+        body = ", ".join(p.text for p in parts.values() if p.text)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write('{"jobs": [' + body + "]}")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.path)
+        self._parts = parts
+        self._signature = self._stat()
+        self._dirty = False
+        self.status = "ok"
+        self.malformed = False
 
 
 _stores: Dict[str, LocalJobsStore] = {}

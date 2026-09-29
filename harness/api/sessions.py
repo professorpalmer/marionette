@@ -182,6 +182,11 @@ def remove_session_transcript(
     except Exception as e:
         diag("server.session_delete_fts", e, msg=f"sid={safe_sid}")
     try:
+        from ..local_jobs_store import local_jobs_store
+        local_jobs_store(os.path.join(state_dir, "swarm_local_jobs.json")).drop_session(safe_sid)
+    except Exception as e:
+        diag("server.session_delete_local_jobs", e, msg=f"sid={safe_sid}")
+    try:
         from ..stream_performance_store import remove_session_performance_receipts
         remove_session_performance_receipts(state_dir, safe_sid)
     except Exception as e:
