@@ -29,6 +29,9 @@ from pmharness.bridge import execute_intent
 from pmharness.drivers.base import known_assistant_phase
 
 from .goal_mode import reset_turn_goal_state
+from .repeat_tool_reminder import reset_repeat_chain
+from .runaway_guard import reset_runaway_state
+from .terminal_empty_recovery import reset_terminal_empty_recovery
 from .tool_capabilities import plan_mode_blocks
 from .local_job_metadata import local_swarm_id
 from .log_reconstruction import check_outbound_reconstruction
@@ -2445,6 +2448,23 @@ def meter_pilot_step(
     )
 
 
+def reset_fresh_turn_state(session: Any) -> None:
+    """Per-user-turn guard state. A new user message (typed or queued) starts
+    with its own budget, repeat/runaway chains and stagnation history."""
+    session._turn_output_tokens = 0
+    session._turn_budget = None
+    session._turn_guard_state = None
+    reset_repeat_chain(session)
+    reset_runaway_state(session)
+    reset_terminal_empty_recovery(session)
+    session._stagnation_last_prose = None
+    session._stagnation_last_actions = None
+    session._stagnation_streak = 0
+    session._invalid_only_streak = 0
+    session._failed_objective_resume_counts = {}
+    session._keep_alive_waits = 0
+
+
 def drain_idle_turn(
     session: Any,
     *,
@@ -2659,6 +2679,7 @@ def drain_idle_turn(
             session._history.append({"role": "system", "content": content, "source": "goal_mode"})
         else:
             reset_turn_goal_state(session)
+            reset_fresh_turn_state(session)
             row = {"role": "user", "content": content}
             if queued.get('input_id'):
                 row['input_id'] = queued['input_id']

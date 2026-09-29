@@ -53,17 +53,15 @@ from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .send_loop_dispatch import DISPATCH_ACTION_KINDS
-from .repeat_tool_reminder import reset_repeat_chain
-from .runaway_guard import reset_runaway_state
 from .terminal_empty_recovery import (
     empty_after_tools_decision,
     inject_empty_retry,
     last_batch_had_error,
     note_tool_batch,
-    reset_terminal_empty_recovery,
 )
 from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
+    reset_fresh_turn_state,
     account_provider_attempt,
     classified_finish_kwargs,
     dispatch_pilot_provider_call,
@@ -1155,19 +1153,7 @@ class SendLoopMixin:
             return
         processed_message, native_image_paths = image_prep
 
-        self._turn_output_tokens = 0
-        self._turn_budget = None
-        # Fresh turn: clear guard / stagnation / failed-objective resume state.
-        self._turn_guard_state = None
-        reset_repeat_chain(self)
-        reset_runaway_state(self)
-        reset_terminal_empty_recovery(self)
-        self._stagnation_last_prose = None
-        self._stagnation_last_actions = None
-        self._stagnation_streak = 0
-        self._invalid_only_streak = 0
-        self._failed_objective_resume_counts = {}
-        self._keep_alive_waits = 0
+        reset_fresh_turn_state(self)
         yield from yield_timed_phase(
             timing, "task_profile",
             emit_turn_task_profile(self, user_message),
