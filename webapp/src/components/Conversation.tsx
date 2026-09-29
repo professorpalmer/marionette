@@ -2599,6 +2599,9 @@ export default function Conversation({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // An IME (Japanese, Chinese, Korean, accent or dictation composition) owns
+    // Enter/Escape while composing: Enter confirms the candidate, not send.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       if (mentionSearch !== null || slashSearch !== null) {
         setMentionSearch(null);

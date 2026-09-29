@@ -376,3 +376,14 @@ it("observes terminal recovery after failed Stop without draining or resuming qu
   expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
   expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).toHaveBeenCalledTimes(1);
 });
+
+it('Enter while an IME is composing confirms the candidate instead of sending', async () => {
+  const chat = vi.spyOn(api, 'chat').mockImplementation(() => () => {});
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: 'にほんご' } });
+  fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true });
+  expect(chat).not.toHaveBeenCalled();
+  expect(input).toHaveValue('にほんご');
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+});
