@@ -232,6 +232,10 @@ def generate_preview(
     return head + marker + tail_part, True
 
 
+# Tools whose failure summary lands at the end of the output.
+_COMMAND_OUTPUT_TOOLS = frozenset({"run_command", "run_command_batch", "run_ipython", "show_kernel"})
+
+
 def _looks_like_command_result(result_id: str) -> bool:
     """Heuristic: command-like results benefit from head+tail preview because
     the failure usually lands at the end of the output."""
@@ -390,7 +394,10 @@ def maybe_persist_result(
         return content
 
     if head_tail is None:
-        head_tail = _looks_like_command_result(result_id)
+        # Provider tool-call ids (call_*, toolu_*) are random; the tool kind
+        # is the real signal. The id heuristic only serves callers without it.
+        name = (tool_name or "").strip()
+        head_tail = name in _COMMAND_OUTPUT_TOOLS if name else _looks_like_command_result(result_id)
 
     preview, has_more = generate_preview(
         content, max_chars=config.preview_chars, head_tail=head_tail
