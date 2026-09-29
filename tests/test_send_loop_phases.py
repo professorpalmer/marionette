@@ -598,7 +598,7 @@ def test_drain_stream_queue_yields_deltas_and_returns_resp():
 
     kinds = [e.kind for e in events]
     assert "message_delta" in kinds
-    assert ("thinking", {"text": "think", "delta": True}) in [
+    assert ("thinking", {"text": "think", "delta": True, "channel": "reasoning"}) in [
         (e.kind, e.data) for e in events
     ]
     assert any(e.kind == "tool_prep" and e.data.get("name") == "read_file" for e in events)

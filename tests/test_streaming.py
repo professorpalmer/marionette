@@ -359,13 +359,12 @@ def test_conversational_loop_streaming():
     kinds = [e.kind for e in events]
     # Check that message_delta events are yielded in order with the right pieces
     delta_events = [e for e in events if e.kind == "message_delta"]
-    assert len(delta_events) == 6
-    assert delta_events[0].data["text"] == "Read"
-    assert delta_events[1].data["text"] == "ing"
-    assert delta_events[2].data["text"] == "..."
-    assert delta_events[3].data["text"] == "Read"
-    assert delta_events[4].data["text"] == "ing"
-    assert delta_events[5].data["text"] == "..."
+    progress = [e.data["text"] for e in delta_events if e.data.get("channel") == "progress"]
+    answer = [e.data["text"] for e in delta_events if e.data.get("channel") == "answer"]
+    assert progress == ["Read", "ing", "..."]
+    # Answer deltas batch: the first token paints at once, the rest coalesce.
+    assert answer[0] == "Read"
+    assert "".join(answer) == "Reading..."
 
     # Commentary was already streamed as progress; only the final answer closes
     # as a durable assistant message.
