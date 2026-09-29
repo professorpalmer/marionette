@@ -1651,9 +1651,9 @@ export default function LeftRail({
                       handleContextMenu(event, source || { id: row.id, title: row.title });
                     }}
                     type="button"
-                    disabled={!!switchingSessionId || opening}
+                    aria-disabled={!!switchingSessionId || opening || undefined}
                     onClick={() => { if (!switchingSessionId) void switchSession(row.id); }}
-                    className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 disabled:opacity-60 ${
+                    className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                       switchingSessionId === row.id ? "bg-panel2/60" : "hover:bg-panel2/30"
                     }`}
                     title={row.snippet ? `${displaySessionListTitle(row.title)}\n${row.snippet}` : displaySessionListTitle(row.title)}
@@ -1705,14 +1705,14 @@ export default function LeftRail({
                     <button
                       key={s.id}
                       type="button"
-                      disabled={!!switchingSessionId || opening}
+                      aria-disabled={!!switchingSessionId || opening || undefined}
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                       onContextMenu={(e) => handleContextMenu(e, s)}
-                      className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 disabled:opacity-60 ${
+                      className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
                       title={`${displaySessionListTitle(s.title)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
@@ -1892,13 +1892,13 @@ export default function LeftRail({
                               <button
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
-                                disabled={!!switchingSessionId || opening}
+                                aria-disabled={!!switchingSessionId || opening || undefined}
                                 title={s.preview ? `${displaySessionListTitle(s.title)}\n${s.preview}` : displaySessionListTitle(s.title)}
                                 data-session-row="true"
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition disabled:opacity-60
+                                className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
@@ -1989,7 +1989,7 @@ export default function LeftRail({
                       type="button"
                       onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
-                      disabled={!!switchingSessionId || opening}
+                      aria-disabled={!!switchingSessionId || opening || undefined}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
