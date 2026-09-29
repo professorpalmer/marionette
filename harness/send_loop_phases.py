@@ -209,6 +209,21 @@ def _note_turn_command(session: Any, verification: str = "") -> None:
         pass
 
 
+def _command_verification(command: str, run_status: str, exit_code: Any) -> str:
+    """Verdict a finished command contributes to the task transaction.
+
+    Only a check (pytest, tsc, npm test...) is verification, and it passes
+    only on exit 0. Any other command records no verdict.
+    """
+    from .todo import is_verify_command
+
+    if not is_verify_command(command):
+        return ""
+    if run_status != "ok":
+        return run_status
+    return "pass" if exit_code == 0 else "fail"
+
+
 def persist_turn_receipt(session: Any, user_message: str = "") -> None:
     """Append a compact JSONL receipt. Best-effort; never raises."""
     try:
@@ -3877,7 +3892,7 @@ def dispatch_local_action(
             json.dumps({**val, "output": _with_command_footer(hist, val)}),
             is_native, ok=False if exit_code != 0 else True if run_status == "ok" else None,
         )
-        _note_turn_command(session, "pass" if run_status == "ok" else run_status)
+        _note_turn_command(session, _command_verification(command, run_status, exit_code))
         return
     # ---- run_command_batch branch (Wave 3) -------------------------
     if act.kind == "run_command_batch":
