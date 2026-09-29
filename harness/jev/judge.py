@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -51,7 +52,19 @@ class Judgment:
     wide_top: List[Tuple[str, float]] = field(default_factory=list)
 
 
-_CACHE: Dict[Tuple[str, Tuple[str, ...]], Judgment] = {}
+# LRU of recent judgments. Keys hold the full request text, so an unbounded
+# dict grew by one entry (pasted content included) per turn for the life of
+# the process; hits only come from literally repeated messages.
+_CACHE_MAX = 128
+_CACHE: "OrderedDict[Tuple[str, Tuple[str, ...]], Judgment]" = OrderedDict()
+
+
+def _remember(key: Tuple[str, Tuple[str, ...]], judgment: Judgment) -> Judgment:
+    _CACHE[key] = judgment
+    _CACHE.move_to_end(key)
+    while len(_CACHE) > _CACHE_MAX:
+        _CACHE.popitem(last=False)
+    return judgment
 
 _OPT_IN = frozenset(("1", "true", "on", "yes"))
 
@@ -249,14 +262,13 @@ def judge_turn(
     names = tuple(skill.name for skill in rows)
     cache_key = (text, names)
     if cache_key in _CACHE:
+        _CACHE.move_to_end(cache_key)
         return _CACHE[cache_key]
     empty = Judgment()
     if not text or _skip_network(text):
-        _CACHE[cache_key] = empty
-        return empty
+        return _remember(cache_key, empty)
     if decide is None and not enabled():
-        _CACHE[cache_key] = empty
-        return empty
+        return _remember(cache_key, empty)
     poster = decide or jev_client.decide
     state = {"request": text, "recent_context": ""}
     wide = poster(state, _wide_questions(rows))
@@ -295,8 +307,7 @@ def judge_turn(
                 if best_fit >= FITS_THRESHOLD and best_name in {skill_name(s) for s in rows} | set(top):
                     judgment.skill = best_name
                     judgment.skill_fits = best_fit
-    _CACHE[cache_key] = judgment
-    return judgment
+    return _remember(cache_key, judgment)
 
 
 def peek_cached(request: str, roster: Iterable[Any] = ()) -> Optional[Judgment]:

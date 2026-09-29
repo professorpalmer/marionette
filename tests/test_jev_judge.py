@@ -186,3 +186,20 @@ def test_classify_jev_micro_needs_deterministic_cue():
 
 def test_classify_library_filename_with_world_record_is_not_micro():
     assert classify_task_profile("beat the world record on llama.cpp decode") == STANDARD
+
+
+def test_judgment_cache_is_bounded_and_keeps_recent():
+    import harness.jev.judge as judge
+
+    judge.clear_cache()
+    for i in range(judge._CACHE_MAX + 40):
+        judge._remember((f"request {i}", ()), Judgment())
+    assert len(judge._CACHE) == judge._CACHE_MAX
+    assert judge.peek_cached("request 0") is None
+    assert judge.peek_cached(f"request {judge._CACHE_MAX + 39}") is not None
+    # A hit refreshes recency, so the oldest surviving entry outlives a new insert.
+    oldest = next(iter(judge._CACHE))[0]
+    judge.judge_turn(oldest, [])
+    judge._remember(("one more", ()), Judgment())
+    assert judge.peek_cached(oldest) is not None
+    judge.clear_cache()
