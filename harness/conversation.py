@@ -655,6 +655,10 @@ class ConvEvent:
 CG_SECTION_UNCHANGED = "[CodeGraph context unchanged from the previous turn -- see above]"
 
 
+def _unchanged_section(kind: str) -> str:
+    return f"[{kind} context unchanged from the previous turn -- see above]"
+
+
 class ConversationalSession(
     PromptQueueMixin,
     SteerMixin,
@@ -2968,10 +2972,7 @@ class ConversationalSession(
                 # Continue) would stack another identical ~4.7K-char copy that
                 # every later call re-sends. Point at the copy still in
                 # history; re-send it only once compaction has dropped it.
-                if cached and any(
-                    isinstance(m.get("content"), str) and cached in m["content"]
-                    for m in self._history if m.get("role") == "user"
-                ):
+                if cached and self._in_user_history(cached):
                     return CG_SECTION_UNCHANGED
                 return cached
             cg_slice = codegraph_context(task=query, cwd=self.config.repo)
@@ -2985,6 +2986,16 @@ class ConversationalSession(
         except Exception:
             pass
         return cg_section
+
+    def _in_user_history(self, section: str) -> bool:
+        """True while an identical trailer section is still in a user row.
+
+        History is append-only, so re-appending it would make every later
+        call re-send another copy until compaction drops the first."""
+        return any(
+            isinstance(m.get("content"), str) and section in m["content"]
+            for m in self._history if m.get("role") == "user"
+        )
 
     def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
         try:
@@ -3003,13 +3014,21 @@ class ConversationalSession(
                 if cg_section:
                     parts.append(cg_section)
             if not skip_wiki:
-                wiki_section = self._build_turn_wiki_section(user_message)
-                if wiki_section:
-                    parts.append(wiki_section)
+                cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
+                if (getattr(self, "_wiki_cache_key", None) == user_message
+                        and cached_wiki and self._in_user_history(cached_wiki)):
+                    # Same ask again (Retry / Continue): no second search,
+                    # no second copy in append-only history.
+                    parts.append(_unchanged_section("Wiki"))
+                else:
+                    wiki_section = self._build_turn_wiki_section(user_message)
+                    if wiki_section:
+                        parts.append(wiki_section)
             try:
                 vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:
-                    parts.append(vault_section)
+                    parts.append(_unchanged_section("Vault")
+                                 if self._in_user_history(vault_section) else vault_section)
             except Exception:
                 pass
             try:
@@ -3021,7 +3040,8 @@ class ConversationalSession(
                 self._jev_judgment = judged
                 skill_section = format_retrieved_skill_bodies(retrieved)
                 if skill_section:
-                    parts.append(skill_section)
+                    parts.append(_unchanged_section("Skill")
+                                 if self._in_user_history(skill_section) else skill_section)
                 note = suggestion_block(judged)
                 if note:
                     parts.append(note)

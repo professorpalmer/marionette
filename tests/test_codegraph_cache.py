@@ -103,3 +103,46 @@ def test_repeated_ask_points_at_the_codegraph_slice_already_in_history(monkeypat
     # Once compaction drops the copy, the full slice is sent again.
     s._history = [m for m in s._history if first not in (m.get("content") or "")]
     assert s._build_turn_cg_section("refactor the uploader") == first
+
+
+def test_repeated_ask_does_not_restack_wiki_vault_or_skill_sections(monkeypatch):
+    """Retry / Continue of the same ask: one wiki search and one copy of each
+    trailer section in append-only history, not one per send."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    s._task_profile = "standard"
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: True)
+    monkeypatch.setattr("harness.task_profile.profile_skips_wiki", lambda *a, **k: False)
+
+    searches = []
+
+    class Wiki:
+        configured = True
+
+        def search_pages(self, query, limit=5):
+            searches.append(query)
+            return [{"slug": "uploader-decision", "title": "Uploader decision",
+                     "snippet": "We chose chunked uploads in 2026 because retries were cheap."}]
+
+        def page_body(self, slug):
+            return ""
+
+    s._wiki = Wiki()
+    monkeypatch.setattr(s, "_build_turn_vault_section",
+                        lambda msg: "### Vault recall\n- earlier: uploader keeps 5 MiB chunks")
+    import harness.conversation as conv
+    monkeypatch.setattr(conv, "format_retrieved_skill_bodies",
+                        lambda retrieved: "### Skill: uploads\nAlways stream to disk first.")
+
+    ask = "refactor the uploader"
+    first = s._append_turn_context_trailer(ask, ask)
+    assert "Uploader decision" in first and "5 MiB chunks" in first and "stream to disk" in first
+    s._history.append({"role": "user", "content": first})
+
+    second = s._append_turn_context_trailer(ask, ask)
+    assert len(searches) == 1
+    for text in ("Uploader decision", "5 MiB chunks", "stream to disk"):
+        assert text not in second
+    for kind in ("Wiki", "Vault", "Skill"):
+        assert f"[{kind} context unchanged from the previous turn -- see above]" in second

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   reconstructStreamMarkdown,
+  splitMarkdownBlocks,
   splitStreamingMarkdown,
 } from "../lib/streamMarkdown";
 
@@ -116,5 +117,32 @@ describe("splitStreamingMarkdown", () => {
 
   it("returns an empty buffer for empty input", () => {
     expect(split("")).toEqual({ flushed: "", hold: "", open: null });
+  });
+});
+
+describe("splitMarkdownBlocks", () => {
+  it("splits at blank lines between top-level blocks and round-trips", () => {
+    const text = "# Title\n\nFirst para\nstill first.\n\n```ts\nconst a = 1;\n\nconst b = 2;\n```\n\nAfter code.";
+    const blocks = splitMarkdownBlocks(text);
+    expect(blocks.join("")).toBe(text);
+    expect(blocks).toEqual([
+      "# Title\n\n",
+      "First para\nstill first.\n\n",
+      "```ts\nconst a = 1;\n\nconst b = 2;\n```\n\n",
+      "After code.",
+    ]);
+  });
+
+  it("keeps loose lists and indented continuations in one block", () => {
+    const text = "1. one\n\n2. two\n\n    more of two\n\n- a\n\n  a cont\n\nDone.";
+    expect(splitMarkdownBlocks(text)).toEqual([
+      "1. one\n\n2. two\n\n    more of two\n\n- a\n\n  a cont\n\n",
+      "Done.",
+    ]);
+  });
+
+  it("does not split inside a tilde fence or on a shorter closer", () => {
+    const text = "~~~~\nx\n\n~~~\ny\n~~~~\n\nz";
+    expect(splitMarkdownBlocks(text)).toEqual(["~~~~\nx\n\n~~~\ny\n~~~~\n\n", "z"]);
   });
 });

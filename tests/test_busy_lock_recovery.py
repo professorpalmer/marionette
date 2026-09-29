@@ -191,3 +191,24 @@ def test_send_stale_recovers_even_if_on_interrupt_raises(monkeypatch):
     events = list(s.send("hello after boom interrupt"))
     busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
     assert not busy, f"on_interrupt raise left session busy: {busy}"
+
+
+def test_send_stale_window_uses_the_local_budget_for_local_pilots(monkeypatch):
+    """A long local prefill (no progress for 5 min) is inside the 15 min local
+    window; send() must not interrupt it on the 3 min cloud clock."""
+    monkeypatch.delenv("HARNESS_SEND_STALE_SECONDS", raising=False)
+    monkeypatch.setenv("HARNESS_TURN_DEADLINE_SECONDS", "3600")
+    s = _session()
+    s.config.driver = "local:managed/qwen-test"
+    interrupted = []
+    monkeypatch.setattr(s.pilot, "on_interrupt", lambda: interrupted.append(1), raising=False)
+    s._busy.acquire(blocking=False)
+    s._mark_busy_acquired()
+    s._busy_since = time.monotonic() - 300.0
+    s._busy_last_progress = s._busy_since
+    s._state = "thinking"
+
+    events = list(s.send("follow-up during prefill"))
+    busy = [e for e in events if e.kind == "error" and "busy" in str(e.data.get("error", ""))]
+    assert busy, "a healthy local turn was force-released at the cloud window"
+    assert interrupted == []

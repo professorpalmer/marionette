@@ -254,3 +254,43 @@ def test_finalize_assistant_turn_emits_done_and_persists(tmp_path: Path):
     rows = load_receipts(str(tmp_path), limit=1)
     assert rows[0]["task_id"] == "s"
     assert rows[0]["profile"] == MICRO
+
+
+def test_queued_prompt_starts_with_fresh_turn_guards():
+    """A queued prompt is a new user turn: it must not inherit the previous
+    prompt's tool budget, guard ledger or stagnation streak."""
+    queue = [{"text": "B: read the other file", "source": "user"}]
+    session = SimpleNamespace(
+        drain_steer=lambda: [],
+        _history=[],
+        _steer_pending=False,
+        _next_queued_needs_driver_swap=lambda: False,
+        _pop_next_prompt=lambda: queue.pop(0) if queue else None,
+        _submit_housekeeping=lambda *_a, **_k: None,
+        _maybe_ingest="ingest",
+        _task_profile=MICRO,
+        _task_tx=new_transaction("A"),
+        _turn_ran_command=False,
+        _verify_remind_count=0,
+        _turn_guard_state=object(),
+        _turn_budget=object(),
+        _turn_output_tokens=9000,
+        _stagnation_streak=2,
+        _invalid_only_streak=1,
+        _failed_objective_resume_counts={"x": 1},
+        config=SimpleNamespace(state_dir="", repo="", driver=""),
+    )
+    gen = drain_idle_turn(
+        session, user_message="A", step=3, swarms=0, turn_prose=["A done"], turn_findings=[],
+    )
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        disposition, msg = stop.value
+    assert (disposition, msg) == ("continue", "B: read the other file")
+    assert session._turn_guard_state is None
+    assert session._turn_budget is None
+    assert session._turn_output_tokens == 0
+    assert session._stagnation_streak == 0
+    assert session._failed_objective_resume_counts == {}

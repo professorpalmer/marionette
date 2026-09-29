@@ -204,3 +204,34 @@ describe("Reasoning menus from the keyboard", () => {
     await waitFor(() => expect(low).toHaveFocus());
   });
 });
+
+describe("Model picker from the keyboard", () => {
+  it("moves with arrows from the filter and picks with Enter", () => {
+    const onPendingModelChange = vi.fn();
+    render(<PilotPicker
+      config={{ ...sonnetConfig, models: ["anthropic:claude-sonnet-4-6", "local:mlx-community/Bonsai2-27B"] }}
+      onPendingModelChange={onPendingModelChange}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "claude-sonnet-4-6" }));
+    const filter = screen.getByRole("combobox", { name: "Search models or providers" });
+    const options = screen.getAllByRole("option");
+    expect(filter).toHaveAttribute("aria-activedescendant", options[0].id);
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(filter).toHaveAttribute("aria-activedescendant", options[1].id);
+    fireEvent.keyDown(filter, { key: "Enter" });
+    expect(onPendingModelChange).toHaveBeenCalledExactlyOnceWith("local:mlx-community/Bonsai2-27B");
+  });
+
+  it("filters then Enter picks the first match", () => {
+    const onPendingModelChange = vi.fn();
+    render(<PilotPicker
+      config={{ ...sonnetConfig, models: ["anthropic:claude-sonnet-4-6", "local:mlx-community/Bonsai2-27B"] }}
+      onPendingModelChange={onPendingModelChange}
+    />);
+    fireEvent.click(screen.getByRole("button", { name: "claude-sonnet-4-6" }));
+    const filter = screen.getByRole("combobox", { name: "Search models or providers" });
+    fireEvent.change(filter, { target: { value: "bonsai" } });
+    fireEvent.keyDown(filter, { key: "Enter" });
+    expect(onPendingModelChange).toHaveBeenCalledExactlyOnceWith("local:mlx-community/Bonsai2-27B");
+  });
+});

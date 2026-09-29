@@ -53,17 +53,15 @@ from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .send_loop_dispatch import DISPATCH_ACTION_KINDS
-from .repeat_tool_reminder import reset_repeat_chain
-from .runaway_guard import reset_runaway_state
 from .terminal_empty_recovery import (
     empty_after_tools_decision,
     inject_empty_retry,
     last_batch_had_error,
     note_tool_batch,
-    reset_terminal_empty_recovery,
 )
 from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
+    reset_fresh_turn_state,
     account_provider_attempt,
     classified_finish_kwargs,
     dispatch_pilot_provider_call,
@@ -524,7 +522,7 @@ class SendLoopMixin:
             if not stale and self._busy_since and self._state in (
                 "thinking", "executing", "streaming",
             ):
-                driver_spec = str(getattr(getattr(self, "cfg", None), "driver", "") or "")
+                driver_spec = str(getattr(getattr(self, "config", None), "driver", "") or "")
                 send_stale_s = local_send_stale_seconds(driver_spec)
                 if send_stale_s > 0 and inactive_for > send_stale_s:
                     try:
@@ -1155,19 +1153,7 @@ class SendLoopMixin:
             return
         processed_message, native_image_paths = image_prep
 
-        self._turn_output_tokens = 0
-        self._turn_budget = None
-        # Fresh turn: clear guard / stagnation / failed-objective resume state.
-        self._turn_guard_state = None
-        reset_repeat_chain(self)
-        reset_runaway_state(self)
-        reset_terminal_empty_recovery(self)
-        self._stagnation_last_prose = None
-        self._stagnation_last_actions = None
-        self._stagnation_streak = 0
-        self._invalid_only_streak = 0
-        self._failed_objective_resume_counts = {}
-        self._keep_alive_waits = 0
+        reset_fresh_turn_state(self)
         yield from yield_timed_phase(
             timing, "task_profile",
             emit_turn_task_profile(self, user_message),
@@ -1305,6 +1291,7 @@ class SendLoopMixin:
         post_swarm_nudge_active = False
 
         consecutive_non_productive = 0
+        envelope_retried = False
         loop_exit_cause = None
         last_classified = None
         # AUTO-VERIFY LOOP: after a turn that edited files, run a fast, scoped
@@ -1585,12 +1572,21 @@ class SendLoopMixin:
                     if synthesis_nudge_active:
                         from .pilot import PilotTurn
                         turn = PilotTurn(say="", actions=[])
+                    elif envelope_retried:
+                        # A second invalid envelope in a row: another identical
+                        # correction just buys another paid call. End the turn.
+                        loop_exit_cause = TERMINAL_EMPTY_LOOP
+                        break
                     else:
-                        # One lenient retry: tell the pilot to fix its envelope.
+                        # One lenient retry. Keep the rejected reply in history
+                        # so the pilot can see what it is being asked to fix.
+                        envelope_retried = True
+                        self._history.append({"role": "assistant", "content": resp.text})
                         self._history.append({"role": "user",
                             "content": f"(system) Your last reply was not valid. {e}. "
                                        f"Reply with the JSON envelope {{\"say\":...,\"actions\":[...]}}."})
                         continue
+                envelope_retried = False
 
             turn, tool_calls = _synthesis_only_turn(
                 synthesis_nudge_active, turn, tool_calls,

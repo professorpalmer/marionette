@@ -89,3 +89,21 @@ export function useOverlayFocus(
     };
   }, [open, opts?.initialFocusRef, opts?.restoreFocus, rootRef]);
 }
+
+/** Arrow/Home/End roving focus across a menu's enabled items. True when handled. */
+export function moveMenuFocus(root: HTMLElement | null, key: string): boolean {
+  if (!root) return false;
+  const items = Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE))
+    .filter((el) => !el.hasAttribute("disabled") && el.tabIndex !== -1);
+  const n = items.length;
+  if (!n) return false;
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const next = key === "ArrowDown" ? (at + 1) % n
+    : key === "ArrowUp" ? (at - 1 + n) % n
+      : key === "Home" ? 0
+        : key === "End" ? n - 1
+          : -1;
+  if (next < 0) return false;
+  items[next].focus();
+  return true;
+}

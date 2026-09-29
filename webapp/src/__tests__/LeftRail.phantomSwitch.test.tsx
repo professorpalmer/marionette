@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LeftRail from "../components/LeftRail";
 import { api } from "../lib/api";
@@ -65,5 +65,39 @@ describe("LeftRail phantom session switch", () => {
     fireEvent.click(otherRow);
     await waitFor(() => expect(switchSpy).toHaveBeenCalledWith("session-b"));
     expect(onSessionChange).toHaveBeenCalledWith("session-b");
+  });
+
+  it("keeps the activated row focusable while the switch is pending", async () => {
+    let finish: (value: { ok: boolean; repo: string }) => void = () => {};
+    switchSpy.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    render(<LeftRail jobsRefresh={0} onSessionChange={vi.fn()} />);
+    const otherRow = await screen.findByRole("button", { name: /Other chat/ });
+    otherRow.focus();
+    fireEvent.click(otherRow);
+    await waitFor(() => expect(switchSpy).toHaveBeenCalledTimes(1));
+    // A disabled button drops keyboard focus to <body>; busy is aria-only.
+    expect(otherRow).not.toBeDisabled();
+    expect(otherRow).toHaveAttribute("aria-disabled", "true");
+    expect(otherRow).toHaveFocus();
+    fireEvent.click(otherRow);
+    expect(switchSpy).toHaveBeenCalledTimes(1);
+    finish({ ok: true, repo: "/workspace" });
+  });
+
+  it("opens the session menu with focus inside it and returns focus on Escape", async () => {
+    render(<LeftRail jobsRefresh={0} onSessionChange={vi.fn()} />);
+    const row = await screen.findByRole("button", { name: /Other chat/ });
+    row.focus();
+    fireEvent.contextMenu(row);
+    const menu = await screen.findByRole("menu", { name: /Other chat actions/ });
+    const fork = within(menu).getByRole("button", { name: "Fork session" });
+    await waitFor(() => expect(fork).toHaveFocus());
+    fireEvent.keyDown(fork, { key: "ArrowDown" });
+    expect(within(menu).getByRole("button", { name: "Rename" })).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: "End" });
+    expect(within(menu).getByRole("button", { name: /Delete/ })).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(row).toHaveFocus();
   });
 });

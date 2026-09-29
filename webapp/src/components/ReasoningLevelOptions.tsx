@@ -2,6 +2,7 @@ import type { KeyboardEvent, RefObject } from "react";
 import { Check } from "lucide-react";
 import type { ReasoningEffort } from "../lib/api";
 import { REASONING_LEVELS } from "../lib/reasoningSupport";
+import { moveMenuFocus } from "../lib/overlayFocus";
 
 /** Reasoning-level rows for a picker menu. Pass ``selectedRef`` as the
  * overlay's initial focus so the keyboard starts on the current level. */
@@ -15,19 +16,7 @@ export default function ReasoningLevelOptions({
   selectedRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const moveFocus = (e: KeyboardEvent<HTMLButtonElement>) => {
-    const rows = Array.from(
-      e.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [],
-    );
-    const at = rows.indexOf(e.currentTarget);
-    const n = rows.length;
-    const next = e.key === "ArrowDown" ? (at + 1) % n
-      : e.key === "ArrowUp" ? (at - 1 + n) % n
-        : e.key === "Home" ? 0
-          : e.key === "End" ? n - 1
-            : -1;
-    if (next < 0) return;
-    e.preventDefault();
-    rows[next].focus();
+    if (moveMenuFocus(e.currentTarget.parentElement, e.key)) e.preventDefault();
   };
 
   return REASONING_LEVELS.map(({ value: level, label }) => {

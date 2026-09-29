@@ -1,6 +1,6 @@
 import { SwarmLinkSessionContext, useOpenSwarmJob } from '../lib/useOpenSwarmJob';
 import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportHandle } from "./conversation/sessionViewport";
-import { useEffect, useLayoutEffect, useRef, useState, useCallback, useDeferredValue, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -38,7 +38,7 @@ import {
   pathTokenInCodeLine,
   tokenizeClickableOutput,
 } from "../lib/clickableOutput";
-import { splitStreamingMarkdown } from "../lib/streamMarkdown";
+import { splitMarkdownBlocks, splitStreamingMarkdown } from "../lib/streamMarkdown";
 import {
   activityWorkDurationMs,
   aggregateExplorationSummary,
@@ -3491,14 +3491,18 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
 
 function StreamingMarkdown({ text }: { text: string }) {
   const buf = splitStreamingMarkdown(text || "");
-  const deferredFlushed = useDeferredValue(buf.flushed);
   const caret = <span className="transcript-stream-caret" aria-hidden="true" />;
+  // Finished top-level blocks are memo hits frame to frame; only the block
+  // still growing re-parses. One tree over all of `flushed` re-highlighted
+  // every earlier code block on every token (O(n^2) over an answer).
+  const blocks = splitMarkdownBlocks(buf.flushed);
+  const pretty = blocks.map((block, i) => <PrettyMarkdown key={i} text={block} />);
   // Never paint flushed-as-markdown plus a sibling lag <span>. That remounts
   // the trailing sentence as <p> then <span> then <p> again — the blink.
   if (buf.open) {
     return (
       <>
-        {buf.flushed ? <PrettyMarkdown text={deferredFlushed} /> : null}
+        {pretty}
         <pre
           data-md-pending
           data-lang={buf.open.lang || undefined}
@@ -3512,7 +3516,7 @@ function StreamingMarkdown({ text }: { text: string }) {
   }
   return (
     <>
-      <PrettyMarkdown text={buf.flushed} />
+      {pretty}
       {buf.hold ? (
         <span data-md-hold className="font-mono">{buf.hold}</span>
       ) : null}
