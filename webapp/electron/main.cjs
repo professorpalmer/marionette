@@ -747,7 +747,14 @@ function startBackend() {
   // Coalesce overlapping starts onto one in-flight promise so we never launch a
   // second backend against the same SQLite while the first is still starting up.
   if (startInFlight) return startInFlight;
-  startInFlight = _startBackendOnce().then(connectDesktopBrowser).finally(() => { startInFlight = null; });
+  // Browser-controller registration is a side registration, not backend
+  // readiness: a slow or failed POST used to reject the whole start, so a crash
+  // respawn skipped re-pointing the renderer at the new port.
+  startInFlight = _startBackendOnce()
+    .then(() => connectDesktopBrowser().catch((e) => {
+      logMain(`[backend] desktop browser registration failed: ${e && e.message ? e.message : e}`);
+    }))
+    .finally(() => { startInFlight = null; });
   return startInFlight;
 }
 
