@@ -1,4 +1,4 @@
-import type { Config } from "./api";
+import type { Config, Session } from "./api";
 
 /**
  * Keep composer models and the workspace repo when /api/config is still
@@ -10,6 +10,31 @@ import type { Config } from "./api";
  * driver must never show as, or be sent as, this session's model.
  */
 export type SessionPilotFields = Pick<Config, "driver" | "reasoning_effort" | "swarm_reasoning_effort">;
+
+// Last known pilot fields per session. Config answers and acknowledged swaps
+// win; session-list rows only fill gaps, so a session opened for the first
+// time after a reload shows its model at once instead of "Select model".
+const knownPilots = new Map<string, SessionPilotFields>();
+
+export function rememberSessionPilot(sessionId: string, fields: SessionPilotFields): void {
+  knownPilots.set(sessionId, fields);
+}
+
+export function knownSessionPilot(sessionId: string | null | undefined): SessionPilotFields | null {
+  return sessionId ? knownPilots.get(sessionId) ?? null : null;
+}
+
+export function seedSessionPilots(rows: readonly Pick<Session, "id" | "pilot_preferences">[]): void {
+  for (const row of rows) {
+    const prefs = row.pilot_preferences;
+    if (!prefs?.driver || knownPilots.has(row.id)) continue;
+    knownPilots.set(row.id, {
+      driver: prefs.driver,
+      reasoning_effort: prefs.reasoning_effort,
+      swarm_reasoning_effort: prefs.swarm_reasoning_effort,
+    });
+  }
+}
 
 /** This session's own pilot fields from a config it answered, if any. */
 export function sessionPilotFields(config: Config | null): SessionPilotFields | null {

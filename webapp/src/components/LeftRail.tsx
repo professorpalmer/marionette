@@ -6,6 +6,7 @@ import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
+import { seedSessionPilots } from "../lib/sessionConfig";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
@@ -363,6 +364,7 @@ export default function LeftRail({
         if (generation !== sessionListGeneration.current) {
           throw new DOMException("Superseded session list", "AbortError");
         }
+        seedSessionPilots(incoming);
         const rows = writeSessionListCache(root, incoming);
         setSessionLoadStates((prev) => ({ ...prev, [root]: "ready" }));
         setSessionsCacheEpoch((n) => n + 1);
