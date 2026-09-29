@@ -105,6 +105,56 @@ class SessionServices:
 # Module helpers (re-exported from server under historical names)
 # ---------------------------------------------------------------------------
 
+_ORPHAN_MIN_AGE_S = 3600.0
+
+
+def sweep_orphan_session_files(state_dir: str, known_ids, *, now: Optional[float] = None,
+                               min_age_s: float = _ORPHAN_MIN_AGE_S) -> int:
+    """Remove prompt queues and input originals left by deleted sessions.
+
+    Delete keeps them because the retired runner may still read them; at boot no
+    runner exists. Only IDs absent from the store and untouched for ``min_age_s``
+    go, so a backend sharing this state dir cannot lose a session it just made.
+    """
+    import shutil
+    import hashlib
+    now = time.time() if now is None else now
+    known = set(known_ids)
+    known_hashes = {hashlib.sha256(s.encode('utf-8')).hexdigest() for s in known}
+    root = os.path.realpath(state_dir)
+    groups: dict[str, list[str]] = {}
+    queues = os.path.join(root, 'prompt_queues')
+    for name in (os.listdir(queues) if os.path.isdir(queues) else ()):
+        stem = name.split('.', 1)[0]
+        if len(stem) == 64 and stem not in known_hashes:
+            groups.setdefault('q:' + stem, []).append(os.path.join(queues, name))
+    trans = os.path.join(root, 'transcripts')
+    for name in (os.listdir(trans) if os.path.isdir(trans) else ()):
+        for suffix in ('.inputs.json.lock', '.inputs.json', '.input-originals'):
+            if name.endswith(suffix):
+                sid = name[:-len(suffix)]
+                if sid and sid not in known:
+                    groups.setdefault('i:' + sid, []).append(os.path.join(trans, name))
+                break
+    removed = 0
+    for paths in groups.values():
+        try:
+            if max(os.stat(p).st_mtime for p in paths) > now - min_age_s:
+                continue
+        except OSError:
+            continue
+        for p in paths:
+            try:
+                if os.path.isdir(p):
+                    shutil.rmtree(p)
+                else:
+                    os.remove(p)
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
 def remove_session_transcript(
     sid: str,
     *,
@@ -131,6 +181,11 @@ def remove_session_transcript(
         remove_session_from_index(state_dir, safe_sid)
     except Exception as e:
         diag("server.session_delete_fts", e, msg=f"sid={safe_sid}")
+    try:
+        from ..local_jobs_store import local_jobs_store
+        local_jobs_store(os.path.join(state_dir, "swarm_local_jobs.json")).drop_session(safe_sid)
+    except Exception as e:
+        diag("server.session_delete_local_jobs", e, msg=f"sid={safe_sid}")
     try:
         from ..stream_performance_store import remove_session_performance_receipts
         remove_session_performance_receipts(state_dir, safe_sid)

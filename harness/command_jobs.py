@@ -450,6 +450,7 @@ def launch_registered_command_job(
     job_id: str,
     command: str,
     cwd: str,
+    done: Optional[threading.Event] = None,
 ) -> bool:
     """Start the daemon thread that executes a registered command job.
 
@@ -469,6 +470,8 @@ def launch_registered_command_job(
             _run_registered_command_job(session, job_id, command, cwd)
         finally:
             release_command_job_launch(session, job_id)
+            if done is not None:
+                done.set()
 
     try:
         threading.Thread(

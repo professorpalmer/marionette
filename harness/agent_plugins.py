@@ -97,28 +97,27 @@ def compute_plugin_content_sha256(plugin_root: Path) -> str:
     if not root.is_dir():
         raise AgentPluginError("plugin root must be a directory")
     hasher = hashlib.sha256()
+    files = []
+
+    def walk(directory: str, prefix: str) -> None:
+        # Prune .git and the stamp before descending: git-cloned plugins can
+        # hold thousands of objects that the digest never includes.
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name in (".git", STAMP_FILENAME):
+                    continue
+                rel = prefix + entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    walk(entry.path, rel + "/")
+                elif entry.is_file(follow_symlinks=False):
+                    st = os.stat(entry.path)
+                    files.append((rel, Path(entry.path), (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)))
+
     try:
-        paths = sorted(
-            (
-                path
-                for path in root.rglob("*")
-                if path.is_file() and not path.is_symlink()
-            ),
-            key=lambda path: path.relative_to(root).as_posix(),
-        )
+        walk(str(root), "")
     except OSError as exc:
         raise AgentPluginError(f"cannot hash plugin contents: {exc}") from exc
-    files = []
-    for path in paths:
-        rel = path.relative_to(root).as_posix()
-        parts = rel.split("/")
-        if STAMP_FILENAME in parts or ".git" in parts:
-            continue
-        try:
-            st = path.stat()
-        except OSError as exc:
-            raise AgentPluginError(f"cannot hash plugin file {rel}: {exc}") from exc
-        files.append((rel, path, (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)))
+    files.sort(key=lambda item: item[0])
     # /api/mcp and /api/plugins poll every few seconds and verify every plugin.
     # Reuse the digest while no file was added, removed or touched. Stat
     # metadata cannot see a same-size rewrite inside one timestamp tick (and

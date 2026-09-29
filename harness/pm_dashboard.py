@@ -7,9 +7,11 @@ state dir, reuses a live board, or starts the same CLI the MCP verb uses.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Optional
 from urllib.parse import urlencode
@@ -18,6 +20,87 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 SPAWN_WAIT_S = 10.0
 _JOB_ID_MAX = 128
+
+# Marionette owns at most one board: the active store's. Reuse-check and spawn
+# are one atomic step so two callers cannot both spawn. Owned boards live in
+# their own session (a crash-respawned backend adopts them), so they are
+# stopped here on exit and recorded in a ledger a later boot can reap.
+_LOCK = threading.Lock()
+_owned: dict[str, Any] = {}
+_ledger_path: Optional[str] = None
+_exit_registered = False
+
+
+def _stop_process(pid: int, proc: Any = None) -> None:
+    try:
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        elif os.name == "posix":
+            import signal
+            os.kill(pid, signal.SIGTERM)
+        else:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        pass
+
+
+def _read_ledger() -> dict[str, int]:
+    try:
+        with open(_ledger_path or "", encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_ledger() -> None:
+    if not _ledger_path:
+        return
+    try:
+        tmp = _ledger_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({k: p.pid for k, p in _owned.items()}, f)
+        os.replace(tmp, _ledger_path)
+    except OSError:
+        pass
+
+
+def _release_owned(state_dir: str) -> None:
+    proc = _owned.pop(state_dir, None)
+    if proc is not None and proc.poll() is None:
+        _stop_process(proc.pid, proc)
+
+
+def stop_owned_dashboards() -> None:
+    with _LOCK:
+        for state_dir in list(_owned):
+            _release_owned(state_dir)
+        _write_ledger()
+
+
+def reap_orphaned_dashboards(ledger_path: str) -> int:
+    """Adopt the ledger and stop boards a crashed backend left running.
+
+    A pid is only stopped while its store's runfile still names it, so a
+    recycled pid or a board the user started themselves is never touched.
+    """
+    global _ledger_path
+    from puppetmaster.dashboard import pid_alive, read_dashboard_runfile
+    with _LOCK:
+        _ledger_path = ledger_path
+        stopped = 0
+        for state_dir, pid in _read_ledger().items():
+            tracked = read_dashboard_runfile(state_dir) or {}
+            if state_dir not in _owned and pid_alive(pid) and tracked.get("pid") == pid:
+                _stop_process(pid)
+                stopped += 1
+        _write_ledger()
+        return stopped
 
 
 def is_dashboard_job_id(job_id: str) -> bool:
@@ -183,20 +266,39 @@ def ensure_local_dashboard(
     wait_s: float = SPAWN_WAIT_S,
 ) -> dict[str, Any]:
     """Return a live dashboard URL for ``state_dir``, starting the stock CLI if needed."""
+    global _exit_registered
+    with _LOCK:
+        for other in [k for k in _owned if k != state_dir]:
+            _release_owned(other)
+        reused = _reuse_tracked_dashboard(state_dir, host, port, all_projects)
+        if reused:
+            reused["url"] = build_dashboard_url(reused["host"], reused["port"], job_id)
+            reused["embed_url"] = reused["url"]
+            _write_ledger()
+            return reused
+        _release_owned(state_dir)
+        process = _spawn_dashboard_cli(state_dir, host, port, job_id, popen=popen)
+        _owned[state_dir] = process
+        _write_ledger()
+        if not _exit_registered:
+            import atexit
+            atexit.register(stop_owned_dashboards)
+            _exit_registered = True
+        result = _await_spawned(process, state_dir, host, port, job_id, all_projects,
+                                sleep=sleep, monotonic=monotonic, wait_s=wait_s)
+        if not result.get("ok"):
+            _release_owned(state_dir)
+            _write_ledger()
+        return result
+
+
+def _await_spawned(process, state_dir, host, port, job_id, all_projects, *, sleep, monotonic, wait_s):
     from puppetmaster.dashboard import (
         dashboard_runfile,
         dashboard_serves,
         read_child_stderr_tail,
         read_dashboard_runfile,
     )
-
-    reused = _reuse_tracked_dashboard(state_dir, host, port, all_projects)
-    if reused:
-        reused["url"] = build_dashboard_url(reused["host"], reused["port"], job_id)
-        reused["embed_url"] = reused["url"]
-        return reused
-
-    process = _spawn_dashboard_cli(state_dir, host, port, job_id, popen=popen)
     deadline = monotonic() + wait_s
     child_info = None
     while monotonic() < deadline:

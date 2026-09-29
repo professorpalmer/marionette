@@ -558,7 +558,10 @@ class WikiClient:
         try:
             direct = _get("/wiki/graph")
             parsed = parse_graph_from_response(direct)
-            if parsed.get("nodes") or parsed.get("edges"):
+            # A graph-shaped 200 is authoritative even when empty: the legacy
+            # fallback costs one request per page against the backend.
+            if parsed.get("nodes") or parsed.get("edges") or (
+                    isinstance(direct, dict) and "nodes" in direct and "edges" in direct):
                 parsed["error"] = None
                 return parsed
         except Exception:

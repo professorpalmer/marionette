@@ -240,6 +240,45 @@ def test_stream_chat_events_mid_watch_gap_emits_ring_miss_then_closes():
     assert '"available": false' in blob or '"available":false' in blob
 
 
+def test_stream_chat_events_sleeps_through_a_quiet_pinned_turn():
+    import time as _time
+    ring = SseEventRing("s1", 1)
+    ring.pinned = True
+    ring.append("message_delta", {"text": "a"})
+    real_since = ring.since
+    calls = {"n": 0}
+
+    def counting_since(cursor=0):
+        calls["n"] += 1
+        return real_since(cursor)
+
+    ring.since = counting_since
+    svc = _sse_svc(rings={("s1", 1): ring}, gens={"s1": 1})
+    chunks: list[bytes] = []
+
+    class _Handler:
+        class wfile:
+            write = staticmethod(chunks.append)
+            flush = staticmethod(lambda: None)
+        def send_response(self, code): pass
+        def send_header(self, k, v): pass
+        def _cors(self): pass
+        def end_headers(self): pass
+
+    def finish():
+        _time.sleep(1.2)
+        ring.append("assistant_done", {})
+        ring.pinned = False
+
+    threading.Thread(target=finish, daemon=True).start()
+    started = _time.monotonic()
+    stream_chat_events(_Handler(), svc, "s1", 0, 1)
+    assert "assistant_done" in b"".join(chunks).decode()
+    assert _time.monotonic() - started < 2.0
+    # 1.2 s of a pinned quiet turn polled at 50 ms made ~25 reads.
+    assert calls["n"] <= 6, calls["n"]
+
+
 # ---------------------------------------------------------------------------
 # GET /api/pilot
 # ---------------------------------------------------------------------------

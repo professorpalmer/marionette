@@ -217,7 +217,8 @@ def test_retained_history_and_classifications(tmp_path):
     runner._local_jobs['wave'] = dict(row('wave'), job_kind='parallel_wave', role='parallel_wave')
     runner._local_jobs['batch'] = dict(row('batch'), job_kind='run_command_batch', role='command_batch')
     runner._persist_local_jobs()
-    assert len(runner._local_jobs) == 1208  # existing live history is not silently pruned
+    # Memory keeps what disk keeps: a restart would reload the same 700.
+    assert len(runner._local_jobs) == 700
     stored = json.loads((tmp_path / 'swarm_local_jobs.json').read_text())['jobs']
     # Newest 500 terminal command receipts + 200 provider/wave history.
     assert len(stored) == 700

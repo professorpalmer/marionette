@@ -37,6 +37,7 @@ import sys
 import hashlib
 import threading
 import time
+import weakref
 import subprocess
 import re
 from dataclasses import dataclass, field, replace as _dc_replace
@@ -1538,15 +1539,25 @@ class ConversationalSession(
             stop = threading.Event()
             self._approval_sweep_stop = stop
 
+        # A weakref and an exit once nothing is pending: the thread must never
+        # pin a runner that SessionRunners already dropped.
+        ref = weakref.ref(self)
+
         def _tick() -> None:
-            while not getattr(self, "_closed", False) and not stop.is_set():
-                if stop.wait(APPROVAL_SWEEP_SECONDS):
+            while not stop.wait(APPROVAL_SWEEP_SECONDS):
+                session = ref()
+                if session is None or getattr(session, "_closed", False):
                     return
                 try:
-                    with self._command_approval_lock_guard():
-                        self._sweep_expired_approvals()
+                    with session._command_approval_lock_guard():
+                        session._sweep_expired_approvals()
+                        if not session._pending_command_approvals:
+                            session._approval_sweeper = None
+                            return
                 except Exception:
                     pass
+                finally:
+                    del session
 
         thread = threading.Thread(target=_tick, name="approval-sweep", daemon=True)
         thread.start()

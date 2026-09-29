@@ -543,7 +543,8 @@ def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
         backup = transaction / "old"
         cleanup = True
         try:
-            shutil.copytree(str(src), str(staged), symlinks=False)
+            shutil.copytree(str(src), str(staged), symlinks=False,
+                            ignore=shutil.ignore_patterns(".git"))
             namespace = portable_skill_namespace(install_id)
             candidate = load_agent_plugin(staged, plugin_data_root() / namespace)
             if candidate.name != package.name:

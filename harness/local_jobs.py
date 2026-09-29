@@ -39,7 +39,7 @@ from .job_actions import (
     snapshot_actions,
     upsert_action_row,
 )
-from .local_jobs_store import local_jobs_store
+from .local_jobs_store import HISTORY_CAP, TERMINAL_STATUSES, cap_session_rows, local_jobs_store
 from .model_identity import (
     collapse_engine_prefixes,
     envelope_model_id,
@@ -2238,7 +2238,27 @@ class LocalJobsMixin:
         except Exception:
             if required:
                 raise
+        else:
+            self._forget_capped_local_jobs_locked()
         self._refresh_foreign_local_jobs_locked()
+
+    def _forget_capped_local_jobs_locked(self) -> None:
+        """Drop settled rows the store's cap already dropped from disk.
+
+        Only the file was capped, so a long-lived runner held every job it ever
+        ran. Rows past the cap are hundreds of jobs old; their workers are done.
+        """
+        scope = self._local_jobs_owner_scope()
+        own = [r for r in self._local_jobs.values() if str(r.get("session_id") or "") == scope]
+        if len(own) <= HISTORY_CAP:
+            return
+        kept = {r.get("id") for r in cap_session_rows(own)}
+        for row in own:
+            jid = row.get("id")
+            if jid not in kept and str(row.get("status") or "") in TERMINAL_STATUSES:
+                self._local_jobs.pop(jid, None)
+                self._local_job_cancels.pop(jid, None)
+                self._local_metadata.publish(jid, None)
 
     def _persist_local_jobs(self) -> None:
         """Lock-taking wrapper around _persist_local_jobs_locked for callers that

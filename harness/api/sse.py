@@ -32,6 +32,7 @@ _CHAT_EVENTS_WATCH_TERMINAL_KINDS = frozenset({
 })
 # Poll interval while waiting for new ring frames (same cadence as terminal SSE).
 _CHAT_EVENTS_WATCH_POLL_S = 0.05
+_CHAT_EVENTS_WATCH_IDLE_WAIT_S = 1.0
 
 # Mid-turn SSE reattach: bounded per-session/per-generation event ring. When the
 # UI detaches, _sse_pump keeps draining the turn and RETAINS recent frames here
@@ -106,11 +107,29 @@ class SseEventRing:
         self.ttl = float(ttl)
         # True while sse_pump is draining this generation — global eviction
         # must not drop a live reattach buffer under multi-session churn.
-        self.pinned = False
         self._lock = threading.Lock()
+        self._changed = threading.Condition(self._lock)
+        self._pinned = False
         self._cursor = 0
         # (cursor, monotonic_ts, event_dict)
         self._entries: Deque[Tuple[int, float, SseRingEvent]] = deque()
+
+    @property
+    def pinned(self) -> bool:
+        return self._pinned
+
+    @pinned.setter
+    def pinned(self, value: bool) -> None:
+        with self._changed:
+            self._pinned = bool(value)
+            self._changed.notify_all()
+
+    def wait_after(self, cursor: int, timeout: float) -> None:
+        """Block until a frame past ``cursor`` lands, the pin changes, or timeout."""
+        with self._changed:
+            pinned = self._pinned
+            self._changed.wait_for(
+                lambda: self._cursor > cursor or self._pinned != pinned, timeout)
 
     def append(self, kind: str, data: Any = None, turn: Any = None) -> int:
         """Append one logical SSE event; returns its cursor id.
@@ -130,6 +149,7 @@ class SseEventRing:
                 ev["turn"] = turn
             self._entries.append((self._cursor, now, ev))
             self._prune_unlocked(now)
+            self._changed.notify_all()
             return self._cursor
 
     def _prune_unlocked(self, now: Optional[float] = None) -> None:
@@ -485,6 +505,12 @@ def stream_chat_events(
                 return
         else:
             idle_unpinned = 0
+            # Mid-turn quiet stretch: sleep until the pump appends or unpins.
+            # The bound re-checks that the ring still exists.
+            waiter = getattr(ring, "wait_after", None)
+            if callable(waiter):
+                waiter(cursor, _CHAT_EVENTS_WATCH_IDLE_WAIT_S)
+                continue
         time.sleep(_CHAT_EVENTS_WATCH_POLL_S)
 
 

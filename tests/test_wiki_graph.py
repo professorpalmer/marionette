@@ -203,6 +203,30 @@ def test_wiki_client_graph_prefers_direct_graph_endpoint(monkeypatch):
     assert calls == ["https://mywiki.example.com/wiki/graph"]
 
 
+def test_empty_direct_graph_is_authoritative_not_a_per_page_fanout(monkeypatch):
+    class FakeResp:
+        status = 200
+        def __init__(self, payload): self._payload = payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self._payload).encode()
+
+    calls = []
+
+    def fake_urlopen(req, timeout=0):
+        calls.append(req.full_url)
+        if req.full_url.endswith("/wiki/graph"):
+            return FakeResp({"nodes": [], "edges": []})
+        if req.full_url.endswith("/wiki/manifest.json"):
+            return FakeResp({"pages": [{"slug": f"p{i}"} for i in range(50)]})
+        return FakeResp({"edges": []})
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    res = WikiClient(base_url="https://mywiki.example.com", token="t").graph()
+    assert res == {"nodes": [], "edges": [], "error": None}
+    assert calls == ["https://mywiki.example.com/wiki/graph"]
+
+
 def test_wiki_client_graph_live_mocked(monkeypatch):
     # Legacy fallback: GET /wiki/manifest.json for nodes, then
     # GET /wiki/graph/<slug>?hops=1 for edges.
@@ -537,3 +561,35 @@ def test_maybe_ingest_clears_graph_cache(monkeypatch):
         assert not srv._wiki_graph_cache
     finally:
         httpd.shutdown()
+
+
+def test_down_wiki_is_fetched_once_per_error_window(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    import harness.wiki as wiki_mod
+    from harness.api import wiki as api_wiki
+
+    calls = []
+
+    class _Down:
+        def __init__(self, *a, **k):
+            self.base_url = "http://127.0.0.1:65009"
+            self.token = ""
+        def graph(self):
+            calls.append(1)
+            __import__("time").sleep(0.1)
+            return {"error": "connection refused", "nodes": [], "edges": []}
+
+    monkeypatch.setattr(wiki_mod, "WikiClient", _Down)
+    monkeypatch.setattr(api_wiki, "wiki_graph_cache", {})
+    svc = SimpleNamespace(cfg=SimpleNamespace(wiki_url="http://127.0.0.1:65009"))
+    out = []
+    threads = [threading.Thread(target=lambda: out.append(api_wiki.get_wiki_status(svc)))
+               for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out.append(api_wiki.get_wiki_graph(svc))
+    assert calls == [1]
+    assert all(body["status"] == "error" and body["retryable"] for _, body in out)

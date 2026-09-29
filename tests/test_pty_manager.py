@@ -143,6 +143,7 @@ def test_read_since_offset_clamping():
     s._buffer = bytearray(b"hello")
     s._total_output = 5
     s._lock = threading.Lock()
+    s._output_ready = threading.Condition(s._lock)
     data, off = s.read_since(-5)
     assert data == b"hello" and off == 5
     data2, off2 = s.read_since(999)
