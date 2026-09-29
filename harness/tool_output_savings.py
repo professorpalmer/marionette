@@ -206,6 +206,11 @@ class ToolOutputSavingsLedger:
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(tool_output_savings)")}
         if "job_id" not in cols:
             self._conn.execute("ALTER TABLE tool_output_savings ADD COLUMN job_id TEXT")
+        # After the column exists (older ledgers predate it): per-job summaries
+        # scanned the whole ledger.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_output_savings_job ON tool_output_savings(job_id)"
+        )
 
     def _append_jsonl(self, rec: dict) -> None:
         if not _jsonl_enabled():
@@ -294,34 +299,31 @@ class ToolOutputSavingsLedger:
         session_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> ToolOutputSavingsSummary:
-        """Aggregate stored records, optionally scoped to one session or job."""
+        """Aggregate stored records, optionally scoped to one session or job.
+
+        Aggregated in SQLite: the process-wide summary backs /api/usage, polled
+        every 2s while busy, and the ledger only grows, so fetching every row
+        into Python made each poll cost O(lifetime rows).
+        """
+        where, args = [], []
+        if session_id:
+            where.append("session_id = ?")
+            args.append(session_id)
+        if job_id:
+            where.append("job_id = ?")
+            args.append(job_id)
+        sql = (
+            "SELECT CASE WHEN reason IS NULL OR reason = '' THEN 'unknown' ELSE reason END, "
+            "SUM(tokens_saved), SUM(MAX(0, original_chars - compact_chars)), COUNT(*) "
+            "FROM tool_output_savings"
+            + (" WHERE " + " AND ".join(where) if where else "")
+            + " GROUP BY 1"
+        )
         try:
             with self._lock:
                 self._ensure_db()
                 assert self._conn is not None
-                if session_id and job_id:
-                    rows = self._conn.execute(
-                        "SELECT tokens_saved, original_chars, compact_chars, reason "
-                        "FROM tool_output_savings WHERE session_id = ? AND job_id = ?",
-                        (session_id, job_id),
-                    ).fetchall()
-                elif session_id:
-                    rows = self._conn.execute(
-                        "SELECT tokens_saved, original_chars, compact_chars, reason "
-                        "FROM tool_output_savings WHERE session_id = ?",
-                        (session_id,),
-                    ).fetchall()
-                elif job_id:
-                    rows = self._conn.execute(
-                        "SELECT tokens_saved, original_chars, compact_chars, reason "
-                        "FROM tool_output_savings WHERE job_id = ?",
-                        (job_id,),
-                    ).fetchall()
-                else:
-                    rows = self._conn.execute(
-                        "SELECT tokens_saved, original_chars, compact_chars, reason "
-                        "FROM tool_output_savings"
-                    ).fetchall()
+                groups = self._conn.execute(sql, args).fetchall()
         except Exception:
             # Fall back to JSONL aggregate when SQLite is unreadable.
             records = parse_jsonl_records(self._jsonl_path)
@@ -331,18 +333,11 @@ class ToolOutputSavingsLedger:
         finally:
             self.close()
 
-        tokens = 0
-        chars = 0
-        by_reason: dict[str, int] = {}
-        for saved, orig, compact, reason in rows:
-            tokens += int(saved)
-            chars += max(0, int(orig) - int(compact))
-            r = str(reason or "unknown")
-            by_reason[r] = by_reason.get(r, 0) + int(saved)
+        by_reason = {str(reason): int(saved or 0) for reason, saved, _chars, _n in groups}
         return ToolOutputSavingsSummary(
-            tokens_saved=tokens,
-            chars_saved=chars,
-            record_count=len(rows),
+            tokens_saved=sum(int(saved or 0) for _r, saved, _c, _n in groups),
+            chars_saved=sum(int(chars or 0) for _r, _s, chars, _n in groups),
+            record_count=sum(int(n) for _r, _s, _c, n in groups),
             by_reason=by_reason,
         )
 
