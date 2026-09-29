@@ -403,3 +403,15 @@ it('narrowing the slash menu resets its selection so Enter picks a real command'
   await waitFor(() => expect((input as HTMLTextAreaElement).value).toMatch(/^\/\S+/));
   expect((input as HTMLTextAreaElement).value).not.toContain('\n');
 });
+
+it('a local command reply stays in the session it was typed in', async () => {
+  let resolve!: (v: unknown) => void;
+  vi.spyOn(api, 'stripSessionImages').mockImplementation(() => new Promise(r => { resolve = r; }) as never);
+  const { input, switchTo } = await mount();
+  fireEvent.change(input, { target: { value: '/images-strip' } });
+  await send();
+  await waitFor(() => expect(api.stripSessionImages).toHaveBeenCalled());
+  await switchTo('B');
+  await act(async () => { resolve({ ok: true, stripped: 2 }); });
+  expect(screen.queryByText(/Removed image attachments/)).toBeNull();
+});

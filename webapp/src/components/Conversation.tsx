@@ -3609,29 +3609,33 @@ export default function Conversation({
       window.dispatchEvent(new Event("harness-new-session"));
       return;
     }
+    // A local command's exchange belongs to the session it was typed in; if
+    // the user switched away before the reply arrived, drop it rather than
+    // append it to whichever session is on screen.
+    const replyInOwningSession = (typed: string) => {
+      const owner = activeSessionIdRef.current;
+      return (text: string) => {
+        if (activeSessionIdRef.current !== owner) return;
+        setItems((p) => [
+          ...p,
+          { kind: "msg", msg: { role: "user", text: typed } },
+          { kind: "msg", msg: { role: "assistant", text } },
+        ]);
+      };
+    };
     if (slash.kind === "todo") {
       const command = msg.startsWith("/") ? msg : `/todo ${slash.text || ""}`.trim();
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void api.sessionTodo({ command })
         .then((res) => {
           if (res?.todos) publishSessionTodos(res.todos, activeSessionId || "");
-          const reply = !res?.ok
+          reply(!res?.ok
             ? (res?.error || res?.usage || "Could not run /todo.")
-            : (res?.notice || res?.tree || res?.markdown || "No todos.");
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: reply } },
-          ]);
+            : (res?.notice || res?.tree || res?.markdown || "No todos."));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not run /todo." } },
-          ]);
-        });
+        .catch(() => reply("Could not run /todo."));
       return;
     }
     if (slash.kind === "refine") {
@@ -3729,32 +3733,17 @@ export default function Conversation({
       return;
     }
     if (slash.kind === "images-strip") {
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void api.stripSessionImages()
         .then((res) => {
           const n = Number(res?.stripped || 0);
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: res?.ok
-                  ? (n ? `Removed image attachments from ${n} history row${n === 1 ? "" : "s"}.` : "No image attachments in history.")
-                  : (res?.error || "Could not strip images."),
-              },
-            },
-          ]);
+          reply(res?.ok
+            ? (n ? `Removed image attachments from ${n} history row${n === 1 ? "" : "s"}.` : "No image attachments in history.")
+            : (res?.error || "Could not strip images."));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not strip images." } },
-          ]);
-        });
+        .catch(() => reply("Could not strip images."));
       return;
     }
     if (slash.kind === "privacy") {
@@ -3768,29 +3757,19 @@ export default function Conversation({
           : action === "set"
             ? api.setPrivacy({ action: "set", patterns: parts.slice(1) })
             : api.getPrivacy();
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void request
         .then((res) => {
           const patterns = res?.forbidden_patterns || [];
-          const reply = !res?.ok
+          reply(!res?.ok
             ? (res?.error || "Could not update privacy.")
             : (patterns.length
               ? `Forbidden patterns:\n${patterns.map((p) => `- ${p}`).join("\n")}`
-              : "No forbidden patterns. Add one with /privacy add .env");
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: reply } },
-          ]);
+              : "No forbidden patterns. Add one with /privacy add .env"));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not update privacy." } },
-          ]);
-        });
+        .catch(() => reply("Could not update privacy."));
       return;
     }
     if (slash.kind === "model") {
