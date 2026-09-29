@@ -119,3 +119,16 @@ def test_search_files_ripgrep(monkeypatch):
         assert ok
         assert "subdir/b.py" in val
         assert "a.txt" not in val
+
+
+@pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+def test_search_files_clips_enormous_matching_lines(tmp_path):
+    # One minified or lockfile line must not fill the whole search result.
+    (tmp_path / "bundle.min.js").write_text("x" * 20000 + "needle" + "y" * 20000, encoding="utf-8")
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path / "state"))
+    cfg.repo = str(tmp_path)
+    s = ConversationalSession(cfg)
+    ok, status, val = s._do_search_files(PilotAction(kind="search_files", query="needle", arguments={}))
+    assert ok and status == "success"
+    assert "bundle.min.js" in val
+    assert max(len(line) for line in val.splitlines()) < 1000
