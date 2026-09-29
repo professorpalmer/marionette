@@ -234,3 +234,17 @@ it("Stage all runs once and stays disabled until git settles", async () => {
   await act(async () => { pending.resolve({ ok: true }); });
   expect(screen.getByRole("button", { name: /Stage all/i })).not.toBeDisabled();
 });
+it("a same-project session switch does not reload git status", async () => {
+  await mount();
+  vi.mocked(nativeGit.status).mockClear();
+  await act(async () => {
+    window.dispatchEvent(new CustomEvent("harness-config-changed", { detail: { repoChanged: false } }));
+    await vi.advanceTimersByTimeAsync(500);
+  });
+  expect(nativeGit.status).not.toHaveBeenCalled();
+  await act(async () => {
+    window.dispatchEvent(new Event("harness-config-changed"));
+    await vi.advanceTimersByTimeAsync(500);
+  });
+  expect(nativeGit.status).toHaveBeenCalled();
+});

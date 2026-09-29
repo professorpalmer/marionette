@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { configChangeKeepsRepo } from "../lib/configChangedEvent";
 import { ChevronRight, ChevronDown, File, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import {
@@ -293,7 +294,9 @@ export default function FileTree() {
     // Debounce: open_project + relocate_session both fire config-changed in
     // one turn; one refresh after the dust settles is enough.
     let debounceTimer: number | null = null;
-    const handleRefresh = () => {
+    const handleRefresh = (event: Event) => {
+      // Same-project session switch: the tree cannot have changed.
+      if (configChangeKeepsRepo(event)) return;
       if (debounceTimer != null) window.clearTimeout(debounceTimer);
       debounceTimer = window.setTimeout(() => {
         void loadFiles();
