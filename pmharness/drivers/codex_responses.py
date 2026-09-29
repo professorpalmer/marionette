@@ -22,6 +22,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import http_pool
 from .request_boundary import http_request
 from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
 from .reasoning_envelope import capture_reasoning, replay_reasoning
@@ -1392,7 +1393,7 @@ class CodexResponsesDriver(CacheRefreshDriver):
                     headers=headers,
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = _consume_codex_sse(
                         resp,
                         on_delta=on_delta,

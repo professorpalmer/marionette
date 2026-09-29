@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
+from . import http_pool
 from .request_boundary import http_request
 from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
@@ -1272,7 +1273,7 @@ class OpenAICompatDriver:
                         self,
                         url, data=data, headers=headers, method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    with http_pool.urlopen(req, timeout=self.timeout) as resp:
                         raw = json.loads(resp.read().decode("utf-8"))
                     last_err = None
                     break
@@ -1404,7 +1405,7 @@ class OpenAICompatDriver:
             try:
                 req = http_request(self, url, data=data, headers=headers, method="POST")
                 last_dispatched_body = dict(body)
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
@@ -1426,7 +1427,7 @@ class OpenAICompatDriver:
                         fallback_attempted = True
                         req = http_request(self, url, data=data, headers=headers, method="POST")
                         last_dispatched_body = dict(body)
-                        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        with http_pool.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
                         d2 = e2.read().decode("utf-8", "replace")[:500]
@@ -1463,7 +1464,7 @@ class OpenAICompatDriver:
                                 url, data=data, headers=headers, method="POST",
                             )
                             last_dispatched_body = dict(body)
-                            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                            with http_pool.urlopen(req, timeout=self.timeout) as resp:
                                 raw = json.loads(resp.read().decode("utf-8"))
                         except urllib.error.HTTPError as e2:
                             d2 = e2.read().decode("utf-8", "replace")[:500]
@@ -1673,7 +1674,7 @@ class OpenAICompatDriver:
                     _arm_post_answer_idle_timeout,
                 )
 
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     idle_armed = False
                     keepalives = 0
                     # Go can pause between reasoning and its real terminal.

@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 import copy
 
+from . import http_pool
 from .request_boundary import http_request
 from .reasoning_envelope import capture_reasoning, replay_reasoning
 from .cache_refresh import CacheRefreshDriver, cache_foreground
@@ -232,7 +233,7 @@ class AnthropicDriver(CacheRefreshDriver):
                         self,
                         url, data=data, headers=headers, method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    with http_pool.urlopen(req, timeout=self.timeout) as resp:
                         raw = json.loads(resp.read().decode("utf-8"))
                     break
                 except urllib.error.HTTPError as e:
@@ -513,7 +514,7 @@ class AnthropicDriver(CacheRefreshDriver):
                         self,
                         url, data=data, headers=headers, method="POST",
                     )
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    with http_pool.urlopen(req, timeout=self.timeout) as resp:
                         raw = json.loads(resp.read().decode("utf-8"))
                     break
                 except urllib.error.HTTPError as e:
@@ -638,7 +639,7 @@ class AnthropicDriver(CacheRefreshDriver):
 
         try:
             req = http_request(self, url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with http_pool.urlopen(req, timeout=self.timeout) as resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()
                     if not line or not line.startswith("data:"):
