@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
@@ -34,6 +34,9 @@ export default function PilotPicker({
   const [modelOpen, setModelOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [activeIdx, setActiveIdx] = useState(0);
+  const listRef = useRef<HTMLDivElement>(null);
+  const optionIdBase = useId();
   const [rerouteNotice, setRerouteNotice] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -212,6 +215,19 @@ export default function PilotPicker({
     () => organizePilotModels(models, current, query, labels),
     [models, current, query, labels],
   );
+  // Keyboard order matches paint order: current model first, then groups.
+  const flat = useMemo(
+    () => [...(organized.current ? [organized.current] : []), ...organized.groups.flatMap((g) => g.items)],
+    [organized],
+  );
+  const activeModel = flat[Math.min(activeIdx, flat.length - 1)];
+  useEffect(() => {
+    if (modelOpen) setActiveIdx(0);
+  }, [modelOpen, query]);
+  useEffect(() => {
+    listRef.current?.querySelector('[data-active="true"]')?.scrollIntoView?.({ block: "nearest" });
+  }, [activeModel]);
+  const optionId = (m: string) => `${optionIdBase}-${flat.indexOf(m)}`;
 
   if (!config) return null;
 
@@ -224,14 +240,20 @@ export default function PilotPicker({
 
   const renderRow = (m: string) => {
     const isSelected = m === current;
+    const isActive = m === activeModel;
     const label = labelOf(m);
     return (
       <div
         key={m}
+        id={optionId(m)}
+        role="option"
+        aria-selected={isSelected}
+        data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
-        className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] hover:bg-panel2 cursor-pointer transition select-none ${
-          isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
-        }`}
+        onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}
+        className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+          isActive ? "bg-panel2" : ""
+        } ${isSelected ? "text-accent font-medium" : "text-txt/90"}`}
       >
         <span className="min-w-0 flex-1 leading-snug" title={m}>{label}</span>
         {isSelected && <Check size={11} className="shrink-0 ml-2" />}
@@ -280,20 +302,37 @@ export default function PilotPicker({
                 ref={filterRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.stopPropagation()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (!flat.length) return;
+                    const step = e.key === "ArrowDown" ? 1 : -1;
+                    setActiveIdx((i) => (Math.min(i, flat.length - 1) + step + flat.length) % flat.length);
+                  } else if (e.key === "Enter" && activeModel) {
+                    e.preventDefault();
+                    void swap(activeModel);
+                  }
+                }}
+                role="combobox"
+                aria-expanded="true"
+                aria-controls={`${optionIdBase}-list`}
+                aria-activedescendant={activeModel ? optionId(activeModel) : undefined}
+                aria-label="Search models or providers"
                 placeholder="Search models or providers"
                 className="bg-transparent text-[11.5px] text-txt placeholder:text-faint outline-none w-full"
               />
             </div>
-            <div className="max-h-[280px] overflow-y-auto">
+            <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[280px] overflow-y-auto">
               {!hasRows ? (
                 <div className="px-3 py-2 text-[11px] text-faint">No matching models</div>
               ) : (
                 <>
                   {organized.current && renderRow(organized.current)}
                   {organized.groups.map((g) => (
-                    <div key={g.provider}>
-                      <div className="px-3 pt-1.5 pb-0.5 text-[10px] text-faint font-medium select-none">
+                    <div key={g.provider} role="group" aria-label={providerLabelOf(g.provider)}>
+                      <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-[10px] text-faint font-medium select-none">
                         {providerLabelOf(g.provider)}
                       </div>
                       {g.items.map((m) => renderRow(m))}
