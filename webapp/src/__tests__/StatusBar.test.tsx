@@ -17,6 +17,7 @@ vi.mock("../lib/api", () => ({
     getUsage: vi.fn(),
     getEconomics: vi.fn(),
     workspaces: vi.fn(),
+    getWorkspace: vi.fn().mockResolvedValue({ repo: "/repo", branch: "main", is_git: true, codegraph_status: "ready" }),
     getSessionState: vi.fn(),
     sessions: vi.fn(),
     pauseSessionGoal: vi.fn(),
@@ -778,4 +779,34 @@ it("does not show a session Retry banner for an unrelated boot-store failure", a
   fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "conversation" } });
   await waitFor(() => expect(screen.getAllByText(/33\.60/).length).toBeGreaterThan(0));
   expect(screen.queryAllByText(/Session usage partial \/ unavailable/)).toHaveLength(0);
+});
+
+describe("StatusBar branch label", () => {
+  const mockGetWorkspace = vi.mocked(api.getWorkspace);
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, runners: {} });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("reads the branch once per repo, not once per config object", async () => {
+    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
+    const config = { repo: "/a", driver: "x", reach: "cloud", budget: 1 } as never;
+    const { rerender } = render(<StatusBar {...statusBarProps} config={config} />);
+    expect(await screen.findByText("dev")).toBeTruthy();
+    for (let i = 0; i < 5; i += 1) {
+      rerender(<StatusBar {...statusBarProps} config={{ ...(config as object) } as never} />);
+    }
+    expect(mockGetWorkspace).toHaveBeenCalledTimes(1);
+    expect(api.workspaces).not.toHaveBeenCalled();
+  });
+
+  it("clears the branch when the new workspace is not a git repo", async () => {
+    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
+    const { rerender } = render(<StatusBar {...statusBarProps} config={{ repo: "/a" } as never} />);
+    expect(await screen.findByText("dev")).toBeTruthy();
+    mockGetWorkspace.mockResolvedValue({ repo: "/plain", branch: "", is_git: false, codegraph_status: "none" });
+    rerender(<StatusBar {...statusBarProps} config={{ repo: "/plain" } as never} />);
+    await waitFor(() => expect(screen.queryByText("dev")).toBeNull());
+  });
 });
