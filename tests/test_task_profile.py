@@ -238,3 +238,32 @@ def test_config_from_env_task_profile(monkeypatch, tmp_path):
     assert HarnessConfig.from_env().task_profile == "auto"
     monkeypatch.setenv("HARNESS_TASK_PROFILE", "deep")
     assert HarnessConfig.from_env().task_profile == "deep"
+
+
+def test_micro_first_turn_does_not_freeze_the_toolset(tmp_path, monkeypatch):
+    """A trivial opener must not hide orchestration tools for the rest of the chat.
+
+    The tools[] snapshot was keyed without the task profile, so a MICRO first
+    turn froze the 11-tool set and a later broad ask had no run_swarm.
+    """
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path / "repo"))
+    session = ConversationalSession(cfg)
+
+    assert session._resolve_task_profile_for_turn("typo in README.md") == MICRO
+    first = {t["function"]["name"] for t in session._build_visible_tools_schema()}
+    assert "run_swarm" not in first
+
+    session._resolve_task_profile_for_turn("audit every module in harness/ and refactor the duplicated helpers across the repo")
+    later = {t["function"]["name"] for t in session._build_visible_tools_schema()}
+    assert {"run_swarm", "run_parallel", "run_implement"} <= later
+
+
+def test_same_visible_shape_keeps_the_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path / "repo"))
+    session = ConversationalSession(cfg)
+    session._resolve_task_profile_for_turn("add OAuth support")
+    first = session._build_visible_tools_schema()
+    session._resolve_task_profile_for_turn("add retry logic to the uploader")
+    assert session._build_visible_tools_schema() is first

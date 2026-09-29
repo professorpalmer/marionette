@@ -228,6 +228,26 @@ describe("shared readiness copy", () => {
     expect(sharedReadinessNotice("No projects", null)).toBe("No projects");
   });
 
+  it("keeps panels on their own copy for a backend warning, not an outage", () => {
+    const warning = createOperationalDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "driver x needs attention",
+      severity: "warning",
+      retryable: true,
+    });
+    expect(panelNotice("Failed to get workspace files", warning)).toBe("Failed to get workspace files");
+    expect(sharedReadinessNotice("No projects", warning)).toBe("No projects");
+    const outage = createOperationalDiagnostic({
+      scope: "backend",
+      operation: "doctor",
+      summary: "Backend is not ready",
+      severity: "error",
+      retryable: true,
+    });
+    expect(panelNotice("Failed to get workspace files", outage)).toBe("Backend is not ready");
+  });
+
   it("lets a panel keep local operational copy unless a readiness root exists", () => {
     expect(panelNotice("Failed to get workspace files", null)).toBe("Failed to get workspace files");
     expect(panelNotice("Failed to get workspace files", desktopBridgeMissingDiagnostic())).toBe(

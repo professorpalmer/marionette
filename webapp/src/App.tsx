@@ -1,5 +1,5 @@
 import { JobMetadataOwner } from './lib/jobMetadataContext';
-import { configForActiveSession, sessionPilotFields, type SessionPilotFields } from './lib/sessionConfig';
+import { configForActiveSession, knownSessionPilot, rememberSessionPilot, sessionPilotFields } from './lib/sessionConfig';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
 import { api, type Config } from "./lib/api";
@@ -90,7 +90,6 @@ export default function App() {
   const pilotSetupRequest = useRef(0);
   const pilotSwapTails = useRef(new Map<string, Promise<unknown>>());
   const configRequest = useRef({ sessionId: activeSessionId, generation: 0 });
-  const knownPilots = useRef(new Map<string, SessionPilotFields>());
   const publishPendingPilotSetup = useCallback((next: Extract<PilotSetupGate, { kind: "awaiting_session" }> | undefined) => {
     pendingPilotSetupRef.current = next;
     setPendingPilotSetup(next);
@@ -107,8 +106,8 @@ export default function App() {
       if (sessionPilotSetupsRef.current[sessionId]?.requestId === requestId) {
         if (activeSessionIdRef.current === sessionId) {
           configRequest.current.generation++;
-          const acknowledged = { ...knownPilots.current.get(sessionId), driver: model };
-          knownPilots.current.set(sessionId, acknowledged);
+          const acknowledged = { ...knownSessionPilot(sessionId), driver: model };
+          rememberSessionPilot(sessionId, acknowledged);
           setConfig(current => {
             const active = configForActiveSession(current, sessionId, acknowledged);
             return active ? { ...active, ...acknowledged, session_id: sessionId } : current;
@@ -152,11 +151,8 @@ export default function App() {
     configRequest.current = { sessionId: activeSessionId, generation: configRequest.current.generation + 1 };
   }
   const answered = sessionPilotFields(receivedConfig);
-  if (answered && receivedConfig?.session_id) knownPilots.current.set(receivedConfig.session_id, answered);
-  const config = configForActiveSession(
-    receivedConfig, activeSessionId,
-    activeSessionId ? knownPilots.current.get(activeSessionId) : null,
-  );
+  if (answered && receivedConfig?.session_id) rememberSessionPilot(receivedConfig.session_id, answered);
+  const config = configForActiveSession(receivedConfig, activeSessionId, knownSessionPilot(activeSessionId));
   const handleSessionChange = useCallback((id: string | null, expectedPreviousId?: string) => {
     if (expectedPreviousId && activeSessionIdRef.current !== expectedPreviousId) return;
     if (id && pendingPilotSetupRef.current) {

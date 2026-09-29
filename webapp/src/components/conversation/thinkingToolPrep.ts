@@ -8,8 +8,14 @@ export function newThinkingId(): string {
   return `th-${Date.now().toString(36)}-${thinkingIdSeq}`;
 }
 
-/** Drop streaming:true from live reasoning rows once the phase ends. */
+/**
+ * Drop streaming:true from live reasoning rows once the phase ends. Returns
+ * the same array when nothing is streaming: this runs on every plain
+ * message_delta, and a fresh array there made React re-render the whole
+ * transcript per token on top of the typewriter's own commit.
+ */
 export function finalizeStreamingThinking(items: Item[]): Item[] {
+  if (!items.some((it) => it.kind === "thinking" && it.streaming)) return items;
   const now = Date.now();
   return items.map((it) => {
     if (it.kind !== "thinking" || !it.streaming) return it;

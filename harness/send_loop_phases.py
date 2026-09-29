@@ -1711,16 +1711,11 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         last_content_kind = "prose"
         ans_meta = dict(meta)
         ans_meta["channel"] = "answer"
+        # Identity-less deltas (most providers) batch under ("answer", "") like
+        # identified ones; one frame per token filled the 512-frame replay
+        # ring in seconds. The payload carries no stream_id, so the renderer
+        # keeps its legacy path; the first frame still goes out at once.
         sid = str(ans_meta.get("stream_id") or "").strip()
-        if not sid:
-            for ev in _flush_all():
-                yield ev
-            data = {"text": clean, "channel": "answer"}
-            # Preserve output_index when present even without stream_id.
-            if "output_index" in ans_meta:
-                data["output_index"] = ans_meta["output_index"]
-            yield ConvEvent("message_delta", data)
-            return
         flushed = answer_batch.push(clean, ans_meta, default_channel="answer")
         for ev in _emit_push_or_first_frame(
             answer_batch,
@@ -1741,11 +1736,6 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         r_meta = dict(meta)
         r_meta["channel"] = "reasoning"
         sid = str(r_meta.get("stream_id") or "").strip()
-        if not sid:
-            for ev in _flush_all():
-                yield ev
-            yield ConvEvent("thinking", {"text": text, "delta": True})
-            return
         flushed = reasoning_batch.push(
             text, r_meta, default_channel="reasoning",
         )

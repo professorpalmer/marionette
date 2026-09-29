@@ -5,6 +5,8 @@ from __future__ import annotations
 import queue
 import time
 
+import pytest
+
 from harness.api.sse import SseEventRing, _SSE_RING_CAP
 from harness.send_loop_phases import drain_stream_queue
 from harness.stream_identity import (
@@ -642,3 +644,25 @@ def test_drain_dual_output_identities_each_first_frame(monkeypatch):
     assert not (extras[0].data or {}).get("stream_id")
     assert streamed == "OneTwo more"
     assert got is resp
+
+
+@pytest.mark.parametrize("kind,event_kind", [("delta", "message_delta"), ("reasoning", "thinking")])
+def test_identity_less_deltas_batch_too(kind, event_kind):
+    """Most providers send no stream_id; one frame per token filled the replay ring."""
+    q: queue.Queue = queue.Queue()
+    words = [f"w{i} " for i in range(520)]
+    for w in words:
+        q.put((kind, w))
+    q.put(("done", type("R", (), {"meta": {}})()))
+    events = []
+    gen = drain_stream_queue(q)
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration:
+        pass
+    frames = [e for e in events if e.kind == event_kind]
+    assert len(frames) < 80
+    assert frames[0].data["text"] == words[0]  # the first token still paints at once
+    assert "".join(f.data["text"] for f in frames) == "".join(words)
+    assert all("stream_id" not in f.data for f in frames)

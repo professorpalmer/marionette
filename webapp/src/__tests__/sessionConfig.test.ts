@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Config } from "../lib/api";
-import { configForActiveSession, pickerConfig, sessionPilotFields } from "../lib/sessionConfig";
+import { configForActiveSession, knownSessionPilot, pickerConfig, rememberSessionPilot, seedSessionPilots, sessionPilotFields } from "../lib/sessionConfig";
 
 const cfg = (sessionId: string): Config => ({
   session_id: sessionId,
@@ -63,5 +63,26 @@ describe("configForActiveSession", () => {
 
   it("stays blank only when nothing has loaded yet", () => {
     expect(configForActiveSession(null, "sess-home-new")).toBeNull();
+  });
+});
+
+describe("known session pilots", () => {
+  it("seeds a never-opened session from the session list", () => {
+    seedSessionPilots([{ id: "seed-a", pilot_preferences: { driver: "anthropic:claude-opus-4-8", reasoning_effort: "high" } }]);
+    const visible = configForActiveSession(cfg("sess-other"), "seed-a", knownSessionPilot("seed-a"));
+    expect(visible?.driver).toBe("anthropic:claude-opus-4-8");
+    expect(visible?.reasoning_effort).toBe("high");
+  });
+
+  it("never lets a list row overwrite a fresher config answer", () => {
+    rememberSessionPilot("seed-b", { driver: "openrouter:moonshotai/kimi-k3" });
+    seedSessionPilots([{ id: "seed-b", pilot_preferences: { driver: "anthropic:claude-opus-4-8" } }]);
+    expect(knownSessionPilot("seed-b")?.driver).toBe("openrouter:moonshotai/kimi-k3");
+  });
+
+  it("ignores rows without a stored driver", () => {
+    seedSessionPilots([{ id: "seed-c" }, { id: "seed-d", pilot_preferences: {} }]);
+    expect(knownSessionPilot("seed-c")).toBeNull();
+    expect(knownSessionPilot("seed-d")).toBeNull();
   });
 });

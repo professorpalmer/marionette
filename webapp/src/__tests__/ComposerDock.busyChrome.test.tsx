@@ -219,3 +219,10 @@ describe("ComposerDock action preservation", () => {
     expect(onSetAuto).toHaveBeenCalledWith(false);
   });
 });
+
+it("says why Send is disabled while the session loads", () => {
+  renderBusyDock("hello", { composerBusy: false, transcriptStale: true });
+  const send = screen.getByRole("button", { name: "Send", exact: true });
+  expect(send).toBeDisabled();
+  expect(send).toHaveAttribute("title", "Loading this session…");
+});

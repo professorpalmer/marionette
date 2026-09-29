@@ -588,7 +588,7 @@ export type Workspace = {
 };
 export type SessionForkPreview = { revision: string; boundaries: { event_id: number; label: string; role: string }[] };
 
-export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string };
+export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string; pilot_preferences?: { driver?: string; reasoning_effort?: ReasoningEffort; swarm_reasoning_effort?: ReasoningEffort } };
 
 export type AdviceReceipt = {
   session_id: string;

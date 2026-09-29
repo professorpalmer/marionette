@@ -530,10 +530,17 @@ export function resolveRepaired(
   return sameRoot(current, repaired) ? null : current;
 }
 
+/**
+ * A readiness root replaces every panel's local copy, so only a real outage
+ * qualifies: a missing desktop bridge, or a backend error. A backend warning
+ * (e.g. one driver needs attention) stays in the header, not in every pane.
+ */
 export function isReadinessDiagnostic(
   diag: OperationalDiagnostic | null | undefined,
 ): boolean {
-  return Boolean(diag && (diag.scope === "desktop_bridge" || diag.scope === "backend"));
+  if (!diag) return false;
+  if (diag.scope === "desktop_bridge") return true;
+  return diag.scope === "backend" && diag.severity === "error";
 }
 
 /** Shared readiness surfaces reuse one root summary instead of inventing local causes. */
