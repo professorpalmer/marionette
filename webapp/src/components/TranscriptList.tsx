@@ -894,13 +894,20 @@ function groupedItemPaints(it: GroupedItem): boolean {
 
 /** Count transcript rows that would actually mount — excludes Working... crumbs
  *  and empty assistant pollution so TranscriptEmptyState matches the feed. */
+// Keyed on array identity: transcript arrays are replaced, never mutated, and
+// parents that re-render per keystroke call this for every retained pane.
+const paintableCountCache = new WeakMap<readonly Item[], number>();
+
 export function countPaintableTranscriptItems(items: Item[]): number {
+  const cached = paintableCountCache.get(items);
+  if (cached !== undefined) return cached;
   const intermediateItems = collectIntermediateAssistantItems(items, false);
   const grouped = groupAgentActivity(items, intermediateItems);
   let count = 0;
   for (const row of grouped) {
     if (groupedItemPaints(row)) count += 1;
   }
+  paintableCountCache.set(items, count);
   return count;
 }
 
