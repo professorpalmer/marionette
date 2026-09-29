@@ -86,3 +86,24 @@ def test_marker_and_reuse_logic(tmp_path, monkeypatch, capsys):
     assert m2["port"] != stale_port
     assert m2["port"] > 0
     assert m2["pid"] == os.getpid()
+
+
+def test_reuse_probe_treats_a_slow_live_backend_as_running(tmp_path, monkeypatch, capsys):
+    # A busy backend that accepts the connection but answers slowly must be
+    # reused, not treated as a stale marker (binding its port would fail).
+    import socket
+    import urllib.request
+
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    with open(os.path.join(str(tmp_path), "backend.json"), "w", encoding="utf-8") as f:
+        json.dump({"port": 59999, "pid": os.getpid()}, f)
+    probed = []
+
+    def slow(url, timeout=None):
+        probed.append(url)
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", slow)
+    serve(host="127.0.0.1", port=59999, force=False)
+    assert probed and probed[0].endswith("/api/endpoint")
+    assert "already running" in capsys.readouterr().out

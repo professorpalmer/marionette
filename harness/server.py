@@ -3557,6 +3557,7 @@ def boot_mcp_servers(mcp: Any = None, diag: Any = None) -> None:
 def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
           lifetime_receipt: str | None = None) -> None:
     import errno
+    import socket
     import sys
     import urllib.request
     import urllib.error
@@ -3594,7 +3595,10 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
                 if m and isinstance(m, dict) and m.get("port"):
                     m_port = m["port"]
                     try:
-                        url = f"http://127.0.0.1:{m_port}/api/config"
+                        # /api/endpoint is the cheap handshake; /api/config takes
+                        # the swap lock and could outlast the probe on a busy
+                        # machine, so a live backend read as a stale marker.
+                        url = f"http://127.0.0.1:{m_port}/api/endpoint"
                         with urllib.request.urlopen(url, timeout=2.0) as resp:
                             if resp.status == 200:
                                 print(f"pm-harness already running at http://{host}:{m_port} — reusing")
@@ -3607,6 +3611,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
                         if getattr(he, "code", 0):
                             print(f"pm-harness already running at http://{host}:{m_port} — reusing")
                             return
+                    except socket.timeout:
+                        # Read timeout (a connect timeout arrives wrapped in
+                        # URLError): something live holds the port and is only
+                        # slow; binding it would just fail. Reuse it.
+                        print(f"pm-harness already running at http://{host}:{m_port} — reusing")
+                        return
                     except Exception:
                         # Connection refused / unreachable -> stale marker, fall
                         # through to bind a fresh server below.
