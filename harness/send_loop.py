@@ -1305,6 +1305,7 @@ class SendLoopMixin:
         post_swarm_nudge_active = False
 
         consecutive_non_productive = 0
+        envelope_retried = False
         loop_exit_cause = None
         last_classified = None
         # AUTO-VERIFY LOOP: after a turn that edited files, run a fast, scoped
@@ -1585,12 +1586,21 @@ class SendLoopMixin:
                     if synthesis_nudge_active:
                         from .pilot import PilotTurn
                         turn = PilotTurn(say="", actions=[])
+                    elif envelope_retried:
+                        # A second invalid envelope in a row: another identical
+                        # correction just buys another paid call. End the turn.
+                        loop_exit_cause = TERMINAL_EMPTY_LOOP
+                        break
                     else:
-                        # One lenient retry: tell the pilot to fix its envelope.
+                        # One lenient retry. Keep the rejected reply in history
+                        # so the pilot can see what it is being asked to fix.
+                        envelope_retried = True
+                        self._history.append({"role": "assistant", "content": resp.text})
                         self._history.append({"role": "user",
                             "content": f"(system) Your last reply was not valid. {e}. "
                                        f"Reply with the JSON envelope {{\"say\":...,\"actions\":[...]}}."})
                         continue
+                envelope_retried = False
 
             turn, tool_calls = _synthesis_only_turn(
                 synthesis_nudge_active, turn, tool_calls,
