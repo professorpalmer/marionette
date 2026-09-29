@@ -6,22 +6,22 @@ import type { TranscriptViewportHandle } from "../components/conversation/sessio
 import { expect, it } from "vitest";
 import { captureSessionViewport, sessionViewportOffset } from "../components/conversation/sessionViewport";
 it("restores an interior row after variable heights above it change", () => {
- const saved = captureSessionViewport(false, 13779, [{key:"row",start:13700,end:14100}]);
+ const saved = captureSessionViewport(false, 13779, () => [{key:"row",start:13700,end:14100}]);
  expect(saved).toEqual({kind:"anchor",key:"row",offset:79,scrollTop:13779});
  expect(sessionViewportOffset(saved, 15000, 18000, 600, false)).toBe(15079);
 });
 it("tail mode follows new content", () => {
- const saved = captureSessionViewport(true, 100, []);
+ const saved = captureSessionViewport(true, 100, () => { throw new Error("pinned capture must not measure rows"); });
  expect(sessionViewportOffset(saved, null, 2000, 600, false)).toBe(1400);
 });
 it("latest user gesture cancels both anchor and tail restoration", () => {
  for (const pinned of [true,false]) {
-  const saved = captureSessionViewport(pinned, 100, [{key:"row",start:80,end:200}]);
+  const saved = captureSessionViewport(pinned, 100, () => [{key:"row",start:80,end:200}]);
   expect(sessionViewportOffset(saved, 500, 2000, 600, true)).toBeNull();
  }
 });
 it("falls back to the saved pixel position if the anchor was deleted", () => {
- const saved = captureSessionViewport(false, 100, [{key:"row",start:80,end:200}]);
+ const saved = captureSessionViewport(false, 100, () => [{key:"row",start:80,end:200}]);
  expect(sessionViewportOffset(saved, null, 2000, 600, false)).toBe(100);
 });
 
@@ -50,8 +50,13 @@ it("mounted transcript exposes anchor capture and restores against changed row g
  Object.defineProperty(container,"scrollHeight",{value:2000,configurable:true});
  Object.defineProperty(container,"clientHeight",{value:600,configurable:true});
  container.scrollTop = 100;
- row.getBoundingClientRect = () => new DOMRect(0,-20,500,300);
+ let layoutReads = 0;
+ row.getBoundingClientRect = () => { layoutReads += 1; return new DOMRect(0,-20,500,300); };
+ // Pinned to the tail (every streamed token while following): no layout reads.
+ expect(viewportRef.current.capture(true)).toEqual({kind:"tail"});
+ expect(layoutReads).toBe(0);
  const saved = viewportRef.current.capture(false);
+ expect(layoutReads).toBe(1);
  expect(saved.kind).toBe("anchor");
  row.getBoundingClientRect = () => new DOMRect(0,380,500,300);
  viewportRef.current.restore(saved);

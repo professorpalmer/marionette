@@ -1647,14 +1647,17 @@ export const TranscriptList = memo(function TranscriptList({
       const el = scrollContainerRef.current;
       if (!el) return [];
       const top = el.getBoundingClientRect().top;
-      return Array.from(el.querySelectorAll<HTMLElement>("[data-viewport-key]")).map((row) => ({
-        key: row.dataset.viewportKey ?? "",
-        start: row.getBoundingClientRect().top - top + el.scrollTop,
-        end: row.getBoundingClientRect().bottom - top + el.scrollTop,
-      }));
+      return Array.from(el.querySelectorAll<HTMLElement>("[data-viewport-key]")).map((row) => {
+        const box = row.getBoundingClientRect();
+        return {
+          key: row.dataset.viewportKey ?? "",
+          start: box.top - top + el.scrollTop,
+          end: box.bottom - top + el.scrollTop,
+        };
+      });
     };
     viewportRef.current = {
-      capture: (pinned) => captureSessionViewport(pinned, scrollContainerRef.current?.scrollTop ?? 0, rows()),
+      capture: (pinned) => captureSessionViewport(pinned, scrollContainerRef.current?.scrollTop ?? 0, rows),
       restore: (saved) => {
         const el = scrollContainerRef.current;
         if (!el) return;
