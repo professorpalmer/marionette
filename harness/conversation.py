@@ -651,6 +651,10 @@ class ConvEvent:
     data: dict = field(default_factory=dict)
 
 
+# Stands in for a CodeGraph slice identical to one already in history.
+CG_SECTION_UNCHANGED = "[CodeGraph context unchanged from the previous turn -- see above]"
+
+
 class ConversationalSession(
     PromptQueueMixin,
     SteerMixin,
@@ -2958,7 +2962,17 @@ class ConversationalSession(
 
             query = working_query(self, user_message)
             if self._cg_cache_key == query:
-                return self._cg_cache_section
+                cached = self._cg_cache_section
+                # History is append-only, so a repeat of the same ask (retry,
+                # Continue) would stack another identical ~4.7K-char copy that
+                # every later call re-sends. Point at the copy still in
+                # history; re-send it only once compaction has dropped it.
+                if cached and any(
+                    isinstance(m.get("content"), str) and cached in m["content"]
+                    for m in self._history if m.get("role") == "user"
+                ):
+                    return CG_SECTION_UNCHANGED
+                return cached
             cg_slice = codegraph_context(task=query, cwd=self.config.repo)
             if cg_slice:
                 cg_section, symbols = wrap_slice(cg_slice)

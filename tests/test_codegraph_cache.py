@@ -81,3 +81,25 @@ def test_codegraph_cache_recomputes_for_new_message(monkeypatch):
     step_get("message one")
     step_get("message two")
     assert calls["n"] == 2, "a new message must recompute the slice"
+
+
+def test_repeated_ask_points_at_the_codegraph_slice_already_in_history(monkeypatch):
+    """A retry or Continue with the same ask must not stack another ~4.7K-char slice."""
+    from harness.conversation import CG_SECTION_UNCHANGED
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    s._task_profile = "standard"
+    import puppetmaster.codegraph as cg
+    monkeypatch.setattr(cg, "codegraph_context", lambda task, cwd, **kw: "- **sym_a** something")
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+
+    first = s._build_turn_cg_section("refactor the uploader")
+    assert first and first != CG_SECTION_UNCHANGED
+    s._history.append({"role": "user", "content": "refactor the uploader\n\n" + first})
+    assert s._build_turn_cg_section("refactor the uploader") == CG_SECTION_UNCHANGED
+
+    # Once compaction drops the copy, the full slice is sent again.
+    s._history = [m for m in s._history if first not in (m.get("content") or "")]
+    assert s._build_turn_cg_section("refactor the uploader") == first
