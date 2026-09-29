@@ -35,6 +35,7 @@ from .provenance_sanitize import artifact_worker_provenance, bound_live_dirty_pr
 _COMMAND_KINDS = ("run_command", "run_command_batch")
 _COMMAND_ROLES = ("command", "command_batch")
 _COMMAND_TERMINAL = frozenset({"completed", "failed", "cancelled", "timeout", "truncated"})
+TERMINAL_STATUSES = _COMMAND_TERMINAL
 
 # Bound provider history per session; command identities must survive action
 # replay, so unresolved command rows are never pruned. Terminal command
