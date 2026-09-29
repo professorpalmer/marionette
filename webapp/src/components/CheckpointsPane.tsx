@@ -7,7 +7,8 @@ import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
 export default function CheckpointsPane() {
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Not loaded yet: the first paint shows Loading, not the empty state.
+  const [isLoading, setIsLoading] = useState(true);
   const [isRestoring, setIsRestoring] = useState<string | null>(null);
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [isCreatingSnapshot, setIsCreatingSnapshot] = useState(false);

@@ -143,3 +143,11 @@ describe("CheckpointsPane startup race", () => {
     expect(await screen.findByText(/briefly unavailable/i, {}, { timeout: 8000 })).toBeTruthy();
   }, 10000);
 });
+
+it("paints Loading, never the empty state, before the first load", async () => {
+  // The first paint is the pre-effect state; server rendering runs no effects.
+  const { renderToString } = await import("react-dom/server");
+  const html = renderToString(<CheckpointsPane />);
+  expect(html).not.toContain("No restore points");
+  expect(html).toContain("Loading restore points");
+});
