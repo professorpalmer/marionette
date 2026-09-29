@@ -19,7 +19,7 @@ export type ProviderConfigModalProps = {
   manual?: boolean;
   provider?: Partial<ProviderInfo> | null;
   /** Add-provider choices: the backend stores keys for known providers only. */
-  providerNames?: string[];
+  providerChoices?: { name: string; label: string }[];
   busy?: boolean;
   onClose: () => void;
   onSubmit: (changed: Partial<ProviderConfigValues>) => void | Promise<void>;
@@ -29,7 +29,7 @@ export default function ProviderConfigModal({
   open,
   manual = false,
   provider = null,
-  providerNames = [],
+  providerChoices = [],
   busy = false,
   onClose,
   onSubmit,
@@ -145,7 +145,7 @@ export default function ProviderConfigModal({
                         className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] font-mono focus:outline-none focus:border-accent disabled:opacity-50"
                       >
                         <option value="">Choose a provider</option>
-                        {providerNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                        {providerChoices.map((c) => <option key={c.name} value={c.name}>{c.label}</option>)}
                       </select>
                     ) : (
                     <input

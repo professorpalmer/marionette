@@ -1572,7 +1572,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             open
             manual={providerConfig.manual}
             provider={providerConfig.manual ? null : providerConfig.provider}
-            providerNames={providers.map((p) => p.name)}
+            providerChoices={providers.map((p) => ({ name: p.name, label: p.display_name || p.name }))}
             busy={!!provBusy}
             onClose={() => setProviderConfig(null)}
             onSubmit={handleProviderConfigSubmit}

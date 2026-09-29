@@ -109,7 +109,8 @@ describe("ProviderConfigModal", () => {
   });
 
   it("adds a key for a known provider chosen from a list", async () => {
-    const { onSubmit } = renderModal({ manual: true, provider: null, providerNames: ["openai", "openrouter"] });
+    const { onSubmit } = renderModal({ manual: true, provider: null, providerChoices: [{ name: "openai", label: "OpenAI" }, { name: "openrouter", label: "OpenRouter" }] });
+    expect(screen.getByRole("option", { name: "OpenAI" })).toBeTruthy();
     const name = await screen.findByTestId("provider-config-field-name");
     expect(name.tagName).toBe("SELECT");
     expect(screen.queryByTestId("provider-config-field-base_url")).toBeNull();
