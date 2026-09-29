@@ -110,3 +110,20 @@ it.each([360, 640, 1024])("keeps desktop panel management and Settings reachable
   expect(editor).toHaveValue("unsent desktop draft");
   expect(localStorage.getItem("pmharness.board.openCards")).toBe(storedCards);
 });
+
+it("the Add panel menu takes focus and moves with the arrow keys", async () => {
+  resize(1024);
+  // Let a prior test's queued panel-focus frame drain before measuring focus.
+  await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); });
+  await act(async () => { render(<App />); });
+  const trigger = screen.getByRole("button", { name: "Add panel" });
+  trigger.focus();
+  fireEvent.click(trigger);
+  const menu = screen.getByRole("menu", { name: "Add panel" });
+  const items = within(menu).getAllByRole("menuitem");
+  await waitFor(() => expect(items[0]).toHaveFocus());
+  fireEvent.keyDown(items[0], { key: "ArrowDown" });
+  expect(items[1]).toHaveFocus();
+  fireEvent.keyDown(items[1], { key: "End" });
+  expect(items[items.length - 1]).toHaveFocus();
+});

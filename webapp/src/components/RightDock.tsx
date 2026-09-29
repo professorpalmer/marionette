@@ -20,6 +20,7 @@ import {
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
+import { moveMenuFocus } from "../lib/overlayFocus";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -108,6 +109,7 @@ export default function RightDock({
   const [menuVersion, setMenuVersion] = useState(0);
   const addTriggerRef = useRef<HTMLButtonElement | null>(null);
   const addMenuRef = useRef<HTMLDivElement | null>(null);
+  const addMenuListRef = useRef<HTMLDivElement | null>(null);
   const [activitySessionId, setActivitySessionId] = useState("");
   const [scopeEpoch, setScopeEpoch] = useState(0);
   const activityEpoch = useRef(0);
@@ -133,6 +135,7 @@ export default function RightDock({
 
   useEffect(() => {
     if (!addMenuOpen) return;
+    addMenuListRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     const closeOnOutsideClick = (event: MouseEvent) => {
       if (event.target instanceof Node && addMenuRef.current?.contains(event.target)) return;
       setAddMenuOpen(false);
@@ -240,7 +243,14 @@ export default function RightDock({
             <Plus size={15} strokeWidth={1.75} />
           </button>
           {addMenuOpen && (
-            <div key={menuVersion} role="menu" aria-label="Add panel" className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0">
+            <div
+              key={menuVersion}
+              ref={addMenuListRef}
+              role="menu"
+              aria-label="Add panel"
+              className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0"
+              onKeyDown={(e) => { if (moveMenuFocus(addMenuListRef.current, e.key)) e.preventDefault(); }}
+            >
               <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">Add panel</div>
               {(() => {
                 const stored = readStoredList("pmharness.tabOrder");
