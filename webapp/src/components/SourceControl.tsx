@@ -520,17 +520,19 @@ export default function SourceControl() {
                       isSelected ? "bg-panel2/80 text-accent" : "text-txt"
                     }`}
                   >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {/* A real button so the row opens from the keyboard; its click
+                        bubbles to the row handler. */}
+                    <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-0 p-0 text-inherit rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent">
                       <FileCode size={12} className="text-muted shrink-0" />
                       <span className="text-[11px] truncate" title={file.path}>
                         {file.path}
                       </span>
-                    </div>
+                    </button>
                     <div className="flex items-center gap-1.5">
                       {!readOnly && (
                       <button
                         onClick={(e) => handleUnstageFile(e, file.path)}
-                        className="opacity-0 group-hover:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-risk"
+                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-risk"
                         title="Unstage file"
                       >
                         <Minus size={10} />
@@ -579,17 +581,19 @@ export default function SourceControl() {
                       isSelected ? "bg-panel2/80 text-accent" : "text-txt"
                     }`}
                   >
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {/* A real button so the row opens from the keyboard; its click
+                        bubbles to the row handler. */}
+                    <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-0 p-0 text-inherit rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent">
                       <FileCode size={12} className="text-muted shrink-0" />
                       <span className="text-[11px] truncate" title={file.path}>
                         {file.path}
                       </span>
-                    </div>
+                    </button>
                     <div className="flex items-center gap-1.5">
                       {!readOnly && (
                       <button
                         onClick={(e) => handleStageFile(e, file.path)}
-                        className="opacity-0 group-hover:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-good"
+                        className="opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 transition p-0.5 hover:bg-panel3 border border-edge/30 rounded text-muted hover:text-good"
                         title="Stage file"
                       >
                         <Plus size={10} />
