@@ -10,17 +10,21 @@ export default function PilotPicker({
   config,
   sessionId = "",
   pendingModel,
+  pendingReasoning,
   setupNotice,
   modelSelectionDisabled = false,
   onPendingModelChange,
+  onPendingReasoningChange,
   onSessionModelChange,
 }: {
   config: Config | null;
   sessionId?: string;
   pendingModel?: string;
+  pendingReasoning?: ReasoningEffort;
   setupNotice?: string;
   modelSelectionDisabled?: boolean;
   onPendingModelChange?: (model: string) => void;
+  onPendingReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
   const [models, setModels] = useState<string[]>([]);
@@ -55,7 +59,7 @@ export default function PilotPicker({
     if (!config) return;
     const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
     setModels(nextModels);
-    setReasoning(config.reasoning_effort || "low");
+    setReasoning(!sessionId && pendingReasoning ? pendingReasoning : config.reasoning_effort || "low");
     setCurrent(!sessionId && pendingModel ? pendingModel : config.driver);
     if (config.driver && !nextModels.includes(config.driver)) {
       const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
@@ -64,7 +68,7 @@ export default function PilotPicker({
     } else {
       setRerouteNotice(null);
     }
-  }, [config, pendingModel, sessionId]);
+  }, [config, pendingModel, pendingReasoning, sessionId]);
 
   useEffect(() => {
     const handleOpen = () => setModelOpen(true);
@@ -159,7 +163,14 @@ export default function PilotPicker({
   };
 
   const setReasoningEffort = async (level: ReasoningEffort) => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      // No session yet: stage the level with the pending model; App applies
+      // both when the first send creates the session.
+      setReasoning(level);
+      setReasonOpen(false);
+      onPendingReasoningChange?.(level, current);
+      return;
+    }
     const generation = ++reasoningOperation.current;
     const prev = reasoning;
     setReasoning(level);

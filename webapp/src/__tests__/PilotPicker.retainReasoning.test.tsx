@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import PilotPicker from "../components/PilotPicker";
 import { api } from "../lib/api";
@@ -138,6 +138,22 @@ describe("PilotPicker initial session model", () => {
 
     expect(onPendingModelChange).toHaveBeenCalledExactlyOnceWith("local:mlx-community/Bonsai2-27B");
     expect(api.swapPilot).not.toHaveBeenCalled();
+  });
+
+  it("stages a reasoning level chosen before a session exists", () => {
+    const onPendingReasoningChange = vi.fn();
+    const { rerender } = render(<PilotPicker config={sonnetConfig} onPendingReasoningChange={onPendingReasoningChange} />);
+
+    fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Reasoning effort picker" })).getByText("High"));
+
+    expect(onPendingReasoningChange).toHaveBeenCalledExactlyOnceWith("high", "anthropic:claude-sonnet-4-6");
+    expect(screen.getByTitle("Reasoning effort (High)")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Reasoning effort picker" })).toBeNull();
+    expect(api.setPilotPreferences).not.toHaveBeenCalled();
+
+    rerender(<PilotPicker config={{ ...sonnetConfig }} pendingReasoning="high" onPendingReasoningChange={onPendingReasoningChange} />);
+    expect(screen.getByTitle("Reasoning effort (High)")).toBeInTheDocument();
   });
 
   it("keeps existing-session selection session scoped", async () => {

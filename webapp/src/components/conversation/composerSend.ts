@@ -5,9 +5,10 @@
 import { inputFailureMessage } from "../../lib/inputFailure";
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
 import { isPilotMouthBusy } from "./runnersBusy";
+import type { ReasoningEffort } from "../../lib/api";
 
 export type PilotSetupGate =
-  | { kind: "awaiting_session"; model: string; requestId: number }
+  | { kind: "awaiting_session"; model: string; reasoning?: ReasoningEffort; requestId: number }
   | { kind: "binding"; model: string; sessionId: string; requestId: number }
   | { kind: "failed"; model: string; sessionId: string; requestId: number }
   | { kind: "ready"; model: string; sessionId: string; requestId: number };

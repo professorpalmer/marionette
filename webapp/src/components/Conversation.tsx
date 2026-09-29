@@ -5,7 +5,7 @@ import { imagePath, nativeFs } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
-import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ServerQueueItem } from "../lib/api";
+import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ReasoningEffort, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import SessionToolsPanel, { type SessionToolsView } from "./conversation/SessionToolsPanel";
@@ -272,9 +272,11 @@ export default function Conversation({
   onJobChange,
   pilotSetup,
   pendingPilotModel,
+  pendingPilotReasoning,
   pilotSetupNotice,
   pilotSelectionDisabled,
   onPendingPilotModelChange,
+  onPendingPilotReasoningChange,
   onSessionPilotModelChange,
 }: {
   config: Config | null;
@@ -283,9 +285,11 @@ export default function Conversation({
   onJobChange: () => void;
   pilotSetup?: PilotSetupGate;
   pendingPilotModel?: string;
+  pendingPilotReasoning?: ReasoningEffort;
   pilotSetupNotice?: string;
   pilotSelectionDisabled?: boolean;
   onPendingPilotModelChange?: (model: string) => void;
+  onPendingPilotReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionPilotModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
   const pilotSetupRef = useRef(pilotSetup);
@@ -4389,9 +4393,11 @@ export default function Conversation({
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
         pendingPilotModel={pendingPilotModel}
+        pendingPilotReasoning={pendingPilotReasoning}
         pilotSetupNotice={pilotSetupNotice}
         pilotSelectionDisabled={pilotSelectionDisabled}
         onPendingPilotModelChange={onPendingPilotModelChange}
+        onPendingPilotReasoningChange={onPendingPilotReasoningChange}
         onSessionPilotModelChange={onSessionPilotModelChange}
         queueLoadError={queueWriteError || queueLoadError}
         attachedDocuments={attachedDocuments}

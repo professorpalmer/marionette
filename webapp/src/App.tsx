@@ -2,7 +2,7 @@ import { JobMetadataOwner } from './lib/jobMetadataContext';
 import { configForActiveSession, knownSessionPilot, rememberSessionPilot, sessionPilotFields } from './lib/sessionConfig';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { setSettingsOverlayOpen } from "./lib/settingsOverlay";
-import { api, type Config } from "./lib/api";
+import { api, type Config, type ReasoningEffort } from "./lib/api";
 import { subscribeDocumentMotionPolicy } from "./lib/motionPolicy";
 import { malformedBackendDiagnostic, parseBackendDiagnostic } from "./lib/operationalDiagnostic";
 import { clearDiagnostic, publishDiagnostic } from "./lib/operationalDiagnosticBus";
@@ -99,14 +99,27 @@ export default function App() {
     sessionPilotSetupsRef.current = updated;
     setSessionPilotSetups(updated);
   }, []);
-  const requestSessionPilot = useCallback((sessionId: string, model: string, requestId = ++pilotSetupRequest.current) => {
+  const requestSessionPilot = useCallback((
+    sessionId: string,
+    model: string,
+    requestId = ++pilotSetupRequest.current,
+    reasoning?: ReasoningEffort,
+  ) => {
     publishSessionPilotSetup({ kind: "binding", model, sessionId, requestId });
     const previous = pilotSwapTails.current.get(sessionId) ?? Promise.resolve();
-    const operation = previous.catch(() => {}).then(() => api.swapPilot(model, sessionId)).then(result => {
+    const operation = previous.catch(() => {}).then(async () => {
+      const result = await api.swapPilot(model, sessionId);
+      if (reasoning) await api.setPilotPreferences(sessionId, { reasoning_effort: reasoning });
+      return result;
+    }).then(result => {
       if (sessionPilotSetupsRef.current[sessionId]?.requestId === requestId) {
         if (activeSessionIdRef.current === sessionId) {
           configRequest.current.generation++;
-          const acknowledged = { ...knownSessionPilot(sessionId), driver: model };
+          const acknowledged = {
+            ...knownSessionPilot(sessionId),
+            driver: model,
+            ...(reasoning ? { reasoning_effort: reasoning } : {}),
+          };
           rememberSessionPilot(sessionId, acknowledged);
           setConfig(current => {
             const active = configForActiveSession(current, sessionId, acknowledged);
@@ -133,13 +146,23 @@ export default function App() {
     return operation;
   }, [publishSessionPilotSetup]);
   const handlePendingPilotModelChange = useCallback((model: string) => {
-    publishPendingPilotSetup({ kind: "awaiting_session", model, requestId: ++pilotSetupRequest.current });
+    const reasoning = pendingPilotSetupRef.current?.reasoning;
+    publishPendingPilotSetup({ kind: "awaiting_session", model, reasoning, requestId: ++pilotSetupRequest.current });
+  }, [publishPendingPilotSetup]);
+  const handlePendingPilotReasoningChange = useCallback((reasoning: ReasoningEffort, model: string) => {
+    const pending = pendingPilotSetupRef.current;
+    publishPendingPilotSetup({
+      kind: "awaiting_session",
+      model: pending?.model ?? model,
+      reasoning,
+      requestId: ++pilotSetupRequest.current,
+    });
   }, [publishPendingPilotSetup]);
   const handleSessionCreated = useCallback((sessionId: string) => {
     const pending = pendingPilotSetupRef.current;
     if (!pending) return;
     publishPendingPilotSetup(undefined);
-    void requestSessionPilot(sessionId, pending.model, pending.requestId)
+    void requestSessionPilot(sessionId, pending.model, pending.requestId, pending.reasoning)
       .then(() => {
         if (activeSessionIdRef.current === sessionId) {
           window.dispatchEvent(new Event("harness-config-changed"));
@@ -165,6 +188,7 @@ export default function App() {
     ? sessionPilotSetups[activeSessionId]
     : pendingPilotSetup;
   const pendingPilotModel = !activeSessionId ? pendingPilotSetup?.model : undefined;
+  const pendingPilotReasoning = !activeSessionId ? pendingPilotSetup?.reasoning : undefined;
   const pilotSetupNotice = pilotSetup?.kind === "binding"
     ? `Setting ${pilotName(pilotSetup.model)} for this session...`
     : pilotSetup?.kind === "failed"
@@ -505,9 +529,11 @@ export default function App() {
                   activeSessionId={activeSessionId}
                   pilotSetup={pilotSetup}
                   pendingPilotModel={pendingPilotModel}
+                  pendingPilotReasoning={pendingPilotReasoning}
                   pilotSetupNotice={pilotSetupNotice}
                   pilotSelectionDisabled={pilotSelectionDisabled}
                   onPendingPilotModelChange={handlePendingPilotModelChange}
+                  onPendingPilotReasoningChange={handlePendingPilotReasoningChange}
                   onSessionPilotModelChange={requestSessionPilot}
                   onArtifacts={(a) => setArtifacts((prev) => [...a, ...prev])}
                   onJobChange={() => setJobsRefresh((n) => n + 1)}
