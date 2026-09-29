@@ -31,6 +31,7 @@ import {
   dismissAgentCommandSession,
   getAgentCommandIndexVersion,
   lookupAgentCommandSession,
+  lookupAgentCommandSessionById,
   registerAgentCommandSession,
   subscribeAgentCommandIndex,
 } from "../lib/agentCommandIndex";
@@ -894,13 +895,20 @@ function groupedItemPaints(it: GroupedItem): boolean {
 
 /** Count transcript rows that would actually mount — excludes Working... crumbs
  *  and empty assistant pollution so TranscriptEmptyState matches the feed. */
+// Keyed on array identity: transcript arrays are replaced, never mutated, and
+// parents that re-render per keystroke call this for every retained pane.
+const paintableCountCache = new WeakMap<readonly Item[], number>();
+
 export function countPaintableTranscriptItems(items: Item[]): number {
+  const cached = paintableCountCache.get(items);
+  if (cached !== undefined) return cached;
   const intermediateItems = collectIntermediateAssistantItems(items, false);
   const grouped = groupAgentActivity(items, intermediateItems);
   let count = 0;
   for (const row of grouped) {
     if (groupedItemPaints(row)) count += 1;
   }
+  paintableCountCache.set(items, count);
   return count;
 }
 
@@ -1324,7 +1332,8 @@ const VirtualTranscriptRow = memo(
 );
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
-function indexCardCommandSession(card: Card, sessionId?: string): void {
+/** Registers a command card; returns the index id, or null for non-command cards. */
+function indexCardCommandSession(card: Card, sessionId?: string): string | null {
   const cliInput = resolveCardCliInput(card);
   const resultCommand = String(card.result?.command || "").trim();
   const inputKey = toolInputFieldKey(card.kind || "");
@@ -1334,7 +1343,7 @@ function indexCardCommandSession(card: Card, sessionId?: string): void {
   const jobId = String(card.result?.job_id || "").trim();
   const cardId = String(card.id || "").trim();
   const id = jobId || cardId;
-  if (linkKind !== "command" || !id || !value) return;
+  if (linkKind !== "command" || !id || !value) return null;
   if (jobId && cardId && jobId !== cardId) dismissAgentCommandSession(cardId);
   const rawStatus = String(card.result?.status || "").trim().toLowerCase();
   const exitCode =
@@ -1361,11 +1370,21 @@ function indexCardCommandSession(card: Card, sessionId?: string): void {
     state,
     sessionId,
   });
+  return id;
 }
 
+// Cards are replaced, never mutated, on update. The effect below runs on every
+// stream frame, so skip a card already indexed for this session unless the
+// index has since evicted or dismissed it (re-registering restores it).
+const indexedCards = new WeakMap<Card, { scope: string; id: string | null }>();
+
 function indexTranscriptCommandSessions(items: Item[], sessionId?: string): void {
+  const scope = sessionId ?? "";
   for (const it of items) {
-    if (it.kind === "card") indexCardCommandSession(it.card, sessionId);
+    if (it.kind !== "card") continue;
+    const seen = indexedCards.get(it.card);
+    if (seen && seen.scope === scope && (seen.id === null || lookupAgentCommandSessionById(seen.id))) continue;
+    indexedCards.set(it.card, { scope, id: indexCardCommandSession(it.card, sessionId) });
   }
 }
 
@@ -1640,14 +1659,17 @@ export const TranscriptList = memo(function TranscriptList({
       const el = scrollContainerRef.current;
       if (!el) return [];
       const top = el.getBoundingClientRect().top;
-      return Array.from(el.querySelectorAll<HTMLElement>("[data-viewport-key]")).map((row) => ({
-        key: row.dataset.viewportKey ?? "",
-        start: row.getBoundingClientRect().top - top + el.scrollTop,
-        end: row.getBoundingClientRect().bottom - top + el.scrollTop,
-      }));
+      return Array.from(el.querySelectorAll<HTMLElement>("[data-viewport-key]")).map((row) => {
+        const box = row.getBoundingClientRect();
+        return {
+          key: row.dataset.viewportKey ?? "",
+          start: box.top - top + el.scrollTop,
+          end: box.bottom - top + el.scrollTop,
+        };
+      });
     };
     viewportRef.current = {
-      capture: (pinned) => captureSessionViewport(pinned, scrollContainerRef.current?.scrollTop ?? 0, rows()),
+      capture: (pinned) => captureSessionViewport(pinned, scrollContainerRef.current?.scrollTop ?? 0, rows),
       restore: (saved) => {
         const el = scrollContainerRef.current;
         if (!el) return;
@@ -3235,8 +3257,8 @@ function lookupLiveCommand(command: string, indexVersion: number) {
   return indexVersion >= 0 ? lookupAgentCommandSession(command) : null;
 }
 
-function FencedCodeBlock({ className, children, commandIndexVersion: commandIndexVersionProp, ...props }: any) {
-  const commandIndexVersion = commandIndexVersionProp ?? 0;
+function FencedCodeBlock({ className, children, ...props }: any) {
+  const commandIndexVersion = useCommandIndexVersion();
   const [copied, setCopied] = useState(false);
   const codeText = nodeToText(children).replace(/\n$/, "");
   const lines = codeText.split("\n");
@@ -3322,169 +3344,186 @@ function FencedCodeBlock({ className, children, commandIndexVersion: commandInde
   );
 }
 
-// Route a clicked markdown link to the right surface instead of a raw
-// new-window navigation: http(s) opens an in-app Browser tab, a file-ish path
-// opens in the editor, and everything else is blocked (no javascript: in Electron).
-
-// Pretty tree only. Streaming wrappers pass a deferred `flushed` string so
-// highlight.js never remounts on a fence the next token can still extend.
-const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
-  const openSwarmJob = useOpenSwarmJob();
-  const openMarkdownHref = (href: string, event: React.MouseEvent) => {
-    if (looksLikeJobId(href)) { event.preventDefault(); event.stopPropagation(); openSwarmJob(href); }
-    else openAgentLink(href, event);
-  };
-  const commandIndexVersion = useSyncExternalStore(
+function useCommandIndexVersion(): number {
+  return useSyncExternalStore(
     subscribeAgentCommandIndex,
     getAgentCommandIndexVersion,
     getAgentCommandIndexVersion,
   );
-  const linked = autolinkAgentText(text || "");
+}
+
+// Route a clicked markdown link to the right surface instead of a raw
+// new-window navigation: http(s) opens an in-app Browser tab, a file-ish path
+// opens in the editor, and everything else is blocked (no javascript: in Electron).
+function MarkdownLink({ href, children }: any) {
+  const openSwarmJob = useOpenSwarmJob();
+  const kind = classifyTranscriptHref(href || "");
+  if (kind === "none") {
+    return <span>{children}</span>;
+  }
+  const open = (event: React.MouseEvent) => {
+    if (looksLikeJobId(href)) { event.preventDefault(); event.stopPropagation(); openSwarmJob(href); }
+    else openAgentLink(href, event);
+  };
+  return (
+    <a
+      href={href}
+      onClick={open}
+      onAuxClick={(e) => { if (e.button === 1) open(e); }}
+      className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
+    >
+      {children}
+    </a>
+  );
+}
+
+function MarkdownCode({ className, children, ...props }: any) {
+  // Only code reads the command index; subscribing here (not at the tree
+  // root) keeps a new command from remounting every bubble on screen.
+  const commandIndexVersion = useCommandIndexVersion();
+  const isInline = !className;
+  if (isInline) {
+    const raw = nodeToText(children).trim();
+    if (looksLikePathInlineCode(raw)) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openAgentFile(raw);
+          }}
+          title={`Open ${raw}`}
+          className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+        >
+          {children}
+        </button>
+      );
+    }
+    if (isExternalUrl(raw)) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openAgentUrl(raw);
+          }}
+          title="Open in browser"
+          className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+        >
+          {children}
+        </button>
+      );
+    }
+    const liveCommand = lookupLiveCommand(raw, commandIndexVersion);
+    if (liveCommand) {
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            openAgentCommand(liveCommand.command, {
+              id: liveCommand.id,
+              output: liveCommand.output,
+              run: false,
+            });
+          }}
+          title="Reveal running command"
+          className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
+        >
+          {children}
+        </button>
+      );
+    }
+    return (
+      <code className="bg-panel2/60 px-1 py-[1px] rounded text-[0.9em] font-mono text-txt/90" {...props}>
+        {children}
+      </code>
+    );
+  }
+  return (
+    <FencedCodeBlock
+      className={className}
+      {...props}
+    >
+      {children}
+    </FencedCodeBlock>
+  );
+}
+
+// Module scope on purpose: react-markdown uses these as element types, so a
+// per-render object would remount the whole tree whenever the bubble re-renders.
+const MARKDOWN_COMPONENTS = {
+  h1: ({ children }: any) => <h1 className="text-sm font-semibold text-txt mt-3 mb-1.5 border-b border-edge pb-0.5">{children}</h1>,
+  h2: ({ children }: any) => <h2 className="text-[0.8125rem] font-semibold text-txt mt-3 mb-1.5">{children}</h2>,
+  h3: ({ children }: any) => <h3 className="text-[0.75rem] font-semibold text-muted mt-2 mb-1">{children}</h3>,
+  p: ({ children }: any) => <p className="font-normal text-[0.8125rem] leading-[1.7] my-2 first:mt-0 last:mb-0">{children}</p>,
+  strong: ({ children }: any) => <strong className="font-semibold text-txt">{children}</strong>,
+  em: ({ children }: any) => <em className="italic text-txt/90">{children}</em>,
+  ul: ({ children }: any) => <ul className="list-disc pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ul>,
+  ol: ({ children }: any) => <ol className="list-decimal pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ol>,
+  li: ({ children }: any) => <li className="font-normal text-[0.8125rem] leading-[1.65]">{children}</li>,
+  blockquote: ({ children }: any) => (
+    <blockquote className="border-l-2 border-edge pl-2.5 my-2 text-muted italic bg-panel2/30 rounded-r-sm py-1">
+      {children}
+    </blockquote>
+  ),
+  a: MarkdownLink,
+  img: ({ src, alt }: any) => (
+    <img
+      src={src}
+      alt={alt || ""}
+      loading="lazy"
+      onClick={() => { if (src) openAgentImage(src); }}
+      className="max-w-full h-auto rounded-md border border-edge/40 my-2 cursor-zoom-in"
+    />
+  ),
+  table: ({ children }: any) => (
+    <div className="overflow-x-auto my-1.5 border border-edge rounded bg-panel/40">
+      <table className="min-w-full text-left text-[0.719rem] border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({ children }: any) => (
+    <thead className="bg-panel2/80 border-b border-edge font-semibold text-muted">{children}</thead>
+  ),
+  tbody: ({ children }: any) => (
+    <tbody className="divide-y divide-edge/40">{children}</tbody>
+  ),
+  tr: ({ children }: any) => (
+    <tr className="hover:bg-panel2/20 odd:bg-transparent even:bg-panel2/10">{children}</tr>
+  ),
+  th: ({ children }: any) => (
+    <th className="px-2 py-1 border-r border-edge/30 last:border-r-0 font-semibold">{children}</th>
+  ),
+  td: ({ children }: any) => (
+    <td className="px-2 py-1 border-r border-edge/30 last:border-r-0 text-txt/90">{children}</td>
+  ),
+  hr: () => <hr className="border-edge/60 my-2" />,
+  code: MarkdownCode,
+  pre: ({ children }: any) => <div className="my-1">{children}</div>
+};
+
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+
+const markdownUrlTransform = (url: string, key: string, node: { tagName: string }) => (
+  key === "href" && node.tagName === "a" && /^file:/i.test(url) && parseFileHref(url)
+    ? fileMarkdownHref(url)
+    : defaultUrlTransform(url)
+);
+
+// Pretty tree only. Streaming passes finished blocks here one at a time.
+const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
-      urlTransform={(url, key, node) => key === "href" && node.tagName === "a" && /^file:/i.test(url) && parseFileHref(url)
-        ? fileMarkdownHref(url)
-        : defaultUrlTransform(url)}
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
-      components={{
-        h1: ({ children }: any) => <h1 className="text-sm font-semibold text-txt mt-3 mb-1.5 border-b border-edge pb-0.5">{children}</h1>,
-        h2: ({ children }: any) => <h2 className="text-[0.8125rem] font-semibold text-txt mt-3 mb-1.5">{children}</h2>,
-        h3: ({ children }: any) => <h3 className="text-[0.75rem] font-semibold text-muted mt-2 mb-1">{children}</h3>,
-        p: ({ children }: any) => <p className="font-normal text-[0.8125rem] leading-[1.7] my-2 first:mt-0 last:mb-0">{children}</p>,
-        strong: ({ children }: any) => <strong className="font-semibold text-txt">{children}</strong>,
-        em: ({ children }: any) => <em className="italic text-txt/90">{children}</em>,
-        ul: ({ children }: any) => <ul className="list-disc pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ul>,
-        ol: ({ children }: any) => <ol className="list-decimal pl-4 my-2 space-y-1 text-txt/90 font-normal">{children}</ol>,
-        li: ({ children }: any) => <li className="font-normal text-[0.8125rem] leading-[1.65]">{children}</li>,
-        blockquote: ({ children }: any) => (
-          <blockquote className="border-l-2 border-edge pl-2.5 my-2 text-muted italic bg-panel2/30 rounded-r-sm py-1">
-            {children}
-          </blockquote>
-        ),
-        a: ({ href, children }: any) => {
-          const kind = classifyTranscriptHref(href || "");
-          if (kind === "none") {
-            return <span>{children}</span>;
-          }
-          return (
-            <a
-              href={href}
-              onClick={(e) => openMarkdownHref(href, e)}
-              onAuxClick={(e) => { if (e.button === 1) openMarkdownHref(href, e); }}
-              className="text-accent/90 no-underline hover:underline underline-offset-2 decoration-accent/40 cursor-pointer break-words"
-            >
-              {children}
-            </a>
-          );
-        },
-        img: ({ src, alt }: any) => (
-          <img
-            src={src}
-            alt={alt || ""}
-            loading="lazy"
-            onClick={() => { if (src) openAgentImage(src); }}
-            className="max-w-full h-auto rounded-md border border-edge/40 my-2 cursor-zoom-in"
-          />
-        ),
-        table: ({ children }: any) => (
-          <div className="overflow-x-auto my-1.5 border border-edge rounded bg-panel/40">
-            <table className="min-w-full text-left text-[0.719rem] border-collapse">{children}</table>
-          </div>
-        ),
-        thead: ({ children }: any) => (
-          <thead className="bg-panel2/80 border-b border-edge font-semibold text-muted">{children}</thead>
-        ),
-        tbody: ({ children }: any) => (
-          <tbody className="divide-y divide-edge/40">{children}</tbody>
-        ),
-        tr: ({ children }: any) => (
-          <tr className="hover:bg-panel2/20 odd:bg-transparent even:bg-panel2/10">{children}</tr>
-        ),
-        th: ({ children }: any) => (
-          <th className="px-2 py-1 border-r border-edge/30 last:border-r-0 font-semibold">{children}</th>
-        ),
-        td: ({ children }: any) => (
-          <td className="px-2 py-1 border-r border-edge/30 last:border-r-0 text-txt/90">{children}</td>
-        ),
-        hr: () => <hr className="border-edge/60 my-2" />,
-        code: ({ className, children, ...props }: any) => {
-          const isInline = !className;
-          if (isInline) {
-            const raw = nodeToText(children).trim();
-            if (looksLikePathInlineCode(raw)) {
-              return (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    openAgentFile(raw);
-                  }}
-                  title={`Open ${raw}`}
-                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
-                >
-                  {children}
-                </button>
-              );
-            }
-            if (isExternalUrl(raw)) {
-              return (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    openAgentUrl(raw);
-                  }}
-                  title="Open in browser"
-                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
-                >
-                  {children}
-                </button>
-              );
-            }
-            const liveCommand = lookupLiveCommand(raw, commandIndexVersion);
-            if (liveCommand) {
-              return (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    openAgentCommand(liveCommand.command, {
-                      id: liveCommand.id,
-                      output: liveCommand.output,
-                      run: false,
-                    });
-                  }}
-                  title="Reveal running command"
-                  className="bg-accent/[0.08] px-1 py-[1px] rounded text-[0.9em] font-mono text-accent/90 hover:underline underline-offset-2 cursor-pointer"
-                >
-                  {children}
-                </button>
-              );
-            }
-            return (
-              <code className="bg-panel2/60 px-1 py-[1px] rounded text-[0.9em] font-mono text-txt/90" {...props}>
-                {children}
-              </code>
-            );
-          }
-          return (
-            <FencedCodeBlock
-              className={className}
-              commandIndexVersion={commandIndexVersion}
-              {...props}
-            >
-              {children}
-            </FencedCodeBlock>
-          );
-        },
-        pre: ({ children }: any) => <div className="my-1">{children}</div>
-      }}
+      urlTransform={markdownUrlTransform}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
     >
-      {linked}
+      {autolinkAgentText(text || "")}
     </ReactMarkdown>
   );
 });

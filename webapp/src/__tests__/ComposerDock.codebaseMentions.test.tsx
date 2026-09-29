@@ -115,6 +115,11 @@ describe("ComposerDock codebase mentions", () => {
 
     expect(screen.getByText("Scope")).toBeInTheDocument();
     expect(screen.getByText("Codebase")).toBeInTheDocument();
+    // The highlighted suggestion is exposed to assistive tech from the textarea.
+    const option = screen.getByRole("option", { name: /Codebase/ });
+    expect(option).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("listbox", { name: "Mentions" })).toContainElement(option);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveAttribute("aria-activedescendant", option.id);
     fireEvent.click(screen.getByText("Codebase"));
     expect(insertCodebase).toHaveBeenCalledTimes(1);
   });

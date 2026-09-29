@@ -7,13 +7,15 @@ export type TranscriptViewportHandle = {
   restore: (saved: SessionViewport) => void;
 };
 
+/** ``measureRows`` forces layout, so it runs only when a row anchor is needed:
+ * pinned-to-tail captures fire on every streamed token. */
 export function captureSessionViewport(
   pinned: boolean,
   scrollTop: number,
-  rows: readonly { key: string; start: number; end: number }[],
+  measureRows: () => readonly { key: string; start: number; end: number }[],
 ): SessionViewport {
   if (pinned) return { kind: "tail" };
-  const row = rows.find((row) => row.end > scrollTop);
+  const row = measureRows().find((row) => row.end > scrollTop);
   return { kind: "anchor", key: row?.key ?? null, offset: row ? scrollTop - row.start : 0, scrollTop };
 }
 

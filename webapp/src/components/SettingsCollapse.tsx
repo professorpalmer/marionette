@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
 
 const SETTINGS_SECTION_OPEN_KEY = "pmharness.settings.sectionOpen";
@@ -49,6 +49,7 @@ export function SettingsCollapse({
   const [open, setOpen] = useState(() => loadSettingsSectionOpen(id, defaultOpen));
   const shown = forceOpen || open;
   const firstOpenCalled = useRef(false);
+  const bodyId = useId();
 
   useEffect(() => {
     if (shown && onFirstOpen && !firstOpenCalled.current) {
@@ -61,6 +62,8 @@ export function SettingsCollapse({
     <div className={className}>
       <button
         type="button"
+        aria-expanded={shown}
+        aria-controls={bodyId}
         onClick={() => {
           setOpen((v) => {
             const next = !v;
@@ -68,7 +71,7 @@ export function SettingsCollapse({
             return next;
           });
         }}
-        className="w-full flex items-center justify-between gap-2 text-left focus:outline-none group"
+        className="w-full flex items-center justify-between gap-2 text-left rounded focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent group"
       >
         <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1.5 min-w-0 group-hover:text-txt transition">
           {shown ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
@@ -80,7 +83,7 @@ export function SettingsCollapse({
           ) : null}
         </span>
       </button>
-      {shown ? <div className="space-y-2">{children}</div> : null}
+      {shown ? <div id={bodyId} className="space-y-2">{children}</div> : null}
     </div>
   );
 }
