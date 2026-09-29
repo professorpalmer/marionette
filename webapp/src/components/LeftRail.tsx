@@ -1,5 +1,5 @@
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
-import { useSharedJobMetadata, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
+import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
 import { MetadataStatus } from './MetadataJobs';
 import { openAgentSwarmJob } from '../lib/agentLinks';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
@@ -39,6 +39,8 @@ import {
   branchesListBoxStyle,
   filterBranchWorkspaces,
 } from "./leftRailBranches";
+
+const RAIL_METADATA_FIELDS = [...METADATA_JOBS_FIELDS, 'working'] as const;
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -112,7 +114,7 @@ export default function LeftRail({
   /** The session Conversation is showing. */
   activeSessionId?: string | null;
 }) {
-  const { state: metadata } = useSharedJobMetadata();
+  const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);

@@ -1,5 +1,5 @@
 import { useOpenSwarmJob } from '../lib/useOpenSwarmJob';
-import { useSharedJobMetadata, metadataJobs } from '../lib/jobMetadataContext';
+import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs } from '../lib/jobMetadataContext';
 import { inputFailureMessage } from "../lib/inputFailure";
 import { imagePath, nativeFs } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
@@ -262,6 +262,10 @@ import {
 } from "./conversation/openFileTabs";
 import { normalizeContextUsage } from "./conversation/contextUsageColors";
 
+// Metadata fields Conversation reads; other publishes (ticks, working flag)
+// must not re-render this component.
+const CONVERSATION_METADATA_FIELDS = [...METADATA_JOBS_FIELDS, 'followedLocal', 'actionPage', 'epoch'] as const;
+
 // Re-export pure helpers so existing test / LeftRail import paths keep working.
 export * from "./conversation/reexports";
 
@@ -302,7 +306,7 @@ export default function Conversation({
   const cancelPendingInitialSend = () => {
     pendingInitialSendRef.current = null;
   };
-  const { store: metadataStore, state: metadata } = useSharedJobMetadata();
+  const { store: metadataStore, state: metadata } = useSharedJobMetadataFields(CONVERSATION_METADATA_FIELDS);
   const openSwarmJob = useOpenSwarmJob(activeSessionId ?? "");
   const [items, setRenderedItems] = useState<Item[]>([]);
   // Mirror of items for session-switch cache writes without stale closures.

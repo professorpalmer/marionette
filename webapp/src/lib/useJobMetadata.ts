@@ -44,7 +44,7 @@ export type JobMetadataState = {
   pins: { selection: MetadataSelection; observation: MetadataObservation | null; result: MetadataPinResult['result'] | null }[];
   detail: DetailState; detailCache: Record<string, Extract<DetailState, { kind: 'selected' }>>; displayLimited: boolean;
 };
-export function metadataTerminalProjection(state: JobMetadataState): NonNullable<JobMetadataState['canonicalTerminal']> {
+export function metadataTerminalProjection(state: Pick<JobMetadataState, "canonicalTerminal" | "detailCache">): NonNullable<JobMetadataState['canonicalTerminal']> {
   const canonicalTerminal = { ...state.canonicalTerminal };
   for (const cached of Object.values(state.detailCache)) {
     const detail = cached.observation;
