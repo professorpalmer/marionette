@@ -714,7 +714,9 @@ class ToolDispatchMixin:
         """Return ``(ok, status, lines)``, or None when ripgrep is unusable."""
         from .search_hints import is_multiline_query
 
-        cmd = [rg_path, "--line-number", "--no-heading", "--color=never"]
+        # A minified or lockfile match can be one enormous line; clip it.
+        cmd = [rg_path, "--line-number", "--no-heading", "--color=never",
+               "--max-columns=500", "--max-columns-preview"]
         if is_multiline_query(query):
             # A query containing newlines can only match across lines.
             cmd.append("--multiline")

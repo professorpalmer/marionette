@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from harness.api.session_control import SessionControlServices, post_session_steer
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -100,7 +102,7 @@ def test_send_write_notes_transaction_reminds_and_receipt(tmp_path):
     assert rec.get("verification") in ("skipped", "unverified")
 
 
-def test_send_write_plus_command_skips_remind_and_marks_pass(tmp_path):
+def test_send_write_plus_command_skips_remind_without_claiming_pass(tmp_path):
     s = _session(tmp_path, auto_verify=False)
     s.pilot = _FakePilotWithActions([
         {"kind": "write_file", "path": "note.txt", "content": "hello"},
@@ -114,8 +116,28 @@ def test_send_write_plus_command_skips_remind_and_marks_pass(tmp_path):
     )
     assert s._turn_ran_command is True
     rec = load_receipts(s.config.state_dir, limit=1)[-1]
-    assert rec.get("verification") == "pass"
+    # echo is not a check: it ran, but it verified nothing.
+    assert rec.get("verification") == "unknown"
     assert rec.get("changed_files")
+
+
+@pytest.mark.parametrize("command,verdict,phase", [
+    # The shell short-circuits, so the outer exit is the first command's;
+    # "pytest" makes the text a verify command.
+    ("true || pytest", "pass", "done"),
+    ("false && pytest", "fail", "verifying"),
+])
+def test_verify_command_verdict_follows_exit_code(tmp_path, command, verdict, phase):
+    s = _session(tmp_path, auto_verify=False)
+    s.pilot = _FakePilotWithActions([
+        {"kind": "write_file", "path": "note.txt", "content": "hello"},
+        {"kind": "run_command", "command": command},
+    ])
+    list(s.send("typo in README.md"))
+    tx = as_dict(s._task_tx)
+    assert tx["verification"] == verdict
+    assert tx["phase"] == phase
+    assert load_receipts(s.config.state_dir, limit=1)[-1].get("verification") == verdict
 
 
 def test_send_micro_skips_wiki_search(tmp_path, monkeypatch):

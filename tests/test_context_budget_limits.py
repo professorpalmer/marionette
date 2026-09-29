@@ -4,6 +4,8 @@ hashing, and multibyte safety. Import-pure, stdlib-only, deterministic."""
 
 import os
 
+import pytest
+
 from harness.context_budget import (
     BudgetConfig,
     byte_size,
@@ -115,6 +117,28 @@ def test_maybe_persist_default_head_only_for_generic_results(tmp_path):
     )
     assert PERSISTED_OUTPUT_TAG in msg
     assert "tail_marker" not in msg
+
+
+@pytest.mark.parametrize("tool_name,tail_visible", [
+    ("run_command", True),
+    ("run_command_batch", True),
+    ("run_ipython", True),
+    ("read_file", False),
+])
+def test_tool_kind_decides_head_tail_for_random_provider_ids(tmp_path, tool_name, tail_visible):
+    # Real ids are random (call_*, toolu_*): a failing pytest run must still
+    # show its FAILED summary without an extra turn to open the spill file.
+    content = "\n".join(f"test_{i} PASSED" for i in range(2000)) + "\nFAILED tests/test_x.py::test_y\n1 failed"
+    config = BudgetConfig(max_result_chars=100, preview_chars=200)
+    msg = maybe_persist_result(
+        content=content,
+        result_id="toolu_01AbCdEfGhIjKlMn",
+        state_dir=str(tmp_path),
+        config=config,
+        tool_name=tool_name,
+    )
+    assert PERSISTED_OUTPUT_TAG in msg
+    assert ("1 failed" in msg) is tail_visible
 
 
 def test_maybe_persist_multibyte_preview_is_valid(tmp_path):

@@ -87,6 +87,7 @@ _PILOT_EXTRAS: Set[str] = {
     "run_swarm",
     "run_implement",
     "run_parallel",
+    "run_command_batch",
     "wait",
     "todo",
     "query_wiki",
@@ -140,6 +141,12 @@ CORE_WORKER: Set[str] = CORE_ALWAYS | _WORKER_EXTRAS
 # dispatch instead of INVALID TOOL CALL. They must not appear in the schema
 # until activated (search_tools or this first-call path).
 LAZY_ACTIVATE_NAMES: Set[str] = {
+    # Named with their arguments in PILOT_SYSTEM, so a first call from the
+    # prompt alone must activate rather than bounce off the catalog.
+    "read_pdf",
+    "lsp",
+    "call_mcp",
+    "request_secret",
     "web_search",
     "web_fetch",
     "browser_navigate",

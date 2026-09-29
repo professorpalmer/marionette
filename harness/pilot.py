@@ -1052,11 +1052,14 @@ def build_tools_schema(
     })
 
     # 1. read_file
+    from .context_budget import _default_max_result
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
         "Read a file's contents from the open workspace or configured read roots. "
         "For a workspace nested in a larger git clone, the git toplevel is also readable. "
-        "For large files, use start_line and limit. "
+        f"Results over about {_default_max_result():,} characters (roughly 150 lines) "
+        "come back as a short preview with the rest saved to a spill file, so read "
+        "large files in ranges of about 150 lines with start_line and limit. "
         "Prefer search_codegraph/search_files to explore code structure. "
         "Prefer read_file over shell cd/type for supported paths."
     )
@@ -1182,7 +1185,9 @@ def build_tools_schema(
                 "Do not use quiet mode for indexing; inspect the job output. "
                 "For verification, preserve each check's failing exit status: "
                 "run checks separately or chain with &&. A successful shell "
-                "wrapper does not establish that every check inside it passed."
+                "wrapper does not establish that every check inside it passed. "
+                "Each call starts a fresh shell in the workspace root: a cd does "
+                "not carry over, so chain `cd dir && ...` in one command."
             ),
             "parameters": {
                 "type": "object",
@@ -3007,7 +3012,6 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_ipython`: execute Python in a session-scoped persistent REPL (variables survive across turns). Prefer read_file/hash_edit/run_command/swarms for normal coding; use this for stateful probes. Requires `code`.
 - `wait`: stay on this turn while background jobs run (Cursor-style Await). Sleeps up to `seconds` (default 2, max 30) and returns whether jobs settled. After run_implement / run_parallel, call wait instead of ending the turn.
 - `cancel_job`: cooperatively cancel an in-flight local or durable worker by `job_id`.
-- `job_findings`: read FINDING/RISK/DECISION artifacts for a known `job_id` in one bounded head+tail dump.
 - `todo`: nested phased checklist for multi-step work. `init` a `{list:[{phase, items}]}` tree, then `start` / `done` / `append` / `block` / `view`. Address tasks by their full content text. One in_progress task at a time; the result names Next. Do not restate the whole plan in prose.
 - `list_dir`: list the files and folders inside a directory. `path` is optional.
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; use an exact enabled provider:model pair or canonical registry ID. An unavailable explicit pin fails; it never authorizes choosing a different model. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
