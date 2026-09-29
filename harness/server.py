@@ -3780,7 +3780,10 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
         threading.Thread(target=boot_mcp_servers, name="mcp-boot", daemon=True).start()
         def _boot_dashboard():
             try:
-                from .pm_dashboard import resolve_dashboard_state_dir, try_warm_local_dashboard
+                from .pm_dashboard import (
+                    reap_orphaned_dashboards, resolve_dashboard_state_dir, try_warm_local_dashboard,
+                )
+                reap_orphaned_dashboards(os.path.join(_sessions_state_dir(), "pm-dashboards.json"))
                 token = resolve_dashboard_state_dir(_cfg.repo or "", "") or ""
                 try_warm_local_dashboard(token)
             except Exception:
