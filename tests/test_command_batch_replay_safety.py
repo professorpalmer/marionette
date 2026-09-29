@@ -265,13 +265,18 @@ def test_batch_child_wait_is_event_driven_not_a_poll(tmp_path):
 def test_raw_child_command_text_is_never_stranded(tmp_path):
     import harness.command_batches as cb
     sess = _Session(str(tmp_path), str(tmp_path))
+    before = set(cb._CHILD_COMMAND_TEXT)
+
+    def mine():
+        return set(cb._CHILD_COMMAND_TEXT) - before
+
     with patch.object(sess, '_register_command_batch_job', side_effect=RuntimeError('journal down')):
         with pytest.raises(RuntimeError):
             start_command_batch(sess, [python_shell_command('print(1)')], 'reg-fail')
-    assert cb._CHILD_COMMAND_TEXT == {}
+    assert mine() == set()
     with patch.object(sess, '_sync_command_batch_from_children', side_effect=RuntimeError('sync')):
         receipt = start_command_batch(sess, [python_shell_command('print(2)')], 'sync-fail')
         deadline = time.monotonic() + 10
-        while cb._CHILD_COMMAND_TEXT and time.monotonic() < deadline:
+        while mine() and time.monotonic() < deadline:
             time.sleep(0.05)
-    assert cb._CHILD_COMMAND_TEXT == {}, receipt
+    assert mine() == set(), receipt
