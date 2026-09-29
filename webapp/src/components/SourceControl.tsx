@@ -114,20 +114,27 @@ export default function SourceControl() {
 
   useEffect(() => {
     const activate = (path: string) => {
+      // Config events fire at every turn end, pilot change and settings save.
+      // Same repo: keep the draft commit message and the open diff.
+      const current = contextRef.current;
+      if (current && current.path === path && coordinator.isCurrent(current)) return current;
       const context = coordinator.activate(path);
       contextRef.current = context;
       resetRepoLocalChrome();
       paintRepoLists(path);
       return context;
     };
+    // Latest config event wins even when the repo (and context) is unchanged.
+    let configSeq = 0;
     const reloadFromConfig = async (context: GitRefreshContext) => {
+      const seq = ++configSeq;
       try {
         const cfg = await api.config();
-        if (!coordinator.isCurrent(context)) return;
+        if (seq !== configSeq || !coordinator.isCurrent(context)) return;
         const next = activate(cfg.repo || ".");
         await coordinator.request(next, ["status", "branches"]);
       } catch (error: unknown) {
-        if (coordinator.isCurrent(context)) setError(error instanceof Error ? error.message : "Error getting config");
+        if (seq === configSeq && coordinator.isCurrent(context)) setError(error instanceof Error ? error.message : "Error getting config");
       }
     };
     void reloadFromConfig(activate(lastSelectedProjectRoot() || "."));
@@ -142,7 +149,8 @@ export default function SourceControl() {
       // Same-project session switch: git status and branches are unchanged.
       if (configChangeKeepsRepo(event)) return;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
-      const context = activate(contextRef.current?.path || ".");
+      configSeq += 1;
+      const context = contextRef.current ?? activate(".");
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
         void reloadFromConfig(context);
