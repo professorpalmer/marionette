@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from harness.api.sessions import SessionServices, post_session_fork, post_sessions_rename
 from harness.sessions import (
     SessionStore,
@@ -127,17 +129,18 @@ def test_post_sessions_rename_missing_is_404(tmp_path):
     assert payload.get("ok") is not True
 
 
-def test_post_sessions_rename_activity_headline_is_400(tmp_path):
+@pytest.mark.parametrize("title", ["Planning Q4 launch", "Looking into auth bug", "Thinking about caching"])
+def test_post_sessions_rename_keeps_user_titles_that_read_like_activity(tmp_path, title):
+    """The activity-headline filter guards auto-titles; a typed rename that
+    starts with Planning / Looking / Thinking used to 400 and silently revert."""
     store = SessionStore(str(tmp_path / "harness_sessions.json"))
     row = store.create(title="Keep me", repo=str(tmp_path), workspace_root=str(tmp_path))
     svc = _session_svc(store, str(tmp_path))
-    code, payload = post_sessions_rename(
-        {"session": row["id"], "title": "Investigating"}, svc
-    )
-    assert code == 400
-    assert "invalid" in str(payload.get("error", "")).lower()
+    code, _ = post_sessions_rename({"session": row["id"], "title": title}, svc)
+    assert code == 200
     kept = next(s for s in store.rows() if s["id"] == row["id"])
-    assert kept["title"] == "Keep me"
+    assert kept["title"] == title
+    assert kept["title_user"] is True
 
 
 def test_post_session_fork_peel_404_and_400(tmp_path):

@@ -412,7 +412,7 @@ export default function LeftRail({
       sessionListGeneration.current += 1;
       await refreshSessionsRef.current();
     } catch (err) {
-      console.error(err);
+      toast(`Could not rename the session${err instanceof Error && err.message ? `: ${err.message}` : ""}`);
       await refreshSessionsRef.current();
     }
   };
@@ -1219,7 +1219,7 @@ export default function LeftRail({
       x: Math.max(8, Math.min(e.clientX, window.innerWidth - 208)),
       y: Math.max(8, Math.min(e.clientY, window.innerHeight - 400)),
       sessionId: s.id,
-      title: displaySessionListTitle(s.title),
+      title: displaySessionListTitle(s.title, s.title_user),
       archived: !!s.archived,
       running: runners[s.id] === "running",
     });
@@ -1658,14 +1658,14 @@ export default function LeftRail({
                     className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                       switchingSessionId === row.id ? "bg-panel2/60" : "hover:bg-panel2/30"
                     }`}
-                    title={row.snippet ? `${displaySessionListTitle(row.title)}\n${row.snippet}` : displaySessionListTitle(row.title)}
+                    title={row.snippet ? `${displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}\n${row.snippet}` : displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}
                   >
                     <div className="flex items-center gap-1.5 min-w-0">
                       {switchingSessionId === row.id
                         ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                         : null}
                       <div className="text-[12.5px] truncate flex-1 text-muted">
-                        {displaySessionListTitle(row.title)}
+                        {displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}
                       </div>
                     </div>
                     {row.snippet ? (
@@ -1712,19 +1712,19 @@ export default function LeftRail({
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
-                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
+                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                       onContextMenu={(e) => handleContextMenu(e, s)}
                       className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
-                      title={`${displaySessionListTitle(s.title)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
+                      title={`${displaySessionListTitle(s.title, s.title_user)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
                     >
                       <div className="flex items-center gap-1.5 min-w-0">
                         {switchingSessionId === s.id
                           ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                           : null}
                         <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
-                          {displaySessionListTitle(s.title)}
+                          {displaySessionListTitle(s.title, s.title_user)}
                         </div>
                       </div>
                       <div className="text-[10px] text-faint truncate font-mono">{label}</div>
@@ -1898,10 +1898,10 @@ export default function LeftRail({
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                                 aria-disabled={!!switchingSessionId || opening || undefined}
-                                title={s.preview ? `${displaySessionListTitle(s.title)}\n${s.preview}` : displaySessionListTitle(s.title)}
+                                title={s.preview ? `${displaySessionListTitle(s.title, s.title_user)}\n${s.preview}` : displaySessionListTitle(s.title, s.title_user)}
                                 data-session-row="true"
                                 aria-current={s.active ? "true" : undefined}
-                                onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
+                                onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
                                 className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
@@ -1909,7 +1909,7 @@ export default function LeftRail({
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                                   : null}
-                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title)}</span>
+                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -1997,7 +1997,7 @@ export default function LeftRail({
                       aria-disabled={!!switchingSessionId || opening || undefined}
                       data-session-row="true"
                       aria-current={s.active ? "true" : undefined}
-                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title))}
+                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                       onContextMenu={(e) => handleContextMenu(e, s)}
                       className={`w-full h-7 text-left rounded pl-6 pr-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
@@ -2006,7 +2006,7 @@ export default function LeftRail({
                       {switchingSessionId === s.id
                         ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
                         : null}
-                      <span className="flex-1 truncate">{displaySessionListTitle(s.title)}</span>
+                      <span className="flex-1 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                     </button>
                   )}
                 </div>

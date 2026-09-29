@@ -576,13 +576,16 @@ class SessionStore:
                     break
 
     def rename(self, sid: str, title: str) -> bool:
+        """Explicit user rename. Exempt from the activity-headline filter,
+        which guards auto-titles: "Planning Q4 launch" is a real title."""
         cleaned = (title or "").strip()
-        if not cleaned or is_activity_headline_text(cleaned):
+        if not cleaned:
             return False
         with self._lock:
             for s in self._sessions:
                 if s["id"] == sid:
                     s["title"] = cleaned
+                    s["title_user"] = True
                     self._save()
                     return True
             return False

@@ -22,7 +22,6 @@ from typing import Any, Callable
 from ..prompt_queue import ORIGINAL_TEXT_UNSET
 from ..diag import note as _diag_default
 from ..sessions import (
-    is_activity_headline_text,
     load_transcript,
     session_stored_root,
     session_visible_for_workspace,
@@ -566,8 +565,6 @@ def post_sessions_rename(body: dict, svc: SessionServices) -> tuple[int, dict]:
     cleaned = (title or "").strip()
     if not cleaned:
         return 400, {"error": "missing title"}
-    if is_activity_headline_text(cleaned):
-        return 400, {"error": "invalid title"}
     ok = svc.sessions.rename(sid, cleaned)
     if not ok:
         return 404, {"error": "session not found"}
