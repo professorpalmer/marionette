@@ -80,31 +80,42 @@ export default function CheckpointsPane() {
     }
   }, []);
 
+  const loadDiff = useCallback(async (id: string) => {
+    setLoadingDiffs((prev) => ({ ...prev, [id]: true }));
+    try {
+      const res = await api.getCheckpointDiff(id);
+      setDiffData((prev) => ({ ...prev, [id]: res }));
+    } catch (err: any) {
+      setDiffData((prev) => ({
+        ...prev,
+        [id]: {
+          ok: false,
+          diff: "",
+          files: [],
+          truncated: false,
+          error: err?.message || "Failed to fetch diff",
+        },
+      }));
+    } finally {
+      setLoadingDiffs((prev) => ({ ...prev, [id]: false }));
+    }
+  }, []);
+
   const toggleDiff = async (id: string) => {
     const isCurrentlyExpanded = !!expandedDiffs[id];
     setExpandedDiffs((prev) => ({ ...prev, [id]: !isCurrentlyExpanded }));
-
-    if (!isCurrentlyExpanded && !diffData[id]) {
-      setLoadingDiffs((prev) => ({ ...prev, [id]: true }));
-      try {
-        const res = await api.getCheckpointDiff(id);
-        setDiffData((prev) => ({ ...prev, [id]: res }));
-      } catch (err: any) {
-        setDiffData((prev) => ({
-          ...prev,
-          [id]: {
-            ok: false,
-            diff: "",
-            files: [],
-            truncated: false,
-            error: err?.message || "Failed to fetch diff",
-          },
-        }));
-      } finally {
-        setLoadingDiffs((prev) => ({ ...prev, [id]: false }));
-      }
-    }
+    if (!isCurrentlyExpanded && !diffData[id]) await loadDiff(id);
   };
+
+  // A diff is "changes since this checkpoint", so any repo mutation (agent
+  // edit, restore) makes every cached diff stale: drop them and reload the
+  // ones the user has open.
+  const expandedDiffsRef = useRef(expandedDiffs);
+  expandedDiffsRef.current = expandedDiffs;
+  const invalidateDiffs = useCallback(() => {
+    setDiffData({});
+    for (const [id, open] of Object.entries(expandedDiffsRef.current)) if (open) void loadDiff(id);
+  }, [loadDiff]);
 
   // Clear + refetch whenever project/session scope changes.
   useEffect(() => {
@@ -128,7 +139,7 @@ export default function CheckpointsPane() {
       clearLocalState();
       void refreshScope();
     };
-    const onMutated = () => fetchCheckpoints();
+    const onMutated = () => { invalidateDiffs(); void fetchCheckpoints(); };
     const onVisible = () => { if (!document.hidden) fetchCheckpoints(); };
     // Electron: main fires this after an unexpected backend respawn on a new
     // port. Re-fetch so a transient ECONNREFUSED doesn't stick in the panel.
@@ -152,7 +163,7 @@ export default function CheckpointsPane() {
       document.removeEventListener("visibilitychange", onVisible);
       try { unsubRespawn?.(); } catch { /* ignore */ }
     };
-  }, [clearLocalState, fetchCheckpoints, refreshScope]);
+  }, [clearLocalState, fetchCheckpoints, refreshScope, invalidateDiffs]);
 
   const handleCreateSnapshot = async (e: React.FormEvent) => {
     e.preventDefault();

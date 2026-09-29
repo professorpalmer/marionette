@@ -90,6 +90,32 @@ describe("CheckpointsPane diff badges", () => {
   });
 });
 
+describe("CheckpointsPane diff freshness", () => {
+  beforeEach(() => {
+    apiMocks.getCheckpoints.mockReset();
+    apiMocks.getCheckpointDiff.mockReset();
+    apiMocks.getWorkspace.mockReset();
+    apiMocks.sessions.mockReset();
+    apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
+    apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
+    apiMocks.getCheckpoints.mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+  });
+
+  it("refreshes an open diff after the repo changes", async () => {
+    apiMocks.getCheckpointDiff
+      .mockResolvedValueOnce({ ok: true, diff: "", truncated: false, files: [] })
+      .mockResolvedValue({ ok: true, diff: "", truncated: false, files: [{ path: "a.py", status: "modified" }] });
+    render(<CheckpointsPane />);
+    await waitFor(() => expect(apiMocks.getCheckpoints.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await screen.findByText("before edits");
+    fireEvent.click(screen.getByTitle("View diff"));
+    await waitFor(() => expect(apiMocks.getCheckpointDiff).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event("harness-repo-mutated"));
+    expect(await screen.findByText("a.py")).toBeTruthy();
+    expect(apiMocks.getCheckpointDiff).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("CheckpointsPane startup race", () => {
   beforeEach(() => {
     apiMocks.getCheckpoints.mockReset();
