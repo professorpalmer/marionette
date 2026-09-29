@@ -9,7 +9,20 @@ from harness.tool_requirement import SoftToolRequirement
 
 def test_should_remind_micro_with_edits_no_command():
     assert SoftToolRequirement.should_remind_verify(MICRO, 1, False, 0) is True
-    assert SoftToolRequirement.should_remind_verify(STANDARD, 2, False, 2) is True
+    assert SoftToolRequirement.should_remind_verify(STANDARD, 2, False, 0) is True
+
+
+def test_one_reminder_then_escalate():
+    assert SoftToolRequirement.should_remind_verify(MICRO, 1, False, 1) is False
+    assert SoftToolRequirement.should_escalate_unverified(MICRO, 1, False, 1) is True
+
+
+def test_docs_only_edits_need_no_verify():
+    from harness.tool_requirement import verifiable_files
+
+    assert verifiable_files(["README.md", "docs/guide.MDX"]) == []
+    assert verifiable_files(["requirements.txt"]) == ["requirements.txt"]
+    assert verifiable_files(["README.md", "harness/x.py"]) == ["harness/x.py"]
 
 
 def test_should_remind_false_when_ran_command_or_no_edits():
@@ -32,7 +45,7 @@ def test_remind_message_asks_to_verify():
     assert "finish" in lowered or "before" in lowered
 
 
-def test_should_escalate_after_three_reminds_unverified():
+def test_should_escalate_after_reminds_unverified():
     assert SoftToolRequirement.should_escalate_unverified(MICRO, 1, False, 3) is True
     assert SoftToolRequirement.should_escalate_unverified(STANDARD, 2, False, 5) is True
 
@@ -40,7 +53,7 @@ def test_should_escalate_after_three_reminds_unverified():
 def test_should_escalate_false_when_command_run_or_no_edits_or_under_budget():
     assert SoftToolRequirement.should_escalate_unverified(MICRO, 1, True, 3) is False
     assert SoftToolRequirement.should_escalate_unverified(MICRO, 0, False, 3) is False
-    assert SoftToolRequirement.should_escalate_unverified(MICRO, 1, False, 2) is False
+    assert SoftToolRequirement.should_escalate_unverified(MICRO, 1, False, 0) is False
 
 
 def test_micro_standard_compact_long_catalog_description():

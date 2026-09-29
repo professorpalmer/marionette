@@ -67,11 +67,19 @@ def _csv_patterns(env_name: str) -> Tuple[re.Pattern, ...]:
     return tuple(_wildcard_to_regex(part.strip()) for part in raw.split(",") if part.strip())
 
 
+# Repeating these with identical arguments is their contract (wait: "call
+# again if jobs are still running"), so the repeat reminder must not tell the
+# pilot to stop. HARNESS_REPEAT_TOOL_INCLUDE can still opt them in.
+_REPEAT_BY_DESIGN = frozenset({"wait"})
+
+
 def is_tracked(tool_name: str) -> bool:
     """Untracked tools are transparent: they neither count nor reset the chain."""
     include = _csv_patterns("HARNESS_REPEAT_TOOL_INCLUDE")
     exclude = _csv_patterns("HARNESS_REPEAT_TOOL_EXCLUDE")
     if include and not any(pat.search(tool_name) for pat in include):
+        return False
+    if tool_name in _REPEAT_BY_DESIGN and not any(pat.search(tool_name) for pat in include):
         return False
     if any(pat.search(tool_name) for pat in exclude):
         return False

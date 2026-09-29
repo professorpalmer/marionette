@@ -376,3 +376,55 @@ it("observes terminal recovery after failed Stop without draining or resuming qu
   expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
   expect(handoff).not.toHaveBeenCalled(); expect(stream.chat).toHaveBeenCalledTimes(1);
 });
+
+it('Enter while an IME is composing confirms the candidate instead of sending', async () => {
+  const chat = vi.spyOn(api, 'chat').mockImplementation(() => () => {});
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: 'にほんご' } });
+  fireEvent.keyDown(input, { key: 'Enter', keyCode: 229, isComposing: true });
+  expect(chat).not.toHaveBeenCalled();
+  expect(input).toHaveValue('にほんご');
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() => expect(chat).toHaveBeenCalledTimes(1));
+});
+
+it('narrowing the slash menu resets its selection so Enter picks a real command', async () => {
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: '/', selectionStart: 1 } });
+  for (let i = 0; i < 12; i++) fireEvent.keyDown(input, { key: 'ArrowDown' });
+  fireEvent.change(input, { target: { value: '/cl', selectionStart: 3 } });
+  // React reports handler errors via window "error", not by rethrowing.
+  const errors: string[] = [];
+  const onError = (e: ErrorEvent) => { errors.push(String(e.message)); e.preventDefault(); };
+  window.addEventListener('error', onError);
+  fireEvent.keyDown(input, { key: 'Enter' });
+  window.removeEventListener('error', onError);
+  expect(errors).toEqual([]);
+  await waitFor(() => expect((input as HTMLTextAreaElement).value).toMatch(/^\/\S+/));
+  expect((input as HTMLTextAreaElement).value).not.toContain('\n');
+});
+
+it('a local command reply stays in the session it was typed in', async () => {
+  let resolve!: (v: unknown) => void;
+  vi.spyOn(api, 'stripSessionImages').mockImplementation(() => new Promise(r => { resolve = r; }) as never);
+  const { input, switchTo } = await mount();
+  fireEvent.change(input, { target: { value: '/images-strip' } });
+  await send();
+  await waitFor(() => expect(api.stripSessionImages).toHaveBeenCalled());
+  await switchTo('B');
+  await act(async () => { resolve({ ok: true, stripped: 2 }); });
+  expect(screen.queryByText(/Removed image attachments/)).toBeNull();
+});
+
+it('/clear mid-turn keeps the live turn stoppable', async () => {
+  const stream = streamMock();
+  const { input } = await mount();
+  fireEvent.change(input, { target: { value: 'start turn' } }); await send(); await stream.accept();
+  expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeInTheDocument();
+  fireEvent.change(input, { target: { value: '/clear' } });
+  fireEvent.keyDown(input, { key: 'Escape' });
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText('start turn')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Stop', exact: true })).toBeInTheDocument();
+});

@@ -2136,9 +2136,23 @@ def record_successful_result(state: TurnGuardState, kind: str, act: Any, content
         pass
 
 
+# Results that describe the workspace. After it changes, a replay would hand
+# the pilot pre-edit contents ("[cached repeat]"), so it re-applied edits that
+# had already landed or failed on old_str.
+WORKSPACE_READ_KINDS = frozenset({"read_file", "list_dir", "search_files", "search_codegraph"})
+
+
+def _invalidate_workspace_reads(state: TurnGuardState) -> None:
+    for store in (state.successful_results, state.execution_counts):
+        for key in [k for k in store if k[0] in WORKSPACE_READ_KINDS]:
+            store.pop(key, None)
+
+
 def record_native_workspace_mutation(state: TurnGuardState) -> None:
-    """Invalidate only prior run_command repeat/cache context."""
+    """A native edit changed the workspace: prior command context and cached
+    workspace reads are stale."""
     state.run_command_context_epoch += 1
+    _invalidate_workspace_reads(state)
 
 
 def record_run_command_completion(state: TurnGuardState, act: Any) -> None:
@@ -2152,6 +2166,8 @@ def record_run_command_completion(state: TurnGuardState, act: Any) -> None:
     state.run_command_context_epoch += 1
     key = ("run_command", normalize_action_args("run_command", act))
     state.run_command_epochs[key] = state.run_command_context_epoch
+    # A command may have rewritten files (formatter, sed -i, codegen).
+    _invalidate_workspace_reads(state)
 
 
 def check_swarm_gate(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict:

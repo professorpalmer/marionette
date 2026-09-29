@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { ChevronDown, Check, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
-import { REASONING_LEVELS, labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
+import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
+import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { useOverlayFocus } from "../lib/overlayFocus";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
@@ -10,17 +11,21 @@ export default function PilotPicker({
   config,
   sessionId = "",
   pendingModel,
+  pendingReasoning,
   setupNotice,
   modelSelectionDisabled = false,
   onPendingModelChange,
+  onPendingReasoningChange,
   onSessionModelChange,
 }: {
   config: Config | null;
   sessionId?: string;
   pendingModel?: string;
+  pendingReasoning?: ReasoningEffort;
   setupNotice?: string;
   modelSelectionDisabled?: boolean;
   onPendingModelChange?: (model: string) => void;
+  onPendingReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
   const [models, setModels] = useState<string[]>([]);
@@ -33,6 +38,7 @@ export default function PilotPicker({
   const containerRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const reasonMenuRef = useRef<HTMLDivElement>(null);
+  const reasonSelectedRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const operation = useRef(0);
@@ -48,6 +54,7 @@ export default function PilotPicker({
     onClose: () => setModelOpen(false),
   });
   useOverlayFocus(reasonOpen, reasonMenuRef, {
+    initialFocusRef: reasonSelectedRef,
     onClose: () => setReasonOpen(false),
   });
 
@@ -55,7 +62,7 @@ export default function PilotPicker({
     if (!config) return;
     const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
     setModels(nextModels);
-    setReasoning(config.reasoning_effort || "low");
+    setReasoning(!sessionId && pendingReasoning ? pendingReasoning : config.reasoning_effort || "low");
     setCurrent(!sessionId && pendingModel ? pendingModel : config.driver);
     if (config.driver && !nextModels.includes(config.driver)) {
       const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
@@ -64,7 +71,7 @@ export default function PilotPicker({
     } else {
       setRerouteNotice(null);
     }
-  }, [config, pendingModel, sessionId]);
+  }, [config, pendingModel, pendingReasoning, sessionId]);
 
   useEffect(() => {
     const handleOpen = () => setModelOpen(true);
@@ -159,7 +166,14 @@ export default function PilotPicker({
   };
 
   const setReasoningEffort = async (level: ReasoningEffort) => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      // No session yet: stage the level with the pending model; App applies
+      // both when the first send creates the session.
+      setReasoning(level);
+      setReasonOpen(false);
+      onPendingReasoningChange?.(level, current);
+      return;
+    }
     const generation = ++reasoningOperation.current;
     const prev = reasoning;
     setReasoning(level);
@@ -314,21 +328,7 @@ export default function PilotPicker({
               aria-label="Reasoning effort picker"
               className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
             >
-              {REASONING_LEVELS.map(({ value, label }) => {
-                const isSelected = value === reasoning;
-                return (
-                  <div
-                    key={value}
-                    onClick={() => setReasoningEffort(value)}
-                    className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] hover:bg-panel2 cursor-pointer transition select-none ${
-                      isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
-                    }`}
-                  >
-                    <span>{label}</span>
-                    {isSelected && <Check size={11} className="shrink-0 ml-2" />}
-                  </div>
-                );
-              })}
+              <ReasoningLevelOptions value={reasoning} onSelect={setReasoningEffort} selectedRef={reasonSelectedRef} />
               {sessionId && retainReady && reasoning !== "none" ? (
                 <label
                   className="flex items-center gap-2 px-3 py-1.5 text-[11.5px] text-txt/90 border-t border-edge/50 select-none cursor-pointer"

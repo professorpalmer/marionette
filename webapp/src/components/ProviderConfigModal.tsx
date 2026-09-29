@@ -18,6 +18,8 @@ export type ProviderConfigModalProps = {
   /** Add-provider path: name is editable and fields start empty. */
   manual?: boolean;
   provider?: Partial<ProviderInfo> | null;
+  /** Add-provider choices: the backend stores keys for known providers only. */
+  providerChoices?: { name: string; label: string }[];
   busy?: boolean;
   onClose: () => void;
   onSubmit: (changed: Partial<ProviderConfigValues>) => void | Promise<void>;
@@ -27,6 +29,7 @@ export default function ProviderConfigModal({
   open,
   manual = false,
   provider = null,
+  providerChoices = [],
   busy = false,
   onClose,
   onSubmit,
@@ -36,11 +39,23 @@ export default function ProviderConfigModal({
     [manual, provider],
   );
   const [draft, setDraft] = useState<ProviderConfigValues>(original);
-  const firstFieldRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const nameRef = useRef<HTMLSelectElement>(null);
+  const keyRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (open) setDraft(original);
+    if (open) {
+      setDraft(original);
+      setError(null);
+    }
   }, [open, original]);
+
+  // Only the key (and, when adding, which provider) is persisted; the rest
+  // describes the provider and is shown read-only when it has a value.
+  const editable = (id: ProviderConfigFieldId) => id === "api_key" || (id === "name" && manual);
+  const groups = PROVIDER_CONFIG_GROUPS
+    .map((group) => ({ ...group, fields: group.fields.filter((id) => editable(id) || draft[id]) }))
+    .filter((group) => group.fields.length > 0);
 
   const changed = useMemo(
     () => changedProviderFields(original, draft, { maskedSecret: provider?.masked }),
@@ -58,7 +73,12 @@ export default function ProviderConfigModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSubmit) return;
-    await onSubmit(changed);
+    setError(null);
+    try {
+      await onSubmit(changed);
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : "Could not save. Try again.");
+    }
   };
 
   return (
@@ -67,7 +87,7 @@ export default function ProviderConfigModal({
       onClose={onClose}
       testId="provider-config-modal"
       className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center p-4"
-      initialFocusRef={firstFieldRef}
+      initialFocusRef={manual ? nameRef : keyRef}
       onBackdropClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -94,7 +114,7 @@ export default function ProviderConfigModal({
         </div>
 
         <div className="px-4 py-3 space-y-4 max-h-[70vh] overflow-y-auto">
-          {PROVIDER_CONFIG_GROUPS.map((group) => (
+          {groups.map((group) => (
             <fieldset
               key={group.id}
               data-testid={`provider-config-group-${group.id}`}
@@ -105,7 +125,7 @@ export default function ProviderConfigModal({
               </legend>
               {group.fields.map((id) => {
                 const secret = SECRET_FIELD_IDS.has(id);
-                const locked = id === "name" && !manual;
+                const locked = !editable(id);
                 const placeholder = secret
                   ? provider?.has_key
                     ? provider.masked || "Retype to replace"
@@ -114,8 +134,22 @@ export default function ProviderConfigModal({
                 return (
                   <label key={id} className="block space-y-1">
                     <span className="text-[11px] text-muted">{PROVIDER_CONFIG_LABELS[id]}</span>
+                    {id === "name" && manual ? (
+                      <select
+                        ref={nameRef}
+                        data-testid="provider-config-field-name"
+                        name="name"
+                        value={draft.name}
+                        onChange={(e) => setField("name", e.target.value)}
+                        disabled={busy}
+                        className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] font-mono focus:outline-none focus:border-accent disabled:opacity-50"
+                      >
+                        <option value="">Choose a provider</option>
+                        {providerChoices.map((c) => <option key={c.name} value={c.name}>{c.label}</option>)}
+                      </select>
+                    ) : (
                     <input
-                      ref={id === "name" ? firstFieldRef : undefined}
+                      ref={id === "api_key" ? keyRef : undefined}
                       data-testid={`provider-config-field-${id}`}
                       type={secret ? "password" : "text"}
                       name={id}
@@ -127,6 +161,7 @@ export default function ProviderConfigModal({
                       readOnly={locked}
                       className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] font-mono focus:outline-none focus:border-accent disabled:opacity-50"
                     />
+                    )}
                     {secret && provider?.has_key ? (
                       <span className="block text-[10px] text-faint">
                         Leave blank to keep the current key. Retype to replace.
@@ -139,6 +174,9 @@ export default function ProviderConfigModal({
           ))}
         </div>
 
+        {error ? (
+          <div role="alert" className="px-4 pb-2 text-[11px] text-risk">{error}</div>
+        ) : null}
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-edge/40">
           <button
             type="button"

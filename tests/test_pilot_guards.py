@@ -822,19 +822,27 @@ def test_different_completed_command_invalidates_prior_command():
     assert check_loop_guard(state, "run_command", first).suppress is False
 
 
-def test_command_context_change_does_not_invalidate_read_only_cache():
-    from harness.pilot_guards import record_successful_result
+def test_workspace_change_invalidates_cached_reads():
+    """read -> edit -> read must re-read, not replay the pre-edit contents."""
+    from harness.pilot_guards import record_run_command_completion, record_successful_result
 
     state = new_turn_guard_state()
     read = _Act(kind="read_file", path="main.py")
     record_action_execution(state, "read_file", read)
-    record_successful_result(state, "read_file", read, "source")
+    record_successful_result(state, "read_file", read, "old source")
+    assert check_loop_guard(state, "read_file", read).replay is True
 
     record_native_workspace_mutation(state)
+    assert check_loop_guard(state, "read_file", read).suppress is False
+    assert ("read_file", normalize_action_args("read_file", read)) not in state.execution_counts
 
-    verdict = check_loop_guard(state, "read_file", read)
-    assert verdict.replay is True
-    assert state.execution_counts[("read_file", normalize_action_args("read_file", read))] == 1
+    # A completed command (formatter, sed -i) invalidates reads the same way.
+    record_action_execution(state, "read_file", read)
+    record_successful_result(state, "read_file", read, "new source")
+    fmt = _Act(kind="run_command", command="npm run format")
+    record_action_execution(state, "run_command", fmt)
+    record_run_command_completion(state, fmt)
+    assert check_loop_guard(state, "read_file", read).suppress is False
 
 
 @pytest.mark.parametrize("kind", ["run_implement", "run_parallel"])

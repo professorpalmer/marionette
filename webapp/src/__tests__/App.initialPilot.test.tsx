@@ -24,6 +24,7 @@ vi.mock("../lib/api", () => ({ api: {
   diagnostics: () => Promise.resolve({}),
   providers: () => Promise.resolve([{ has_key: true }]),
   swapPilot: vi.fn(),
+  setPilotPreferences: vi.fn(),
 } }));
 
 vi.mock("../components/LeftRail", () => ({
@@ -47,6 +48,7 @@ vi.mock("../components/Conversation", () => ({
     pilotSetupNotice,
     pilotSelectionDisabled,
     onPendingPilotModelChange,
+    onPendingPilotReasoningChange,
     onSessionPilotModelChange,
   }: {
     activeSessionId: string | null;
@@ -54,10 +56,12 @@ vi.mock("../components/Conversation", () => ({
     pilotSetupNotice?: string;
     pilotSelectionDisabled?: boolean;
     onPendingPilotModelChange: (model: string) => void;
+    onPendingPilotReasoningChange: (level: "high", model: string) => void;
     onSessionPilotModelChange: (sessionId: string, model: string) => Promise<unknown>;
   }) => <div>
     <button onClick={() => onPendingPilotModelChange("local:mlx-community/Bonsai2-27B")}>Choose Bonsai</button>
     <button onClick={() => onPendingPilotModelChange("anthropic:claude-sonnet-4-6")}>Choose Claude</button>
+    <button onClick={() => onPendingPilotReasoningChange("high", "anthropic:claude-sonnet-4-6")}>Choose High</button>
     <button onClick={() => { if (activeSessionId) void onSessionPilotModelChange(activeSessionId, "local:mlx-community/Bonsai2-27B"); }}>Retry succeeded</button>
     <button onClick={() => { if (activeSessionId) void onSessionPilotModelChange(activeSessionId, "local:mlx-community/Bonsai2-27B"); }}>Swap Bonsai</button>
     <button onClick={() => { if (activeSessionId) void onSessionPilotModelChange(activeSessionId, "anthropic:claude-sonnet-4-6"); }}>Swap Claude</button>
@@ -92,6 +96,7 @@ function deferred<T>() {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(api.swapPilot).mockReset();
+  vi.mocked(api.setPilotPreferences).mockReset();
 });
 
 afterEach(cleanup);
@@ -221,5 +226,25 @@ it("serializes existing-session selections so an older backend request cannot fi
   expect(screen.getByTestId("setup-notice")).toHaveTextContent("Setting claude-sonnet-4-6 for this session");
 
   await act(async () => second.resolve({ ok: true }));
+  await waitFor(() => expect(screen.getByTestId("setup-notice")).toBeEmptyDOMElement());
+});
+
+it("applies a reasoning level chosen before the first message to the created session", async () => {
+  vi.mocked(api.swapPilot).mockResolvedValue({ ok: true });
+  const prefs = deferred<unknown>();
+  vi.mocked(api.setPilotPreferences).mockReturnValue(prefs.promise as never);
+  await act(async () => { render(<App />); });
+  fireEvent.click(screen.getByRole("button", { name: "Choose High" }));
+  fireEvent.click(screen.getByRole("button", { name: "Choose Bonsai" }));
+  act(() => {
+    rail.created("session-new");
+    rail.change("session-new");
+  });
+
+  await waitFor(() => expect(api.setPilotPreferences).toHaveBeenCalledExactlyOnceWith("session-new", { reasoning_effort: "high" }));
+  expect(api.swapPilot).toHaveBeenCalledExactlyOnceWith("local:mlx-community/Bonsai2-27B", "session-new");
+  // The first send stays gated until the level is on the session too.
+  expect(screen.getByTestId("selection-disabled")).toHaveTextContent("true");
+  await act(async () => prefs.resolve({}));
   await waitFor(() => expect(screen.getByTestId("setup-notice")).toBeEmptyDOMElement());
 });

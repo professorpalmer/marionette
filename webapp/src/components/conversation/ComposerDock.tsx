@@ -6,7 +6,7 @@
 import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
-import type { InputDocument, QueueRecovery } from "../../lib/api";
+import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
 import type { RefObject } from "react";
 import {
   ChevronDown,
@@ -78,9 +78,11 @@ export default function ComposerDock({
   swarmLiveJobs = [],
   sessionId = "",
   pendingPilotModel,
+  pendingPilotReasoning,
   pilotSetupNotice,
   pilotSelectionDisabled = false,
   onPendingPilotModelChange,
+  onPendingPilotReasoningChange,
   onSessionPilotModelChange,
   queueLoadError,
   attachedDocuments = [],
@@ -180,9 +182,11 @@ export default function ComposerDock({
   swarmLiveJobs?: Job[];
   sessionId?: string;
   pendingPilotModel?: string;
+  pendingPilotReasoning?: ReasoningEffort;
   pilotSetupNotice?: string;
   pilotSelectionDisabled?: boolean;
   onPendingPilotModelChange?: (model: string) => void;
+  onPendingPilotReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionPilotModelChange?: (sessionId: string, model: string) => Promise<unknown>;
   queueLoadError?: string | null;
   attachedDocuments?: InputDocument[];
@@ -1096,9 +1100,11 @@ export default function ComposerDock({
                 sessionId={sessionId}
                 config={pickerConfig(config, sessionId)}
                 pendingModel={pendingPilotModel}
+                pendingReasoning={pendingPilotReasoning}
                 setupNotice={pilotSetupNotice}
                 modelSelectionDisabled={pilotSelectionDisabled}
                 onPendingModelChange={onPendingPilotModelChange}
+                onPendingReasoningChange={onPendingPilotReasoningChange}
                 onSessionModelChange={onSessionPilotModelChange}
               />
             </div>

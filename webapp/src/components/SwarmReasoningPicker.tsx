@@ -1,18 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { REASONING_LEVELS, labelForEffort } from "../lib/reasoningSupport";
+import { labelForEffort } from "../lib/reasoningSupport";
+import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
 export default function SwarmReasoningPicker({ config, sessionId = "" }: { config: Config | null; sessionId?: string }) {
   const [effort, setEffort] = useState<ReasoningEffort>("medium");
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const selectedRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   useEffect(() => () => { operation.current++; }, [sessionId]);
 
   useOverlayFocus(open, menuRef, {
+    initialFocusRef: selectedRef,
     onClose: () => setOpen(false),
   });
 
@@ -71,21 +74,7 @@ export default function SwarmReasoningPicker({ config, sessionId = "" }: { confi
           aria-label="Worker reasoning picker"
           className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
         >
-          {REASONING_LEVELS.map(({ value, label }) => {
-            const isSelected = value === effort;
-            return (
-              <div
-                key={value}
-                onClick={() => setWorkerEffort(value)}
-                className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] hover:bg-panel2 cursor-pointer transition select-none ${
-                  isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
-                }`}
-              >
-                <span>{label}</span>
-                {isSelected && <Check size={11} className="shrink-0 ml-2" />}
-              </div>
-            );
-          })}
+          <ReasoningLevelOptions value={effort} onSelect={setWorkerEffort} selectedRef={selectedRef} />
         </div>
       )}
     </div>

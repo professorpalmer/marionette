@@ -78,11 +78,13 @@ def post_local_models(body: dict, svc: LocalModelServices) -> tuple[int, JsonPay
         if kind == "activate":
             snapshot = manager.activate(command["spec"])
             spec = snapshot.get("active_spec") or command["spec"]
+            prev_driver = svc.cfg.driver
             try:
                 svc.cfg.driver = spec
                 svc.rebuild_pilot_and_session()
                 svc.save_workspace_driver(getattr(svc.cfg, "repo", None), spec)
             except Exception as exc:
+                svc.cfg.driver = prev_driver
                 return 500, {"error": "Activated, but the pilot could not swap: %s" % exc}
             try:
                 svc.resync_driver_after_model_curation()

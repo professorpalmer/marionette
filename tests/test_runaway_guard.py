@@ -163,3 +163,19 @@ def test_append_action_result_suffixes_runaway_without_extra_row(tmp_path):
 
 def json_error():
     return '{"ok": false, "error": "ModuleNotFoundError: missing"}'
+
+
+def test_progressing_wait_is_not_told_its_status_is_unchanged():
+    session = _session()
+    act = _wait()
+    outs = [note_runaway_and_maybe_steer(session, act, f"running {i}/5", is_error=False) for i in range(1, 6)]
+    assert not any("runaway-guard" in o for o in outs)
+
+
+def test_repeat_reminder_never_tells_the_pilot_to_stop_waiting():
+    from harness.repeat_tool_reminder import note_repeat_and_maybe_nudge
+
+    session = _session()
+    act = _wait()
+    outs = [note_repeat_and_maybe_nudge(session, act, "running 1/5") for _ in range(8)]
+    assert not any("Do not call this tool" in o for o in outs)

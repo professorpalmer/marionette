@@ -200,6 +200,8 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
         # in-process AWS_* / provider env left by a concurrent path is gone
         # before registry sync re-reads availability.
         scrub_provider_env(p.name)
+        from ..model_fetch import invalidate_models_cache
+        invalidate_models_cache(p.name)
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()
         # Clearing a key is the same as disable for the picker: drop a
@@ -219,6 +221,10 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
             if not val:
                 return 400, {"error": "api_key required to set"}
             set_api_key(p.name, val)
+        # The catalog cache is keyed by provider, not credential: a key for
+        # another org or plan must not inherit the old key's model list.
+        from ..model_fetch import invalidate_models_cache
+        invalidate_models_cache(p.name)
         # Resync agentic registry when a provider key is set
         from ..auto_registry import sync_agentic_registry_safe
         sync_agentic_registry_safe()

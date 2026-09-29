@@ -1094,6 +1094,14 @@ def _resync_driver_after_model_curation() -> dict:
             # rebuild; still report the intended driver so the picker label
             # matches what will run after the turn.
             _diag("server.model_curation_driver_rebuild", e)
+            # Busy: the next turn applies the session's stored driver, so
+            # store the resolved one or it swaps back to the dropped model.
+            active_id = _runners.active_view_id or _sessions.active
+            if active_id:
+                try:
+                    _sessions.pilot_preferences(active_id, updates={"driver": _cfg.driver})
+                except ValueError:
+                    pass
         try:
             _save_workspace_driver(_cfg.repo, _cfg.driver)
         except Exception as e:

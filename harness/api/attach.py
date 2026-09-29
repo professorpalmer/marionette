@@ -427,6 +427,15 @@ def replace_failed_placeholder(svc: AttachServices, placeholder: Any) -> Any:
     return real
 
 
+def _record_session_driver(svc: Any, session_id: str, driver: str) -> None:
+    try:
+        svc.sessions.pilot_preferences(session_id, updates={"driver": driver})
+    except ValueError:
+        pass  # view without a session row (draft / deleted mid-rebuild)
+    except Exception as e:
+        svc.diag("server.rebuild_session_driver_record", e)
+
+
 def rebuild_pilot_and_session(svc: AttachServices) -> None:
     """Rebuild the ACTIVE view's runner for the current driver, preserving history.
 
@@ -490,6 +499,10 @@ def rebuild_pilot_and_session(svc: AttachServices) -> None:
                 f"could not load model {attempted_driver!r}: {e}. Reverted to the "
                 f"previous pilot."
             ) from e
+        # Turns re-apply the session's stored driver first, so a rebuild
+        # that does not record itself there is undone on the next send.
+        if active_id:
+            _record_session_driver(svc, active_id, attempted_driver)
         try:
             svc.freeze_pilot_meters_into_boot_carry(old_pilot)
         except Exception:

@@ -5,7 +5,7 @@ import { imagePath, nativeFs } from "../lib/transport";
 import { InputRetryKeys, receiptDraft, requireImageCapacity } from "./conversation/inputDraft";
 import type { SessionViewport, TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, type SetStateAction } from "react";
-import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ServerQueueItem } from "../lib/api";
+import { api, type Config, type InputReceipt, type InputDocument, type InputSubmission, type QueueRecovery, type ReasoningEffort, type ServerQueueItem } from "../lib/api";
 import { usePolling } from "../lib/usePolling";
 import FileEditorPane from "./FileEditorPane";
 import SessionToolsPanel, { type SessionToolsView } from "./conversation/SessionToolsPanel";
@@ -272,9 +272,11 @@ export default function Conversation({
   onJobChange,
   pilotSetup,
   pendingPilotModel,
+  pendingPilotReasoning,
   pilotSetupNotice,
   pilotSelectionDisabled,
   onPendingPilotModelChange,
+  onPendingPilotReasoningChange,
   onSessionPilotModelChange,
 }: {
   config: Config | null;
@@ -283,9 +285,11 @@ export default function Conversation({
   onJobChange: () => void;
   pilotSetup?: PilotSetupGate;
   pendingPilotModel?: string;
+  pendingPilotReasoning?: ReasoningEffort;
   pilotSetupNotice?: string;
   pilotSelectionDisabled?: boolean;
   onPendingPilotModelChange?: (model: string) => void;
+  onPendingPilotReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionPilotModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
   const pilotSetupRef = useRef(pilotSetup);
@@ -2328,6 +2332,8 @@ export default function Conversation({
     setInput(val);
     const trigger = detectComposerTrigger(val, cursorPosition);
     if (trigger.kind === "slash") {
+      // A new query is a new list: start at its top match, as mentions do.
+      if (trigger.query !== slashSearch) setSelectedSlashIndex(0);
       setSlashSearch(trigger.query);
       setMentionSearch(null);
       setMentionIndex(-1);
@@ -2599,6 +2605,9 @@ export default function Conversation({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // An IME (Japanese, Chinese, Korean, accent or dictation composition) owns
+    // Enter/Escape while composing: Enter confirms the candidate, not send.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       if (mentionSearch !== null || slashSearch !== null) {
         setMentionSearch(null);
@@ -2666,7 +2675,7 @@ export default function Conversation({
           return;
         }
         if (e.key === "Enter") {
-          insertSlashCommand(matchingSlash[selectedSlashIndex].cmd);
+          insertSlashCommand(matchingSlash[clampSelectIndex(selectedSlashIndex, matchingSlash.length)].cmd);
           e.preventDefault();
           return;
         }
@@ -3592,10 +3601,14 @@ export default function Conversation({
       itemsRef.current = [];
       transcriptFpRef.current = "";
       if (activeSessionId) writeTranscriptCache(activeSessionId, []);
-      setTurnOpen(false);
-      setWaitHint(null);
-      setStatus("idle");
-      setCompactingStatus(null);
+      // /clear does not stop the backend: mid-turn, keep the live turn's
+      // chrome (Stop, busy status) so the next Enter still steers it.
+      if (!composerBusy) {
+        setTurnOpen(false);
+        setWaitHint(null);
+        setStatus("idle");
+        setCompactingStatus(null);
+      }
       return;
     }
     if (chrome === "new_session") {
@@ -3604,29 +3617,33 @@ export default function Conversation({
       window.dispatchEvent(new Event("harness-new-session"));
       return;
     }
+    // A local command's exchange belongs to the session it was typed in; if
+    // the user switched away before the reply arrived, drop it rather than
+    // append it to whichever session is on screen.
+    const replyInOwningSession = (typed: string) => {
+      const owner = activeSessionIdRef.current;
+      return (text: string) => {
+        if (activeSessionIdRef.current !== owner) return;
+        setItems((p) => [
+          ...p,
+          { kind: "msg", msg: { role: "user", text: typed } },
+          { kind: "msg", msg: { role: "assistant", text } },
+        ]);
+      };
+    };
     if (slash.kind === "todo") {
       const command = msg.startsWith("/") ? msg : `/todo ${slash.text || ""}`.trim();
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void api.sessionTodo({ command })
         .then((res) => {
           if (res?.todos) publishSessionTodos(res.todos, activeSessionId || "");
-          const reply = !res?.ok
+          reply(!res?.ok
             ? (res?.error || res?.usage || "Could not run /todo.")
-            : (res?.notice || res?.tree || res?.markdown || "No todos.");
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: reply } },
-          ]);
+            : (res?.notice || res?.tree || res?.markdown || "No todos."));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not run /todo." } },
-          ]);
-        });
+        .catch(() => reply("Could not run /todo."));
       return;
     }
     if (slash.kind === "refine") {
@@ -3724,32 +3741,17 @@ export default function Conversation({
       return;
     }
     if (slash.kind === "images-strip") {
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void api.stripSessionImages()
         .then((res) => {
           const n = Number(res?.stripped || 0);
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: res?.ok
-                  ? (n ? `Removed image attachments from ${n} history row${n === 1 ? "" : "s"}.` : "No image attachments in history.")
-                  : (res?.error || "Could not strip images."),
-              },
-            },
-          ]);
+          reply(res?.ok
+            ? (n ? `Removed image attachments from ${n} history row${n === 1 ? "" : "s"}.` : "No image attachments in history.")
+            : (res?.error || "Could not strip images."));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not strip images." } },
-          ]);
-        });
+        .catch(() => reply("Could not strip images."));
       return;
     }
     if (slash.kind === "privacy") {
@@ -3763,29 +3765,19 @@ export default function Conversation({
           : action === "set"
             ? api.setPrivacy({ action: "set", patterns: parts.slice(1) })
             : api.getPrivacy();
+      const reply = replyInOwningSession(msg);
       setInput("");
       setEditingIndex(null);
       void request
         .then((res) => {
           const patterns = res?.forbidden_patterns || [];
-          const reply = !res?.ok
+          reply(!res?.ok
             ? (res?.error || "Could not update privacy.")
             : (patterns.length
               ? `Forbidden patterns:\n${patterns.map((p) => `- ${p}`).join("\n")}`
-              : "No forbidden patterns. Add one with /privacy add .env");
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: reply } },
-          ]);
+              : "No forbidden patterns. Add one with /privacy add .env"));
         })
-        .catch(() => {
-          setItems((p) => [
-            ...p,
-            { kind: "msg", msg: { role: "user", text: msg } },
-            { kind: "msg", msg: { role: "assistant", text: "Could not update privacy." } },
-          ]);
-        });
+        .catch(() => reply("Could not update privacy."));
       return;
     }
     if (slash.kind === "model") {
@@ -4401,9 +4393,11 @@ export default function Conversation({
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
         pendingPilotModel={pendingPilotModel}
+        pendingPilotReasoning={pendingPilotReasoning}
         pilotSetupNotice={pilotSetupNotice}
         pilotSelectionDisabled={pilotSelectionDisabled}
         onPendingPilotModelChange={onPendingPilotModelChange}
+        onPendingPilotReasoningChange={onPendingPilotReasoningChange}
         onSessionPilotModelChange={onSessionPilotModelChange}
         queueLoadError={queueWriteError || queueLoadError}
         attachedDocuments={attachedDocuments}
