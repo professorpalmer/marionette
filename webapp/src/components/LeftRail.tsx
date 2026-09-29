@@ -9,6 +9,7 @@ import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from 
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
+import { moveMenuFocus, useOverlayFocus } from "../lib/overlayFocus";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -114,6 +115,8 @@ export default function LeftRail({
   const { state: metadata } = useSharedJobMetadata();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  const contextFirstItemRef = useRef<HTMLButtonElement>(null);
   const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
   const [forkOpen, setForkOpen] = useState(false);
   const [swapping, setSwapping] = useState<string | null>(null);
@@ -757,19 +760,18 @@ export default function LeftRail({
       setContextMenu(null);
       setConfirmDeleteId(null);
     };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setContextMenu(null);
-        setConfirmDeleteId(null);
-      }
-    };
     window.addEventListener("click", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
+    return () => window.removeEventListener("click", handleClose);
   }, [contextMenu]);
+  // Keyboard path (Shift+F10 / Menu key): focus enters the menu, Tab stays
+  // in it, Escape closes it and focus returns to the session row.
+  useOverlayFocus(!!contextMenu, contextMenuRef, {
+    initialFocusRef: contextFirstItemRef,
+    onClose: () => {
+      setContextMenu(null);
+      setConfirmDeleteId(null);
+    },
+  });
 
   useEffect(() => {
     if (!projectContextMenu) return;
@@ -2236,11 +2238,15 @@ export default function LeftRail({
       {/* CONTEXT MENU */}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
+          role="menu"
+          aria-label={`${contextMenu.title} actions`}
           className="session-context-menu fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[150px]"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => { if (moveMenuFocus(contextMenuRef.current, e.key)) e.preventDefault(); }}
         >
-          <button type="button" className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+          <button ref={contextFirstItemRef} type="button" className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
             onClick={() => {
               setForkTrigger(contextTrigger.current);
               setForkTarget(contextMenu.session);
@@ -2324,6 +2330,7 @@ export default function LeftRail({
                   Yes
                 </button>
                 <button
+                  autoFocus
                   onClick={() => setConfirmDeleteId(null)}
                   className="text-muted hover:underline"
                 >
