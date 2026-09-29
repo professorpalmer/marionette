@@ -540,6 +540,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import chat_archive as _archive_api
     from .api import environment as _env_api
     from .api import doctor as _doctor_api
+    from .api import resources as _resources_api
     from .api import files as _files_api
     from .api import git as _git_api
     from .api import hooks as _hooks_api
@@ -895,6 +896,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         "/api/config": lambda handler, u, qs: handler._get_config(qs.get("session_id", [None])[0]),
         "/api/diagnostics": get_json(
             _doctor_api.get_diagnostics, services=svc.doctor_services),
+        "/api/diagnostics/resources": get_json(
+            _resources_api.get_resources, services=svc.resource_services),
         "/api/diagnostics/bundle": get_json(
             _doctor_api.get_diagnostics_bundle,
             services=svc.doctor_services,
