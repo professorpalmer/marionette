@@ -1195,6 +1195,7 @@ export default function ComposerDock({
                 </>
               : <button type="button" onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)}
                   aria-label={auto ? "Run" : plan ? "Plan" : "Send"}
+                  title={transcriptStale ? "Loading this session…" : editBusy ? "Saving your edit…" : undefined}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                   <Send size={9} /><span className="composer-toolbar-send-label">{auto ? "Run" : plan ? "Plan" : "Send"}</span></button>}
             </div>
