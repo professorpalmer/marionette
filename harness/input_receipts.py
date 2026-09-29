@@ -548,15 +548,17 @@ class InputReceiptStore:
     def list(self):
         with self.transaction():
             document = self._read()
-            pending = [r for r in document['inputs'] if r['status'] in ('delivering', 'uncertain')]
-            if pending:
+            # Same-instance delivering is still the live attempt. Only a foreign
+            # owner (backend restart / new store) may be reconciled from durable
+            # transcript evidence, so only then is the transcript parsed: the
+            # queue is polled every few seconds for the whole of a live turn.
+            foreign = [r for r in document['inputs']
+                       if r['status'] in ('delivering', 'uncertain') and r.get('owner_instance') != self.instance]
+            if foreign:
                 ids = self._durable_ids()
                 changed = False
-                for row in pending:
-                    # Same-instance delivering is still the live attempt.
-                    # Only a foreign owner (backend restart / new store) may
-                    # be reconciled from durable transcript evidence.
-                    if row['id'] in ids and row.get('owner_instance') != self.instance:
+                for row in foreign:
+                    if row['id'] in ids:
                         row.update(status='injected', reason='exact_native_input_id_reconciled')
                         changed = True
                 if changed:
