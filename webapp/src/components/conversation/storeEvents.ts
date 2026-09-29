@@ -12,6 +12,15 @@ import {
 
 /** Poll cadence for the single store-event subscription. */
 export const STORE_EVENTS_POLL_MS = 1000;
+/** Idle cap: with no turn running and nothing new, back off to this. A turn
+ * started elsewhere is still picked up by the runners poll, which arms the
+ * live watch. */
+export const STORE_EVENTS_IDLE_MAX_MS = 8000;
+
+/** Next store poll delay: 1s while busy or progressing, doubling while idle. */
+export function storePollDelayMs(idleStreak: number): number {
+  return Math.min(STORE_EVENTS_IDLE_MAX_MS, STORE_EVENTS_POLL_MS * 2 ** Math.max(0, idleStreak));
+}
 
 /** Advance last-applied store cursor after a read_events_since batch. */
 export function nextStoreCursor(

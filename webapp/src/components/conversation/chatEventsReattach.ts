@@ -22,8 +22,8 @@ import {
   shouldStartLiveChatEventsWatch,
 } from "./chatEvents";
 import {
-  STORE_EVENTS_POLL_MS,
   isStoreRingMissEvent,
+  storePollDelayMs,
   storeCursorAfterBatch,
   shouldApplyStoreEvent,
   shouldApplyStoreStreamAfterLive,
@@ -577,6 +577,15 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
     chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
 
+    // Consecutive empty polls with no detached turn: an idle session need not
+    // be asked for events every second.
+    let idleStreak = 0;
+    const nextDelay = (cursorBefore: number) => {
+      const progressed = lastAppliedCursorRef.current !== cursorBefore;
+      idleStreak = detachedBusyRef.current || progressed ? 0 : idleStreak + 1;
+      return storePollDelayMs(idleStreak);
+    };
+
     const armNext = (delayMs: number) => {
       if (cancelled() || userStoppedRef.current) {
         releasePollInFlight();
@@ -598,6 +607,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       }
       chatEventsPollTimerRef.current = window.setTimeout(() => {
         chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
+        const cursorBefore = lastAppliedCursorRef.current;
         void pullChatEvents().then((keepPolling) => {
           if (!keepPolling || cancelled()) {
             clearChatEventsPoll();
@@ -611,12 +621,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             releasePollInFlight();
             return;
           }
-          armNext(STORE_EVENTS_POLL_MS);
+          armNext(nextDelay(cursorBefore));
         });
       }, delayMs) as unknown as number;
     };
 
     // Non-overlapping request-driven chain: next poll only after the prior settles.
+    const firstCursor = lastAppliedCursorRef.current;
     void pullChatEvents().then((keepPolling) => {
       if (!keepPolling || cancelled()) {
         releasePollInFlight();
@@ -630,7 +641,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         releasePollInFlight();
         return;
       }
-      armNext(STORE_EVENTS_POLL_MS);
+      armNext(nextDelay(firstCursor));
     });
   };
 
