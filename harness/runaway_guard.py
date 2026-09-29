@@ -230,7 +230,9 @@ def observe_step(
         else:
             state["poll_key"] = poll_key
             state["poll_count"] = 1
-        if int(state["poll_count"]) >= after:
+        # The steer says the status came back unchanged; only say so when it
+        # did. A wait that reports progress (1/5, 2/5...) is the tool working.
+        if int(state["poll_count"]) >= after and int(state.get("result_count") or 0) >= after:
             candidates.append(SIGNAL_POLLING)
             state["observations"].append({
                 "kind": SIGNAL_POLLING,
