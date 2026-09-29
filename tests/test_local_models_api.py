@@ -108,6 +108,28 @@ def test_activate_rebuilds_pilot(tmp_path):
     assert svc.cfg.driver == "local:managed/qwen-test"
 
 
+def test_activate_while_busy_keeps_the_running_driver(tmp_path):
+    svc, _ = _svc(tmp_path)
+    state = svc.manager._state()
+    state["managed"]["runtime"] = {"status": "ready", "path": "/x"}
+    state["managed"]["model"] = {"status": "ready", "id": "qwen-test", "path": "/m"}
+    state["managed"]["process"] = {
+        "pid": 1, "port": 9, "host": "127.0.0.1", "healthy": True,
+        "alias": "marionette-x", "nonce": "x", "exe": "llama-server",
+        "model_path": "qwen-test",
+    }
+    svc.manager._save(state)
+    svc.manager.reconcile_process = lambda: svc.manager._state()
+
+    def busy():
+        raise RuntimeError("pilot busy -- finish or stop the current turn before rebuilding")
+
+    svc.rebuild_pilot_and_session = busy
+    status, _ = post_local_models({"type": "activate", "spec": "local:managed/qwen-test"}, svc)
+    assert status == 500
+    assert svc.cfg.driver == "stub:ok"
+
+
 def test_post_install_requires_model_id(tmp_path):
     svc, _ = _svc(tmp_path)
     status, payload = post_local_models({"type": "install", "target": "all"}, svc)

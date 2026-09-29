@@ -364,3 +364,42 @@ def test_session_with_unbuildable_saved_pilot_still_opens_and_recovers(owned_ser
     srv.Handler._swap_pilot(h, "stub-oracle", b)
     assert h.code == 200, h.body
     assert srv._pilot.pilot.name == "stub-oracle"
+
+
+def test_settings_rebuild_is_not_undone_by_the_next_turn(owned_server):
+    """Local Activate / Settings driver edit rebuild onto cfg.driver.
+
+    Turns re-apply the session's stored driver first, so the rebuild must
+    record itself there or the next send swaps straight back.
+    """
+    srv = owned_server
+    a_id = srv._sessions.active
+    h = Handler()
+    srv.Handler._swap_pilot(h, "stub-oracle", a_id)
+    assert srv._sessions.pilot_preferences(a_id)["driver"] == "stub-oracle"
+
+    srv._cfg.driver = "stub-oracle-v2"
+    srv._rebuild_pilot_and_session()
+
+    assert srv._sessions.pilot_preferences(a_id)["driver"] == "stub-oracle-v2"
+    assert srv._ensure_session_driver(a_id)
+    assert srv._pilot.pilot.name == "stub-oracle-v2"
+
+
+def test_curation_resync_while_busy_stores_the_replacement_driver(owned_server, monkeypatch):
+    """Disabling the active model mid-turn defers the rebuild to the next turn,
+    which must pick up the replacement, not the disabled model."""
+    srv = owned_server
+    a_id, a = srv._sessions.active, srv._pilot
+    h = Handler()
+    srv.Handler._swap_pilot(h, "stub-oracle", a_id)
+    monkeypatch.setattr(srv, "_resolve_available_driver",
+                        lambda: setattr(srv._cfg, "driver", "stub-oracle-v2"))
+    monkeypatch.setattr(srv, "_save_workspace_driver", lambda *_a: None)
+    a = srv._pilot
+    a._busy.acquire()
+    try:
+        assert srv._resync_driver_after_model_curation()["changed"] is True
+    finally:
+        a._busy.release()
+    assert srv._sessions.pilot_preferences(a_id)["driver"] == "stub-oracle-v2"
