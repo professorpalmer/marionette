@@ -139,3 +139,43 @@ function isCloserLine(line: string, ticks: string): boolean {
   const m = line.match(CLOSER_LINE);
   return Boolean(m && m[2][0] === ticks[0] && m[2].length >= ticks.length);
 }
+
+/** Top-level list item (`-`, `*`, `+`, `1.`, `1)`), which may continue a list across a blank line. */
+const LIST_ITEM_LINE = /^(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+
+/** Split finished markdown into top-level blocks so a stream only re-parses its tail.
+
+A boundary is a blank line (outside a fence) followed by a line at column 0
+that cannot continue the previous block: not indented (list continuation,
+indented code) and not a list item (loose list). Blank lines stay on the
+preceding block, so `blocks.join("") === text`.
+*/
+export function splitMarkdownBlocks(text: string): string[] {
+  if (!text) return [];
+  const blocks: string[] = [];
+  let start = 0;
+  let pos = 0;
+  let fence: string | null = null;
+  let prevBlank = false;
+  while (pos < text.length) {
+    const nl = text.indexOf("\n", pos);
+    const end = nl === -1 ? text.length : nl + 1;
+    const line = text.slice(pos, nl === -1 ? text.length : nl);
+    if (fence) {
+      const m = line.match(CLOSER_LINE);
+      if (m && m[2][0] === fence[0] && m[2].length >= fence.length) fence = null;
+    } else {
+      const blank = line.trim() === "";
+      if (prevBlank && !blank && pos > start && !/^\s/.test(line) && !LIST_ITEM_LINE.test(line)) {
+        blocks.push(text.slice(start, pos));
+        start = pos;
+      }
+      const m = line.match(FENCE_LINE);
+      if (m) fence = m[2];
+      prevBlank = blank;
+    }
+    pos = end;
+  }
+  blocks.push(text.slice(start));
+  return blocks;
+}
