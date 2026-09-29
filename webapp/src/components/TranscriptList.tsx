@@ -595,42 +595,41 @@ export function isLiveAnswerAssistant(msg: Msg): boolean {
   return msg.streaming === true;
 }
 
-function turnHasInvestigationActivity(items: Item[], turnStart: number): boolean {
-  return items.slice(turnStart).some(
-    (row) =>
-      row.kind === "card"
-      || row.kind === "thinking"
-      || row.kind === "swarm_result"
-      || row.kind === "swarm_pending",
-  );
-}
-
-function laterInvestigationActivity(items: Item[], fromIdx: number): {
+type LaterActivity = {
   laterCardOrSwarm: boolean;
   laterThinking: boolean;
   laterAssistant: boolean;
-} {
-  let laterCardOrSwarm = false;
-  let laterThinking = false;
-  let laterAssistant = false;
-  for (let j = fromIdx + 1; j < items.length; j++) {
-    const later = items[j];
-    if (isOperatorProgressBoundary(later)) break;
-    if (later.kind === "msg" && later.msg.role === "assistant") {
-      laterAssistant = true;
-    }
-    if (
-      later.kind === "card"
-      || later.kind === "swarm_result"
-      || later.kind === "swarm_pending"
-    ) {
-      laterCardOrSwarm = true;
-    }
-    if (later.kind === "thinking") {
-      laterThinking = true;
+};
+
+/**
+ * One reverse pass: for each index, the activity after it up to the next
+ * operator boundary (`later`), and whether any investigation activity
+ * follows it anywhere (`activityFrom`). Grouping runs on every streamed
+ * token, so per-message forward scans made it quadratic in transcript length.
+ */
+function investigationTables(items: Item[]): { later: LaterActivity[]; activityFrom: boolean[] } {
+  const n = items.length;
+  const later: LaterActivity[] = new Array(n);
+  const activityFrom: boolean[] = new Array(n + 1);
+  activityFrom[n] = false;
+  let acc: LaterActivity = { laterCardOrSwarm: false, laterThinking: false, laterAssistant: false };
+  for (let j = n - 1; j >= 0; j--) {
+    later[j] = acc;
+    const row = items[j];
+    const investigation = row.kind === "card" || row.kind === "thinking"
+      || row.kind === "swarm_result" || row.kind === "swarm_pending";
+    activityFrom[j] = investigation || activityFrom[j + 1];
+    if (isOperatorProgressBoundary(row)) {
+      acc = { laterCardOrSwarm: false, laterThinking: false, laterAssistant: false };
+    } else {
+      acc = {
+        laterCardOrSwarm: acc.laterCardOrSwarm || row.kind === "card" || row.kind === "swarm_result" || row.kind === "swarm_pending",
+        laterThinking: acc.laterThinking || row.kind === "thinking",
+        laterAssistant: acc.laterAssistant || (row.kind === "msg" && row.msg.role === "assistant"),
+      };
     }
   }
-  return { laterCardOrSwarm, laterThinking, laterAssistant };
+  return { later, activityFrom };
 }
 
 export function collectIntermediateAssistantItems(
@@ -645,13 +644,19 @@ export function collectIntermediateAssistantItems(
   }
   const currentTurnStart = lastUserIdx >= 0 ? lastUserIdx + 1 : 0;
 
+  const { later: laterByIndex, activityFrom } = investigationTables(items);
   let turnStart = 0;
+  let seenCardInTurn = false;
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "msg" && item.msg.role === "user") {
       turnStart = i + 1;
+      seenCardInTurn = false;
       continue;
     }
+    // Card-before-this-row within the turn; read before counting row i.
+    const seenCardBefore = seenCardInTurn;
+    if (item.kind === "card") seenCardInTurn = true;
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
 
     const structurallyProvenProgress = isStructurallyProvenNativeProgress(items, i);
@@ -672,10 +677,7 @@ export function collectIntermediateAssistantItems(
       continue;
     }
 
-    const seenCardBefore = items
-      .slice(turnStart, i)
-      .some((row) => row.kind === "card");
-    const foldActivity = turnHasInvestigationActivity(items, turnStart);
+    const foldActivity = activityFrom[turnStart];
 
     // Open-loop absorption is current-turn only (see docstring).
     const openAbsorb = agentLoopOpen && i >= currentTurnStart;
@@ -684,7 +686,7 @@ export function collectIntermediateAssistantItems(
       continue;
     }
 
-    const later = laterInvestigationActivity(items, i);
+    const later = laterByIndex[i];
 
     if (!seenCardBefore) {
       // Sealed pre-tool sticky outside — except explicit plan/progress
@@ -1532,9 +1534,18 @@ export const TranscriptList = memo(function TranscriptList({
   const pausePoint =
     status === "awaiting_swarm" || (holdSwarmAwait && !pilotBusy);
 
-  const intermediateItems = collectIntermediateAssistantItems(items, agentLoopOpen);
-  const grouped = groupAgentActivity(items, intermediateItems);
-  const viewportKeys = transcriptViewportKeys(grouped);
+  // Derived from items alone: status flips and busy-clock ticks re-render this
+  // (uncompiled) component without changing the transcript.
+  const { intermediateItems, grouped } = useMemo(() => {
+    const intermediate = collectIntermediateAssistantItems(items, agentLoopOpen);
+    return { intermediateItems: intermediate, grouped: groupAgentActivity(items, intermediate) };
+  }, [items, agentLoopOpen]);
+  const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
+  const rawIndexByMsg = useMemo(() => {
+    const index = new Map<Msg, number>();
+    items.forEach((raw, i) => { if (raw.kind === "msg" && !index.has(raw.msg)) index.set(raw.msg, i); });
+    return index;
+  }, [items]);
   const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
   const { head: virtualGrouped, tail: liveTailGrouped, tailStartIndex } =
     partitionTranscriptLiveTail(grouped, {
@@ -1692,7 +1703,7 @@ export const TranscriptList = memo(function TranscriptList({
     if (!it) return null;
     const key = stableItemKey(it, i);
     if (it.kind === "msg") {
-      const rawIdx = items.findIndex(raw => raw.kind === "msg" && (raw as { kind: "msg"; msg: Msg }).msg === it.msg);
+      const rawIdx = rawIndexByMsg.get(it.msg) ?? -1;
 
       let prevMsg: Msg | null = null;
       for (let j = i - 1; j >= 0; j--) {
