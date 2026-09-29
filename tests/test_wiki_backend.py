@@ -382,3 +382,49 @@ def test_pending_retry_timer_is_not_duplicated(monkeypatch):
         wiki_backend._schedule_retry(log=open(os.devnull, "ab"))
 
     assert len(created_timers) == 1
+
+
+def _hung_backend(isolated_state, monkeypatch):
+    home, _ = isolated_state
+    backend = _fake_backend(str(home), with_uvicorn=True)
+    monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.setenv("WIKI_API_BASE", "http://127.0.0.1:8000")
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wiki_backend, "_venv_repair_attempted", True)
+    monkeypatch.setattr(wiki_backend, "_schedule_retry", lambda log: None)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_cmd", lambda *a: [
+        wiki_backend.sys.executable, "-c", "import time; time.sleep(60)"])
+    monkeypatch.setattr(wiki_backend, "_started_proc", None)
+    spawned = []
+    real_spawn = wiki_backend._spawn
+    monkeypatch.setattr(wiki_backend, "_spawn",
+                        lambda *a: spawned.append(real_spawn(*a)) or spawned[-1])
+    return spawned
+
+
+def test_unhealthy_spawn_is_stopped_before_a_retry(isolated_state, monkeypatch):
+    spawned = _hung_backend(isolated_state, monkeypatch)
+    try:
+        result = wiki_backend.ensure_wiki_backend_running(wait_secs=0.3)
+        assert result["reason"] == "timeout waiting for /healthz"
+        assert spawned[0].poll() is not None
+        assert wiki_backend._started_proc is None
+    finally:
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
+
+
+def test_clean_exit_stops_the_spawned_backend(isolated_state, monkeypatch):
+    spawned = _hung_backend(isolated_state, monkeypatch)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *a, **k: bool(spawned))
+    try:
+        wiki_backend._start_locked("http://127.0.0.1:8000", subprocess.DEVNULL, 0.3, False)
+        assert spawned[0].poll() is None
+        wiki_backend._stop_started_proc()
+        assert spawned[0].poll() is not None
+    finally:
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()

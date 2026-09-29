@@ -158,10 +158,18 @@ def _venv_bin(venv_dir: str, name: str) -> str:
     return os.path.join(venv_dir, "bin", name)
 
 
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
 def _log_handle():
     try:
         log_path = os.path.expanduser(os.path.join("~", ".pmharness", "wiki-backend.log"))
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        try:
+            if os.path.getsize(log_path) > _LOG_MAX_BYTES:
+                os.replace(log_path, log_path + ".1")
+        except OSError:
+            pass
         return open(log_path, "ab", buffering=0)
     except Exception:
         return subprocess.DEVNULL
@@ -401,6 +409,41 @@ def _spawn(cmd: list[str], cwd: str, log):
     return subprocess.Popen(cmd, **kwargs)
 
 
+def _stop_started_proc() -> None:
+    """Stop the uvicorn this process spawned. An adopted backend is not ours."""
+    global _started_proc
+    proc, _started_proc = _started_proc, None
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            import signal
+            os.killpg(proc.pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+        proc.wait(5)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(2)
+        except Exception:
+            pass
+
+
+_exit_stop_registered = False
+
+
+def _register_exit_stop() -> None:
+    # uvicorn runs in its own session so a harness crash-respawn can adopt it,
+    # which also puts it outside the group Electron kills on quit. A clean
+    # harness exit therefore stops it here.
+    global _exit_stop_registered
+    if not _exit_stop_registered:
+        import atexit
+        atexit.register(_stop_started_proc)
+        _exit_stop_registered = True
+
+
 def _schedule_retry(log) -> None:
     """After a failed spawn/health-wait, retry once in the background.
 
@@ -441,39 +484,51 @@ def ensure_wiki_backend_running(wait_secs: float = 90.0, allow_provision: bool =
             return {"started": False, "reason": "already running"}
 
         log = _log_handle()
-
-        backend_dir = _find_existing_backend_dir()
-        if not backend_dir and allow_provision:
-            backend_dir = _provision_wiki(log)
-        if not backend_dir:
-            return {"started": False, "reason": "no wiki backend available"}
-
-        if not os.path.isfile(_venv_bin(os.path.join(backend_dir, ".venv"), "python")):
-            _repair_backend_venv_once(backend_dir, log)
-
-        port = urlparse(base).port or 8000
-        cmd = _uvicorn_cmd(backend_dir, port)
-        if not cmd:
-            _log_line(log, "no usable python for uvicorn; not spawning")
-            return {"started": False, "reason": "no usable python for uvicorn"}
-
         try:
-            _started_proc = _spawn(cmd, backend_dir, log)
-        except Exception as exc:
-            _schedule_retry(log)
-            return {"started": False, "reason": f"spawn failed: {exc}"}
+            return _start_locked(base, log, wait_secs, allow_provision)
+        finally:
+            if hasattr(log, "close"):
+                log.close()
 
-        deadline = time.monotonic() + wait_secs
-        while time.monotonic() < deadline:
-            if _healthz(base, timeout=1.5):
-                return {"started": True, "reason": "backend up",
-                        "dir": backend_dir, "port": port}
-            if _started_proc.poll() is not None:
-                _schedule_retry(log)
-                return {"started": False, "reason": "backend exited during startup"}
-            time.sleep(0.5)
+
+def _start_locked(base: str, log, wait_secs: float, allow_provision: bool) -> dict:
+    global _started_proc
+    backend_dir = _find_existing_backend_dir()
+    if not backend_dir and allow_provision:
+        backend_dir = _provision_wiki(log)
+    if not backend_dir:
+        return {"started": False, "reason": "no wiki backend available"}
+
+    if not os.path.isfile(_venv_bin(os.path.join(backend_dir, ".venv"), "python")):
+        _repair_backend_venv_once(backend_dir, log)
+
+    port = urlparse(base).port or 8000
+    cmd = _uvicorn_cmd(backend_dir, port)
+    if not cmd:
+        _log_line(log, "no usable python for uvicorn; not spawning")
+        return {"started": False, "reason": "no usable python for uvicorn"}
+
+    # Our own unhealthy spawn from an earlier attempt must not linger.
+    _stop_started_proc()
+    try:
+        _started_proc = _spawn(cmd, backend_dir, log)
+        _register_exit_stop()
+    except Exception as exc:
         _schedule_retry(log)
-        return {"started": False, "reason": "timeout waiting for /healthz"}
+        return {"started": False, "reason": f"spawn failed: {exc}"}
+
+    deadline = time.monotonic() + wait_secs
+    while time.monotonic() < deadline:
+        if _healthz(base, timeout=1.5):
+            return {"started": True, "reason": "backend up",
+                    "dir": backend_dir, "port": port}
+        if _started_proc.poll() is not None:
+            _schedule_retry(log)
+            return {"started": False, "reason": "backend exited during startup"}
+        time.sleep(0.5)
+    _stop_started_proc()
+    _schedule_retry(log)
+    return {"started": False, "reason": "timeout waiting for /healthz"}
 
 
 def ensure_wiki_backend_async() -> None:
