@@ -2241,13 +2241,15 @@ export const api = {
       exact?: boolean;
       error?: string;
       candidates?: string[];
-    }>("/api/file/resolve?path=" + encodeURIComponent(path)),
+      read_only?: boolean;
+    }>("/api/file/resolve?path=" + encodeURIComponent(path), { failureKind: "lookup" }),
   readFile: (path: string) =>
     getJSONSoft<{
       ok: boolean;
       path?: string;
       content?: string;
       truncated?: boolean;
+      read_only?: boolean;
       error?: string;
       binary?: boolean;
       name?: string;

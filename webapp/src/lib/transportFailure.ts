@@ -7,7 +7,8 @@ export type TransportFailureContext = {
   path?: string;
   sessionId?: string;
   repo?: string;
-  failureKind?: "action" | "operational";
+  /** lookup: any HTTP answer is a result for the caller, never a failure banner. */
+  failureKind?: "action" | "operational" | "lookup";
 };
 
 export function publishTransportFailure(
@@ -31,6 +32,7 @@ export function publishTransportFailure(
   // Only a recognized action with a structured backend reason stays local.
   // Unknown statuses and malformed responses still report operational failure.
   if (ctx.failureKind === "action" && isLocalActionFailure(err)) return;
+  if (ctx.failureKind === "lookup" && err instanceof Error && "status" in err) return;
   const diag = fromTransportFailure({
     operation: ctx.operation,
     path: ctx.path,

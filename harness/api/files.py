@@ -123,6 +123,37 @@ def _mutate_path_error_status(msg: str) -> int:
     return 403 if "Access denied" in msg or "escapes" in msg or ".git" in msg else 400
 
 
+# Documents a chat link may preview read-only outside the workspace (a report
+# the pilot wrote to ~/Downloads). Rendered from /api/file/read content only.
+_EXTERNAL_PREVIEW_EXTS = frozenset({".md", ".markdown", ".txt", ".json", ".csv", ".log"})
+
+
+def external_preview_path(user_path: str) -> str | None:
+    """Absolute path of a read-only previewable document outside the workspace.
+
+    Only explicit absolute (or ``~/``) paths to document files under the
+    user's home qualify; hidden directories, ``~/Library`` and every other
+    extension stay with the desktop opener. Never used by a write endpoint.
+    """
+    raw = (user_path or "").strip()
+    if raw.startswith("~/"):
+        raw = os.path.expanduser(raw)
+    if not os.path.isabs(raw):
+        return None
+    full = os.path.realpath(raw)
+    home = os.path.realpath(os.path.expanduser("~"))
+    try:
+        rel = os.path.relpath(full, home)
+    except ValueError:
+        return None
+    parts = rel.replace("\\", "/").split("/")
+    if rel == "." or parts[0] in ("..", "Library") or any(p.startswith(".") for p in parts):
+        return None
+    if os.path.splitext(full)[1].lower() not in _EXTERNAL_PREVIEW_EXTS:
+        return None
+    return full if os.path.isfile(full) else None
+
+
 def _read_path_error_status(msg: str) -> int:
     return 403 if "Access denied" in msg else 400
 
@@ -480,6 +511,9 @@ def get_file_resolve(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     try:
         full_path, rel_posix = resolve_editor_path(repo, query)
     except ValueError as e:
+        external = external_preview_path(query)
+        if external:
+            return 200, {"ok": True, "path": external, "exact": True, "read_only": True}
         return _read_path_error_status(str(e)), {"error": str(e)}
     if os.path.isfile(full_path):
         return 200, {"ok": True, "path": rel_posix, "exact": True}
@@ -603,11 +637,15 @@ def get_file_read(rel_path: str, svc: FileServices) -> tuple[int, dict]:
     rel_path = (rel_path or "").strip()
     if not rel_path:
         return 400, {"error": "Missing path parameter"}
+    read_only = False
     try:
         full_path, rel_posix = resolve_editor_path(repo, rel_path)
     except ValueError as e:
-        msg = str(e)
-        return _read_path_error_status(msg), {"error": msg}
+        external = external_preview_path(rel_path)
+        if not external:
+            msg = str(e)
+            return _read_path_error_status(msg), {"error": msg}
+        full_path, rel_posix, read_only = external, external, True
     if not os.path.isfile(full_path):
         return 404, {"error": "File not found", "path": rel_posix}
     try:
@@ -638,6 +676,7 @@ def get_file_read(rel_path: str, svc: FileServices) -> tuple[int, dict]:
             "path": rel_posix or rel_path,
             "content": content,
             "truncated": truncated,
+            **({"read_only": True} if read_only else {}),
         }
     except Exception as e:
         return 500, {"error": f"Failed to read file: {e}"}
