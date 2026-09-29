@@ -31,6 +31,24 @@ codegraph_fail_until: dict = {}  # repo -> monotonic timestamp
 
 # Handle to the in-flight CodeGraph indexer: (repo_path, Popen) | None.
 codegraph_index_proc = None  # tuple[str, Any] | None
+INDEX_TIMEOUT_S = 1800
+_exit_kill_registered = False
+
+
+def _kill_running_indexer() -> None:
+    entry = codegraph_index_proc
+    if entry is not None and entry[1].poll() is None:
+        from ..command_policy import kill_process_group
+        kill_process_group(entry[1])
+
+
+def _register_exit_kill() -> None:
+    # The indexer runs in its own group, outside what Electron signals on quit.
+    global _exit_kill_registered
+    if not _exit_kill_registered:
+        import atexit
+        atexit.register(_kill_running_indexer)
+        _exit_kill_registered = True
 codegraph_index_lock = threading.Lock()
 
 # Debounce: never re-check staleness more than once per this interval per repo.
@@ -276,17 +294,23 @@ def index_codegraph_bg(repo_path: str):
                 "stdout": log_f,
                 "stderr": subprocess.STDOUT,
             }
+            # Own process group: the CLI spawns a Node indexer, and a timeout
+            # must stop that grandchild too, not just the Python parent.
             if os.name == "nt":
                 # Explicit CREATE_NO_WINDOW in addition to win_console's
                 # process-wide Popen default (defense-in-depth).
-                popen_kwargs["creationflags"] = getattr(
-                    subprocess, "CREATE_NO_WINDOW", 0
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 )
+            else:
+                popen_kwargs["start_new_session"] = True
             proc = subprocess.Popen(
                 deps.puppetmaster_cmd("codegraph", "init", "--index"),
                 **popen_kwargs,
             )
             codegraph_index_proc = (repo_path, proc)
+            _register_exit_kill()
             try:
                 from ..worktrees import bind_worktree_subprocess
 
@@ -300,7 +324,7 @@ def index_codegraph_bg(repo_path: str):
 
     # After scope/excludes, allow a longer run; still a backstop so a wedged
     # process cannot pin the panel forever.
-    index_timeout = 1800
+    index_timeout = INDEX_TIMEOUT_S
 
     def wait_and_update():
         global codegraph_status, codegraph_status_reason, codegraph_index_proc
@@ -344,10 +368,8 @@ def index_codegraph_bg(repo_path: str):
                 "or apply asset excludes, then re-index."
             )
             codegraph_fail_until[repo_path] = time.monotonic() + 120.0
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            from ..command_policy import kill_process_group
+            kill_process_group(proc)
         finally:
             try:
                 from ..worktrees import release_worktree_subprocess

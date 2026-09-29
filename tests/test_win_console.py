@@ -242,4 +242,5 @@ def test_codegraph_index_popen_sets_create_no_window(monkeypatch, tmp_path):
         monkeypatch.setattr(cgi._deps, "get_state_dir", lambda: str(tmp_path))
 
     cgi.index_codegraph_bg(repo)
-    assert captured["kwargs"].get("creationflags") == 0x08000000
+    # No console window, and its own group so a timeout can stop the Node child.
+    assert captured["kwargs"].get("creationflags") == 0x08000000 | 0x200
