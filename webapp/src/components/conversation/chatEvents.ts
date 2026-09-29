@@ -246,6 +246,23 @@ export function ringCursorAfterLiveFrame(
   return lastApplied;
 }
 
+/** Carry a primary chat frame's server ring identity into durable reattach. */
+export function recordPrimaryStreamFrame(opts: {
+  lastAppliedRingCursorRef: { current: number };
+  ringGenerationRef: { current: number | undefined };
+}, frame: {
+  cursor?: number;
+  generation?: number;
+}): void {
+  opts.lastAppliedRingCursorRef.current = ringCursorAfterLiveFrame(
+    opts.lastAppliedRingCursorRef.current,
+    frame.cursor,
+  );
+  if (typeof frame.generation === "number" && frame.generation > 0) {
+    opts.ringGenerationRef.current = frame.generation;
+  }
+}
+
 /** Start a stream generation with its fresh server ring. */
 export function beginChatStreamGeneration(opts: {
   streamGenRef: { current: number };
