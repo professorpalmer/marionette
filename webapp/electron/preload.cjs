@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld(
 );
 
 let streamSeq = 0;
+// Unique per page load: the counter restarts on every reload, and main keys
+// stream channels by this id, so a pre-reload stream could otherwise feed its
+// frames (and done/error) to the new page's first stream.
+const streamPage = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 let imageSeq = 0;
 
 contextBridge.exposeInMainWorld("harnessIPC", {
@@ -106,7 +110,7 @@ contextBridge.exposeInMainWorld("harnessIPC", {
 
   // stream(path, onEvent, onDone, onError) -> cancel()
   stream: (path, onEvent, onDone, onError, identityHeaders) => {
-    const id = `stream-${++streamSeq}`;
+    const id = `stream-${streamPage}-${++streamSeq}`;
     const onEv = (_e, ev) => onEvent(ev);
     const onDoneCb = () => { cleanup(); onDone && onDone(); };
     const onErrCb = (_e, err) => { cleanup(); onError && onError(err); };

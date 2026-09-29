@@ -651,6 +651,10 @@ class ConvEvent:
     data: dict = field(default_factory=dict)
 
 
+# Stands in for a CodeGraph slice identical to one already in history.
+CG_SECTION_UNCHANGED = "[CodeGraph context unchanged from the previous turn -- see above]"
+
+
 class ConversationalSession(
     PromptQueueMixin,
     SteerMixin,
@@ -2374,6 +2378,32 @@ class ConversationalSession(
         self._invalidate_tools_schema()
         return {"ok": True, "reloaded": True, "servers": report}
 
+    def _read_elision_key(self, act: Any) -> Optional[str]:
+        """Key under which a newer identical read supersedes an older one.
+
+        The path is resolved against the workspace (``./x.py``, ``x.py`` and the
+        absolute path are one file) and a ranged read keys on its slice, so the
+        ~150-line reads the read_file schema recommends are elided too; a
+        different or partially overlapping range is a different key.
+        """
+        if getattr(act, "kind", "") != "read_file" or not getattr(act, "path", None):
+            return None
+        raw = str(act.path)
+        label = raw
+        if "://" not in raw:
+            repo = str(getattr(self.config, "repo", "") or "")
+            full = os.path.realpath(raw if os.path.isabs(raw) or not repo else os.path.join(repo, raw))
+            if repo:
+                root = os.path.realpath(repo)
+                if full == root or full.startswith(root + os.sep):
+                    full = os.path.relpath(full, root)
+            label = full.replace(os.sep, "/")
+        start = getattr(act, "start_line", None)
+        limit = getattr(act, "limit", None)
+        if start is None and limit is None:
+            return label
+        return f"{label}:{start or 1}+{limit if limit is not None else 'end'}"
+
     def _build_visible_tools_schema(self) -> list:
         from .tool_discovery import (
             _profile_compacts_descriptions,
@@ -2932,7 +2962,17 @@ class ConversationalSession(
 
             query = working_query(self, user_message)
             if self._cg_cache_key == query:
-                return self._cg_cache_section
+                cached = self._cg_cache_section
+                # History is append-only, so a repeat of the same ask (retry,
+                # Continue) would stack another identical ~4.7K-char copy that
+                # every later call re-sends. Point at the copy still in
+                # history; re-send it only once compaction has dropped it.
+                if cached and any(
+                    isinstance(m.get("content"), str) and cached in m["content"]
+                    for m in self._history if m.get("role") == "user"
+                ):
+                    return CG_SECTION_UNCHANGED
+                return cached
             cg_slice = codegraph_context(task=query, cwd=self.config.repo)
             if cg_slice:
                 cg_section, symbols = wrap_slice(cg_slice)
@@ -3396,14 +3436,11 @@ class ConversationalSession(
         # reads (no start_line/limit) are safe to elide -- a ranged read is a
         # distinct slice the model may still need.
         read_path = None
-        try:
-            if (getattr(act, "kind", "") == "read_file"
-                    and getattr(act, "path", None)
-                    and getattr(act, "start_line", None) is None
-                    and getattr(act, "limit", None) is None):
-                read_path = str(act.path)
-        except Exception:
-            read_path = None
+        if semantics.get("is_error") is not True:
+            try:
+                read_path = self._read_elision_key(act)
+            except Exception:
+                read_path = None
 
         try:
             from .repeat_tool_reminder import note_repeat_and_maybe_nudge

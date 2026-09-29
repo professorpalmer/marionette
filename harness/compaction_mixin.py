@@ -29,6 +29,16 @@ from typing import Iterator, Optional
 
 from .context_budget import age_history_images
 
+# "(read_file <path as the model spelled it> returned)" heads a read result.
+# It is not file text: two reads of one slice via different path spellings
+# must not report a change.
+_READ_HEADER_RE = re.compile(r"^\(read_file .* returned\)[ \t]*\n?")
+
+
+def _strip_read_header(text: str) -> str:
+    return _READ_HEADER_RE.sub("", text, count=1)
+
+
 # grok-build-style quality floors (see xai-grok-compaction summary.rs /
 # intra_compaction/config.rs). Floor / reduction guards fail closed: an
 # exception in those paths refuses compaction rather than applying a bad rewrite.
@@ -2058,7 +2068,7 @@ class CompactionContextMixin:
                 return None
             content = m.get("content")
             if isinstance(content, str):
-                return content
+                return _strip_read_header(content)
             if isinstance(content, list):
                 parts = []
                 for block in content:
@@ -2070,7 +2080,7 @@ class CompactionContextMixin:
                             parts.append(txt)
                 if not parts:
                     return None
-                return "".join(parts)
+                return _strip_read_header("".join(parts))
             return None
         except Exception:
             return None

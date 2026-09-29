@@ -747,7 +747,14 @@ function startBackend() {
   // Coalesce overlapping starts onto one in-flight promise so we never launch a
   // second backend against the same SQLite while the first is still starting up.
   if (startInFlight) return startInFlight;
-  startInFlight = _startBackendOnce().then(connectDesktopBrowser).finally(() => { startInFlight = null; });
+  // Browser-controller registration is a side registration, not backend
+  // readiness: a slow or failed POST used to reject the whole start, so a crash
+  // respawn skipped re-pointing the renderer at the new port.
+  startInFlight = _startBackendOnce()
+    .then(() => connectDesktopBrowser().catch((e) => {
+      logMain(`[backend] desktop browser registration failed: ${e && e.message ? e.message : e}`);
+    }))
+    .finally(() => { startInFlight = null; });
   return startInFlight;
 }
 
@@ -1291,12 +1298,15 @@ ipcMain.on("harness:stream", (event, channelId, apiPath, identityHeaders) => {
     }
   };
 
+  const owned = streamOwnerFor(event.sender);
   const cleanup = () => {
     if (finished) return;
     finished = true;
+    if (owned) owned.delete(cleanup);
     try { ipcMain.removeListener(`${channelId}:cancel`, onCancel); } catch {}
     try { if (req) req.destroy(); } catch {}
   };
+  if (owned) owned.add(cleanup);
 
   const onCancel = () => { cleanup(); };
 
@@ -1319,6 +1329,25 @@ ipcMain.on("harness:stream", (event, channelId, apiPath, identityHeaders) => {
   req.on("error", (e) => { safeSend(`${channelId}:error`, sanitizedStreamConnError(e)); cleanup(); });
   ipcMain.once(`${channelId}:cancel`, onCancel);
 });
+
+// Streams end with the page that opened them. A reload or renderer crash used
+// to leave the backend SSE open until its turn finished, still sending to the
+// same webContents. did-navigate is main-frame only, so an iframe preview does
+// not end live streams.
+const streamOwners = new WeakMap();
+function streamOwnerFor(sender) {
+  if (!sender || typeof sender.on !== "function") return null;
+  let owned = streamOwners.get(sender);
+  if (!owned) {
+    owned = new Set();
+    streamOwners.set(sender, owned);
+    const endAll = () => { for (const end of [...owned]) end(); };
+    sender.on("did-navigate", endAll);
+    sender.on("render-process-gone", endAll);
+    sender.once("destroyed", endAll);
+  }
+  return owned;
+}
 
 // ---- native bridges (file tree + git) ----
 const { registerFsBridge } = require("./fs-bridge.cjs");
