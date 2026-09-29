@@ -139,3 +139,18 @@ describe("agentCommandIndex", () => {
     expect(listAgentCommandSessions("sess-1")).toEqual([]);
   });
 });
+
+describe("bounded command index", () => {
+  beforeEach(() => _resetAgentCommandIndexForTests());
+
+  it("keeps the newest commands and never evicts a running one", async () => {
+    const { AGENT_COMMAND_INDEX_MAX, registerAgentCommandSession, lookupAgentCommandSessionById } = await import("../lib/agentCommandIndex");
+    registerAgentCommandSession({ id: "live", command: "npm run dev" });
+    for (let i = 0; i < AGENT_COMMAND_INDEX_MAX + 50; i++) {
+      registerAgentCommandSession({ id: `c${i}`, command: `echo ${i}`, output: "x".repeat(100), state: "done" });
+    }
+    expect(lookupAgentCommandSessionById("live")?.state).toBe("running");
+    expect(lookupAgentCommandSessionById("c0")).toBeNull();
+    expect(lookupAgentCommandSessionById(`c${AGENT_COMMAND_INDEX_MAX + 49}`)).not.toBeNull();
+  });
+});

@@ -47,3 +47,21 @@ describe("agentTerminalStream", () => {
     expect(backlog.endsWith("x".repeat(100))).toBe(true);
   });
 });
+
+describe("mirror-only buffering", () => {
+  it("does not buffer output for a command whose mirror was never opened", async () => {
+    const { _resetAgentTerminalStreamForTests, registerAgentTerminalWriter, seedAgentTerminalCommand } = await import("../lib/agentTerminalStream");
+    const { syncAgentCommandOutput } = await import("../lib/agentLinks");
+    _resetAgentTerminalStreamForTests();
+    syncAgentCommandOutput("never-opened", "big output");
+    const seen: string[] = [];
+    registerAgentTerminalWriter("never-opened", (c) => seen.push(c));
+    expect(seen).toEqual([]);
+
+    seedAgentTerminalCommand("opened", "make");
+    syncAgentCommandOutput("opened", "building");
+    const replay: string[] = [];
+    registerAgentTerminalWriter("opened", (c) => replay.push(c));
+    expect(replay.join("")).toContain("building");
+  });
+});

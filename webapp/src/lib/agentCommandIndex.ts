@@ -101,8 +101,25 @@ export function registerAgentCommandSession(input: {
   };
   byId.set(id, session);
   rememberCommandId(command, id);
+  evictOldCommands();
   emit(true);
   return session;
+}
+
+// Every command card of every visited session registered here (with its full
+// output) and stayed for the life of the window. Keep the newest; running
+// commands are never evicted, and the shown transcript re-registers its cards
+// when it renders.
+export const AGENT_COMMAND_INDEX_MAX = 500;
+
+function evictOldCommands(): void {
+  if (byId.size <= AGENT_COMMAND_INDEX_MAX) return;
+  for (const [id, session] of byId) {
+    if (byId.size <= AGENT_COMMAND_INDEX_MAX) return;
+    if (session.state === "running") continue;
+    forgetCommandId(session.command, id);
+    byId.delete(id);
+  }
 }
 
 export function lookupAgentCommandSession(command: string): AgentCommandSession | null {

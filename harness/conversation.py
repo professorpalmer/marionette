@@ -948,6 +948,7 @@ class ConversationalSession(
         # High-water marks to avoid duplicate auto-distill on the same signal
         self._distilled_findings_hwm = 0
         self._distilled_turns_hwm = 0
+        self._distilled_tool_calls_hwm = 0
         self._distilled_corrections_hwm = 0
         # diff review: opt-in mode to hold agent edits for approval
         from .config import parse_truthy

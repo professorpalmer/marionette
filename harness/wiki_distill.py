@@ -28,6 +28,13 @@ def _slugify(s: str) -> str:
     return (re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "session")[:60]
 
 
+# Budget for the transcript digest sent to the hidden distill call.
+TRANSCRIPT_DIGEST_MAX_CHARS = 8000
+# Tool calls since the last distill that justify one without new findings
+# (the same threshold distill() uses to call a session hard).
+DISTILL_MIN_NEW_TOOL_CALLS = 8
+
+
 class WikiDistillMixin:
     """Mixin holding wiki grounding, wiki ingest, and skill/rule distill helpers.
 
@@ -258,13 +265,24 @@ class WikiDistillMixin:
         return count
 
     def _build_transcript_digest(self) -> str:
-        lines = []
-        for msg in self.export_display_transcript():
+        """The most recent display rows, whole lines, within a fixed budget.
+
+        The digest goes into a hidden pilot call; uncapped it was the whole
+        transcript on every auto turn, so distill spend grew quadratically.
+        """
+        lines: list = []
+        used = 0
+        for msg in reversed(self.export_display_transcript()):
             role = msg.get("role", "")
             text = msg.get("text", "")
-            if role and text:
-                lines.append(f"{role.upper()}: {text}")
-        return "\n".join(lines)
+            if not (role and text):
+                continue
+            line = f"{role.upper()}: {text}"
+            if lines and used + len(line) + 1 > TRANSCRIPT_DIGEST_MAX_CHARS:
+                break
+            lines.append(line[-TRANSCRIPT_DIGEST_MAX_CHARS:])
+            used += len(lines[-1]) + 1
+        return "\n".join(reversed(lines))
 
     def _maybe_auto_distill(self):
         """If auto-distill is enabled and there is new signal, propose
@@ -273,14 +291,20 @@ class WikiDistillMixin:
             return None
 
         has_new_findings = len(self._session_findings) > self._distilled_findings_hwm
-        has_new_turns = self._turn_count > self._distilled_turns_hwm
         has_new_corrections = len(self._corrections) > self._distilled_corrections_hwm
+        # A turn alone is not new signal: distilling on every auto turn made a
+        # hidden pilot call each time. Without findings or corrections, wait
+        # for as much new tool work as the digest path treats as a hard session.
+        has_new_work = (
+            self._total_tool_calls - getattr(self, "_distilled_tool_calls_hwm", 0)
+        ) >= DISTILL_MIN_NEW_TOOL_CALLS
 
-        if not (has_new_findings or has_new_turns or has_new_corrections):
+        if not (has_new_findings or has_new_work or has_new_corrections):
             return None
 
         self._distilled_findings_hwm = len(self._session_findings)
         self._distilled_turns_hwm = self._turn_count
+        self._distilled_tool_calls_hwm = self._total_tool_calls
         self._distilled_corrections_hwm = len(self._corrections)
 
         try:

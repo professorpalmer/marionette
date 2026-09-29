@@ -126,7 +126,8 @@ def test_auto_token_ceiling_trips():
 
 def test_auto_distill_on_completion(tmp_path, monkeypatch):
     """With HARNESS_AUTO_DISTILL=1, a finished auto run with >=2 findings yields a
-    'distilled' event proposing PENDING candidates (still human-gated)."""
+    'distilled' event proposing PENDING candidates (still human-gated). A bare
+    turn is not new signal, so the findings are what triggers it."""
     monkeypatch.setenv("HARNESS_AUTO_DISTILL", "1")
     import harness.skill_store as sks, harness.rule_store as rks
     monkeypatch.setattr(sks, "SKILLS_DIR", tmp_path / "skills")
@@ -149,6 +150,10 @@ def test_auto_distill_on_completion(tmp_path, monkeypatch):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
     s.pilot = _DistillPilot()
+    s._session_findings.extend([
+        {"type": "finding", "claim": "the cache key omits the repo"},
+        {"type": "finding", "claim": "retries re-send the full context"},
+    ])
     events = list(s.run_auto("investigate", AutoBudget(max_swarms=20)))
     distilled = [e for e in events if e.kind == "distilled"]
     assert distilled, "expected a distilled event on completion"
