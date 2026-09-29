@@ -25,3 +25,12 @@ def test_prompt_named_tools_are_visible_or_lazily_activatable():
     stranded = sorted(n for n in named if n not in visible and not is_lazy_activatable_name(n))
     assert named, "prompt tool names should resolve against the catalog"
     assert stranded == []
+
+
+def test_schemas_state_the_read_spill_limit_and_fresh_shell_cwd():
+    from harness.pilot import build_tools_schema
+
+    by_name = {_tool_name(t): (t.get("function") or t)["description"] for t in build_tools_schema()}
+    assert "spill file" in by_name["read_file"] and "150 lines" in by_name["read_file"]
+    assert "fresh shell in the workspace root" in by_name["run_command"]
+    assert PILOT_SYSTEM.count("`job_findings`:") == 1
