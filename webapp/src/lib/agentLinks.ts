@@ -11,6 +11,7 @@ import {
   registerAgentCommandSession,
 } from "./agentCommandIndex";
 import {
+  hasAgentTerminalMirror,
   seedAgentTerminalCommand,
   syncAgentTerminalSnapshot,
 } from "./agentTerminalStream";
@@ -619,7 +620,7 @@ export function syncAgentCommandOutput(id: string, output: string): void {
     registerAgentCommandSession({ id: procId, command: known.command, output: snap });
   }
   try {
-    syncAgentTerminalSnapshot(procId, snap);
+    if (hasAgentTerminalMirror(procId)) syncAgentTerminalSnapshot(procId, snap);
     window.dispatchEvent(
       new CustomEvent("harness-sync-agent-terminal", {
         detail: { id: procId, output: snap },

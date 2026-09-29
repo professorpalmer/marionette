@@ -15,6 +15,16 @@ const seededCommands = new Set<string>();
 
 const MAX_BACKLOG = 256_000;
 
+/**
+ * True once a mirror for this process was opened (seeded) or is mounted.
+ * Snapshot syncs for never-opened processes are skipped: every command card
+ * of every session used to buffer its output here forever, and opening a
+ * mirror seeds and syncs the full output from the command index anyway.
+ */
+export function hasAgentTerminalMirror(procId: string): boolean {
+  return writers.has(procId) || seededCommands.has(procId);
+}
+
 /** Register an xterm write callback and replay backlog. Returns unregister. */
 export function registerAgentTerminalWriter(procId: string, write: Writer): () => void {
   writers.set(procId, write);
