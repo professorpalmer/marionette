@@ -3,16 +3,26 @@ from __future__ import annotations
 """Soft tool-use requirements (oh-my-pi remind-then-escalate).
 
 On MICRO/STANDARD turns that touch files, nudge the pilot to run tests/verify
-before settling. After a fixed remind budget with still no ``run_command``,
+before settling. After one reminder with still no ``run_command``,
 callers may escalate rather than silently accept unverified edits.
 """
 
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 from .task_profile import MICRO, STANDARD, normalize_profile
 
 _REMIND_PROFILES = frozenset({MICRO, STANDARD})
-_MAX_REMINDS = 3
+# One nudge: a pilot that ignored the reminder answers the same text the same
+# way, so repeats only burn round trips before escalation.
+_MAX_REMINDS = 1
+
+# Prose edits have nothing for a test run to check.
+_DOC_SUFFIXES = (".md", ".mdx", ".rst", ".adoc")
+
+
+def verifiable_files(files: Iterable[str]) -> list:
+    """Touched files a verify command could meaningfully check (not docs)."""
+    return [f for f in files if not str(f).lower().endswith(_DOC_SUFFIXES)]
 
 
 def _as_int(value: Union[int, float, None]) -> int:

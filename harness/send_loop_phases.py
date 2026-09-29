@@ -663,10 +663,10 @@ def maybe_soft_verify_nudge(session: Any) -> Iterator[Any]:
 
     try:
         from .task_transaction import as_dict
-        from .tool_requirement import SoftToolRequirement
+        from .tool_requirement import SoftToolRequirement, verifiable_files
 
         txd = as_dict(getattr(session, "_task_tx", None))
-        files = list(txd.get("files") or [])
+        files = verifiable_files(txd.get("files") or [])
         profile = getattr(session, "_task_profile", "") or ""
         ran = bool(getattr(session, "_turn_ran_command", False))
         count = int(getattr(session, "_verify_remind_count", 0) or 0)

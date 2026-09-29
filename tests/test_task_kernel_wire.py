@@ -166,6 +166,26 @@ def test_maybe_soft_verify_nudge_skips_when_command_ran():
     assert session._history == []
 
 
+def test_maybe_soft_verify_nudge_skips_docs_only_edits():
+    session = SimpleNamespace(
+        _history=[],
+        _task_profile=MICRO,
+        _task_tx=note_files(new_transaction("typo in README"), ["README.md"]),
+        _turn_ran_command=False,
+        _verify_remind_count=0,
+        _turn_verification="",
+    )
+    gen = maybe_soft_verify_nudge(session)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        nudged = stop.value
+    assert nudged is False
+    assert session._history == []
+    assert session._turn_verification == ""
+
+
 def test_drain_idle_turn_nudges_unverified_micro_edits():
     session = SimpleNamespace(
         drain_steer=lambda: [],
@@ -176,7 +196,7 @@ def test_drain_idle_turn_nudges_unverified_micro_edits():
         _submit_housekeeping=lambda *_a, **_k: None,
         _maybe_ingest="ingest",
         _task_profile=MICRO,
-        _task_tx=note_files(new_transaction("typo"), ["README.md"]),
+        _task_tx=note_files(new_transaction("typo"), ["app.py"]),
         _turn_ran_command=False,
         _verify_remind_count=0,
         config=SimpleNamespace(state_dir="", repo=""),
