@@ -89,6 +89,7 @@ def test_absolute_cursor_survives_multiple_rollovers():
     sess._buffer = bytearray()
     sess._total_output = 0
     sess._lock = threading.Lock()
+    sess._output_ready = threading.Condition(sess._lock)
     cursor = 0
     for i in range(12):
         chunk = bytes([65 + i]) * (_BUFFER_CAP // 3)
@@ -157,6 +158,7 @@ def test_stream_gap_reconnect_recovers_exact_retained_bytes(requested, reason):
     from harness.pty_manager import _BUFFER_CAP
     sess = object.__new__(PtySession)
     sess._lock = threading.Lock()
+    sess._output_ready = threading.Condition(sess._lock)
     sess._buffer = bytearray()
     sess._total_output = 0
     sess._alive = False
@@ -185,6 +187,7 @@ def test_read_snapshot_remains_consistent_during_concurrent_trimming():
     from harness.pty_manager import _BUFFER_CAP
     sess = object.__new__(PtySession)
     sess._lock = threading.Lock()
+    sess._output_ready = threading.Condition(sess._lock)
     sess._buffer = bytearray()
     sess._total_output = 0
     finished = threading.Event()
@@ -210,3 +213,31 @@ def test_read_snapshot_remains_consistent_during_concurrent_trimming():
     finally:
         producer.join()
     assert sess.read_output(0)[1] == 400 * 4096
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Unix controlled PTY fixture')
+def test_idle_stream_waits_for_output_instead_of_polling(monkeypatch, tmp_path):
+    import io
+    import json
+    from harness.api.terminals import stream_terminal
+
+    script = tmp_path / 'idle.sh'
+    script.write_text('#!/bin/sh\nprintf "ready"\nsleep 2.2\nprintf "late"\n')
+    script.chmod(0o700)
+    monkeypatch.setenv('SHELL', str(script))
+    sess = PtySession(cwd=str(tmp_path))
+    reads = []
+    real = sess.read_output
+    sess.read_output = lambda offset: reads.append(offset) or real(offset)
+    handler = SimpleNamespace(wfile=io.BytesIO(), send_response=lambda *a: None,
+                              send_header=lambda *a: None, _cors=lambda: None,
+                              end_headers=lambda: None)
+    try:
+        stream_terminal(handler, sess.id, TerminalServices(None, SimpleNamespace(get=lambda sid: sess)))
+        frames = [json.loads(c[6:]) for c in handler.wfile.getvalue().decode().split('\n\n') if c]
+        text = b''.join(__import__('base64').b64decode(f['b64']) for f in frames if f['kind'] == 'data')
+        assert b'ready' in text and b'late' in text
+        # ~2.2 s idle: a 20 Hz poll made ~45 reads; waiting wakes on output and the 1 Hz observation.
+        assert len(reads) <= 12, len(reads)
+    finally:
+        sess.kill()

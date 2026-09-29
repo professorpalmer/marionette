@@ -343,6 +343,7 @@ class PtySession:
         self._buffer = bytearray()
         self._total_output = 0
         self._lock = threading.Lock()
+        self._output_ready = threading.Condition(self._lock)
         self._alive = True
         now = time.time()
         self.created_at = now
@@ -393,6 +394,7 @@ class PtySession:
             except (OSError, ValueError):
                 break
         self._alive = False
+        self._notify_output()
 
     def _kill_unix(self) -> None:
         try:
@@ -547,6 +549,7 @@ class PtySession:
                 break
             self._append_output(buf.raw[: nread.value])
         self._alive = False
+        self._notify_output()
 
     def _cleanup_conpty_handles(self) -> None:
         _close_win_handle(getattr(self, "_input_read", None))
@@ -608,6 +611,17 @@ class PtySession:
             self._buffer.extend(data)
             if len(self._buffer) > _BUFFER_CAP:
                 del self._buffer[:len(self._buffer) - _BUFFER_CAP]
+            self._output_ready.notify_all()
+
+    def _notify_output(self) -> None:
+        with self._lock:
+            self._output_ready.notify_all()
+
+    def wait_output(self, offset: int, timeout: float) -> None:
+        """Block until output past ``offset`` exists, the shell ends, or timeout."""
+        with self._lock:
+            self._output_ready.wait_for(
+                lambda: self._total_output != offset or not self._alive, timeout)
 
     def read_output(self, offset: int) -> tuple:
         """Atomic (bytes, absolute end, actual start, gap reason) snapshot.
@@ -691,6 +705,7 @@ class PtySession:
 
     def kill(self) -> None:
         self._alive = False
+        self._notify_output()
         if os.name == "nt":
             self._kill_conpty()
         else:

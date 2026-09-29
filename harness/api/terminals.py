@@ -131,9 +131,15 @@ def stream_terminal(handler: Any, sid: str, svc: TerminalServices, start_offset:
         return bool(data)
 
     try:
+        wait_output = getattr(sess, "wait_output", None)
         while sess.alive():
             if not read_and_send():
-                time.sleep(0.05)
+                if callable(wait_output):
+                    # Sleep until the reader appends output; wake at least for
+                    # the 1 Hz observation that also detects a gone client.
+                    wait_output(offset, max(0.0, 1.0 - (time.monotonic() - last_observation)))
+                else:
+                    time.sleep(0.05)
             if time.monotonic() - last_observation >= 1.0:
                 send({"kind": "observation", "state": "unknown", "offset": offset})
                 last_observation = time.monotonic()
