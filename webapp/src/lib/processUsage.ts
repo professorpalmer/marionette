@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type UsageData } from "./api";
+import { api, type LedgerView, type UsageData } from "./api";
 
 export type ProcessUsageSession = UsageData["session"];
 
@@ -8,6 +8,8 @@ export type ProcessUsageSnapshot = {
   status: "loading" | "ready" | "unavailable";
   readStatus?: "unavailable";
   sessionTotal?: UsageData["session_total"];
+  /** The active session's usage ledger, when the backend recorded any calls. */
+  ledger?: LedgerView;
   fetchedAt: number;
   generation: number;
 };
@@ -47,10 +49,15 @@ function emit(next: ProcessUsageSnapshot): void {
   listeners.forEach((listener) => listener(snapshot));
 }
 
-function acceptSession(session: ProcessUsageSession, sessionTotal: UsageData["session_total"]): void {
+function acceptSession(
+  session: ProcessUsageSession,
+  sessionTotal: UsageData["session_total"],
+  ledger?: LedgerView,
+): void {
   if (session.read_status === "unavailable" || sessionTotal?.read_status === "unavailable") {
     emit({
       session,
+      ledger,
       status: sessionUsageUnavailable(session, sessionTotal)
         ? retryAttempts >= STARTUP_RETRIES ? "unavailable" : "loading"
         : "ready",
@@ -64,13 +71,14 @@ function acceptSession(session: ProcessUsageSession, sessionTotal: UsageData["se
   if (acceptZero) {
     acceptZero = false;
   } else if (sessionIsZero(session) && sessionHasSpend(snapshot.session) && snapshot.readStatus !== "unavailable" && session.cost_source !== "provider") {
-    emit({ ...snapshot, sessionTotal });
+    emit({ ...snapshot, sessionTotal, ledger: ledger ?? snapshot.ledger });
     return;
   }
   emit({
     session,
     status: "ready",
     sessionTotal,
+    ledger,
     fetchedAt: Date.now(),
     generation: snapshot.generation + 1,
   });
@@ -131,7 +139,7 @@ export function refreshProcessUsage(opts: { manual?: boolean } = {}): Promise<vo
       const data = await api.getUsage();
       if (owner !== scopeGeneration) return;
       if (!data?.session) throw new Error("Usage unavailable");
-      acceptSession(data.session, data.session_total);
+      acceptSession(data.session, data.session_total, data.ledger);
       if (sessionUsageUnavailable(data.session, data.session_total)) scheduleStartupRetry();
       else {
         stopRetry();

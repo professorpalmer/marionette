@@ -31,13 +31,7 @@ import {
   useSessionStateFeed,
 } from "../lib/sessionStateFeed";
 
-import {
-  cacheHitDisplay,
-  delegationSavingsCredited,
-  listPriceValueTotal,
-  routingSavingsCredited,
-  spendIsEstimated,
-} from "./CostBreakdown";
+import { formatTokenCount, formatUsd, hasLedger, ledgerFooter } from "../lib/ledgerDisplay";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { shortPilotModelLabel } from "../lib/turnProgress";
 import type { UpdateAvailability } from "./UpdateBanner";
@@ -280,28 +274,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
-  const formatTokens = (num: number) => {
-    if (num >= 1000000) {
-      return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M";
-    }
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1).replace(/\.0$/, "") + "k";
-    }
-    return num.toString();
-  };
-
-  const formatCost = (num: number) => {
-    if (num === 0) return "$0.00";
-    if (num < 0.001) {
-      return `$${num.toFixed(4)}`;
-    }
-    if (num < 0.01) {
-      return `$${num.toFixed(3)}`;
-    }
-    return `$${num.toFixed(2)}`;
-  };
-
   const showUsage = usage && (usage.tokens_used > 0 || usage.est_cost_usd > 0);
+  const ledger = hasLedger(processUsage.ledger) ? processUsage.ledger : null;
+  const ledgerWords = ledger ? ledgerFooter(ledger) : null;
   const openSessionEconomics = () => {
     // The panel can mount after this click's selection event. Keep the exact
     // destination available for that first render; the pane consumes it.
@@ -426,88 +401,64 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           Usage unavailable
         </button>
       )}
-      {showUsage && usage && (
+      {ledger && ledgerWords ? (
         <>
           <span className="w-px h-3 bg-edge/40 shrink-0" />
           <span
             className="flex items-center gap-1.5 text-muted/80 min-w-0"
-            title="This session, all time: persisted pilot and worker usage plus owned job spend. Click for the same session accounting."
+            title="This session, all time: every model call recorded once and priced when it was made. Click for the breakdown."
           >
             <Coins size={10} className="text-faint shrink-0" />
-            <span className="status-bar-optional-xs">{formatTokens(usage.tokens_used)} tok</span>
-            {(() => {
-              const valueUsd = listPriceValueTotal(usage);
-              const listPriceUsd = (usage.nominal_cost_usd ?? usage.est_cost_usd) + valueUsd;
-              const hit = cacheHitDisplay(usage);
-              if (listPriceUsd <= 0 && hit.percent == null) return null;
-              const cached = usage.tokens_cached || 0;
-              const compacted = usage.tool_output_tokens_saved || 0;
-              const cacheValue =
-                (typeof usage.cache_savings_gross_usd === "number"
-                  ? usage.cache_savings_gross_usd
-                  : usage.cache_savings_usd || 0)
-                + (usage.cache_saved_usd_swarm || 0);
-              const delegationUsd = delegationSavingsCredited(
-                usage.delegation_savings_basis,
-                usage.delegation_saved_usd,
-              );
-              const routingUsd = routingSavingsCredited(
-                usage.routing_savings_basis,
-                usage.routing_saved_usd,
-              );
-              const detail = [
-                hit.percent != null
-                  ? `${hit.percent} ${hit.label} hit`
-                  : "",
-                cached > 0
-                  ? `${formatTokens(cached)} prompt tokens from cache${
-                      cacheValue > 0 ? ` (~${formatCost(cacheValue)} list-price cache value)` : ""
-                    }`
-                  : "",
-                compacted > 0
-                  ? `${formatTokens(compacted)} tool-output tokens compacted${
-                      usage.tool_output_savings_usd ? ` (~${formatCost(usage.tool_output_savings_usd)})` : ""
-                    }`
-                  : "",
-                (delegationUsd || routingUsd)
-                  ? `model-selection list-price value (~${formatCost(delegationUsd || routingUsd)})`
-                  : "",
-              ].filter(Boolean).join("  ·  ");
-              return (
-                <button
-                  type="button"
-                  onClick={openSessionEconomics}
-                  className="status-bar-optional-sm inline-flex items-center gap-1 px-1.5 py-px text-good/65 hover:text-good/80"
-                  title={`At list price${usage.list_price_complete === false ? ' (partial)' : ''}; not a cash charge. ${detail}`}
-                >
-                  {hit.percent != null ? <span>{hit.percent} {hit.label}</span> : null}
-                  {hit.percent != null && listPriceUsd > 0 ? (
-                    <span className="text-good/50" aria-hidden="true">·</span>
-                  ) : null}
-                  {listPriceUsd > 0 ? `~${formatCost(listPriceUsd)} list-price${usage.list_price_complete === false ? ' (partial)' : ''}` : null}
-                </button>
-              );
-            })()}
+            <span className="status-bar-optional-xs">{formatTokenCount(ledger.tokens)} tok</span>
+            {ledgerWords.cache ? (
+              <span className="status-bar-optional-sm text-good/65">{ledgerWords.cache}</span>
+            ) : null}
+            {ledgerWords.plan ? (
+              <button
+                type="button"
+                onClick={openSessionEconomics}
+                className="status-bar-optional-sm px-1 text-good/65 hover:text-good/80"
+                title={ledgerWords.planTitle ?? undefined}
+              >
+                {ledgerWords.plan}
+              </button>
+            ) : null}
+            {ledgerWords.local ? (
+              <span className="status-bar-optional-sm text-faint">{ledgerWords.local}</span>
+            ) : null}
             <button
               type="button"
               onClick={openSessionEconomics}
-              title={
-                !spendIsEstimated(usage)
-                  ? "Billed spend for this session, all time. Click for session accounting."
-                  : "Estimated spend for this session, all time. Click for session accounting."
-              }
+              title={`${ledgerWords.spendTitle} Click for the breakdown.`}
               className="inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90 font-medium hover:border-edge hover:text-txt transition cursor-pointer"
             >
-              {spendIsEstimated(usage) && usage.cost_source !== "plan_estimated" ? "~" : ""}
-              {usage.read_status === "unavailable"
-                ? usage.est_cost_usd > 0 ? `${formatCost(usage.est_cost_usd)} known subtotal` : "Spend unavailable"
-                : usage.cost_source === "plan_estimated" && usage.est_cost_usd === 0
-                  ? "Included in plan · $0 marginal spend" : formatCost(usage.est_cost_usd)}
+              {ledgerWords.spend}
             </button>
-            <span className="text-faint/70 normal-case font-sans tracking-normal">this session</span>
+            {ledgerWords.unpriced ? (
+              <span className="text-warn/80" title="Calls with no reported cost and no published rate. Not counted as $0.">
+                {ledgerWords.unpriced}
+              </span>
+            ) : null}
+            <span className="text-faint/70 normal-case font-sans tracking-normal">spent this session</span>
           </span>
         </>
-      )}
+      ) : showUsage && usage ? (
+        <>
+          <span className="w-px h-3 bg-edge/40 shrink-0" />
+          <button
+            type="button"
+            onClick={openSessionEconomics}
+            className="flex items-center gap-1.5 text-muted/80 min-w-0 hover:text-muted"
+            title="This session started before usage was recorded per call, so its figures are an estimate."
+          >
+            <Coins size={10} className="text-faint shrink-0" />
+            <span className="status-bar-optional-xs">{formatTokenCount(usage.tokens_used)} tok</span>
+            <span className="text-faint/80">
+              {usage.read_status === "unavailable" ? "spend unavailable" : `~${formatUsd(usage.est_cost_usd)} estimate, before ledger`}
+            </span>
+          </button>
+        </>
+      ) : null}
       </div>
       <div className="status-bar-cluster status-bar-cluster-end">
       {toast && (

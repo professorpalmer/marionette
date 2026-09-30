@@ -867,7 +867,53 @@ export type RecommendResult = {
   roles: Record<string, string>;
 };
 
+/** One group of ledger rows (a route, purpose, job, or the plan/local totals). */
+export type LedgerBucket = {
+  calls: number;
+  tokens: number;
+  input_uncached: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  cache_hit: number | null;
+  /** Cash that left the wallet (plan and local rows contribute $0). */
+  cash_usd: number;
+  /** The same calls at the provider's list rate (rows with a published rate). */
+  list_usd: number;
+  list_unpriced_calls: number;
+  unpriced_calls: number;
+  reported_calls: number;
+};
+
+export type LedgerBilling = "metered" | "plan" | "local";
+
+/** The session's usage ledger view (harness.usage_ledger.summary). */
+export type LedgerView = {
+  session_id: string;
+  calls: number;
+  spent_usd: number;
+  spent_exact: boolean;
+  spent_confidence: "none" | "reported" | "computed" | "mixed";
+  unpriced_calls: number;
+  tokens: number;
+  cache_hit: number | null;
+  plan: LedgerBucket;
+  local: LedgerBucket;
+  by_route: Array<LedgerBucket & { billing: LedgerBilling; provider: string; model: string }>;
+  by_purpose: Record<string, LedgerBucket>;
+  by_job: Record<string, LedgerBucket>;
+  since: number | null;
+  reconcile?: {
+    openrouter?: {
+      day: { ledger_usd: number; account_usd: number; unrecorded_usd: number };
+      month: { ledger_usd: number; account_usd: number; unrecorded_usd: number };
+    } | null;
+  };
+};
+
 export type UsageData = {
+  /** The active session's usage ledger (every recorded call, priced at call time). */
+  ledger?: LedgerView;
   session: {
     nominal_cost_usd?: number;
     plan_billing?: boolean;

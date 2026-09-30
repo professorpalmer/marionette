@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Coins } from "lucide-react";
 import { api, type EconomicsData, type EconomicsScope } from "../lib/api";
 import { activeSessionUsage, refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
+import { hasLedger } from "../lib/ledgerDisplay";
+import LedgerBreakdown from "./LedgerBreakdown";
 import { usePolling } from "../lib/usePolling";
 import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
@@ -221,7 +223,9 @@ export default function EconomicsPane() {
             Session usage is incomplete or unavailable. Retry
           </button>
         )}
-        {showProcessMeters && processMeters ? (
+        {sessionAllTime && hasLedger(processUsage.ledger) ? (
+          <LedgerBreakdown view={processUsage.ledger} />
+        ) : showProcessMeters && processMeters ? (
           <CostBreakdown data={processMeters} />
         ) : null}
         {economicsMatchesSelection ? (
