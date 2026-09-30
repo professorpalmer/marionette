@@ -1,21 +1,6 @@
 /**
- * Pure reorder helpers for the local msgQueue and server prompt queue UIs.
+ * Pure reorder helpers for the server prompt queue UI.
  */
-
-/** Move an item up or down by one slot (no-op at bounds). */
-export function moveItem<T>(
-  items: T[],
-  index: number,
-  direction: "up" | "down",
-): T[] {
-  const targetIndex = direction === "up" ? index - 1 : index + 1;
-  if (targetIndex < 0 || targetIndex >= items.length) return items;
-  const next = [...items];
-  const temp = next[index];
-  next[index] = next[targetIndex];
-  next[targetIndex] = temp;
-  return next;
-}
 
 /** Reorder by drag-drop: remove from `from` and insert at `to`. */
 export function reorderByDrag<T>(items: T[], from: number, to: number): T[] {
@@ -62,7 +47,3 @@ export function applyQueueListIdentity(
 
 export const QUEUE_LOAD_FAIL_NOTICE = "Couldn’t refresh prompt queue";
 
-/** Soft client msgQueue is session-local; clear on switch. */
-export function blankMsgQueueOnSessionSwitch(): [] {
-  return [];
-}

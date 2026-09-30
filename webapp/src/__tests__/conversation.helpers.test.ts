@@ -208,16 +208,13 @@ import {
 } from "../components/conversation/composerInput";
 import {
   applyQueueListIdentity,
-  blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
-  moveItem,
   QUEUE_LOAD_FAIL_NOTICE,
   reorderByDrag,
   shouldApplyQueueRefresh,
 } from "../components/conversation/queueOps";
 import {
   notifyPrefEnabled,
-  queueMessagesPrefEnabled,
   shouldShowCompletionNotification,
   soundPrefEnabled,
 } from "../components/conversation/completionNotify";
@@ -2530,9 +2527,8 @@ describe("composer attachment cache", () => {
 });
 
 describe("prompt queue session-switch honesty", () => {
-  it("blanks visible queue rows and soft msgQueue on switch", () => {
+  it("blanks visible queue rows on switch", () => {
     expect(blankQueueItemsOnSessionSwitch()).toEqual([]);
-    expect(blankMsgQueueOnSessionSwitch()).toEqual([]);
   });
 
   it("shouldApplyQueueRefresh fences stale session / gen", () => {
@@ -3449,7 +3445,6 @@ describe("composerInput module", () => {
 
 describe("queueOps / openFileTabs / runnersBusy", () => {
   it("reorders queues and upserts editor tabs", () => {
-    expect(moveItem(["a", "b", "c"], 0, "down")).toEqual(["b", "a", "c"]);
     expect(reorderByDrag(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
     expect(upsertOpenTab([], "a.ts", 1, 2)).toEqual([
       { path: "a.ts", isDirty: false, line: 1, col: 2 },
@@ -3603,7 +3598,6 @@ describe("completionNotify / feedScroll / streamTerminal / swarmPoll", () => {
     const getItem = (k: string) => store[k] ?? null;
     expect(notifyPrefEnabled(getItem)).toBe(true);
     expect(soundPrefEnabled(getItem)).toBe(false);
-    expect(queueMessagesPrefEnabled(getItem)).toBe(true);
     store["pmharness.notify"] = "false";
     expect(notifyPrefEnabled(getItem)).toBe(false);
     expect(

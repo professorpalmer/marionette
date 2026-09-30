@@ -17,6 +17,7 @@ import {
   type Item,
 } from "./TranscriptList";
 import {
+  currentTurnStep,
   deriveBusyProgress,
   latchWaitingPhaseStartedAt,
   turnHasLiveInvestigation,
@@ -195,9 +196,7 @@ import {
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
 import {
   applyQueueListIdentity,
-  blankMsgQueueOnSessionSwitch,
   blankQueueItemsOnSessionSwitch,
-  moveItem,
   QUEUE_LOAD_FAIL_NOTICE,
   reorderByDrag,
   shouldApplyQueueRefresh,
@@ -205,7 +204,6 @@ import {
 import type { ComposerAttachedImage } from "./conversation/composerAttachmentCache";
 import {
   notifyPrefEnabled,
-  queueMessagesPrefEnabled,
   shouldShowCompletionNotification,
   soundPrefEnabled,
 } from "./conversation/completionNotify";
@@ -661,12 +659,7 @@ export default function Conversation({
       }
     };
   }, []);
-  const [msgQueue, setMsgQueue] = useState<{ text: string; auto: boolean; plan?: boolean }[]>([]);
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
-
-  // PROMPT QUEUE (server-side "playlist"): distinct from the client-only
-  // msgQueue above. These items live on the backend and are drained by the
+  // PROMPT QUEUE (server-side "playlist"). These items live on the backend and are drained by the
   // harness itself at turn completion (an SSE "queued_prompt" event fires when
   // one starts running) -- so they persist across reloads and survive even if
   // this tab isn't watching. We just mirror the backend list here for display.
@@ -783,6 +776,8 @@ export default function Conversation({
   });
   // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
   const composerBusy = isPilotMouthBusy(turnOpen, status, sessionSwitchPending);
+  const pilotStepBusy = composerBusy && !sessionSwitchPending;
+  const pilotStep = pilotStepBusy ? currentTurnStep(items) : null;
   const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
     paintableCount: countPaintableTranscriptItems(items),
@@ -1082,10 +1077,9 @@ export default function Conversation({
   };
 
   useEffect(() => {
-    // Immediate honesty: blank A's playlist (and soft client msgQueue) before
-    // the new session's refresh returns — Clear All must not wipe B by accident.
+    // Immediate honesty: blank A's playlist before the new session's refresh
+    // returns — Clear All must not wipe B by accident.
     setQueueItems(blankQueueItemsOnSessionSwitch());
-    setMsgQueue(blankMsgQueueOnSessionSwitch());
     setQueueLoadError(null);
     setQueueWriteError(null);
     setQueueRecovery([]);
@@ -1105,42 +1099,6 @@ export default function Conversation({
   usePolling(() => queuePollRequest.current ?? refreshQueue(activeSessionIdRef.current), 3000, {
     scopeKey: activeSessionId ?? "",
   });
-
-  const moveQueueItem = (index: number, direction: "up" | "down") => {
-    setMsgQueue((prev) => moveItem(prev, index, direction));
-  };
-
-  const handleDragStart = (idx: number) => {
-    setDragIndex(idx);
-  };
-
-  const handleDragOver = (e: React.DragEvent, idx: number) => {
-    e.preventDefault();
-    setDragOverIndex(idx);
-  };
-
-  const handleDragLeave = (idx: number) => {
-    if (dragOverIndex === idx) {
-      setDragOverIndex(null);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent, targetIdx: number) => {
-    e.preventDefault();
-    if (dragIndex === null || dragIndex === targetIdx) {
-      setDragIndex(null);
-      setDragOverIndex(null);
-      return;
-    }
-    setMsgQueue((prev) => reorderByDrag(prev, dragIndex, targetIdx));
-    setDragIndex(null);
-    setDragOverIndex(null);
-  };
-
-  const handleDragEnd = () => {
-    setDragIndex(null);
-    setDragOverIndex(null);
-  };
 
   // PROMPT QUEUE drag-to-reorder. Mirrors the tab reorder pattern in
   // RightPane.tsx (handleDragStart/handleDragOver/handleDragEnd): optimistic
@@ -1355,13 +1313,6 @@ export default function Conversation({
       // or clicked. (The 5s poll only runs while the panel is visible.)
       fetchContextUsage();
 
-      const isQueueEnabled = queueMessagesPrefEnabled();
-
-      if (isQueueEnabled && msgQueue.length > 0) {
-        const nextMsg = msgQueue[0];
-        setMsgQueue((prev) => prev.slice(1));
-        executeSend(nextMsg.text, nextMsg.auto, nextMsg.plan || false);
-      }
       // NOTE: server-side prompt-queue auto-drain is NOT done here. This effect
       // keys on `status` and status is set to "done" on the assistant_done SSE
       // event WHILE the stream is still open (cancelRef still set), then set to
@@ -2132,8 +2083,10 @@ export default function Conversation({
 
   // Auto-grow textarea (Cursor-like). Keep overflow hidden until we hit the
   // max height -- overflow-y-auto on an empty/short field paints a useless
-  // Windows classic scrollbar gutter inside the rounded composer.
-  useEffect(() => {
+  // Windows classic scrollbar gutter inside the rounded composer. Layout
+  // effect: a restored draft or prefilled edit must not paint a frame at the
+  // old height and then jump.
+  useLayoutEffect(() => {
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
@@ -4466,13 +4419,12 @@ export default function Conversation({
         auto={auto}
         plan={plan}
         composerBusy={composerBusy}
+        sessionSwitching={sessionSwitchPending}
+        pilotStep={pilotStep}
         transcriptStale={transcriptStale}
         wikiPrepared={wikiPrepared}
         memoryProposals={memoryProposals}
         distillNotice={distillNotice}
-        msgQueue={msgQueue}
-        dragIndex={dragIndex}
-        dragOverIndex={dragOverIndex}
         queueItems={queueItems}
         swarmLiveJobs={swarmLiveJobs}
         sessionId={activeSessionId || cachedSessionIdRef.current || ""}
@@ -4518,8 +4470,6 @@ export default function Conversation({
         onSetWikiPrepared={setWikiPrepared}
         onSetMemoryProposals={setMemoryProposals}
         onSetDistillNotice={setDistillNotice}
-        onSetMsgQueue={setMsgQueue}
-        onSetInput={setInput}
         onSetAuto={setAuto}
         onSetPlan={setPlan}
         onSetCanRevertEdit={setCanRevertEdit}
@@ -4535,12 +4485,6 @@ export default function Conversation({
         onSetLightboxUrl={setLightboxUrl}
         setSafeTimeout={setSafeTimeout}
         fetchContextUsage={fetchContextUsage}
-        handleDragStart={handleDragStart}
-        handleDragOver={handleDragOver}
-        handleDragLeave={handleDragLeave}
-        handleDrop={handleDrop}
-        handleDragEnd={handleDragEnd}
-        moveQueueItem={moveQueueItem}
         handleQueueClearAll={handleQueueClearAll}
         handleQueueDragStart={handleQueueDragStart}
         handleQueueDragOver={handleQueueDragOver}

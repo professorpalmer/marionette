@@ -10,7 +10,6 @@ import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/ap
 import { useId, type RefObject } from "react";
 import {
   ChevronDown,
-  ChevronUp,
   Code,
   FileText,
   Folder,
@@ -23,7 +22,6 @@ import {
   Send,
   Share2,
   Square,
-  Trash2,
   X,
   Zap,
   Brain,
@@ -48,7 +46,6 @@ import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
 import { pickerConfig } from "../../lib/sessionConfig";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
-export type MsgQueueItem = { text: string; auto: boolean; plan?: boolean };
 export type ServerQueueItem = { id: string; text: string; images?: string[]; model?: string };
 export type MemoryProposal = {
   id: string;
@@ -68,13 +65,11 @@ export default function ComposerDock({
   plan,
   composerBusy,
   sessionSwitching = false,
+  pilotStep = null,
   transcriptStale,
   wikiPrepared,
   memoryProposals,
   distillNotice,
-  msgQueue,
-  dragIndex,
-  dragOverIndex,
   queueItems,
   swarmLiveJobs = [],
   sessionId = "",
@@ -114,8 +109,6 @@ export default function ComposerDock({
   onSetWikiPrepared,
   onSetMemoryProposals,
   onSetDistillNotice,
-  onSetMsgQueue,
-  onSetInput,
   onSetAuto,
   onSetPlan,
   onSetCanRevertEdit,
@@ -128,12 +121,6 @@ export default function ComposerDock({
   onSetLightboxUrl,
   setSafeTimeout,
   fetchContextUsage,
-  handleDragStart,
-  handleDragOver,
-  handleDragLeave,
-  handleDrop,
-  handleDragEnd,
-  moveQueueItem,
   handleQueueClearAll,
   handleQueueDragStart,
   handleQueueDragOver,
@@ -174,13 +161,12 @@ export default function ComposerDock({
   composerBusy: boolean;
   /** A->B switch in flight: disabled Send, never Stop/Steer/Interrupt from either session. */
   sessionSwitching?: boolean;
+  /** The pilot's current step, shown under the active todo item. */
+  pilotStep?: string | null;
   transcriptStale: boolean;
   wikiPrepared: { pages: any[]; autoIngested: boolean } | null;
   memoryProposals: MemoryProposal[];
   distillNotice: string | null;
-  msgQueue: MsgQueueItem[];
-  dragIndex: number | null;
-  dragOverIndex: number | null;
   queueItems: ServerQueueItem[];
   swarmLiveJobs?: Job[];
   sessionId?: string;
@@ -224,10 +210,6 @@ export default function ComposerDock({
   onSetDistillNotice: (
     v: string | null | ((cur: string | null) => string | null),
   ) => void;
-  onSetMsgQueue: (
-    updater: MsgQueueItem[] | ((prev: MsgQueueItem[]) => MsgQueueItem[]),
-  ) => void;
-  onSetInput: (v: string) => void;
   onSetAuto: (updater: boolean | ((prev: boolean) => boolean)) => void;
   onSetPlan: (updater: boolean | ((prev: boolean) => boolean)) => void;
   onSetCanRevertEdit: (v: boolean) => void;
@@ -242,12 +224,6 @@ export default function ComposerDock({
   onSetLightboxUrl: (v: string | null) => void;
   setSafeTimeout: (fn: () => void, ms: number) => void;
   fetchContextUsage: () => void;
-  handleDragStart: (idx: number) => void;
-  handleDragOver: (e: React.DragEvent, idx: number) => void;
-  handleDragLeave: (idx: number) => void;
-  handleDrop: (e: React.DragEvent, idx: number) => void;
-  handleDragEnd: () => void;
-  moveQueueItem: (index: number, direction: "up" | "down") => void;
   handleQueueClearAll: () => void;
   handleQueueDragStart: (idx: number) => void;
   handleQueueDragOver: (e: React.DragEvent, idx: number) => void;
@@ -459,101 +435,7 @@ export default function ComposerDock({
             </button>
           </div>
         )}
-        {msgQueue.length > 0 && (
-          <div className="mb-3 space-y-1.5">
-            <div className="flex items-center justify-between mb-1 px-1">
-              <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
-                Queued ({msgQueue.length})
-              </span>
-              <button
-                onClick={() => onSetMsgQueue([])}
-                className="text-[10px] text-faint hover:text-muted transition font-semibold"
-              >
-                Clear all
-              </button>
-            </div>
-            {msgQueue.map((qm, idx) => {
-              const isDragOverRow = dragOverIndex === idx;
-              const isDragging = dragIndex === idx;
-
-              return (
-                <div
-                  key={idx}
-                  draggable
-                  onDragStart={() => handleDragStart(idx)}
-                  onDragOver={(e) => handleDragOver(e, idx)}
-                  onDragLeave={() => handleDragLeave(idx)}
-                  onDrop={(e) => handleDrop(e, idx)}
-                  onDragEnd={handleDragEnd}
-                  className={`flex items-center justify-between bg-panel2/60 border rounded-lg px-3 py-1.5 text-[12px] text-muted transition-all duration-150 select-none
-                    ${isDragging ? "opacity-40" : ""}
-                    ${isDragOverRow ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
-                >
-                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                    <div className="text-faint hover:text-muted cursor-grab active:cursor-grabbing flex items-center justify-center p-0.5">
-                      <GripVertical size={12} />
-                    </div>
-                    <span className="text-faint text-[10px] font-mono select-none">
-                      {idx + 1}
-                    </span>
-                    <span
-                      onClick={() => {
-                        onSetInput(qm.text);
-                        onSetAuto(qm.auto);
-                        onSetPlan(qm.plan || false);
-                        onSetMsgQueue((prev) => prev.filter((_, i) => i !== idx));
-                        taRef.current?.focus();
-                      }}
-                      title="Click to edit message"
-                      className="truncate max-w-md cursor-pointer hover:text-txt hover:underline transition-colors select-none"
-                    >
-                      {qm.text}
-                    </span>
-                    {qm.plan && (
-                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-accent/15 text-accent rounded whitespace-nowrap">
-                        plan
-                      </span>
-                    )}
-                    {qm.auto && (
-                      <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 bg-warn/15 text-warn rounded whitespace-nowrap">
-                        auto
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
-                    <button
-                      onClick={() => moveQueueItem(idx, "up")}
-                      disabled={idx === 0}
-                      title="Move up"
-                      className="p-1 rounded text-faint hover:text-muted hover:bg-panel border border-transparent hover:border-edge/40 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                    >
-                      <ChevronUp size={12} />
-                    </button>
-                    <button
-                      onClick={() => moveQueueItem(idx, "down")}
-                      disabled={idx === msgQueue.length - 1}
-                      title="Move down"
-                      className="p-1 rounded text-faint hover:text-muted hover:bg-panel border border-transparent hover:border-edge/40 disabled:opacity-30 disabled:pointer-events-none transition-all"
-                    >
-                      <ChevronDown size={12} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        onSetMsgQueue((prev) => prev.filter((_, i) => i !== idx));
-                      }}
-                      title="Cancel/Remove"
-                      className="p-1 rounded text-faint hover:text-risk hover:bg-risk/10 border border-transparent hover:border-risk/20 transition-all"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} active={composerBusy} />
+        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} active={composerBusy} pilotStep={pilotStep} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}

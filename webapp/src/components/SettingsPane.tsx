@@ -183,10 +183,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     const val = localStorage.getItem("pmharness.sound");
     return val !== null ? val === "true" : false;
   });
-  const [queueMessages, setQueueMessages] = useState(() => {
-    const val = localStorage.getItem("pmharness.queueMessages");
-    return val !== null ? val === "true" : true;
-  });
 
   const toggleNotify = () => {
     const newVal = !notify;
@@ -197,11 +193,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     const newVal = !sound;
     setSound(newVal);
     localStorage.setItem("pmharness.sound", String(newVal));
-  };
-  const toggleQueue = () => {
-    const newVal = !queueMessages;
-    setQueueMessages(newVal);
-    localStorage.setItem("pmharness.queueMessages", String(newVal));
   };
 
   // Live UI (Vite HMR): the backend always runs from the source checkout, so this
@@ -2298,21 +2289,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               <span className="font-medium text-[11px]">Completion sound</span>
               <span className="text-[10px] uppercase font-bold tracking-wider">
                 {sound ? "on" : "off"}
-              </span>
-            </button>
-
-            {/* Queue Messages Toggle */}
-            <button
-              onClick={toggleQueue}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-                queueMessages
-                  ? "bg-accent/10 border-accent/30 text-accent"
-                  : "bg-panel2 border-edge text-muted"
-              }`}
-            >
-              <span className="font-medium text-[11px]">Queue concurrent messages</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider">
-                {queueMessages ? "on" : "off"}
               </span>
             </button>
           </div>

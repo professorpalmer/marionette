@@ -40,9 +40,6 @@ function renderDock(opts: {
       wikiPrepared={null}
       memoryProposals={[]}
       distillNotice={null}
-      msgQueue={[]}
-      dragIndex={null}
-      dragOverIndex={null}
       queueItems={[]}
       queueDragIndex={null}
       queueDragOverIndex={null}
@@ -68,8 +65,6 @@ function renderDock(opts: {
       onSetWikiPrepared={noop}
       onSetMemoryProposals={noop}
       onSetDistillNotice={noop}
-      onSetMsgQueue={noop}
-      onSetInput={noop}
       onSetAuto={noop}
       onSetPlan={noop}
       onSetCanRevertEdit={noop}
@@ -82,12 +77,6 @@ function renderDock(opts: {
       onSetLightboxUrl={noop}
       setSafeTimeout={noop}
       fetchContextUsage={noop}
-      handleDragStart={noop}
-      handleDragOver={noop}
-      handleDragLeave={noop}
-      handleDrop={noop}
-      handleDragEnd={noop}
-      moveQueueItem={noop}
       handleQueueClearAll={noop}
       handleQueueDragStart={noop}
       handleQueueDragOver={noop}
