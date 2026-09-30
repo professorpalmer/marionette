@@ -574,6 +574,31 @@ export function activityWorkDurationMs(
 }
 
 /**
+ * Wall-clock span of a saved turn: from the user's message to the end of the
+ * last action, read from the times the backend stamps on transcript rows, so
+ * it survives a reload. Null when the rows predate those times.
+ */
+export function turnSpanMs(
+  items: Array<{ kind: string; card?: { ts?: number; turn_ts?: number; result?: { duration_ms?: number | null } | null } }>,
+): number | null {
+  let start = Infinity;
+  let end = -Infinity;
+  for (const it of items) {
+    const card = it.kind === "card" ? it.card : undefined;
+    if (card?.ts == null || card.turn_ts == null) continue;
+    start = Math.min(start, card.turn_ts);
+    end = Math.max(end, card.ts + Math.max(0, card.result?.duration_ms ?? 0));
+  }
+  return end > start ? end - start : null;
+}
+
+export function maxKnown(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
+/**
  * Duration for the Worked for row. A live fold still on the same job uses
  * the wall-clock busy timer when it is longer than recorded tool slices —
  * that is the Still working… clock. Prior folds never inherit it.
