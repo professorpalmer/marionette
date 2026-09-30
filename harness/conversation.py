@@ -3522,6 +3522,12 @@ class ConversationalSession(
         except Exception:
             pass
         try:
+            from .todo_reminder import note_todo_progress_and_maybe_nudge
+
+            clamped_content = note_todo_progress_and_maybe_nudge(self, act, clamped_content)
+        except Exception:
+            pass
+        try:
             from .runaway_guard import note_runaway_and_maybe_steer
 
             clamped_content = note_runaway_and_maybe_steer(
