@@ -73,7 +73,7 @@ export function SettingsCollapse({
         }}
         className="w-full flex items-center justify-between gap-2 text-left rounded focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent group"
       >
-        <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1.5 min-w-0 group-hover:text-txt transition">
+        <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1.5 min-w-0 group-hover:text-txt transition">
           {shown ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
           <span className="truncate">{title}</span>
           {summary ? (

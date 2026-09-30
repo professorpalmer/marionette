@@ -70,15 +70,15 @@ export function FeaturedProviderRow({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-txt leading-tight">{label}</div>
-          <div className="text-[11px] text-muted mt-0.5 leading-snug">{copy.tagline}</div>
+          <div className="text-ui-13 font-semibold text-txt leading-tight">{label}</div>
+          <div className="text-ui-11 text-muted mt-0.5 leading-snug">{copy.tagline}</div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {busy || sessionId ? (
             <button
               type="button"
               onClick={onCancel}
-              className="text-[11px] text-muted hover:text-txt border border-edge rounded px-2 py-1"
+              className="text-ui-11 text-muted hover:text-txt border border-edge rounded px-2 py-1"
             >
               Cancel
             </button>
@@ -87,7 +87,7 @@ export function FeaturedProviderRow({
             type="button"
             onClick={onSignIn}
             disabled={busy}
-            className="inline-flex items-center gap-1 bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-1 text-[11px] font-medium disabled:opacity-35"
+            className="inline-flex items-center gap-1 bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-1 text-ui-11 font-medium disabled:opacity-35"
           >
             <LogIn size={12} />
             {busy ? (pkce ? "Waiting for code…" : "Waiting…") : "Sign in"}
@@ -95,7 +95,7 @@ export function FeaturedProviderRow({
         </div>
       </div>
       {hint ? (
-        <p className="mt-1.5 text-[11px] text-accent font-mono leading-normal">{hint}</p>
+        <p className="mt-1.5 text-ui-11 text-accent font-mono leading-normal">{hint}</p>
       ) : null}
       {pkce && sessionId ? (
         <div className="mt-2 flex items-center gap-2">
@@ -104,20 +104,20 @@ export function FeaturedProviderRow({
             value={pasteCode}
             onChange={(e) => onPasteCode(e.target.value)}
             placeholder="paste authorization code#state"
-            className="flex-1 bg-bg border border-edge rounded-lg px-2.5 py-1.5 text-[12px] font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent"
+            className="flex-1 bg-bg border border-edge rounded-lg px-2.5 py-1.5 text-ui-12 font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent"
           />
           <button
             type="button"
             onClick={onComplete}
             disabled={busy || !pasteCode.trim()}
-            className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-[11px] font-medium disabled:opacity-35"
+            className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-ui-11 font-medium disabled:opacity-35"
           >
             Complete
           </button>
         </div>
       ) : null}
       {errorNotice ? (
-        <p className="mt-1.5 text-[11px] text-risk" role="alert">
+        <p className="mt-1.5 text-ui-11 text-risk" role="alert">
           {errorNotice}
         </p>
       ) : null}
@@ -182,10 +182,10 @@ export function KeyProviderRow({
         disabled={disabled}
         className="w-full text-left"
       >
-        <div className="text-[13px] font-semibold text-txt leading-tight">
+        <div className="text-ui-13 font-semibold text-txt leading-tight">
           {provider.display_name || provider.name}
         </div>
-        <div className="text-[11px] text-muted mt-0.5 leading-snug">{copy.tagline}</div>
+        <div className="text-ui-11 text-muted mt-0.5 leading-snug">{copy.tagline}</div>
       </button>
       {expanded ? (
         <form
@@ -196,12 +196,12 @@ export function KeyProviderRow({
           }}
         >
           <div className="flex items-start justify-between gap-3">
-            <p className="text-[12px] text-muted leading-relaxed">{copy.blurb}</p>
+            <p className="text-ui-12 text-muted leading-relaxed">{copy.blurb}</p>
             {copy.keyUrl ? (
               <button
                 type="button"
                 onClick={() => openOnboardingKeyUrl(copy.keyUrl!)}
-                className="shrink-0 inline-flex items-center gap-1 text-[12px] text-accent hover:underline pt-0.5"
+                className="shrink-0 inline-flex items-center gap-1 text-ui-12 text-accent hover:underline pt-0.5"
               >
                 Get a key
                 <ExternalLink size={11} />
@@ -216,10 +216,10 @@ export function KeyProviderRow({
             value={keyValue}
             onChange={(e) => setKeyValue(e.target.value)}
             disabled={saving || disabled}
-            className="mt-2 w-full bg-bg border border-edge rounded-lg px-3 py-2 text-[13px] font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-50"
+            className="mt-2 w-full bg-bg border border-edge rounded-lg px-3 py-2 text-ui-13 font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-50"
           />
           {errorNotice ? (
-            <p className="mt-2 text-[12px] text-risk" role="alert">
+            <p className="mt-2 text-ui-12 text-risk" role="alert">
               {errorNotice}
             </p>
           ) : null}
@@ -227,7 +227,7 @@ export function KeyProviderRow({
             <button
               type="submit"
               disabled={!canConnect}
-              className="inline-flex items-center gap-1.5 bg-accent text-panel font-semibold rounded-lg px-3.5 py-1.5 text-[12.5px] hover:brightness-110 disabled:opacity-35 disabled:hover:brightness-100 transition"
+              className="inline-flex items-center gap-1.5 bg-accent text-panel font-semibold rounded-lg px-3.5 py-1.5 text-ui-12.5 hover:brightness-110 disabled:opacity-35 disabled:hover:brightness-100 transition"
             >
               <KeyRound size={13} />
               {saving ? "Connecting…" : "Connect"}
@@ -415,23 +415,23 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
           <h1 className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
             Let&apos;s get you set up with Marionette
           </h1>
-          <p className="mt-2 text-[13px] text-muted leading-relaxed">
+          <p className="mt-2 text-ui-13 text-muted leading-relaxed">
             Sign in with a plan or paste a Full stack key. One credential runs chat and swarms.
           </p>
         </header>
 
         {loading ? (
-          <p className="text-center text-muted text-[13px] py-10">Loading providers…</p>
+          <p className="text-center text-muted text-ui-13 py-10">Loading providers…</p>
         ) : (
           <>
             {loadNotice ? (
-              <p className="mb-4 text-center text-[12px] text-risk" role="alert">
+              <p className="mb-4 text-center text-ui-12 text-risk" role="alert">
                 {loadNotice}
               </p>
             ) : null}
 
             <section aria-label="Featured plan sign-in">
-              <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
+              <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">
                 Sign in with a plan
               </h2>
               <div className="space-y-2">
@@ -454,11 +454,11 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
             </section>
 
             <section className="mt-6" aria-label="API key providers">
-              <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-2">
+              <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">
                 Or paste an API key
               </h2>
               {keyRows.length === 0 ? (
-                <p className="text-center text-muted text-[13px] py-4">
+                <p className="text-center text-muted text-ui-13 py-4">
                   No key providers available. You can add a key later from Settings.
                 </p>
               ) : (
@@ -483,7 +483,7 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
           <button
             type="button"
             onClick={() => finishSkip(onClose)}
-            className="text-[12.5px] text-muted hover:text-txt transition-colors"
+            className="text-ui-12.5 text-muted hover:text-txt transition-colors"
           >
             I&apos;ll choose a provider later
           </button>

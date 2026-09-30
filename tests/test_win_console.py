@@ -1,6 +1,7 @@
 """The Windows hidden-console default must cover every subprocess site without
 clobbering deliberate console choices (wiki_backend's DETACHED_PROCESS, a
 debug CREATE_NEW_CONSOLE)."""
+from tests._isolation import isolate_module_attr
 import io
 import json
 import os
@@ -80,7 +81,7 @@ def test_cursor_cli_popen_sets_create_no_window(monkeypatch, tmp_path):
         captured["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=fake_popen)
     monkeypatch.setattr(
         "pmharness.drivers.cursor_cli.sys.platform", "win32", raising=False,
     )

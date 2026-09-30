@@ -19,6 +19,7 @@ route_task / memory dispatch lives in ``send_loop_dispatch``.
 import inspect
 import queue as queue_mod
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -1154,10 +1155,8 @@ def dispatch_pilot_provider_call(
             and callable(getattr(session.pilot, "chat_stream", None))
         )
         if is_interactive and _can_stream:
-            import queue
-            import threading
             request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=True)
-            q = queue.Queue()
+            q = queue_mod.Queue()
             t = threading.Thread(
                 target=copy_context().run,
                 args=(run_stream, session, q, tools_schema, sys_prompt),
@@ -3925,10 +3924,12 @@ def dispatch_local_action(
             )
             return
         try:
+            # Replay identity is the provider's call id (a re-sent call must
+            # reconcile its earlier batch); aid is only the card's UI identity.
             receipt = start_command_batch(
                 session,
                 list(getattr(act, "commands", None) or []),
-                aid,
+                str(getattr(act, "tool_call_id", None) or "").strip() or aid,
                 max_concurrency=int(getattr(act, "max_concurrency", 0) or 0) or None,
             )
         except Exception as exc:

@@ -243,7 +243,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
           <button
             type="button"
             onClick={onRefresh}
-            className="mt-3 text-[10px] px-2 py-1 rounded border border-edge text-muted hover:text-txt hover:bg-panel2/40 transition"
+            className="mt-3 text-ui-10 px-2 py-1 rounded border border-edge text-muted hover:text-txt hover:bg-panel2/40 transition"
           >
             Retry
           </button>
@@ -254,48 +254,31 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
       <div className="flex flex-col items-center justify-center h-full p-6 text-center text-muted">
         <Eye size={24} className="mb-2 text-faint" />
         <span className="text-xs font-medium">No pending edits to review</span>
-        <span className="text-[10px] text-faint mt-1">Enable "Review edits before applying" in Settings.</span>
+        <span className="text-ui-10 text-faint mt-1">Enable "Review edits before applying" in Settings.</span>
       </div>
     );
   }
 
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-4 select-text">
-      <style>{`
-        @keyframes green-sweep-overlay {
-          0% { transform: translateY(-100%); }
-          100% { transform: translateY(200%); }
-        }
-        .animate-sweep-overlay {
-          animation: green-sweep-overlay 1.2s infinite linear;
-        }
-        @keyframes scale-up {
-          0% { transform: scale(0.6); opacity: 0; }
-          50% { transform: scale(1.1); }
-          100% { transform: scale(1); opacity: 1; }
-        }
-        .animate-scale-up {
-          animation: scale-up 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
-        }
-      `}</style>
       {reviewsNotice && (
         <div
           data-testid="reviews-load-error"
-          className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
+          className="p-2 rounded text-ui-11 flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
         >
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
           <span className="flex-1">{reviewsNotice}</span>
           <button
             type="button"
             onClick={onRefresh}
-            className="shrink-0 text-[10px] underline underline-offset-2 hover:text-txt"
+            className="shrink-0 text-ui-10 underline underline-offset-2 hover:text-txt"
           >
             Retry
           </button>
         </div>
       )}
       {msg && (
-        <div className={`p-2 rounded text-[11px] flex items-start gap-1.5 ${
+        <div className={`p-2 rounded text-ui-11 flex items-start gap-1.5 ${
           msg.type === "success" ? "bg-accent/10 border border-accent/20 text-accent" : "bg-risk/10 border border-risk/20 text-risk"
         }`}>
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
@@ -319,21 +302,21 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
           <div key={rev.id} className="bg-panel2/40 border border-edge rounded p-3 space-y-3">
             <div className="flex flex-col gap-1 border-b border-edge/60 pb-2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-accent uppercase font-bold tracking-wider bg-accent/10 px-1.5 py-0.5 rounded">
+                <span className="text-ui-10 font-mono text-accent uppercase font-bold tracking-wider bg-accent/10 px-1.5 py-0.5 rounded">
                   {rev.id}
                 </span>
-                <span className="text-[9px] text-faint font-mono">
+                <span className="text-ui-9 text-faint font-mono">
                   {new Date(rev.created_at * 1000).toLocaleTimeString()}
                 </span>
               </div>
               <span className="text-xs font-semibold text-txt">{rev.objective}</span>
-              <span className="text-[10px] text-muted font-mono leading-tight">Job ID: {rev.job_id.slice(0, 12)}...</span>
+              <span className="text-ui-10 text-muted font-mono leading-tight">Job ID: {rev.job_id.slice(0, 12)}...</span>
             </div>
 
             {rev.error ? (
               <div
                 data-testid="pending-review-error"
-                className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/25 text-risk"
+                className="p-2 rounded text-ui-11 flex items-start gap-1.5 bg-risk/10 border border-risk/25 text-risk"
               >
                 <AlertCircle size={12} className="shrink-0 mt-0.5" />
                 <span className="leading-snug">
@@ -346,19 +329,19 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
               {rev.files.map((file, fIdx) => (
                 <div key={fIdx} className="space-y-2">
                   <div className="flex items-center justify-between border-b border-edge/30 pb-1">
-                    <span className="text-[11px] font-mono text-muted truncate max-w-[180px]" title={file.path}>
+                    <span className="text-ui-11 font-mono text-muted truncate max-w-[180px]" title={file.path}>
                       {file.path}
                     </span>
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => handleSetFileDecisions(rev.id, file, "accept")}
-                        className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-accent hover:bg-accent/10 hover:border-accent/30 transition font-medium"
+                        className="text-ui-9 px-1.5 py-0.5 rounded bg-panel border border-edge text-accent hover:bg-accent/10 hover:border-accent/30 transition font-medium"
                       >
                         Accept All
                       </button>
                       <button
                         onClick={() => handleSetFileDecisions(rev.id, file, "reject")}
-                        className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-faint hover:text-risk hover:bg-risk/10 hover:border-risk/30 transition font-medium"
+                        className="text-ui-9 px-1.5 py-0.5 rounded bg-panel border border-edge text-faint hover:text-risk hover:bg-risk/10 hover:border-risk/30 transition font-medium"
                       >
                         Reject All
                       </button>
@@ -377,7 +360,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
 
                       // Style/class for hunk container
                       let containerStyle: React.CSSProperties = {};
-                      let containerClass = "relative border rounded overflow-hidden transition-all duration-300 ";
+                      let containerClass = "relative border rounded overflow-hidden transition-[max-height,opacity,transform,margin,padding,border-width] duration-base ease-base ";
 
                       if (isApplied || isFadingOut) {
                         containerClass += "opacity-0 scale-95 pointer-events-none ";
@@ -388,9 +371,6 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                           paddingTop: "0px",
                           paddingBottom: "0px",
                           borderWidth: "0px",
-                          transition: prefersReduced
-                            ? "opacity 150ms ease"
-                            : "max-height 350ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms ease, margin 350ms, padding 350ms, border-width 350ms"
                         };
                       } else {
                         containerClass += isAccepted ? "border-edge" : "border-edge/40 opacity-70";
@@ -408,26 +388,21 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                           {/* Green Sweep Overlay */}
                           {isApplying && !prefersReduced && (
                             <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
-                              <div
-                                className="absolute inset-x-0 h-1/2 bg-gradient-to-b from-transparent via-accent/20 to-transparent animate-sweep-overlay"
-                                style={{
-                                  background: "linear-gradient(to bottom, transparent, rgba(63, 185, 80, 0.25), transparent)"
-                                }}
-                              />
+                              <div className="absolute inset-x-0 h-1/2 bg-gradient-to-b from-transparent via-good/25 to-transparent diff-apply-sweep" />
                             </div>
                           )}
 
                           {/* Green Applied Checkmark Overlay */}
                           {isApplied && !prefersReduced && (
-                            <div className="absolute inset-0 bg-accent/5 flex items-center justify-center z-20">
-                              <div className="bg-panel border border-accent/40 rounded-full p-2 text-accent shadow-lg shadow-accent/10 animate-scale-up">
+                            <div className="absolute inset-0 bg-good/5 flex items-center justify-center z-20">
+                              <div className="bg-panel border border-good/40 rounded-full p-2 text-good shadow-lg shadow-good/10 diff-applied-pop">
                                 <Check size={18} className="stroke-[3]" />
                               </div>
                             </div>
                           )}
 
                           <div className="bg-panel flex items-center justify-between px-2 py-1 border-b border-edge/50">
-                            <span className="text-[9px] font-mono text-faint">{hunk.header.trim()}</span>
+                            <span className="text-ui-9 font-mono text-faint">{hunk.header.trim()}</span>
                             <div className="flex gap-1">
                               <button
                                 onClick={() => handleSetHunkDecision(rev.id, decisionId, "accept")}
@@ -452,15 +427,15 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                             </div>
                           </div>
 
-                          <pre className="p-2 overflow-x-auto text-[10px] font-mono leading-relaxed bg-black/30 max-h-[200px] scrollbar-thin">
+                          <pre className="p-2 overflow-x-auto text-ui-10 font-mono leading-relaxed bg-black/30 max-h-[200px] scrollbar-thin">
                             {hunk.lines.map((line, lIdx) => {
                               const isAdd = line.startsWith("+");
                               const isDel = line.startsWith("-");
                               let lineClass = "";
                               if (isAdd) {
                                 lineClass = isApplying
-                                  ? "bg-accent/25 text-accent border-l-2 border-accent/80 px-1 transition-all duration-300"
-                                  : "bg-accent/10 text-accent border-l-2 border-accent/40 px-1 transition-all duration-300";
+                                  ? "bg-good/25 text-good border-l-2 border-good/80 px-1 transition-colors"
+                                  : "bg-good/10 text-good border-l-2 border-good/40 px-1 transition-colors";
                               } else if (isDel) {
                                 lineClass = "bg-risk/10 text-risk border-l-2 border-risk/40 px-1";
                               } else {

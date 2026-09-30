@@ -184,3 +184,41 @@ describe("ComposerTodoPanel", () => {
     expect(document.querySelectorAll(".animate-spin")).toHaveLength(1);
   });
 });
+
+describe("ComposerTodoPanel live step", () => {
+  afterEach(() => clearSessionTodos());
+
+  it("shows the pilot's running step under the active item between todo updates", () => {
+    publishSessionTodos({
+      phases: [{ name: "Probe", tasks: [
+        { content: "Run the six probes", status: "in_progress" },
+        { content: "Report the result", status: "pending" },
+      ] }],
+    }, "sess-live");
+    render(<ComposerTodoPanel sessionId="sess-live" active pilotStep="run echo probe 3" />);
+    const row = screen.getByText("Run the six probes").closest("[data-todo-lit]");
+    expect(row).not.toBeNull();
+    expect(screen.getByText("run echo probe 3")).toBeInTheDocument();
+  });
+
+  it("falls back to the next item when none is marked in progress", () => {
+    publishSessionTodos({
+      phases: [{ name: "Probe", tasks: [
+        { content: "Run the six probes", status: "pending" },
+        { content: "Report the result", status: "pending" },
+      ] }],
+      next: "Run the six probes",
+    }, "sess-next");
+    render(<ComposerTodoPanel sessionId="sess-next" active pilotStep="run echo probe 1" />);
+    expect(screen.getByText("Run the six probes").closest("[data-todo-lit]")).not.toBeNull();
+    expect(screen.getByText("Report the result").closest("[data-todo-lit]")).toBeNull();
+  });
+
+  it("shows no live step once the pilot is idle", () => {
+    publishSessionTodos({
+      phases: [{ name: "Probe", tasks: [{ content: "Run the six probes", status: "in_progress" }] }],
+    }, "sess-idle");
+    render(<ComposerTodoPanel sessionId="sess-idle" active pilotStep={null} />);
+    expect(screen.getByText("Run the six probes").closest("[data-todo-lit]")).toBeNull();
+  });
+});

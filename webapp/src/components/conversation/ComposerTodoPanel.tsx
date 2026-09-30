@@ -44,14 +44,30 @@ function todoPhaseKey(sessionId: string, phaseIndex: number, phaseName: string):
   return `${sessionId}:${phaseIndex}:${phaseName}`;
 }
 
+/**
+ * The task the pilot is working on right now: the one it marked in progress,
+ * else the next pending one. Between todo updates this item shows the live
+ * step, so the list moves with the work without claiming anything is done.
+ */
+function activeTaskContent(snapshot: SessionTodoSnapshot): string | null {
+  for (const phase of snapshot.phases) {
+    const task = phase.tasks.find((t) => t.status === "in_progress");
+    if (task) return task.content;
+  }
+  return snapshot.next || null;
+}
+
 export default function ComposerTodoPanel({
   jobs = [],
   sessionId,
   active = true,
+  pilotStep = null,
 }: {
   jobs?: readonly Job[];
   sessionId: string;
   active?: boolean;
+  /** The pilot's running step (tool and goal) while its turn is open. */
+  pilotStep?: string | null;
 }) {
   const snapshot = useSyncExternalStore(
     subscribeSessionTodos,
@@ -90,6 +106,7 @@ export default function ComposerTodoPanel({
   if (!todoHasWork(snapshot) || storedSid !== sessionId || (!active && !hasLiveOwner)) return null;
   const { done, total } = todoSnapshotProgress(snapshot);
   const next = snapshot.next;
+  const liveStep = active && pilotStep ? { task: activeTaskContent(snapshot), step: pilotStep } : null;
 
   const dismiss = () => {
     clearSessionTodos();
@@ -103,7 +120,7 @@ export default function ComposerTodoPanel({
           type="button"
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/35"
+          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-ui-10.5 leading-4 text-txt hover:bg-panel/35"
         >
           {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
           <ListTree size={11} className="text-faint" />
@@ -131,6 +148,7 @@ export default function ComposerTodoPanel({
                 phase={phase}
                 expanded={!collapsedPhaseKeys.has(key)}
                 litContents={lit}
+                liveStep={liveStep}
                 onToggle={() => setCollapsedPhaseKeys((current) => {
                   const next = new Set(current);
                   if (next.has(key)) next.delete(key);
@@ -151,12 +169,14 @@ function PhaseBlock({
   phase,
   expanded,
   litContents,
+  liveStep,
   onToggle,
 }: {
   index: number;
   phase: SessionTodoSnapshot["phases"][number];
   expanded: boolean;
   litContents: ReadonlySet<string>;
+  liveStep: { task: string | null; step: string } | null;
   onToggle: () => void;
 }) {
   const { done, total } = todoPhaseProgress(phase);
@@ -166,7 +186,7 @@ function PhaseBlock({
         type="button"
         aria-expanded={expanded}
         onClick={onToggle}
-        className="flex w-full items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/30"
+        className="flex w-full items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-ui-10.5 leading-4 text-txt hover:bg-panel/30"
       >
         {expanded ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
         <span className="font-medium tabular-nums">
@@ -176,18 +196,20 @@ function PhaseBlock({
       {expanded ? (
         <div className="pl-4 space-y-0.5">
           {phase.tasks.map((task) => {
-            const lit = litContents.has(task.content);
+            const step = liveStep && liveStep.task === task.content ? liveStep.step : null;
+            const lit = litContents.has(task.content) || step != null;
             return (
               <div
                 key={task.content}
                 title={task.blocker || task.content}
                 data-todo-lit={lit ? "1" : undefined}
-                className={`flex items-start gap-1.5 text-[10.5px] leading-4 ${taskTone(task.status, lit)}`}
+                className={`flex items-start gap-1.5 text-ui-10.5 leading-4 ${taskTone(task.status, lit)}`}
               >
                 <TaskMark status={task.status} lit={lit} />
                 <span className="whitespace-pre-wrap break-words">
                   {task.content}
                   {task.blocker ? <span className="mt-0.5 block text-faint">{task.blocker}</span> : null}
+                  {step ? <span className="block truncate font-mono text-faint">{step}</span> : null}
                 </span>
               </div>
             );

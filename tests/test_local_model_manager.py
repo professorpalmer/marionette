@@ -1,6 +1,7 @@
 """Hermetic download, extract, and process-ownership tests for local models."""
 from __future__ import annotations
 
+from tests._isolation import isolate_module_attr
 import hashlib
 import io
 import json
@@ -548,7 +549,7 @@ def test_windows_tree_stop_taskkill(monkeypatch):
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
-    monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
+    isolate_module_attr(monkeypatch, "harness.local_model_manager", "subprocess", run=fake_run)
     stop_process_tree(4242, proc=None, grace=0, sleeper=lambda _s: None)
     assert calls[0][:4] == ["taskkill", "/PID", "4242", "/T"]
     assert "/F" not in calls[0]
@@ -1446,7 +1447,7 @@ def test_windows_helpers_never_call_wmic(monkeypatch):
 
     monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
     monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
+    isolate_module_attr(monkeypatch, "harness.local_model_manager", "subprocess", run=fake_run)
     monkeypatch.setattr(
         "harness.local_model_manager._windows_pid_query",
         lambda pid: {"alive": True, "image": "llama-server.exe", "start_key": "1"},
@@ -1720,7 +1721,7 @@ def test_windows_unmatched_pid_does_not_taskkill(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("harness.local_model_manager._platform_name", lambda: "nt")
-    monkeypatch.setattr("harness.local_model_manager.subprocess.run", fake_run)
+    isolate_module_attr(monkeypatch, "harness.local_model_manager", "subprocess", run=fake_run)
     monkeypatch.setattr(
         "harness.local_model_manager._windows_pid_query",
         lambda pid: {

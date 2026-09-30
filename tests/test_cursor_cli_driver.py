@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._isolation import isolate_module_attr
 import io
 import json
 import os
@@ -278,7 +279,7 @@ def test_driver_chat_stream_mocked_subprocess(monkeypatch, tmp_path):
         captured["cmd"] = cmd
         return FakeProc()
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=fake_popen)
 
     d = CursorCliDriver(
         name="cursor-cli:auto",
@@ -365,7 +366,7 @@ def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
         captured["env"] = kwargs.get("env")
         return FakeProc()
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=fake_popen)
     d = CursorCliDriver(name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin))
     d.chat_stream([{"role": "user", "content": "hi"}], on_delta=lambda _t: None)
     assert captured.get("env") is not None
@@ -425,7 +426,7 @@ def test_long_prompt_never_in_argv(monkeypatch, tmp_path):
         captured["cmd"] = cmd
         return FakeProc()
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=fake_popen)
     huge = "x" * 20_000
     d = CursorCliDriver(name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin))
     resp = d.complete(huge)
@@ -517,9 +518,7 @@ def test_driver_drops_cursor_native_tool_calls(monkeypatch, tmp_path):
         def kill(self):
             pass
 
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: FakeProc(),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: FakeProc(),
     )
     d = CursorCliDriver(name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin))
     resp = d.chat_stream([{"role": "user", "content": "hi"}], on_delta=lambda _d: None)
@@ -776,7 +775,7 @@ def _install_fake_agent(monkeypatch, tmp_path, streams):
             raise AssertionError("unexpected extra agent spawn")
         return FakeProc(queue.pop(0))
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=fake_popen)
     driver = CursorCliDriver(
         name="cursor-cli:m",
         model="composer-2.5",
@@ -1034,9 +1033,7 @@ def test_resume_failure_fails_clearly_and_clears_native(monkeypatch, tmp_path):
         captured["cmds"].append(list(cmd))
         return procs.pop(0)
 
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen", sequenced_popen,
-    )
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=sequenced_popen)
     d = CursorCliDriver(
         name="cursor-cli:m",
         model="composer-2.5",
@@ -1096,9 +1093,7 @@ def test_resume_noisy_stderr_markers_do_not_fail_successful_turn(
         captured["cmds"].append(list(cmd))
         return procs.pop(0)
 
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen", sequenced_popen,
-    )
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=sequenced_popen)
     d = CursorCliDriver(
         name="cursor-cli:m",
         model="composer-2.5",
@@ -1164,9 +1159,9 @@ def test_driver_meta_preserves_explicit_zero_cache_and_served_model(
             pass
 
     # Explicit zeros must survive into meta.
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: FakeProc(
+    isolate_module_attr(
+        monkeypatch, "pmharness.drivers.cursor_cli", "subprocess",
+        Popen=lambda *a, **k: FakeProc(
             _stream({
                 "inputTokens": 10,
                 "outputTokens": 1,
@@ -1187,9 +1182,9 @@ def test_driver_meta_preserves_explicit_zero_cache_and_served_model(
     assert resp.meta["cache_write_tokens"] == 0
 
     # Absent cache fields → omit keys (null evidence), keep raw_usage.
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: FakeProc(
+    isolate_module_attr(
+        monkeypatch, "pmharness.drivers.cursor_cli", "subprocess",
+        Popen=lambda *a, **k: FakeProc(
             _stream({"inputTokens": 10, "outputTokens": 1})
         ),
     )
@@ -1285,9 +1280,9 @@ class _PrintProc:
 def test_print_path_accepts_fable_display_label(monkeypatch, tmp_path):
     fake_bin = tmp_path / "agent"
     fake_bin.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: _PrintProc(
+    isolate_module_attr(
+        monkeypatch, "pmharness.drivers.cursor_cli", "subprocess",
+        Popen=lambda *a, **k: _PrintProc(
             _print_stream("Claude Fable 5 High (200K) No Thinking")
         ),
     )
@@ -1307,9 +1302,7 @@ def test_print_path_accepts_fable_display_label(monkeypatch, tmp_path):
 def test_print_path_fails_closed_on_fable_vs_luna(monkeypatch, tmp_path):
     fake_bin = tmp_path / "agent"
     fake_bin.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: _PrintProc(_print_stream("gpt-5.6-luna-medium")),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: _PrintProc(_print_stream("gpt-5.6-luna-medium")),
     )
     d = CursorCliDriver(
         name="cursor-cli:claude-fable-5-high",
@@ -1364,9 +1357,7 @@ def test_driver_chat_stamps_natural_terminal_on_success(monkeypatch, tmp_path):
         }),
         "",
     ])
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: _fake_cursor_proc(stream),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: _fake_cursor_proc(stream),
     )
     d = CursorCliDriver(
         name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
@@ -1393,9 +1384,7 @@ def test_driver_nonzero_exit_does_not_stamp_natural(monkeypatch, tmp_path):
         }),
         "",
     ])
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: _fake_cursor_proc(stream, returncode=1),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: _fake_cursor_proc(stream, returncode=1),
     )
     d = CursorCliDriver(
         name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
@@ -1419,9 +1408,7 @@ def test_driver_result_error_does_not_stamp_natural(monkeypatch, tmp_path):
         }),
         "",
     ])
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: _fake_cursor_proc(stream),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: _fake_cursor_proc(stream),
     )
     d = CursorCliDriver(
         name="cursor-cli:m", model="composer-2.5", agent_binary=str(fake_bin),
@@ -1457,9 +1444,7 @@ def test_driver_timeout_does_not_stamp_natural(monkeypatch, tmp_path):
         def kill(self):
             self.returncode = -9
 
-    monkeypatch.setattr(
-        "pmharness.drivers.cursor_cli.subprocess.Popen",
-        lambda *a, **k: TimeoutProc(),
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=lambda *a, **k: TimeoutProc(),
     )
     d = CursorCliDriver(
         name="cursor-cli:m",

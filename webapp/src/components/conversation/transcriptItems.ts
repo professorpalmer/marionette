@@ -356,7 +356,10 @@ export function transcriptResponseToItems(res: {
   const scope = sessionId || res.session_id;
   let loadedItems: Item[] = [];
   if (res.display && res.display.length > 0) {
+    let turnTs: number | undefined;
     loadedItems = res.display.flatMap((m: any): Item[] => {
+      const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : undefined;
+      if ((m.type ?? "message") === "message" && m.role === "user") turnTs = ts;
       if (m.type === "card") {
         if (m.kind === "run_swarm") return [];
         // result == null means still in flight (persisted at action_start).
@@ -415,6 +418,8 @@ export function transcriptResponseToItems(res: {
             goals,
             actions,
             worker_id: m.worker_id ? String(m.worker_id) : undefined,
+            ts,
+            turn_ts: ts != null ? turnTs : undefined,
             running: pending,
             open: false,
             result: pending ? undefined : (m.result || undefined)

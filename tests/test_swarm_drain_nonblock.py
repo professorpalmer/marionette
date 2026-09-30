@@ -204,6 +204,7 @@ def test_drain_persists_swarm_badge_to_display_transcript():
     })
     list(s.drain_swarm_results())
     badges = [d for d in s.export_display_transcript() if d.get("type") == "swarm_result"]
+    assert all(isinstance(b.pop("ts"), int) for b in badges)
     assert badges == [{
         "type": "swarm_result",
         "job_id": "abc123",

@@ -448,7 +448,7 @@ export default function SourceControl() {
     }
 
     return (
-      <div key={index} className={`whitespace-pre font-mono text-[11px] min-h-[1.2rem] ${className}`}>
+      <div key={index} className={`whitespace-pre font-mono text-ui-11 min-h-[1.2rem] ${className}`}>
         {line}
       </div>
     );
@@ -497,11 +497,11 @@ export default function SourceControl() {
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       {readOnly && (
-        <div className="text-[10px] text-muted px-3 py-1.5 border-b border-edge/30 bg-panel2/40 uppercase tracking-wider">
+        <div className="text-ui-10 text-muted px-3 py-1.5 border-b border-edge/30 bg-panel2/40 uppercase tracking-wider">
           Read-only — stage and commit require the desktop app
         </div>
       )}
-      <div className="text-[10px] text-muted px-3 pt-2 uppercase tracking-wider flex items-center justify-between shrink-0">
+      <div className="text-ui-10 text-muted px-3 pt-2 uppercase tracking-wider flex items-center justify-between shrink-0">
         <span>Git Status</span>
         <button
           onClick={() => loadGitStatus(contextRef.current, true)}
@@ -514,20 +514,20 @@ export default function SourceControl() {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2 flex flex-col gap-3">
-        {errorNotice && <div className="text-[11px] text-risk">{errorNotice}</div>}
+        {errorNotice && <div className="text-ui-11 text-risk">{errorNotice}</div>}
 
         <div>
-          <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold">
+          <div className="text-ui-9 uppercase tracking-wider text-muted mb-1.5 font-semibold">
             Branches
           </div>
           <div className="flex flex-wrap gap-1 max-h-[80px] overflow-y-auto border border-edge/30 rounded p-1.5 bg-panel2/50">
             {branches.length === 0 && !loading && (
-              <div className="text-[10px] text-muted italic">No branches found</div>
+              <div className="text-ui-10 text-muted italic">No branches found</div>
             )}
             {branches.map((b) => (
               <span
                 key={b.name}
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border ${
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-ui-10 border ${
                   b.active
                     ? "text-accent border-accent/40 bg-accent/5 font-semibold"
                     : "text-muted border-edge hover:text-txt"
@@ -543,13 +543,13 @@ export default function SourceControl() {
         <div className="flex-1 flex flex-col min-h-[120px] overflow-y-auto gap-4 pr-1">
           {/* Staged Group */}
           <div className="flex flex-col">
-            <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
+            <div className="text-ui-9 uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
               <span>Staged ({stagedFiles.length})</span>
               {stagedFiles.length > 0 && !readOnly && (
                 <button
                   onClick={runBulk(handleUnstageAll)}
                   disabled={bulkBusy}
-                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
+                  className="text-ui-9 text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
                 >
                   Unstage all
                 </button>
@@ -557,7 +557,7 @@ export default function SourceControl() {
             </div>
             <div className="border border-edge/30 rounded bg-panel2/30 flex flex-col divide-y divide-edge/20 max-h-[160px] overflow-y-auto">
               {stagedFiles.length === 0 && (
-                <div className="text-[10px] text-muted italic p-2 text-center select-none">
+                <div className="text-ui-10 text-muted italic p-2 text-center select-none">
                   No staged changes
                 </div>
               )}
@@ -576,7 +576,7 @@ export default function SourceControl() {
                         bubbles to the row handler. */}
                     <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-0 p-0 text-inherit rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent">
                       <FileCode size={12} className="text-muted shrink-0" />
-                      <span className="text-[11px] truncate" title={file.path}>
+                      <span className="text-ui-11 truncate" title={file.path}>
                         {file.path}
                       </span>
                     </button>
@@ -591,7 +591,7 @@ export default function SourceControl() {
                       </button>
                       )}
                       <span
-                        className={`text-[9px] font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
+                        className={`text-ui-9 font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
                         title={style.label}
                       >
                         {file.status}
@@ -605,13 +605,13 @@ export default function SourceControl() {
 
           {/* Unstaged Group */}
           <div className="flex flex-col">
-            <div className="text-[9px] uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
+            <div className="text-ui-9 uppercase tracking-wider text-muted mb-1.5 font-semibold flex items-center justify-between">
               <span>Changes ({unstagedFiles.length})</span>
               {unstagedFiles.length > 0 && !readOnly && (
                 <button
                   onClick={runBulk(handleStageAll)}
                   disabled={bulkBusy}
-                  className="text-[9px] text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
+                  className="text-ui-9 text-muted hover:text-accent font-medium uppercase tracking-wider transition disabled:opacity-40"
                 >
                   Stage all
                 </button>
@@ -619,7 +619,7 @@ export default function SourceControl() {
             </div>
             <div className="border border-edge/30 rounded bg-panel2/30 flex flex-col divide-y divide-edge/20 max-h-[160px] overflow-y-auto">
               {unstagedFiles.length === 0 && (
-                <div className="text-[10px] text-muted italic p-2 text-center select-none">
+                <div className="text-ui-10 text-muted italic p-2 text-center select-none">
                   No unstaged changes
                 </div>
               )}
@@ -638,7 +638,7 @@ export default function SourceControl() {
                         bubbles to the row handler. */}
                     <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent border-0 p-0 text-inherit rounded focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent">
                       <FileCode size={12} className="text-muted shrink-0" />
-                      <span className="text-[11px] truncate" title={file.path}>
+                      <span className="text-ui-11 truncate" title={file.path}>
                         {file.path}
                       </span>
                     </button>
@@ -653,7 +653,7 @@ export default function SourceControl() {
                       </button>
                       )}
                       <span
-                        className={`text-[9px] font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
+                        className={`text-ui-9 font-mono font-semibold px-1 rounded border uppercase ${style.text}`}
                         title={style.label}
                       >
                         {file.status}
@@ -674,27 +674,27 @@ export default function SourceControl() {
           onChange={(e) => setCommitMessage(e.target.value)}
           placeholder="Commit message... (no emojis)"
           rows={2}
-          className="w-full text-[11px] bg-bg border border-edge/40 rounded p-1.5 focus:outline-none focus:border-accent/50 resize-none text-txt placeholder:text-muted"
+          className="w-full text-ui-11 bg-bg border border-edge/40 rounded p-1.5 focus:outline-none focus:border-accent/50 resize-none text-txt placeholder:text-muted"
         />
         <div className="flex items-center justify-between">
-          <span className="text-[10px] text-muted truncate max-w-[60%]">
+          <span className="text-ui-10 text-muted truncate max-w-[60%]">
             {commitStatus || (stagedFiles.length > 0 ? `${stagedFiles.length} files staged` : "Nothing staged")}
           </span>
           <button
             onClick={handleCommit}
             disabled={!commitMessage.trim() || stagedFiles.length === 0 || commitLoading}
-            className="px-3 py-1 bg-panel2 border border-edge hover:border-accent/40 hover:text-accent disabled:opacity-50 disabled:hover:text-muted disabled:hover:border-edge rounded text-[11px] font-medium text-txt transition flex items-center gap-1 shrink-0"
+            className="px-3 py-1 bg-panel2 border border-edge hover:border-accent/40 hover:text-accent disabled:opacity-50 disabled:hover:text-muted disabled:hover:border-edge rounded text-ui-11 font-medium text-txt transition flex items-center gap-1 shrink-0"
           >
             {commitLoading ? "Committing..." : "Commit"}
           </button>
         </div>
-        {commitNotice && <div className="text-[10px] text-risk mt-1">{commitNotice}</div>}
+        {commitNotice && <div className="text-ui-10 text-risk mt-1">{commitNotice}</div>}
       </div>
       )}
 
       <div className="h-1/2 border-t border-edge flex flex-col overflow-hidden bg-panel2 shrink-0">
         <div className="flex items-center justify-between px-3 py-1.5 border-b border-edge bg-panel select-none shrink-0">
-          <span className="text-[10px] text-muted uppercase tracking-wider truncate max-w-[80%]">
+          <span className="text-ui-10 text-muted uppercase tracking-wider truncate max-w-[80%]">
             {selectedFile ? `Diff: ${getFileName(selectedFile)} ${viewingStagedDiff ? "(staged)" : "(unstaged)"}` : "No diff loaded"}
           </span>
           {selectedFile && (
@@ -713,9 +713,9 @@ export default function SourceControl() {
         </div>
         <div className="flex-1 overflow-auto bg-bg p-3">
           {diffLoading && (
-            <div className="text-[11px] text-muted">Generating diff view...</div>
+            <div className="text-ui-11 text-muted">Generating diff view...</div>
           )}
-          {diffNotice && <div className="text-[11px] text-risk">{diffNotice}</div>}
+          {diffNotice && <div className="text-ui-11 text-risk">{diffNotice}</div>}
           
           {!diffLoading && !diffNotice && diffText !== null && !hasHunks && (
             <div className="space-y-0.5 select-text">
@@ -726,7 +726,7 @@ export default function SourceControl() {
           {!diffLoading && !diffNotice && diffText !== null && hasHunks && (
             <div className="space-y-4">
               {headerLines.length > 0 && (
-                <div className="p-1.5 bg-panel2/30 border border-edge/10 rounded text-muted font-mono text-[10px] select-text">
+                <div className="p-1.5 bg-panel2/30 border border-edge/10 rounded text-muted font-mono text-ui-10 select-text">
                   {headerLines.map((line, idx) => (
                     <div key={idx} className="truncate">{line}</div>
                   ))}
@@ -736,13 +736,13 @@ export default function SourceControl() {
               {hunks.map((hunk, hunkIdx) => (
                 <div key={hunkIdx} className="border border-edge/20 rounded overflow-hidden bg-bg/50 group/hunk">
                   <div className="flex items-center justify-between px-2 py-1 bg-panel border-b border-edge/20 select-none">
-                    <span className="text-[10px] font-mono text-accent font-semibold">
+                    <span className="text-ui-10 font-mono text-accent font-semibold">
                       {hunk.header}
                     </span>
                     {!readOnly && (
                     <button
                       onClick={() => handleApplyHunk(hunk, viewingStagedDiff)}
-                      className="opacity-0 group-hover/hunk:opacity-100 transition px-2 py-0.5 bg-panel2 border border-edge/60 hover:border-accent/40 rounded text-[9px] text-muted hover:text-accent font-medium"
+                      className="opacity-0 group-hover/hunk:opacity-100 transition px-2 py-0.5 bg-panel2 border border-edge/60 hover:border-accent/40 rounded text-ui-9 text-muted hover:text-accent font-medium"
                     >
                       {viewingStagedDiff ? "Unstage hunk" : "Stage hunk"}
                     </button>
@@ -760,14 +760,14 @@ export default function SourceControl() {
             <button
               type="button"
               onClick={() => setShowFullDiff(true)}
-              className="mt-2 text-[11px] text-accent hover:underline"
+              className="mt-2 text-ui-11 text-accent hover:underline"
             >
               Show {hiddenDiffLines.toLocaleString()} more lines
             </button>
           )}
 
           {!diffLoading && !diffNotice && diffText === null && (
-            <div className="text-[11px] text-muted italic">
+            <div className="text-ui-11 text-muted italic">
               Select a changed file above to view its diff
             </div>
           )}

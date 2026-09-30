@@ -38,6 +38,9 @@ def test_run_parallel_provider_default(monkeypatch):
         # Supply an available agentic worker independently of host credentials.
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
         monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+        # The delegation gate reads real provider keys; without this the test
+        # depended on the host (or an earlier test) leaving one usable.
+        monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
         goals_seen = []
         def mock_worker_run(self):
@@ -149,6 +152,9 @@ def test_run_parallel_analysis_empty_diff_applied(monkeypatch):
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
         monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+        # The delegation gate reads real provider keys; without this the test
+        # depended on the host (or an earlier test) leaving one usable.
+        monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
         expects_seen = []
         substantive = (
@@ -249,6 +255,9 @@ def test_run_parallel_analysis_discards_seed_patch_persists_findings(monkeypatch
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
         monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+        # The delegation gate reads real provider keys; without this the test
+        # depended on the host (or an earlier test) leaving one usable.
+        monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
         finding_line = (
             "FINDING: harness/auth.py:42 token refresh never validates expiry"
@@ -357,6 +366,9 @@ def test_run_parallel_analysis_verification_only_degraded(monkeypatch):
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
         monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+        # The delegation gate reads real provider keys; without this the test
+        # depended on the host (or an earlier test) leaving one usable.
+        monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
         def mock_worker_run(self):
             return WorkerResult(
@@ -422,6 +434,9 @@ def test_run_parallel_implement_empty_diff_not_applied(monkeypatch):
         session = ConversationalSession(cfg)
         monkeypatch.setattr("harness.edit_engines.agentic_available", lambda: True)
         monkeypatch.setattr("harness.edit_engines.agentic_platform_enabled", lambda: True)
+        # The delegation gate reads real provider keys; without this the test
+        # depended on the host (or an earlier test) leaving one usable.
+        monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
 
         def mock_worker_run(self):
             assert getattr(self, "expects_diff", True) is True

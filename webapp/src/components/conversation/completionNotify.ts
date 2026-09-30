@@ -17,13 +17,6 @@ export function soundPrefEnabled(
   return soundPref !== null ? soundPref === "true" : false;
 }
 
-export function queueMessagesPrefEnabled(
-  getItem: (key: string) => string | null = (k) => localStorage.getItem(k),
-): boolean {
-  const queuePrefVal = getItem("pmharness.queueMessages");
-  return queuePrefVal !== null ? queuePrefVal === "true" : true;
-}
-
 /** Show a desktop notification only when the document is hidden / unfocused. */
 export function shouldShowCompletionNotification(opts: {
   notifyEnabled: boolean;

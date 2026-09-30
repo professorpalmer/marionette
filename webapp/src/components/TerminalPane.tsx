@@ -519,7 +519,7 @@ export default function TerminalPane() {
         {agentView ? (
           <>
             <span
-              className="text-[10px] text-faint font-medium truncate min-w-0 font-mono"
+              className="text-ui-10 text-faint font-medium truncate min-w-0 font-mono"
               title={agentView.command}
             >
               {agentLabel}
@@ -528,14 +528,14 @@ export default function TerminalPane() {
               type="button"
               onClick={showInteractiveShell}
               title="Return to the interactive shell (keeps this command history)"
-              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border text-faint border-edge2 hover:text-muted hover:bg-panel2/60 transition-colors"
+              className="shrink-0 text-ui-10 px-1.5 py-0.5 rounded border text-faint border-edge2 hover:text-muted hover:bg-panel2/60 transition-colors"
             >
               Interactive shell
             </button>
           </>
         ) : (
           <>
-            <span className="text-[10px] uppercase tracking-wider text-faint font-medium">
+            <span className="text-ui-10 uppercase tracking-wider text-faint font-medium">
               Terminal -- {terminalObservationLabel(observation.state, observation.at, now)}
               {submission && <span
                 title="Input receipts confirm only bytes accepted by the PTY, not command execution or completion."
@@ -545,7 +545,7 @@ export default function TerminalPane() {
             <button
               onClick={restart}
               title="Restart terminal (kills the current shell and starts a fresh one)"
-              className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+              className={`flex items-center gap-1 text-ui-10 px-1.5 py-0.5 rounded border transition-colors ${
                 exited
                   ? "bg-accent/15 text-accent border-accent/30 hover:bg-accent/25"
                   : "text-faint border-edge2 hover:text-muted hover:bg-panel2/60"
@@ -573,7 +573,7 @@ export default function TerminalPane() {
             type="button"
             data-testid="terminal-add-to-chat"
             title={`Add selection to chat (${addToChatShortcutHint(isMacNavigator())})`}
-            className="absolute z-10 text-[10px] px-1.5 py-0.5 rounded border text-faint border-edge2 bg-[#0f1113] hover:text-muted hover:bg-panel2/80 transition-colors"
+            className="absolute z-10 text-ui-10 px-1.5 py-0.5 rounded border text-faint border-edge2 bg-[#0f1113] hover:text-muted hover:bg-panel2/80 transition-colors"
             style={selectionStyle ?? { right: 12, top: 8 }}
             onMouseDown={(e) => {
               e.preventDefault();

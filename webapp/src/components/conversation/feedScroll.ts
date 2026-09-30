@@ -572,3 +572,19 @@ export function settleFrameResult(opts: {
     frame > FEED_SETTLE_MAX_FRAMES;
   return { stableFrames, frame, done };
 }
+
+/**
+ * Run a scroll write marked as ours, so the scroll handler does not read it
+ * as a user gesture. A write that moves nothing fires no scroll event, so the
+ * mark is dropped at once; left set, it swallowed the user's next real scroll.
+ */
+export function runProgrammaticScroll(
+  el: { scrollTop: number } | null,
+  mark: { current: boolean },
+  write: () => void,
+): void {
+  const before = el?.scrollTop ?? 0;
+  mark.current = true;
+  write();
+  if (!el || Math.abs(el.scrollTop - before) < 0.5) mark.current = false;
+}

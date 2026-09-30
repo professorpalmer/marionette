@@ -301,7 +301,7 @@ export default function BrowserPane({ sessionId = "" }: { sessionId?: string }) 
             <div
               key={tab.id}
               onClick={() => setActiveTabId(tab.id)}
-              className={`group relative flex items-center gap-2 px-3 py-1 rounded-t-md text-[11px] font-medium cursor-pointer transition max-w-[140px] min-w-[80px] shrink-0 border-t-2
+              className={`group relative flex items-center gap-2 px-3 py-1 rounded-t-md text-ui-11 font-medium cursor-pointer transition max-w-[140px] min-w-[80px] shrink-0 border-t-2
                 ${isActive 
                   ? "bg-panel2 text-txt border-x border-b border-x-edge border-b-panel2 border-t-accent -mb-[1px]" 
                   : "bg-panel text-muted border-transparent hover:bg-panel2/50 hover:text-txt"
@@ -336,7 +336,7 @@ export default function BrowserPane({ sessionId = "" }: { sessionId?: string }) 
           <input value={draft} onChange={(e) => setDraft(e.target.value)}
             onFocus={() => setEditing(true)} onBlur={() => setEditing(false)}
             spellCheck={false}
-            className="w-full bg-bg border border-edge rounded-md px-2 h-6 text-[11px] text-txt
+            className="w-full bg-bg border border-edge rounded-md px-2 h-6 text-ui-11 text-txt
                        focus:outline-none focus:border-accent2" />
         </form>
         <NavBtn label="Pop out (always-on-top, persists when you switch tabs)" onClick={() => popOut(url)}><ExternalLink size={12} /></NavBtn>
@@ -472,7 +472,7 @@ export default function BrowserPane({ sessionId = "" }: { sessionId?: string }) 
         })}
 
         {isDesktop && isGoogleSigninReject(url) && (
-          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-2 text-[11px] text-txt z-10 flex items-center gap-3">
+          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-2 text-ui-11 text-txt z-10 flex items-center gap-3">
             <span className="text-muted">
               Google blocked the embedded browser for sign-in. Finish signing in
               with your system browser, then come back.
@@ -487,7 +487,7 @@ export default function BrowserPane({ sessionId = "" }: { sessionId?: string }) 
         )}
 
         {!isDesktop && (
-          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-1.5 text-[10px] text-muted z-10">
+          <div className="absolute bottom-0 inset-x-0 bg-panel/95 border-t border-edge px-3 py-1.5 text-ui-10 text-muted z-10">
             Web preview: many sites block embedding (X-Frame-Options/CSP). Full
             navigation arrives in the desktop build via the webview.
           </div>

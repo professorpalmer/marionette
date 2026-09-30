@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search, RefreshCw, ChevronRight, ChevronDown } from "lucide-react";
 import { api, type ModelCatalogEntry } from "../lib/api";
+import { SwitchTrack } from "./ui/Switch";
 
 const COLLAPSE_THRESHOLD = 12;
 const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
@@ -199,8 +200,8 @@ export default function ModelsSettingsPage() {
     <div className="max-w-2xl">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-[15px] font-semibold text-txt">Models</h2>
-          <p className="text-[11px] text-muted mt-0.5">
+          <h2 className="text-ui-15 font-semibold text-txt">Models</h2>
+          <p className="text-ui-11 text-muted mt-0.5">
             Toggle which models appear in the pilot picker. {enabledCount > 0
               ? `${enabledCount} enabled.`
               : "None curated -- the picker shows every available model."}
@@ -221,14 +222,14 @@ export default function ModelsSettingsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search models or providers"
-          className="bg-transparent text-[12px] text-txt placeholder:text-faint outline-none w-full"
+          className="bg-transparent text-ui-12 text-txt placeholder:text-faint outline-none w-full"
         />
       </div>
 
       {loading && catalog.length === 0 ? (
-        <div className="text-[12px] text-faint py-8 text-center">Loading model catalog...</div>
+        <div className="text-ui-12 text-faint py-8 text-center">Loading model catalog...</div>
       ) : groups.length === 0 ? (
-        <div className="text-[12px] text-faint py-8 text-center">
+        <div className="text-ui-12 text-faint py-8 text-center">
           No models available. Add a provider key in Providers &amp; Keys first.
         </div>
       ) : (
@@ -242,7 +243,7 @@ export default function ModelsSettingsPage() {
                   type="button"
                   onClick={() => toggleGroup(g.provider)}
                   aria-expanded={!collapsed}
-                  className="w-full flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint font-semibold mb-1.5 px-1 hover:text-txt transition"
+                  className="w-full flex items-center gap-1.5 text-ui-10 uppercase tracking-wider text-faint font-semibold mb-1.5 px-1 hover:text-txt transition"
                 >
                   {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
                   <span className="truncate">{g.display}</span>
@@ -273,21 +274,15 @@ export default function ModelsSettingsPage() {
                           aria-disabled:opacity-50`}
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="text-[12px] text-txt truncate block">
+                          <span className="text-ui-12 text-txt truncate block">
                             {entry.name && entry.name !== entry.model ? entry.name : entry.model}
                           </span>
                           {entry.name && entry.name !== entry.model ? (
-                            <span className="text-[10px] text-faint font-mono truncate block">{entry.model}</span>
+                            <span className="text-ui-10 text-faint font-mono truncate block">{entry.model}</span>
                           ) : null}
                         </span>
-                        <span
-                          className={`shrink-0 ml-3 flex items-center justify-center w-9 h-5 rounded-full transition relative
-                            ${entry.enabled ? "bg-accent/80" : "bg-edge"}`}
-                        >
-                          <span
-                            className={`absolute w-4 h-4 rounded-full bg-white transition-transform
-                              ${entry.enabled ? "translate-x-2" : "-translate-x-2"}`}
-                          />
+                        <span className="ml-3 flex">
+                          <SwitchTrack on={entry.enabled} />
                         </span>
                       </button>
                     ))}

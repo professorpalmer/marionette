@@ -288,12 +288,18 @@ export type TranscriptRowHeightCache = {
     rowId: string,
     feedInnerWidth: number,
   ) => number;
+  /** Height a row was actually painted at (live tail), reused when it enters
+   *  the list with the same content at the same width. */
+  recordMeasuredHeight: (item: GroupedItem, rowId: string, feedInnerWidth: number, height: number) => void;
+  /** True when the row was painted in the live tail (measure it on arrival). */
+  wasPaintedLive: (rowId: string) => boolean;
   clear: () => void;
 };
 
 export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
   const preparedByKey = new Map<string, PreparedText>();
   const heightByMemo = new Map<string, number>();
+  const measuredByRow = new Map<string, { width: number; height: number; content: string }>();
 
   function layoutHeight(
     rowId: string,
@@ -347,6 +353,10 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
     rowId: string,
     feedInnerWidth: number,
   ): number {
+    const measured = measuredByRow.get(rowId);
+    if (measured && measured.width === feedInnerWidth && measured.content === rowContentSignature(item)) {
+      return measured.height;
+    }
     const fixed = FIXED_ROW_HEIGHT_PX[item.kind];
     if (fixed != null) return fixed;
 
@@ -361,11 +371,30 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
 
   return {
     estimateRowHeight,
+    recordMeasuredHeight: (item, rowId, feedInnerWidth, height) => {
+      if (height > 0) measuredByRow.set(rowId, { width: feedInnerWidth, height, content: rowContentSignature(item) });
+    },
+    wasPaintedLive: (rowId) => measuredByRow.has(rowId),
     clear: () => {
       preparedByKey.clear();
       heightByMemo.clear();
+      measuredByRow.clear();
     },
   };
+}
+
+/** What a measured height depends on besides width: the row's content size. */
+function rowContentSignature(item: GroupedItem): string {
+  switch (item.kind) {
+    case "msg":
+      return `msg:${item.msg.text.length}`;
+    case "thinking":
+      return `think:${item.text.length}`;
+    case "activity_group":
+      return `fold:${item.items.length}`;
+    default:
+      return item.kind;
+  }
 }
 
 /** Signal that changes on every stream token / fold membership so rows remasure. */

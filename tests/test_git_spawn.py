@@ -1,6 +1,7 @@
 """Dest git spawn neutralization (env + -c flags)."""
 from __future__ import annotations
 
+from tests._isolation import isolated_patch
 from unittest.mock import MagicMock, patch
 
 from harness.git_spawn import git_extra_args, git_spawn_env
@@ -50,7 +51,7 @@ def test_git_extra_args_disable_hooks_fsmonitor_and_help_alias():
 
 def test_workspaces_git_passes_hooks_path_neutralize():
     mock_proc = MagicMock(returncode=0, stdout="", stderr="")
-    with patch("harness.workspaces.subprocess.run", return_value=mock_proc) as mocked:
+    with isolated_patch("harness.workspaces", "subprocess", "run", return_value=mock_proc) as mocked:
         _git("/tmp/repo", "status", "--porcelain")
     argv = list(mocked.call_args.args[0])
     assert argv[:3] == ["git", "-C", "/tmp/repo"]

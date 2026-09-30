@@ -42,6 +42,32 @@ describe("ledger footer", () => {
     expect(f.plan).toBe("9k tok on plan · $0.50 at list (partial)");
   });
 
+  it("shows an all-local session's tokens once and no cache rate", () => {
+    const f = ledgerFooter(view({
+      tokens: 960, cache_hit: 0,
+      local: { ...empty, calls: 2, tokens: 960, cache_hit: 0 },
+    }));
+    expect(f.tokens).toBeNull();
+    expect(f.local).toBe("960 tok local");
+    expect(f.cache).toBeNull();
+  });
+
+  it("shows an all-plan session's tokens once", () => {
+    const f = ledgerFooter(view({ tokens: 9_000, plan: { ...empty, calls: 3, tokens: 9_000 } }));
+    expect(f.tokens).toBeNull();
+    expect(f.plan).toBe("9k tok on plan");
+  });
+
+  it("keeps the total and cache rate for a mixed session", () => {
+    const f = ledgerFooter(view({
+      tokens: 10_000, cache_hit: 0.5,
+      local: { ...empty, calls: 1, tokens: 960 },
+    }));
+    expect(f.tokens).toBe("10k tok");
+    expect(f.local).toBe("960 tok local");
+    expect(f.cache).toBe("50% cache");
+  });
+
   it("only sessions with recorded calls are shown from the ledger", () => {
     expect(hasLedger(view({ calls: 0 }))).toBe(false);
     expect(hasLedger(undefined)).toBe(false);

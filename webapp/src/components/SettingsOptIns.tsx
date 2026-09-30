@@ -79,10 +79,10 @@ export default function SettingsOptIns({
   return (
     <div className="space-y-3" data-testid="settings-opt-ins">
       <div>
-        <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+        <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
           Opt-ins
         </label>
-        <p className="text-[10px] text-muted">
+        <p className="text-ui-10 text-muted">
           Optional extras. Off stays off. None of these are required for chat.
         </p>
       </div>
@@ -91,7 +91,7 @@ export default function SettingsOptIns({
         const idle = row.key === "jev_enabled" && on && settings.jev_ready === false;
         return (
           <div key={row.key} className="space-y-1.5">
-            <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
               {row.label}
             </label>
             <button
@@ -105,12 +105,12 @@ export default function SettingsOptIns({
                   : "bg-panel2 border-edge text-muted"
               } disabled:opacity-50`}
             >
-              <span className="font-medium text-[11px]">{row.summary}</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider">
+              <span className="font-medium text-ui-11">{row.summary}</span>
+              <span className="text-ui-10 uppercase font-bold tracking-wider">
                 {idle ? "idle" : on ? "on" : "off"}
               </span>
             </button>
-            <p className="text-[10px] text-muted">{row.help}</p>
+            <p className="text-ui-10 text-muted">{row.help}</p>
           </div>
         );
       })}

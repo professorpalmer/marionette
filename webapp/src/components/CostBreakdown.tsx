@@ -404,7 +404,7 @@ export default function CostBreakdown({
   hero?: boolean;
 }) {
   if (data.read_status === "unavailable") {
-    return <div role="status" className="px-3 py-3 text-[11px] text-muted">
+    return <div role="status" className="px-3 py-3 text-ui-11 text-muted">
       {data.accounting_scope === 'conversation' ? 'Session usage' : 'App-run usage'} is partial / unavailable.
       {data.est_cost_usd > 0 ? ` Known spend subtotal: ${fmtCost(data.est_cost_usd)}.` : " Spend total unavailable."}
     </div>;
@@ -480,8 +480,8 @@ export default function CostBreakdown({
   if (!hero && !showWhySaved && !showUnknownRouting) return null;
 
   return (
-    <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt">
-      <p className="text-[10px] text-muted mb-2 leading-snug">
+    <div className="w-full min-h-0 px-3 py-3 text-ui-11 text-txt">
+      <p className="text-ui-10 text-muted mb-2 leading-snug">
         {data.accounting_scope === 'conversation'
           ? 'This session, all time. Tokens and cache hits are recorded session usage; job spend includes owned worker receipts. List-price value includes attributable job evidence only.'
           : 'Spend and list-price value since you opened Marionette.'}
@@ -494,20 +494,20 @@ export default function CostBreakdown({
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">{included ? "Included in plan" : "Spend"}</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{included ? "$0 marginal spend" : `${spendPrefix}${fmtCost(est)}`}</div>
+            <div className="text-ui-10 text-muted">{included ? "Included in plan" : "Spend"}</div>
+            <div className="mt-0.5 text-ui-15 font-medium tabular-nums text-txt">{included ? "$0 marginal spend" : `${spendPrefix}${fmtCost(est)}`}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">At list price{data.list_price_complete === false ? " (partial)" : ""}</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">~{fmtCost(withoutSavings)}</div>
+            <div className="text-ui-10 text-muted">At list price{data.list_price_complete === false ? " (partial)" : ""}</div>
+            <div className="mt-0.5 text-ui-15 font-medium tabular-nums text-txt">~{fmtCost(withoutSavings)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">{hasPlanValue ? "Estimated savings" : listPriceValueHeading(listPriceValueWeakestBasis(data))}</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">~{fmtCost(savingsTotal)}</div>
+            <div className="text-ui-10 text-muted">{hasPlanValue ? "Estimated savings" : listPriceValueHeading(listPriceValueWeakestBasis(data))}</div>
+            <div className="mt-0.5 text-ui-15 font-medium tabular-nums text-good/65">~{fmtCost(savingsTotal)}</div>
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] text-muted">Less than list price</div>
-            <div className="mt-0.5 text-[15px] font-medium tabular-nums text-good/65">
+            <div className="text-ui-10 text-muted">Less than list price</div>
+            <div className="mt-0.5 text-ui-15 font-medium tabular-nums text-good/65">
               {savingsPercent === null ? "—" : `${savingsPercent.toFixed(1)}%`}
             </div>
           </div>
@@ -517,8 +517,8 @@ export default function CostBreakdown({
 
       {showWhySaved ? (
       <div className={hero ? "mt-2 pt-2 border-t border-edge/50" : undefined}>
-      <div className="text-[10px] text-faint mb-1">Why list-price is lower</div>
-      <p className="text-[10px] text-muted mb-1.5 leading-snug">
+      <div className="text-ui-10 text-faint mb-1">Why list-price is lower</div>
+      <p className="text-ui-10 text-muted mb-1.5 leading-snug">
         Each line is shown once, so the total stays honest.
       </p>
       {promptCacheSaved > 0 ? (

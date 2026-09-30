@@ -259,18 +259,18 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
   return (
     <div
       ref={paneRef}
-      className={`flex flex-col text-[12px] ${embedded ? "h-full min-h-0" : "h-full"}`}
+      className={`flex flex-col text-ui-12 ${embedded ? "h-full min-h-0" : "h-full"}`}
     >
       <div
         ref={headerRef}
         className={`flex items-center justify-between shrink-0 ${embedded ? "px-2 py-1" : "px-3 py-2 border-b border-edge"}`}
       >
         {!embedded ? (
-          <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
+          <span className="uppercase tracking-wider text-ui-10 text-faint font-medium flex items-center gap-1.5">
             <Plug size={11} /> MCP Servers
           </span>
         ) : (
-          <span className="text-[9px] text-faint">
+          <span className="text-ui-9 text-faint">
             {formatMcpHeaderSummary(servers)}
           </span>
         )}
@@ -290,14 +290,14 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
         {actionError && (
           <div
             role="alert"
-            className="text-risk text-[10px] leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
+            className="text-risk text-ui-10 leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
           >
             Action failed: {actionError}
           </div>
         )}
 
         {servers.length === 0 && !adding && (
-          <div className={`text-faint text-[11px] text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
+          <div className={`text-faint text-ui-11 text-center px-3 leading-relaxed ${embedded ? "mt-2" : "mt-6"}`}>
             No MCP servers yet. Add github, aws, vercel, a browser controller, or a Docker HTTP URL
             (e.g. http://localhost:8085/mcp). Discord bot recipe (optional, not built-in):
             docs/discord-mcp.md in the Marionette repo.
@@ -314,12 +314,12 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
               <span className="font-medium text-txt flex-1 truncate flex items-center gap-1.5">
                 <span>{s.name}</span>
                 {s.transport && (
-                  <span className="px-1 py-0.5 rounded bg-panel border border-edge text-faint text-[8.5px] font-mono uppercase tracking-wider">
+                  <span className="px-1 py-0.5 rounded bg-panel border border-edge text-faint text-ui-8.5 font-mono uppercase tracking-wider">
                     {s.transport}
                   </span>
                 )}
               </span>
-              <span className="text-faint text-[10px]">{lifecycleStatusLabel(s)}</span>
+              <span className="text-faint text-ui-10">{lifecycleStatusLabel(s)}</span>
               <button
                 onClick={() => refreshServer(s.name)}
                 disabled={busy === s.name}
@@ -333,12 +333,12 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
                 : <button onClick={() => start(s.name)} disabled={busy === s.name} title="Start" className="text-muted hover:text-good"><Play size={12} /></button>}
               <button onClick={() => remove(s.name)} disabled={busy === s.name} title="Remove" className="text-muted hover:text-risk"><Trash2 size={12} /></button>
             </div>
-            <div className="text-faint text-[10px] mt-0.5 truncate font-mono">{s.command}</div>
+            <div className="text-faint text-ui-10 mt-0.5 truncate font-mono">{s.command}</div>
             {/* Lifecycle health — separate from last tool invocation. */}
-            {s.error && <div className="text-risk text-[10px] mt-1 break-words">Server: {s.error}</div>}
+            {s.error && <div className="text-risk text-ui-10 mt-1 break-words">Server: {s.error}</div>}
             {lastLabel && (
               <div
-                className={`text-[10px] mt-1 break-words ${last?.ok ? "text-muted" : "text-warn"}`}
+                className={`text-ui-10 mt-1 break-words ${last?.ok ? "text-muted" : "text-warn"}`}
                 title="Last actual tool call (not server lifecycle health)"
               >
                 {lastLabel}
@@ -382,7 +382,7 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
           >
             <button
               onClick={toggleToolsCollapsed}
-              className="flex items-center gap-1 min-w-0 text-[11px] uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
+              className="flex items-center gap-1 min-w-0 text-ui-11 uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
             >
               {toolsCollapsed ? (
                 <ChevronRight size={11} className="shrink-0" />
@@ -403,13 +403,13 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
                   className="py-1 border-b border-edge/20 last:border-none flex flex-wrap items-baseline gap-x-1.5 min-w-0"
                 >
                   <span
-                    className="text-accent font-mono text-[11px] truncate max-w-full"
+                    className="text-accent font-mono text-ui-11 truncate max-w-full"
                     title={t.qualified}
                   >
                     {t.qualified}
                   </span>
                   <span
-                    className="text-faint text-[10px] truncate max-w-full"
+                    className="text-faint text-ui-10 truncate max-w-full"
                     title={t.description}
                   >
                     {t.description}
@@ -478,34 +478,34 @@ function AddForm({
       <div className="flex flex-wrap gap-1">
         {Object.keys(catalog).map((k) => (
           <button key={k} onClick={() => pickPreset(k)}
-            className="px-1.5 py-0.5 rounded bg-bg border border-edge text-[10px] text-muted hover:text-txt">{k}</button>
+            className="px-1.5 py-0.5 rounded bg-bg border border-edge text-ui-10 text-muted hover:text-txt">{k}</button>
         ))}
       </div>
       <input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. github)"
-        className="bg-bg border border-edge rounded px-2 h-6 text-[11px] focus:outline-none focus:border-accent2" />
+        className="bg-bg border border-edge rounded px-2 h-6 text-ui-11 focus:outline-none focus:border-accent2" />
       
       <input value={url} onChange={(e) => { setUrl(e.target.value); if (e.target.value.trim()) { setCommand(""); setArgStr(""); setEnvStr(""); } }}
         placeholder="URL (for HTTP, e.g. http://localhost:8000/mcp)"
-        className="bg-bg border border-edge rounded px-2 h-6 text-[11px] font-mono focus:outline-none focus:border-accent2" />
+        className="bg-bg border border-edge rounded px-2 h-6 text-ui-11 font-mono focus:outline-none focus:border-accent2" />
 
       {!url.trim() && (
         <>
           <input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="command (npx, uvx, ...)"
-            className="bg-bg border border-edge rounded px-2 h-6 text-[11px] font-mono focus:outline-none focus:border-accent2" />
+            className="bg-bg border border-edge rounded px-2 h-6 text-ui-11 font-mono focus:outline-none focus:border-accent2" />
           <input value={argStr} onChange={(e) => setArgStr(e.target.value)} placeholder="args (space-separated)"
-            className="bg-bg border border-edge rounded px-2 h-6 text-[11px] font-mono focus:outline-none focus:border-accent2" />
+            className="bg-bg border border-edge rounded px-2 h-6 text-ui-11 font-mono focus:outline-none focus:border-accent2" />
           <textarea value={envStr} onChange={(e) => setEnvStr(e.target.value)} placeholder="env (KEY=value per line)"
-            rows={2} className="bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono resize-none focus:outline-none focus:border-accent2" />
+            rows={2} className="bg-bg border border-edge rounded px-2 py-1 text-ui-11 font-mono resize-none focus:outline-none focus:border-accent2" />
         </>
       )}
 
-      {err && <div className="text-risk text-[10px]">{err}</div>}
+      {err && <div className="text-risk text-ui-10">{err}</div>}
       <div className="flex gap-1.5">
         <button onClick={submit} disabled={submitting || !name.trim() || (!url.trim() && !command.trim())}
-          className="flex-1 h-6 rounded bg-accent text-black/90 text-[11px] font-semibold flex items-center justify-center gap-1 disabled:opacity-40">
+          className="flex-1 h-6 rounded bg-accent text-black/90 text-ui-11 font-semibold flex items-center justify-center gap-1 disabled:opacity-40">
           {submitting ? <><Loader2 size={11} className="animate-spin" /> Starting…</> : <><Check size={11} /> Add &amp; start</>}
         </button>
-        <button onClick={onDone} className="px-2 h-6 rounded border border-edge text-muted text-[11px] flex items-center gap-1"><X size={11} /></button>
+        <button onClick={onDone} className="px-2 h-6 rounded border border-edge text-muted text-ui-11 flex items-center gap-1"><X size={11} /></button>
       </div>
     </div>
   );

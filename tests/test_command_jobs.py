@@ -7,6 +7,7 @@ metadata. Foreground ``run_command`` stays synchronous and also registers a
 """
 from __future__ import annotations
 
+from tests._isolation import isolated_patch
 import json
 import os
 import threading
@@ -134,7 +135,7 @@ def test_register_before_start_and_pending_receipt(session):
         launched.append((target, targs))
         return MagicMock()
 
-    with patch("harness.command_jobs.threading.Thread", side_effect=_capture_thread):
+    with isolated_patch("harness.command_jobs", "threading", "Thread", side_effect=_capture_thread):
         receipt = start_background_run_command(sess, act, "a-1")
 
     job_id = receipt["job_id"]
@@ -173,7 +174,7 @@ def test_terminal_background_command_receipt_is_idempotent_for_its_action(sessio
         "result": {"status": "running"},
     }]
     act = PilotAction(kind="run_command", command="echo receipt", background=True)
-    with patch("harness.command_jobs.threading.Thread", return_value=MagicMock()):
+    with isolated_patch("harness.command_jobs", "threading", "Thread", return_value=MagicMock()):
         pending = start_background_run_command(sess, act, "a-delivery")
     assert sess._finish_command_job(
         pending["job_id"], status="completed", summary="exit 0", exit_code=0,
@@ -730,7 +731,7 @@ def test_codegraph_dispatch_auto_background(session, command):
     sess, _, repo = session
     act = PilotAction(kind='run_command', command=command, repo=repo)
     sess._do_run_command = MagicMock()
-    with patch('harness.command_jobs.threading.Thread') as thread:
+    with isolated_patch("harness.command_jobs", "threading", "Thread") as thread:
         events = list(dispatch_local_action(sess, act, 'a-index', True, []))
     sess._do_run_command.assert_not_called()
     data = events[0].data

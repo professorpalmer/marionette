@@ -217,10 +217,8 @@ export {
   clampSelectIndex,
 } from "./composerInput";
 export {
-  moveItem,
   reorderByDrag,
   blankQueueItemsOnSessionSwitch,
-  blankMsgQueueOnSessionSwitch,
   shouldApplyQueueRefresh,
   applyQueueListIdentity,
   QUEUE_LOAD_FAIL_NOTICE,
@@ -228,7 +226,6 @@ export {
 export {
   notifyPrefEnabled,
   soundPrefEnabled,
-  queueMessagesPrefEnabled,
   shouldShowCompletionNotification,
 } from "./completionNotify";
 export { createApplyStreamEvent } from "./streamEventHandler";

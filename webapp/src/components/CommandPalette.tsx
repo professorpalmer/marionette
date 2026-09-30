@@ -159,7 +159,7 @@ export default function CommandPalette({
               setActiveIndex(0);
             }}
             placeholder="Run a command…"
-            className="w-full bg-transparent text-[13px] text-txt placeholder:text-faint outline-none"
+            className="w-full bg-transparent text-ui-13 text-txt placeholder:text-faint outline-none"
             aria-controls={listId}
             aria-autocomplete="list"
             autoComplete="off"
@@ -174,7 +174,7 @@ export default function CommandPalette({
           className="max-h-72 overflow-y-auto py-1"
         >
           {actions.length === 0 ? (
-            <div className="px-3 py-2.5 text-[12px] text-muted">No matching commands</div>
+            <div className="px-3 py-2.5 text-ui-12 text-muted">No matching commands</div>
           ) : (
             actions.map((action, index) => {
               const active = index === activeIndex;
@@ -186,7 +186,7 @@ export default function CommandPalette({
                   aria-selected={active}
                   data-palette-index={index}
                   data-testid={`command-palette-item-${action.id}`}
-                  className={`w-full text-left px-3 py-2 text-[12.5px] transition-colors ${
+                  className={`w-full text-left px-3 py-2 text-ui-12.5 transition-colors ${
                     active
                       ? "bg-panel2 text-txt"
                       : "text-muted hover:bg-panel2/50 hover:text-txt"

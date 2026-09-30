@@ -257,8 +257,8 @@ export default function LocalModelsSettingsPage() {
   if (loading && !snapshot) {
     return (
       <div className="max-w-2xl" data-testid="local-models-page">
-        <h2 className="text-[15px] font-semibold text-txt mb-2">Local Models</h2>
-        <p className="text-[12px] text-faint">Loading hardware and install state...</p>
+        <h2 className="text-ui-15 font-semibold text-txt mb-2">Local Models</h2>
+        <p className="text-ui-12 text-faint">Loading hardware and install state...</p>
       </div>
     );
   }
@@ -291,8 +291,8 @@ export default function LocalModelsSettingsPage() {
 
   return (
     <div className="max-w-2xl" data-testid="local-models-page">
-      <h2 className="text-[15px] font-semibold text-txt mb-1">Local Models</h2>
-      <p className="text-[12px] text-muted mb-4">
+      <h2 className="text-ui-15 font-semibold text-txt mb-1">Local Models</h2>
+      <p className="text-ui-12 text-muted mb-4">
         Choose a catalog model to install and run, or attach an existing OpenAI-compatible
         service. Public remotes such as RunPod are supported over HTTPS after you confirm you
         trust them.
@@ -301,7 +301,7 @@ export default function LocalModelsSettingsPage() {
       {alertText ? (
         <div
           role="alert"
-          className="mb-3 flex items-start gap-2 rounded-md border border-edge/50 bg-panel2 px-3 py-2 text-[12px] text-txt"
+          className="mb-3 flex items-start gap-2 rounded-md border border-edge/50 bg-panel2 px-3 py-2 text-ui-12 text-txt"
           data-testid="local-models-error"
         >
           <AlertCircle size={14} className="mt-0.5 text-faint shrink-0" aria-hidden="true" />
@@ -310,19 +310,19 @@ export default function LocalModelsSettingsPage() {
       ) : null}
 
       <section className="mb-6" data-testid="local-models-hardware">
-        <h3 className="text-[13px] font-semibold text-txt mb-1">This machine</h3>
-        <p className="text-[12px] text-muted">
+        <h3 className="text-ui-13 font-semibold text-txt mb-1">This machine</h3>
+        <p className="text-ui-12 text-muted">
           {hardware?.platform_key || "unknown"} · {hardware?.accelerator || "cpu"}
           {hardware?.ram_bytes ? ` · ${formatBytes(hardware.ram_bytes)} RAM` : ""}
           {hardware?.disk_free_bytes ? ` · ${formatBytes(hardware.disk_free_bytes)} free` : ""}
         </p>
         {hardware?.supported ? (
-          <p className="text-[12px] text-txt mt-1 flex items-center gap-1.5">
+          <p className="text-ui-12 text-txt mt-1 flex items-center gap-1.5">
             <CheckCircle2 size={13} className="text-faint" aria-hidden="true" />
             <span>A pinned llama.cpp runtime is available for this platform.</span>
           </p>
         ) : (
-          <p className="text-[12px] text-txt mt-1 flex items-center gap-1.5" data-testid="local-models-unsupported">
+          <p className="text-ui-12 text-txt mt-1 flex items-center gap-1.5" data-testid="local-models-unsupported">
             <AlertCircle size={13} className="text-faint" aria-hidden="true" />
             <span>{hardware?.unsupported_reason || "Managed install is not available on this machine."}</span>
           </p>
@@ -330,15 +330,15 @@ export default function LocalModelsSettingsPage() {
       </section>
 
       <section className="mb-6" data-testid="local-models-managed">
-        <h3 className="text-[13px] font-semibold text-txt mb-2">Managed llama.cpp</h3>
-        <p className="text-[12px] text-muted mb-2">
+        <h3 className="text-ui-13 font-semibold text-txt mb-2">Managed llama.cpp</h3>
+        <p className="text-ui-12 text-muted mb-2">
           Pick which catalog model to download and run on this machine.
         </p>
         {models.length > 0 ? (
           <label className="block mb-3" data-testid="local-models-catalog-select">
-            <span className="text-[11px] text-muted">Available model</span>
+            <span className="text-ui-11 text-muted">Available model</span>
             <select
-              className="mt-1 w-full px-2 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt"
+              className="mt-1 w-full px-2 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt"
               value={selectedModel?.id || ""}
               onChange={(event) => setSelectedCatalogId(event.target.value)}
             >
@@ -348,10 +348,10 @@ export default function LocalModelsSettingsPage() {
             </select>
           </label>
         ) : (
-          <p className="text-[12px] text-faint mb-3">No catalog models are packaged in this build.</p>
+          <p className="text-ui-12 text-faint mb-3">No catalog models are packaged in this build.</p>
         )}
         {selectedModel ? (
-          <dl className="mb-3 text-[12px] text-muted" data-testid="local-models-catalog-facts">
+          <dl className="mb-3 text-ui-12 text-muted" data-testid="local-models-catalog-facts">
             <div>{selectedModel.name}</div>
             <div>Source: {selectedModel.source || "catalog"} · Trust: {selectedModel.trust || "catalog"}</div>
             <div>
@@ -362,16 +362,16 @@ export default function LocalModelsSettingsPage() {
             </div>
           </dl>
         ) : null}
-        <p className="text-[12px] text-muted mb-2" data-testid="local-models-managed-status">
+        <p className="text-ui-12 text-muted mb-2" data-testid="local-models-managed-status">
           Runtime {statusLabel(runtimeStatus)} · Model {statusLabel(modelStatus)}
           {` · Server ${managed ? residencyLabel(managed) : "Status unknown"}`}
           {process?.context_length ? ` · ${process.context_length} context` : ""}
         </p>
         {managed?.residency === "stopped" && managed.stop_reason === "inactivity" ? (
-          <p className="text-[12px] text-muted mb-2">Start to use this model.</p>
+          <p className="text-ui-12 text-muted mb-2">Start to use this model.</p>
         ) : null}
         {installed ? (
-          <div className="mb-3 flex flex-wrap items-end gap-2 text-[12px]" data-testid="local-models-idle-policy">
+          <div className="mb-3 flex flex-wrap items-end gap-2 text-ui-12" data-testid="local-models-idle-policy">
             <label className="text-muted">
               Unload after inactivity (minutes; 0 disables)
               <input
@@ -408,7 +408,7 @@ export default function LocalModelsSettingsPage() {
                 style={{ width: `${progress}%` }}
               />
             </div>
-            <p className="text-[11px] text-muted mt-1">
+            <p className="text-ui-11 text-muted mt-1">
               {download.phase || "download"} · {formatBytes(download.bytes)} / {formatBytes(download.total)}
             </p>
           </div>
@@ -417,7 +417,7 @@ export default function LocalModelsSettingsPage() {
           {!installed && !installing && !paused ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null || !hardware?.supported || !selectedModel?.id}
               onClick={() => void run({
                 type: "install",
@@ -434,7 +434,7 @@ export default function LocalModelsSettingsPage() {
           {paused ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null || !hardware?.supported || !selectedModel?.id}
               onClick={() => void run({
                 type: "install",
@@ -451,7 +451,7 @@ export default function LocalModelsSettingsPage() {
           {runtimeStatus === "downloading" || modelStatus === "downloading" ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null}
               onClick={() => void run({ type: "cancel", target: "all" }, "cancel")}
             >
@@ -464,7 +464,7 @@ export default function LocalModelsSettingsPage() {
           {installed && !running && !lifecycleBusy ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null}
               onClick={() => void run({ type: "start" }, "start")}
             >
@@ -478,7 +478,7 @@ export default function LocalModelsSettingsPage() {
             <>
               <button
                 type="button"
-                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                 disabled={busy !== null}
                 onClick={() => void run({ type: "stop" }, "stop")}
               >
@@ -489,7 +489,7 @@ export default function LocalModelsSettingsPage() {
               </button>
               <button
                 type="button"
-                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                 disabled={busy !== null}
                 onClick={() => void run({ type: "restart" }, "restart")}
               >
@@ -500,7 +500,7 @@ export default function LocalModelsSettingsPage() {
               </button>
               <button
                 type="button"
-                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                 disabled={busy !== null || !spec}
                 onClick={() => void run({ type: "activate", spec }, "activate")}
               >
@@ -511,7 +511,7 @@ export default function LocalModelsSettingsPage() {
           {modelPresent ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null}
               onClick={() => void run({ type: "remove", target: "model" }, "remove")}
             >
@@ -524,7 +524,7 @@ export default function LocalModelsSettingsPage() {
           {runtimePresent ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null}
               onClick={() => void run({ type: "remove", target: "runtime" }, "remove")}
             >
@@ -537,7 +537,7 @@ export default function LocalModelsSettingsPage() {
           {modelPresent && runtimePresent ? (
             <button
               type="button"
-              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
               disabled={busy !== null}
               onClick={() => void run({ type: "remove", target: "all" }, "remove")}
             >
@@ -551,35 +551,35 @@ export default function LocalModelsSettingsPage() {
       </section>
 
       <section data-testid="local-models-external">
-        <h3 className="text-[13px] font-semibold text-txt mb-2">Existing or remote service</h3>
-        <p className="text-[12px] text-muted mb-2" data-testid="local-models-remote-copy">
+        <h3 className="text-ui-13 font-semibold text-txt mb-2">Existing or remote service</h3>
+        <p className="text-ui-12 text-muted mb-2" data-testid="local-models-remote-copy">
           RunPod or any remote OpenAI-compatible service, plus Ollama, LM Studio, omlx, vLLM,
           and llama.cpp on this machine or LAN. HTTPS and an explicit trust confirmation are
           required for public remotes.
         </p>
-        <p className="text-[12px] text-muted mb-2" data-testid="local-models-tool-calling-copy">
+        <p className="text-ui-12 text-muted mb-2" data-testid="local-models-tool-calling-copy">
           The check records whether the endpoint returned the requested tool call. It does
           not execute tools or enroll the model as a Puppetmaster swarm worker.
         </p>
-        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-url">
+        <label className="block text-ui-11 text-muted mb-1" htmlFor="local-endpoint-url">
           Endpoint URL
         </label>
         <input
           id="local-endpoint-url"
           value={url}
           onChange={(event) => setUrl(event.target.value)}
-          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-name">
+        <label className="block text-ui-11 text-muted mb-1" htmlFor="local-endpoint-name">
           Display name
         </label>
         <input
           id="local-endpoint-name"
           value={displayName}
           onChange={(event) => setDisplayName(event.target.value)}
-          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-model">
+        <label className="block text-ui-11 text-muted mb-1" htmlFor="local-endpoint-model">
           Model id
         </label>
         <input
@@ -587,9 +587,9 @@ export default function LocalModelsSettingsPage() {
           value={manualModel}
           onChange={(event) => setManualModel(event.target.value)}
           placeholder="Required if the server does not list models"
-          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-context">
+        <label className="block text-ui-11 text-muted mb-1" htmlFor="local-endpoint-context">
           Context tokens
         </label>
         <input
@@ -599,9 +599,9 @@ export default function LocalModelsSettingsPage() {
           value={contextTokens}
           onChange={(event) => setContextTokens(event.target.value)}
           placeholder="262144"
-          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <label className="block text-[11px] text-muted mb-1" htmlFor="local-endpoint-key">
+        <label className="block text-ui-11 text-muted mb-1" htmlFor="local-endpoint-key">
           Optional API key
         </label>
         <input
@@ -609,9 +609,9 @@ export default function LocalModelsSettingsPage() {
           type="password"
           value={apiKey}
           onChange={(event) => setApiKey(event.target.value)}
-          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          className="w-full mb-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <label className="flex items-center gap-2 text-[12px] text-txt mb-2">
+        <label className="flex items-center gap-2 text-ui-12 text-txt mb-2">
           <input
             type="checkbox"
             checked={acceptLan}
@@ -619,7 +619,7 @@ export default function LocalModelsSettingsPage() {
           />
           This is a LAN machine I trust
         </label>
-        <label className="flex items-center gap-2 text-[12px] text-txt mb-3" data-testid="local-models-accept-remote">
+        <label className="flex items-center gap-2 text-ui-12 text-txt mb-3" data-testid="local-models-accept-remote">
           <input
             type="checkbox"
             checked={acceptRemote}
@@ -630,7 +630,7 @@ export default function LocalModelsSettingsPage() {
         <div className="flex flex-wrap gap-2 mb-3">
           <button
             type="button"
-            className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             disabled={busy !== null}
             onClick={() => void run({
               type: "probe",
@@ -644,7 +644,7 @@ export default function LocalModelsSettingsPage() {
           </button>
           <button
             type="button"
-            className="px-2.5 py-1.5 rounded-md border border-edge/40 text-[12px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            className="px-2.5 py-1.5 rounded-md border border-edge/40 text-ui-12 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
             disabled={busy !== null || !canSave}
             onClick={() => {
               const parsedContext = Number.parseInt(contextTokens.trim(), 10);
@@ -667,7 +667,7 @@ export default function LocalModelsSettingsPage() {
           </button>
         </div>
         {probe ? (
-          <div className="mb-3 text-[12px] text-muted" data-testid="local-models-probe">
+          <div className="mb-3 text-ui-12 text-muted" data-testid="local-models-probe">
             <p>Detected {probe.vendor}. {probe.models.length} model{probe.models.length === 1 ? "" : "s"}.</p>
             {typeof probe.context_length === "number" && probe.context_length > 0 ? (
               <p data-testid="local-models-probe-context">
@@ -676,9 +676,9 @@ export default function LocalModelsSettingsPage() {
             ) : null}
             {probe.models.length > 0 ? (
               <label className="block mt-2">
-                <span className="text-[11px] text-muted">Discovered model</span>
+                <span className="text-ui-11 text-muted">Discovered model</span>
                 <select
-                  className="mt-1 w-full px-2 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt"
+                  className="mt-1 w-full px-2 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt"
                   value={selectedDiscovered}
                   onChange={(event) => setSelectedDiscovered(event.target.value)}
                 >
@@ -694,7 +694,7 @@ export default function LocalModelsSettingsPage() {
         ) : null}
 
         {(snapshot?.externals || []).length === 0 ? (
-          <p className="text-[12px] text-faint" data-testid="local-models-empty-external">
+          <p className="text-ui-12 text-faint" data-testid="local-models-empty-external">
             No saved servers yet. Probe a URL or save one with a model id.
           </p>
         ) : (
@@ -708,13 +708,13 @@ export default function LocalModelsSettingsPage() {
                   className="rounded-md border border-edge/40 px-3 py-2"
                   data-testid={`local-external-${endpoint.id}`}
                 >
-                  <p className="text-[12px] text-txt">
+                  <p className="text-ui-12 text-txt">
                     {endpoint.name || endpoint.id} · {endpoint.vendor}
                     {endpoint.healthy ? " · reachable" : " · saved"}
                   </p>
-                  <p className="text-[11px] text-muted truncate">{endpoint.base_url}</p>
+                  <p className="text-ui-11 text-muted truncate">{endpoint.base_url}</p>
                   <p
-                    className="text-[11px] text-muted mt-1"
+                    className="text-ui-11 text-muted mt-1"
                     data-testid={`local-external-context-${endpoint.id}`}
                   >
                     {typeof endpoint.context_length === "number" && endpoint.context_length > 0
@@ -722,7 +722,7 @@ export default function LocalModelsSettingsPage() {
                       : "Context unknown"}
                   </p>
                   <p
-                    className="text-[11px] text-muted mt-1"
+                    className="text-ui-11 text-muted mt-1"
                     data-testid={`local-external-tool-calling-${endpoint.id}`}
                   >
                     Tool calling {TOOL_CALLING_LABELS[toolCalling.status]}
@@ -739,11 +739,11 @@ export default function LocalModelsSettingsPage() {
                         const value = event.target.value;
                         setCardContext((prev) => ({ ...prev, [endpoint.id]: value }));
                       }}
-                      className="w-28 px-2 py-1 rounded-md bg-panel2 border border-edge/50 text-[11px] text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      className="w-28 px-2 py-1 rounded-md bg-panel2 border border-edge/50 text-ui-11 text-txt outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                     />
                     <button
                       type="button"
-                      className="px-2 py-1 rounded-md border border-edge/40 text-[11px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      className="px-2 py-1 rounded-md border border-edge/40 text-ui-11 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                       disabled={busy !== null}
                       onClick={() => {
                         const parsed = Number.parseInt((cardContext[endpoint.id] || "").trim(), 10);
@@ -770,7 +770,7 @@ export default function LocalModelsSettingsPage() {
                   <div className="flex flex-wrap gap-2 mt-2">
                     <button
                       type="button"
-                      className="px-2 py-1 rounded-md border border-edge/40 text-[11px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      className="px-2 py-1 rounded-md border border-edge/40 text-ui-11 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                       disabled={busy !== null}
                       onClick={() => void run({ type: "activate", spec: endpointSpec }, "activate")}
                     >
@@ -778,7 +778,7 @@ export default function LocalModelsSettingsPage() {
                     </button>
                     <button
                       type="button"
-                      className="px-2 py-1 rounded-md border border-edge/40 text-[11px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      className="px-2 py-1 rounded-md border border-edge/40 text-ui-11 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                       disabled={busy !== null}
                       onClick={() => void run({ type: "verify_tool_calling", spec: endpointSpec }, "verify")}
                     >
@@ -786,7 +786,7 @@ export default function LocalModelsSettingsPage() {
                     </button>
                     <button
                       type="button"
-                      className="px-2 py-1 rounded-md border border-edge/40 text-[11px] text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+                      className="px-2 py-1 rounded-md border border-edge/40 text-ui-11 text-txt hover:bg-panel2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                       disabled={busy !== null}
                       onClick={() => void run({ type: "remove", target: "all", endpoint_id: endpoint.id }, "remove")}
                     >

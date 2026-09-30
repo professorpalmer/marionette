@@ -46,6 +46,7 @@ from uuid import uuid4
 
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd
 from .paths import git_toplevel, path_within
+from .display_rows import DisplayRows
 from .command_approval_identity import ApprovalExpectation, require_current_approval
 
 MAX_PENDING_APPROVALS = 256
@@ -725,6 +726,14 @@ class ConversationalSession(
         self.__dict__["_pilot"] = driver
         _tag_pilot_for_metering(driver, self)
 
+    @property
+    def _display_transcript(self) -> DisplayRows:
+        return self._display_rows
+
+    @_display_transcript.setter
+    def _display_transcript(self, rows) -> None:
+        self._display_rows = rows if isinstance(rows, DisplayRows) else DisplayRows(rows or ())
+
     def __init__(self, config: HarnessConfig) -> None:
         self.config = config
         import tempfile
@@ -833,7 +842,7 @@ class ConversationalSession(
         self._ctx_token_cache: Optional[int] = None
         self._ctx_token_cache_len: int = -1
         # parallel clean transcript for rendering in UI
-        self._display_transcript: list[dict] = []
+        self._display_transcript = []
         # One-slot stash for Hermes-style message-edit Revert (set by rewind).
         self._rewind_stash = None  # type: ignore[assignment]
         # tracking background swarm job IDs for the session

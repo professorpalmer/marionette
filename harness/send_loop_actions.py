@@ -53,6 +53,23 @@ from .send_loop_phases import (
 )
 
 
+
+def _session_action_id(session: Any, base: str) -> str:
+    """``base`` if this session has not used it for a card yet, else ``base~n``."""
+    used = getattr(session, "_used_action_ids", None)
+    if used is None:
+        used = {
+            row.get("id") for row in getattr(session, "_display_transcript", ())
+            if isinstance(row, dict) and row.get("type") == "card"
+        }
+        session._used_action_ids = used
+    aid, n = base, 1
+    while aid in used:
+        n += 1
+        aid = f"{base}~{n}"
+    used.add(aid)
+    return aid
+
 def execute_turn_actions(
     session: Any,
     *,
@@ -233,8 +250,10 @@ def execute_turn_actions(
         action_seq += 1
         # Prefer the provider's stable tool_call_id so tool_prep:{callId}
         # can promote in place; fall back to a{n} for JSON / synthetic turns.
+        # The card id is unique per session: providers reuse call ids across
+        # turns, and call_id carries the provider's id separately.
         _tcid = str(getattr(act, "tool_call_id", None) or "").strip()
-        aid = _tcid or f"a{action_seq}"
+        aid = _session_action_id(session, _tcid or f"a{action_seq}")
         # Malformed/truncated tool call: do NOT silently drop it. Surface the error
         # back to the model so it re-issues the call with all required arguments, and
         # count it as activity so the autonomous loop does not mistake it for "done".
@@ -266,8 +285,10 @@ def execute_turn_actions(
             if translated is not None:
                 act = translated
                 turn.actions[idx] = act
-                _tcid = str(getattr(act, "tool_call_id", None) or "").strip() or _tcid
-                aid = _tcid or aid
+                translated_tcid = str(getattr(act, "tool_call_id", None) or "").strip()
+                if translated_tcid and translated_tcid != _tcid:
+                    _tcid = translated_tcid
+                    aid = _session_action_id(session, _tcid)
         act_goal = action_display_goal(act)
 
         # run_implement / run_parallel emit their own action_start after

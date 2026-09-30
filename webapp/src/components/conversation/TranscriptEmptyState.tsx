@@ -8,7 +8,7 @@ export default function TranscriptEmptyState({
 }) {
   if (itemCount === 0 && !transcriptStale) {
     return (
-      <div className="text-muted text-[13px] mt-32 text-center leading-relaxed">
+      <div className="text-muted text-ui-13 mt-32 text-center leading-relaxed">
         Message the pilot. It plans, investigates via swarms, and explains.
       </div>
     );

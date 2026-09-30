@@ -49,6 +49,7 @@ def test_display_transcript_accumulation():
     assert receipt['id'] == input_id
     assert receipt['original_text'] == "how do I build a wooden table?"
     assert receipt['status'] == 'injected'
+    assert all(isinstance(row.pop("ts"), int) for row in display)
     assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id}
     assert display[1] == {"type": "message", "role": "assistant", "text": "Sure, I can help you with that."}
 
@@ -191,3 +192,34 @@ def test_export_display_strips_trailer_history_keeps_it():
     assert "CODEGRAPH" not in display[0]["text"]
     # Stored display row is not mutated — only the export copy is scrubbed.
     assert session._display_transcript[0]["text"] == dirty
+
+
+def test_display_rows_are_stamped_with_append_time():
+    """A turn's length must survive reload: every display row records when it
+    was appended, however it got there, and in-place replacement keeps it."""
+    import time as _time
+
+    session = ConversationalSession(HarnessConfig())
+    before = _time.time() * 1000
+    session._display_transcript.append({"type": "message", "role": "user", "text": "hi"})
+    session._display_transcript = [{"type": "message", "role": "user", "text": "loaded"}]
+    assert "ts" not in session._display_transcript[0]
+    session._display_transcript = []
+    session._display_transcript += [{"type": "card", "id": "c1", "result": None}]
+    session._display_transcript.append({"type": "message", "role": "user", "text": "hi"})
+    session._display_transcript.insert(0, {"type": "message", "role": "assistant", "text": "x"})
+    rows = session._display_transcript
+    assert all(isinstance(r["ts"], int) and r["ts"] >= before - 1 for r in rows)
+
+    stamped = rows[1]["ts"]
+    rows[1] = {"type": "message", "role": "user", "text": "edited"}
+    assert rows[1]["ts"] == stamped
+
+    kept = {"type": "message", "role": "user", "text": "old", "ts": 42}
+    rows.append(kept)
+    assert rows[-1]["ts"] == 42
+    assert "ts" in session.export_transcript_data()["display"][-1]
+
+    import copy as _copy
+    unstamped = type(rows)([{"type": "message", "text": "no time"}])
+    assert "ts" not in _copy.deepcopy(unstamped)[0]

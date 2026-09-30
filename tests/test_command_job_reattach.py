@@ -7,6 +7,7 @@ child or discard completed siblings.
 """
 from __future__ import annotations
 
+from tests._isolation import isolated_patch
 import json
 import os
 import threading
@@ -89,7 +90,7 @@ def test_launch_checkpoint_persisted_before_thread_start(session):
         return MagicMock()
 
     with patch.object(sess, "_checkpoint_command_job_launch", side_effect=_wrap_checkpoint):
-        with patch("harness.command_jobs.threading.Thread", side_effect=_capture_thread):
+        with isolated_patch("harness.command_jobs", "threading", "Thread", side_effect=_capture_thread):
             receipt = start_background_run_command(sess, act, "a-ckpt")
 
     job_id = receipt["job_id"]

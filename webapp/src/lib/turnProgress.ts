@@ -574,6 +574,31 @@ export function activityWorkDurationMs(
 }
 
 /**
+ * Wall-clock span of a saved turn: from the user's message to the end of the
+ * last action, read from the times the backend stamps on transcript rows, so
+ * it survives a reload. Null when the rows predate those times.
+ */
+export function turnSpanMs(
+  items: Array<{ kind: string; card?: { ts?: number; turn_ts?: number; result?: { duration_ms?: number | null } | null } }>,
+): number | null {
+  let start = Infinity;
+  let end = -Infinity;
+  for (const it of items) {
+    const card = it.kind === "card" ? it.card : undefined;
+    if (card?.ts == null || card.turn_ts == null) continue;
+    start = Math.min(start, card.turn_ts);
+    end = Math.max(end, card.ts + Math.max(0, card.result?.duration_ms ?? 0));
+  }
+  return end > start ? end - start : null;
+}
+
+export function maxKnown(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.max(a, b);
+}
+
+/**
  * Duration for the Worked for row. A live fold still on the same job uses
  * the wall-clock busy timer when it is longer than recorded tool slices —
  * that is the Still working… clock. Prior folds never inherit it.
@@ -826,6 +851,19 @@ function cardsInTurn(items: TurnItem[]): TurnCard[] {
     }
   }
   return out;
+}
+
+/**
+ * The step the open turn is on, for the todo list: the latest tool card of the
+ * current turn, running or just finished. Latest rather than running, so the
+ * line steps from one command to the next instead of blinking out between them.
+ */
+export function currentTurnStep(items: TurnItem[]): string | null {
+  const card = [...cardsInTurn(items)].reverse().find((c) => (c.kind || "") !== "todo");
+  if (!card) return null;
+  const goal = shortenGoal(resolveCardCliInput(card) || "");
+  const kind = toolFocusPhrase(card.kind || "");
+  return [kind, goal].filter(Boolean).join(" ") || null;
 }
 
 /** Prefer basename-ish tail of a path/goal so the pill stays readable. */
@@ -1148,11 +1186,14 @@ export function deriveBusyProgress(
 
   // Footer keeps a quiet step line; header pill uses Investigating / Still
   // working… — never raw phase enums (running/thinking/streaming).
+  const latest = itemsInCurrentTurn(items).at(-1) as { kind: string; msg?: { role?: string; streaming?: boolean; workerStream?: boolean } } | undefined;
+  const writing = latest?.kind === "msg" && latest.msg?.role === "assistant" && Boolean(latest.msg.streaming) && !latest.msg.workerStream;
   const parts: string[] = [];
   if (runningKind) parts.push(runningKind);
   else if (runningGoal) parts.push(runningGoal);
   else if (toolPrep) parts.push(toolPrep);
   else if (running || status === "executing") parts.push("Investigating…");
+  else if (writing) parts.push("Writing…");
   else parts.push("Still working…");
   if (step > 0) parts.push(`step ${step}`);
   if (elapsed) parts.push(elapsed);
@@ -1177,6 +1218,20 @@ export function deriveBusyProgress(
     runningGoal,
     runningKind,
   };
+}
+
+/**
+ * The card an Investigating headline names. A running command's card exists a
+ * beat before its arguments arrive; naming it then flashes the bare tool name
+ * between every call, so name the latest card that has a goal until it does.
+ */
+export function headlineFocusCard<C extends { goal?: string }>(
+  cards: readonly C[],
+  running: C | undefined,
+  goalOf: (card: C) => string,
+): C | undefined {
+  if (!running || goalOf(running)) return running;
+  return [...cards].reverse().find((c) => goalOf(c)) ?? running;
 }
 
 /**

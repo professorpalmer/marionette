@@ -18,10 +18,12 @@ export default function ComposerActivityRail({
   jobs,
   sessionId,
   active = true,
+  pilotStep = null,
 }: {
   jobs: readonly Job[];
   sessionId: string;
   active?: boolean;
+  pilotStep?: string | null;
 }) {
   const bodyJobs = jobs.filter(job => !job.metadata_only);
   const commandIndexVersion = useSyncExternalStore(
@@ -55,7 +57,7 @@ export default function ComposerActivityRail({
       data-slot={hasOverview ? "composer-activity-rail" : undefined}
     >
       <div className={hasOverview ? "space-y-0.5 p-0.5" : undefined}>
-        <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} active={active} />
+        <ComposerTodoPanel jobs={bodyJobs} sessionId={sessionId} active={active} pilotStep={pilotStep} />
         <ComposerTasksPanel jobs={bodyJobs} sessionId={sessionId} />
         <ComposerStatusStack swarmJobs={bodyJobs} sessionId={sessionId} />
       </div>

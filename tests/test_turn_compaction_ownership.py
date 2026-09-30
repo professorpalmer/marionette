@@ -1,4 +1,5 @@
 """Regression coverage for turn admission and abandoned compaction ownership."""
+from tests._isolation import isolate_module_attr
 import copy
 from contextvars import copy_context
 import threading
@@ -120,7 +121,7 @@ def test_timed_out_summary_never_mutates_active_model(tmp_path, monkeypatch, rep
             assert entered.wait(5)
             # Return while the summarizer is blocked, exactly as timeout does.
 
-    monkeypatch.setattr("harness.compaction_mixin.threading.Thread", TimedOutThread)
+    isolate_module_attr(monkeypatch, "harness.compaction_mixin", "threading", Thread=TimedOutThread)
     try:
         events = list(session._maybe_compact_history(force=True))
         during = pilot.model
