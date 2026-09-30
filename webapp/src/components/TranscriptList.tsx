@@ -110,6 +110,7 @@ import {
 import {
   assistantTextForMeasure,
   createTranscriptRowHeightCache,
+  type TranscriptRowHeightCache,
   rowMeasureSignal,
   shouldAttachDomMeasure,
   shouldRemeasureImmediately,
@@ -1189,6 +1190,8 @@ const VirtualTranscriptRow = memo(
     viewportKey: string;
     feedSettled: boolean;
     measureDom: (element: HTMLElement) => void;
+    /** Arrived from the live tail: measure in the first layout pass, before paint. */
+    paintedLive: boolean;
     children: ReactNode;
   }>(function VirtualTranscriptRow(
     {
@@ -1199,6 +1202,7 @@ const VirtualTranscriptRow = memo(
       viewportKey,
       feedSettled,
       measureDom,
+      paintedLive,
       children,
     },
     forwardedRef,
@@ -1206,7 +1210,7 @@ const VirtualTranscriptRow = memo(
   const rowRef = useRef<HTMLDivElement>(null);
   const [mountSettled, setMountSettled] = useState(false);
   const attachDom = shouldAttachDomMeasure(item, feedSettled);
-  const remasureNow = shouldRemeasureImmediately(item);
+  const remasureNow = paintedLive || shouldRemeasureImmediately(item);
   const measureSignal = rowMeasureSignal(item);
   const keepMeasure = attachDom || remasureNow || item.kind === "activity_group";
 
@@ -1281,6 +1285,43 @@ const VirtualTranscriptRow = memo(
   );
   }),
 );
+
+/**
+ * A live-tail row. It records the height it is painted at so that when the
+ * turn ends and it moves into the virtual list, its first frame there already
+ * has its real height instead of an estimate corrected frames later.
+ */
+function LiveTailRow({
+  item,
+  rowId,
+  viewportKey,
+  heights,
+  feedInnerWidth,
+  children,
+}: {
+  item: GroupedItem;
+  rowId: string;
+  viewportKey: string;
+  heights: TranscriptRowHeightCache;
+  feedInnerWidth: number;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const record = () => heights.recordMeasuredHeight(item, rowId, feedInnerWidth, el.getBoundingClientRect().height);
+    record();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(record) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [heights, item, rowId, feedInnerWidth]);
+  return (
+    <div ref={ref} data-viewport-key={viewportKey} className="pb-1">
+      {children}
+    </div>
+  );
+}
 
 /** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
 /** Registers a command card; returns the index id, or null for non-command cards. */
@@ -1565,7 +1606,7 @@ export const TranscriptList = memo(function TranscriptList({
     return () => ro?.disconnect();
   }, [scrollContainerRef, grouped.length, scrollEpoch]);
 
-  const rowHeightCacheRef = useRef(createTranscriptRowHeightCache());
+  const [rowHeightCache] = useState(createTranscriptRowHeightCache);
   const feedInnerWidth = useMemo(() => {
     const w = scrollContainerRef.current?.clientWidth ?? 600;
     return transcriptFeedInnerWidth(w);
@@ -1578,7 +1619,7 @@ export const TranscriptList = memo(function TranscriptList({
       const item = virtualGrouped[index];
       if (!item) return TRANSCRIPT_ROW_FALLBACK_PX;
       const rowId = stableItemKey(item, index);
-      return rowHeightCacheRef.current.estimateRowHeight(item, rowId, feedInnerWidth);
+      return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth);
     },
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,
@@ -2127,6 +2168,7 @@ export const TranscriptList = memo(function TranscriptList({
               rowId={rowId}
               feedSettled={feedSettled}
               measureDom={measureVirtualRowDom}
+              paintedLive={rowHeightCache.wasPaintedLive(rowId)}
             >
               {renderGroupedItem(virtualRow.index)}
             </VirtualTranscriptRow>
@@ -2158,9 +2200,16 @@ export const TranscriptList = memo(function TranscriptList({
         const idx = tailStartIndex + i;
         const key = stableItemKey(grouped[idx]!, idx);
         return (
-          <div key={key} data-viewport-key={viewportKeys[idx]} className="pb-1">
+          <LiveTailRow
+            key={key}
+            item={grouped[idx]!}
+            rowId={key}
+            viewportKey={viewportKeys[idx] ?? ""}
+            heights={rowHeightCache}
+            feedInnerWidth={feedInnerWidth}
+          >
             {renderGroupedItem(idx)}
-          </div>
+          </LiveTailRow>
         );
       })}
     </div>
