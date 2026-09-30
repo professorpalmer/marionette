@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 
 from .skill_store import SkillStore, Skill, _slug
+from pmharness.drivers.metering import attribution
 
 MIN_FINDINGS = 2
 
@@ -155,7 +156,8 @@ def _classify_candidate(pilot, cand: Candidate, shortlist: List[Skill]) -> dict:
         + "\n\nClassify the candidate skill now."
     )
     
-    resp = pilot.complete(prompt, system=CLASSIFY_SYSTEM)
+    with attribution(purpose="skill_distill"):
+        resp = pilot.complete(prompt, system=CLASSIFY_SYSTEM)
     text = getattr(resp, "text", "") or ""
     
     parsed = _parse_classify_response(text)
@@ -262,7 +264,8 @@ def distill_session(pilot, objective: str, findings: List[dict],
     prompt = (f"Objective: {objective}\n\nWhat was learned (findings/decisions):\n"
               f"{digest}\n\nDistill the reusable skill now.")
 
-    resp = pilot.complete(prompt, system=DISTILL_SYSTEM)
+    with attribution(purpose="skill_distill"):
+        resp = pilot.complete(prompt, system=DISTILL_SYSTEM)
     cand = _parse_envelope(getattr(resp, "text", "") or "")
     if not cand:
         return {"status": "skipped", "reason": "no reusable lesson"}
@@ -379,7 +382,8 @@ def distill_rules(pilot, objective: str, findings: List[dict],
 
     prompt = (f"Objective: {objective}\n\nWhat happened:\n{digest}\n\n"
               f"Extract standing conventions now.")
-    resp = pilot.complete(prompt, system=RULES_SYSTEM)
+    with attribution(purpose="skill_distill"):
+        resp = pilot.complete(prompt, system=RULES_SYSTEM)
     text = getattr(resp, "text", "") or ""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:

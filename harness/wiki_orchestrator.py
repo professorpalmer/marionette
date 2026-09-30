@@ -125,10 +125,13 @@ def prepare_pages(
     )
 
     try:
-        if hasattr(driver, "chat"):
-            resp = driver.chat([{"role": "user", "content": prompt}], system=_ORCH_SYSTEM)
-        else:
-            resp = driver.complete(prompt, system=_ORCH_SYSTEM)
+        from pmharness.drivers.metering import attribution
+
+        with attribution(purpose="wiki_ingest"):
+            if hasattr(driver, "chat"):
+                resp = driver.chat([{"role": "user", "content": prompt}], system=_ORCH_SYSTEM)
+            else:
+                resp = driver.complete(prompt, system=_ORCH_SYSTEM)
         text = getattr(resp, "text", "") or ""
         if getattr(resp, "error", None):
             return {"status": "error", "pages": [], "reason": str(resp.error)}

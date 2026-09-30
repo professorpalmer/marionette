@@ -211,7 +211,10 @@ def run_doctor(argv) -> int:
             from .providers import build_doctor_driver
 
             driver = build_doctor_driver(cfg.driver, reach=cfg.reach)
-            resp = driver.complete('Reply with exactly: {"action":"stop","rationale":"ok"}')
+            from pmharness.drivers.metering import attribution
+
+            with attribution(purpose="doctor"):
+                resp = driver.complete('Reply with exactly: {"action":"stop","rationale":"ok"}')
             if resp.error:
                 _line("fail", "driver ping", resp.error[:120])
                 hard_fail = True

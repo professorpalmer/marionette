@@ -249,9 +249,12 @@ class AdvisorService:
                 kwargs["max_attempts"] = 1
             if "is_cancelled" in parameters:
                 kwargs["is_cancelled"] = cancel.is_set
-            response = driver.chat([{"role": "user", "content": json.dumps({
-                "conversation": json.loads(receipt["snapshot"]), "question": receipt["question"],
-            }, ensure_ascii=False)}], **kwargs)
+            from pmharness.drivers.metering import attribution
+
+            with attribution(session_id=receipt["session_id"] or None, purpose="advisor"):
+                response = driver.chat([{"role": "user", "content": json.dumps({
+                    "conversation": json.loads(receipt["snapshot"]), "question": receipt["question"],
+                }, ensure_ascii=False)}], **kwargs)
             failed = bool(response.error or (response.meta or {}).get("tool_calls"))
             store.update(request_id, status="cancelled" if cancel.is_set() else "failed" if failed else "succeeded",
                          answer=response.text if not failed and not cancel.is_set() else "",
