@@ -325,6 +325,8 @@ export default function LeftRail({
   });
   const [bankSessions, setBankSessions] = useState<Session[]>([]);
   const [bankLoading, setBankLoading] = useState(false);
+  /** The last bank read failed; earlier rows stay on screen. */
+  const [bankError, setBankError] = useState(false);
   const [sessionSearchQuery, setSessionSearchQuery] = useState("");
   const [sessionSearchRows, setSessionSearchRows] = useState<SessionSearchRow[]>([]);
   const [sessionSearchLoading, setSessionSearchLoading] = useState(false);
@@ -989,9 +991,9 @@ export default function LeftRail({
       const all = Array.isArray(rows) ? rows : [];
       bankAllRef.current = all;
       setBankSessions(all.filter((s) => !s.archived));
+      setBankError(false);
     } catch {
-      bankAllRef.current = [];
-      setBankSessions([]);
+      setBankError(true);
     } finally {
       setBankLoading(false);
     }
@@ -1664,9 +1666,9 @@ export default function LeftRail({
                     }`}
                     title={row.snippet ? `${displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}\n${row.snippet}` : displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}
                   >
-                    <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="relative flex items-center min-w-0">
                       {switchingSessionId === row.id
-                        ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                        ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute -left-4 animate-spin text-accent" />
                         : null}
                       <div className="text-[12.5px] truncate flex-1 text-muted">
                         {displaySessionListTitle(row.title, [...sessions, ...bankSessions].find((session) => session.id === row.id)?.title_user)}
@@ -1680,8 +1682,16 @@ export default function LeftRail({
               </div>
             </Section>
           ) : (
-            <Section title="Recent" headerSpinner={bankLoading}>
-              {bankSessions.length === 0 && !bankLoading && <Empty>No sessions</Empty>}
+            <Section title="Recent" headerSpinner={bankLoading && bankSessions.length === 0}>
+              {bankSessions.length === 0 && !bankLoading && (bankError ? (
+                <button
+                  type="button"
+                  onClick={() => void refreshBankSessions()}
+                  className="px-1.5 py-1 text-left text-[11px] text-muted hover:text-txt"
+                >
+                  Couldn't load sessions. Retry
+                </button>
+              ) : <Empty>No sessions</Empty>)}
               <div className="space-y-0.5 pb-2">
                 {bankSessions.map((s) => {
                   const root = s.workspace_root || s.repo || "";
@@ -1723,9 +1733,9 @@ export default function LeftRail({
                       }`}
                       title={`${displaySessionListTitle(s.title, s.title_user)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
                     >
-                      <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="relative flex items-center min-w-0">
                         {switchingSessionId === s.id
-                          ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                          ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute -left-4 animate-spin text-accent" />
                           : null}
                         <div className={`text-[12.5px] truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
                           {displaySessionListTitle(s.title, s.title_user)}
@@ -1907,11 +1917,11 @@ export default function LeftRail({
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center gap-1.5 text-[12px] transition aria-disabled:opacity-60
+                                className={`relative flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center text-[12px] transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
-                                  ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                                  ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
                                   : null}
                                 <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                               </button>
@@ -1922,7 +1932,7 @@ export default function LeftRail({
                                       await handleDeleteSession(s.id);
                                       setConfirmDeleteId(null);
                                     }}
-                                    className="text-[10px] text-red-400 font-semibold hover:underline"
+                                    className="text-[10px] text-risk font-semibold hover:underline"
                                   >
                                     Yes
                                   </button>
@@ -1941,7 +1951,7 @@ export default function LeftRail({
                                       setConfirmDeleteId(s.id);
                                     }}
                                     title="Delete session"
-                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-red-400 hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-risk hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                                   >
                                     <Trash2 size={11} />
                                   </button>
@@ -2003,12 +2013,12 @@ export default function LeftRail({
                       aria-current={s.active ? "true" : undefined}
                       onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                       onContextMenu={(e) => handleContextMenu(e, s)}
-                      className={`w-full h-7 text-left rounded pl-6 pr-2 flex items-center gap-1.5 text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
+                      className={`relative w-full h-7 text-left rounded pl-6 pr-2 flex items-center text-[12.5px] transition opacity-60 hover:opacity-100 disabled:opacity-40
                         ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
                         ${switchingSessionId === s.id ? "opacity-70" : ""}`}
                     >
                       {switchingSessionId === s.id
-                        ? <Loader2 size={11} className="shrink-0 animate-spin text-accent" />
+                        ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
                         : null}
                       <span className="flex-1 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                     </button>
@@ -2147,7 +2157,7 @@ export default function LeftRail({
                 type="button"
                 aria-label="Clear finished jobs"
                 onClick={clearFinishedJobs}
-                className="h-6 w-6 shrink-0 grid place-items-center rounded text-faint hover:bg-panel2/60 hover:text-red-400 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 transition-colors"
+                className="h-6 w-6 shrink-0 grid place-items-center rounded text-faint hover:bg-panel2/60 hover:text-risk focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 transition-colors"
               >
                 <Trash2 size={11} />
               </button>
@@ -2209,7 +2219,7 @@ export default function LeftRail({
                       >
                         <JobStatusIcon status={st} />
                         <span
-                          className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-red-400/90" : "text-txt"}`}
+                          className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-risk/90" : "text-txt"}`}
                           title={jobDisplayTitle(j)}
                         >
                           {jobDisplayTitle(j)}
@@ -2332,7 +2342,7 @@ export default function LeftRail({
                     setContextMenu(null);
                     setConfirmDeleteId(null);
                   }}
-                  className="text-red-400 font-bold hover:underline"
+                  className="text-risk font-bold hover:underline"
                 >
                   Yes
                 </button>
@@ -2350,7 +2360,7 @@ export default function LeftRail({
               onClick={() => {
                 setConfirmDeleteId(contextMenu.sessionId);
               }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-red-400 font-medium transition-colors"
+              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-risk font-medium transition-colors"
             >
               Delete
             </button>

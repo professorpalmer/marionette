@@ -1117,16 +1117,17 @@ it("absorbs shell-edge growth in the leftmost column and keeps mounted card stat
     card.scrollTop = 37;
     rectSpy.mockReturnValue(new DOMRect(0, 0, 900, 600));
     act(() => notifyResize());
+    view.rerender(<RightPane {...baseProps} visible={false} />);
     const resized = JSON.parse(localStorage.getItem("pmharness.board.cardLayouts.v1") || "{}");
     expect(resized.state.columnSpan / 12 * 900).toBeCloseTo(7 / 12 * 700);
     expect(resized.economics.columnSpan / 12 * 900).toBeCloseTo(900 - 7 / 12 * 700);
-    view.rerender(<RightPane {...baseProps} visible={false} />);
     view.rerender(<RightPane {...baseProps} visible />);
     expect(screen.getByRole("region", { name: "Economics panel" })).toBe(card);
     expect(card.scrollTop).toBe(37);
     expect(screen.getByRole("combobox", { name: "Economics ownership" })).toHaveValue("conversation");
     rectSpy.mockReturnValue(new DOMRect(0, 0, 700, 600));
     act(() => notifyResize());
+    view.unmount();
     const restored = JSON.parse(localStorage.getItem("pmharness.board.cardLayouts.v1") || "{}");
     expect(restored.state.columnSpan).toBeCloseTo(7);
     expect(restored.economics.columnSpan).toBeCloseTo(5);

@@ -60,6 +60,10 @@ export default function EconomicsPane() {
       ),
     ) ?? null,
   );
+  /** The latest read failed or answered for another repo/scope. */
+  const [loadFailed, setLoadFailed] = useState(false);
+  /** The shown report belongs to the previous session until the next read lands. */
+  const [sessionStale, setSessionStale] = useState(false);
   const economicsRequest = useRef(0);
   const processUsage = useProcessUsage();
 
@@ -82,16 +86,21 @@ export default function EconomicsPane() {
             data,
           );
           setEconomics(data);
+          setLoadFailed(false);
+          setSessionStale(false);
           return;
         }
-        // getJSONSoft turns HTTP 400 into {ok:false} without `available`.
-        if (data && typeof data === "object" && (data as { ok?: boolean }).ok === false) {
-          setEconomics(null);
-        }
+        setLoadFailed(true);
       })
       .catch(() => {
-        // Older harnesses can omit GET /api/economics.
+        if (request === economicsRequest.current) setLoadFailed(true);
       });
+  };
+
+  const showCachedOrPrevious = (root: string, nextScope: EconomicsPaneScope, nextPeriod: 30 | null) => {
+    setLoadFailed(false);
+    const cached = readEconomicsCache(economicsCacheKey(root, nextScope, nextPeriod));
+    if (cached) setEconomics(cached);
   };
 
   usePolling(loadEconomics, 10000, { enabled: Boolean(projectRoot) });
@@ -102,8 +111,7 @@ export default function EconomicsPane() {
     };
     const onSessionChanged = () => {
       if (scope === "conversation") {
-        economicsRequest.current += 1;
-        setEconomics(null);
+        setSessionStale(true);
         void loadEconomics();
       }
     };
@@ -120,6 +128,7 @@ export default function EconomicsPane() {
       const root = String((event as CustomEvent<string>).detail || "");
       if (projectRoot && root && repoPathsEqual(projectRoot, root)) return;
       economicsRequest.current += 1;
+      setLoadFailed(false);
       setProjectRoot(root);
       setEconomics(
         readEconomicsCache(economicsCacheKey(root, scope, periodDays)) ?? null,
@@ -137,11 +146,7 @@ export default function EconomicsPane() {
       delete (window as any).__pmPendingEconomicsSelection;
       setScope("conversation");
       setPeriodDays(null);
-      setEconomics(
-        readEconomicsCache(
-          economicsCacheKey(projectRoot, "conversation", null),
-        ) ?? null,
-      );
+      showCachedOrPrevious(projectRoot, "conversation", null);
       void loadEconomics("conversation", null, projectRoot);
     };
     window.addEventListener("harness-economics-selection", onSelection);
@@ -155,6 +160,7 @@ export default function EconomicsPane() {
     && (!projectRoot || (economics.repo && repoPathsEqual(economics.repo, projectRoot)))
     && (periodDays === 30 ? economics.window_days === 30 : !economics.window_days),
   );
+  const reportCurrent = economicsMatchesSelection && !sessionStale;
   const projectLabel = projectRoot.split(/[\\/]/).filter(Boolean).at(-1) || "this repo";
   const sessionAllTime = scope === 'conversation' && periodDays === null;
   const sessionUsage = activeSessionUsage(processUsage);
@@ -185,9 +191,7 @@ export default function EconomicsPane() {
           onChange={(event) => {
             const nextScope = event.target.value as EconomicsPaneScope;
             setScope(nextScope);
-            setEconomics(
-              readEconomicsCache(economicsCacheKey(projectRoot, nextScope, periodDays)) ?? null,
-            );
+            showCachedOrPrevious(projectRoot, nextScope, periodDays);
             void loadEconomics(nextScope, periodDays, projectRoot);
           }}
           aria-label="Economics ownership"
@@ -202,9 +206,7 @@ export default function EconomicsPane() {
           onChange={(event) => {
             const nextPeriod = event.target.value === "30" ? 30 : null;
             setPeriodDays(nextPeriod);
-            setEconomics(
-              readEconomicsCache(economicsCacheKey(projectRoot, scope, nextPeriod)) ?? null,
-            );
+            showCachedOrPrevious(projectRoot, scope, nextPeriod);
             void loadEconomics(scope, nextPeriod, projectRoot);
           }}
           aria-label="Economics period"
@@ -228,13 +230,35 @@ export default function EconomicsPane() {
         ) : showProcessMeters && processMeters ? (
           <CostBreakdown data={processMeters} />
         ) : null}
-        {economicsMatchesSelection ? (
-          <EconomicsDurable
-            data={economics}
-            hero={!sessionAllTime}
-          />
-        ) : (
-          <p className="px-3 py-3 text-[11px] text-muted">Updating {projectLabel}…</p>
+        {!reportCurrent && (
+          !projectRoot ? (
+            <p className="px-3 py-3 text-[11px] text-muted">Select a project to see its economics.</p>
+          ) : loadFailed ? (
+            <button
+              type="button"
+              className="px-3 py-3 text-left text-[11px] text-muted hover:text-txt"
+              onClick={() => {
+                setLoadFailed(false);
+                void loadEconomics();
+              }}
+            >
+              Couldn't load economics for {projectLabel}. Retry
+            </button>
+          ) : (
+            <p className="px-3 py-3 text-[11px] text-muted" role="status">Updating {projectLabel}…</p>
+          )
+        )}
+        {economics && (reportCurrent || !loadFailed) && (
+          <div
+            data-testid="economics-report"
+            className={reportCurrent ? undefined : "opacity-50"}
+            aria-busy={!reportCurrent}
+          >
+            <EconomicsDurable
+              data={economics}
+              hero={!sessionAllTime}
+            />
+          </div>
         )}
       </div>
     </div>

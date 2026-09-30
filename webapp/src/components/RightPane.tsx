@@ -126,6 +126,8 @@ function startPointerResize(
 
 type Tab = "state" | "files" | "git" | "worktrees" | "terminal" | "browser" | "settings" | "checkpoints" | "review" | "swarm" | "economics";
 
+const SHELL_RESIZE_SETTLE_MS = 250;
+
 const TAB_CONFIG: Record<Tab, { label: string }> = {
   state: { label: "State" },
   files: { label: "Files" },
@@ -307,10 +309,26 @@ function readInitialOpenCards(): Tab[] {
       CANONICAL_ORDER.includes(tab as Tab) && tab !== PINNED_LAST && list.indexOf(tab) === index);
 }
 
-/** Shows the dock's single terminal host inside a card; parks it on unmount.
- * Moving the DOM node (not remounting TerminalPane) keeps the shell, its
- * running process and scrollback alive across close, reopen and moves. */
-function TerminalSlot({ host, parkRef }: { host: HTMLElement; parkRef: RefObject<HTMLElement | null> }) {
+type ParkedHost = { host: HTMLElement; parkRef: RefObject<HTMLDivElement | null> };
+
+/** A host node for one long-lived pane, kept in a hidden park until a card shows it. */
+function useParkedHost(): ParkedHost {
+  const [host] = useState(() => {
+    const el = document.createElement("div");
+    el.className = "h-full w-full";
+    return el;
+  });
+  const parkRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!host.isConnected) parkRef.current?.appendChild(host);
+  });
+  return { host, parkRef };
+}
+
+/** Shows a parked pane's host inside a card; parks it on unmount.
+ * Moving the DOM node (not remounting the pane) keeps its process, scroll
+ * and local state alive across close, reopen and moves between columns. */
+function PaneSlot({ host, parkRef }: ParkedHost) {
   const slotRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     slotRef.current?.appendChild(host);
@@ -328,17 +346,11 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
   onEmpty?: () => void;
   onRequestMinWidth?: (minPx: number) => void;
 }) {
-  // One TerminalPane for the dock's lifetime, portaled into a host node that
-  // TerminalSlot moves between a card body and the hidden park.
-  const [terminalHost] = useState(() => {
-    const el = document.createElement("div");
-    el.className = "h-full w-full";
-    return el;
-  });
-  const terminalParkRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!terminalHost.isConnected) terminalParkRef.current?.appendChild(terminalHost);
-  });
+  // One TerminalPane, SwarmPane and StatePane for the dock's lifetime, each
+  // portaled into a host node that PaneSlot moves between a card body and its park.
+  const terminalSlot = useParkedHost();
+  const swarmSlot = useParkedHost();
+  const stateSlot = useParkedHost();
   const tabVisibilityRef = useRef<RightPaneTabVisibility>(loadRightPaneTabVisibility());
   const [cardLayouts, setCardLayouts] = useState<CardLayouts>(() => readCardLayouts());
   const cardLayoutsRef = useRef(cardLayouts);
@@ -473,6 +485,12 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
       setBoardWidth(0);
       return;
     }
+    // Resize ticks update React state only; storage is written once the shell settles.
+    let settleTimer: ReturnType<typeof setTimeout> | undefined;
+    const saveSettled = () => {
+      settleTimer = undefined;
+      localStorage.setItem(CARD_LAYOUT_STORAGE_KEY, JSON.stringify(cardLayoutsRef.current));
+    };
     const applyWidth = () => {
       const nextWidth = el.getBoundingClientRect().width;
       const prevWidth = prevBoardWidthRef.current;
@@ -491,13 +509,20 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
           nextLayouts[tab] = { columnSpan: absorbed[index], customized: true };
         }
       });
-      persistCardLayouts(nextLayouts);
+      persistCardLayouts(nextLayouts, false);
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(saveSettled, SHELL_RESIZE_SETTLE_MS);
     };
     applyWidth();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(applyWidth);
     observer.observe(el);
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      if (settleTimer === undefined) return;
+      clearTimeout(settleTimer);
+      saveSettled();
+    };
   }, [visible, openCards.length, persistCardLayouts]);
 
   const persistStackFractions = useCallback((nextFractions: Record<string, number[]>, durable = true) => {
@@ -760,7 +785,7 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
 
   const renderCardBody = (tabName: Tab) => (
     <ErrorBoundary label={TAB_CONFIG[tabName]?.label || tabName} inline>
-      {tabName === "state" ? <StatePane artifacts={artifacts} embedded networkEnabled={visible} /> : renderTabInner(tabName)}
+      {renderTabInner(tabName)}
     </ErrorBoundary>
   );
 
@@ -773,7 +798,9 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
       case "git":
         return <SourceControl />;
       case "terminal":
-        return <TerminalSlot host={terminalHost} parkRef={terminalParkRef} />;
+        return <PaneSlot {...terminalSlot} />;
+      case "state":
+        return <PaneSlot {...stateSlot} />;
       case "worktrees":
         return <WorktreesPane />;
       case "settings":
@@ -781,7 +808,7 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
       case "checkpoints":
         return <CheckpointsPane />;
       case "swarm":
-        return <SwarmPane enabled={visible} />;
+        return <PaneSlot {...swarmSlot} />;
       case "economics":
         return <EconomicsPane />;
       case "review":
@@ -970,20 +997,23 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
             </div>
         </div>
       )}
-      {createPortal(<TerminalPane />, terminalHost)}
-      {/* Keep the expensive interactive panes alive when users close their cards. */}
+      {createPortal(<TerminalPane />, terminalSlot.host)}
+      {createPortal(
+        <ErrorBoundary label={TAB_CONFIG.swarm.label} inline>
+          <SwarmPane enabled={visible && openCards.includes("swarm")} />
+        </ErrorBoundary>,
+        swarmSlot.host,
+      )}
+      {createPortal(
+        <ErrorBoundary label={TAB_CONFIG.state.label} inline>
+          <StatePane artifacts={artifacts} embedded networkEnabled={visible && openCards.includes("state")} />
+        </ErrorBoundary>,
+        stateSlot.host,
+      )}
       <div className="hidden" aria-hidden>
-        {!openCards.includes("state") && (
-          <div data-testid="state-pane-slot">
-            <StatePane artifacts={artifacts} embedded networkEnabled={false} />
-          </div>
-        )}
-        <div data-testid="terminal-pane-slot" ref={terminalParkRef} />
-        {!openCards.includes("swarm") && (
-          <div data-testid="swarm-pane-slot">
-            <SwarmPane enabled={false} />
-          </div>
-        )}
+        <div data-testid="state-pane-slot" ref={stateSlot.parkRef} />
+        <div data-testid="terminal-pane-slot" ref={terminalSlot.parkRef} />
+        <div data-testid="swarm-pane-slot" ref={swarmSlot.parkRef} />
       </div>
       {settingsOpen && (
         <SettingsShell
