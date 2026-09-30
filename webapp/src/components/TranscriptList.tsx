@@ -111,6 +111,7 @@ import {
   shouldRemeasureImmediately,
   transcriptFeedInnerWidth,
   TRANSCRIPT_ROW_FALLBACK_PX,
+  TRANSCRIPT_USER_CLAMP_PX,
 } from "./conversation/transcriptRowHeight";
 import {
   compactionKeptDroppedLine,
@@ -1955,12 +1956,7 @@ export const TranscriptList = memo(function TranscriptList({
     } else if (it.kind === "compaction") {
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
-      return (
-        <div key={key} className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10.5px] text-faint w-fit my-1 select-none font-mono animate-in fade-in duration-200">
-          <span className="text-muted">{it.mode === "interrupt" ? "interrupt:" : "steer:"}</span>
-          <span>{it.text}</span>
-        </div>
-      );
+      return <SteerNote key={key} text={it.text} mode={it.mode} />;
     } else if (it.kind === "quality_gate") {
       const gate = qualityGatePresentation(it);
       const toneClass =
@@ -3505,6 +3501,85 @@ const Markdown = memo(function Markdown({
   return <PrettyMarkdown text={text} />;
 });
 
+function useProseClamp(text: string, clampPx: number) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setOverflowing(el.scrollHeight > clampPx + 4);
+  }, [text, clampPx]);
+  return {
+    ref,
+    overflowing,
+    expanded,
+    collapsed: overflowing && !expanded,
+    toggle: () => setExpanded((open) => !open),
+  };
+}
+
+/** Pasted prose past TRANSCRIPT_USER_CLAMP_PX fades and offers Show more. */
+function ClampedProse({
+  text,
+  fadeClassName,
+}: {
+  text: string;
+  fadeClassName: string;
+}) {
+  const clamp = useProseClamp(text, TRANSCRIPT_USER_CLAMP_PX);
+  return (
+    <div data-testid="transcript-clamp" data-collapsed={clamp.collapsed ? "1" : "0"}>
+      <div className="relative">
+        <div
+          ref={clamp.ref}
+          data-testid="transcript-clamp-body"
+          className="overflow-hidden whitespace-pre-wrap break-words"
+          style={clamp.collapsed ? { maxHeight: TRANSCRIPT_USER_CLAMP_PX } : undefined}
+        >
+          {text}
+        </div>
+        {clamp.collapsed ? (
+          <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent ${fadeClassName}`} />
+        ) : null}
+      </div>
+      {clamp.overflowing ? (
+        <button
+          type="button"
+          onClick={clamp.toggle}
+          className="mt-1 flex items-center gap-0.5 text-[11px] text-muted/90 hover:text-txt transition-colors select-none"
+        >
+          {clamp.expanded
+            ? (<><ChevronUp size={12} /> Show less</>)
+            : (<><ChevronDown size={12} /> Show more</>)}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function SteerNote({
+  text,
+  mode,
+}: {
+  text: string;
+  mode?: "steer" | "interrupt";
+}) {
+  return (
+    <div
+      data-testid="steer-note"
+      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-[10.5px] text-faint my-1 font-mono animate-in fade-in duration-200"
+    >
+      <span className="shrink-0 select-none text-muted">
+        {mode === "interrupt" ? "interrupt:" : "steer:"}
+      </span>
+      <div className="min-w-0 select-text">
+        <ClampedProse text={text} fadeClassName="from-bg" />
+      </div>
+    </div>
+  );
+}
+
 function Bubble({
   msg,
   showLabel,
@@ -3528,19 +3603,6 @@ function Bubble({
   const [copied, setCopied] = useState(false);
   const isUser = msg.role === "user";
   const displayedText = isUser ? msg.text : cleanAssistantText(msg.text);
-
-  // Cursor-style clamp: long SENT user messages collapse to a few lines with a
-  // fade + "Show more", so a pasted wall of text doesn't dominate the transcript.
-  const USER_CLAMP_PX = 160;
-  const [userExpanded, setUserExpanded] = useState(false);
-  const [userOverflowing, setUserOverflowing] = useState(false);
-  const userClampRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!isUser) return;
-    const el = userClampRef.current;
-    if (el) setUserOverflowing(el.scrollHeight > USER_CLAMP_PX + 4);
-  }, [displayedText, isUser]);
-  const userCollapsed = isUser && userOverflowing && !userExpanded;
 
   // Keep the ephemeral worker-stream window pinned to its latest tokens so it
   // reads as a live ticker rather than scrolling the whole page.
@@ -3602,29 +3664,10 @@ function Bubble({
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
           }`}>
-            <div className="relative">
-              <div
-                ref={userClampRef}
-                className="overflow-hidden"
-                style={userCollapsed ? { maxHeight: USER_CLAMP_PX } : undefined}
-              >
-                {displayedText}
-              </div>
-              {userCollapsed && (
-                <div className={`pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t to-transparent ${isEditing ? "from-accent/10" : "from-accent2"}`} />
-              )}
-            </div>
-            {isUser && userOverflowing && (
-              <button
-                type="button"
-                onClick={() => setUserExpanded((v) => !v)}
-                className="mt-1 flex items-center gap-0.5 text-[11px] text-muted/90 hover:text-txt transition-colors select-none"
-              >
-                {userExpanded
-                  ? (<><ChevronUp size={12} /> Show less</>)
-                  : (<><ChevronDown size={12} /> Show more</>)}
-              </button>
-            )}
+            <ClampedProse
+              text={displayedText}
+              fadeClassName={isEditing ? "from-accent/10" : "from-accent2"}
+            />
             {msg.images && msg.images.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {msg.images.map((img, idx) => (

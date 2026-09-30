@@ -1287,3 +1287,78 @@ describe("live command token clicks", () => {
     expect(shelfAfter).toHaveAttribute("aria-expanded", "false");
   });
 });
+
+function withClampBodyScrollHeight(px: number, run: () => void) {
+  const proto = HTMLElement.prototype;
+  const prev = Object.getOwnPropertyDescriptor(proto, "scrollHeight");
+  Object.defineProperty(proto, "scrollHeight", {
+    configurable: true,
+    get() {
+      if (this instanceof HTMLElement && this.dataset.testid === "transcript-clamp-body") {
+        return px;
+      }
+      if (prev && typeof prev.get === "function") return prev.get.call(this);
+      return 0;
+    },
+  });
+  try {
+    run();
+  } finally {
+    if (prev) Object.defineProperty(proto, "scrollHeight", prev);
+    else Reflect.deleteProperty(proto, "scrollHeight");
+  }
+}
+
+describe("steer clamp", () => {
+  it("collapses a long steer the same way as a long user message", () => {
+    const wall = "probe ".repeat(80);
+    withClampBodyScrollHeight(400, () => {
+      render(
+        <TranscriptList
+          {...listProps([
+            { kind: "steer", text: wall },
+            { kind: "msg", msg: { role: "user", text: wall } },
+          ])}
+        />,
+      );
+      const clamps = screen.getAllByTestId("transcript-clamp");
+      expect(clamps).toHaveLength(2);
+      for (const clamp of clamps) {
+        expect(clamp).toHaveAttribute("data-collapsed", "1");
+      }
+      const more = screen.getAllByRole("button", { name: "Show more" });
+      expect(more).toHaveLength(2);
+      fireEvent.click(more[0]!);
+      expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
+      expect(screen.getByText("steer:")).toBeTruthy();
+      const bodies = screen.getAllByTestId("transcript-clamp-body");
+      expect(bodies).toHaveLength(2);
+      expect(bodies.every((el) => (el.textContent || "").includes("probe probe"))).toBe(true);
+    });
+  });
+
+  it("leaves a short steer open", () => {
+    withClampBodyScrollHeight(24, () => {
+      render(
+        <TranscriptList
+          {...listProps([{ kind: "steer", text: "try the other file", mode: "steer" }])}
+        />,
+      );
+      expect(screen.getByTestId("transcript-clamp")).toHaveAttribute("data-collapsed", "0");
+      expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
+      expect(screen.getByText("steer:")).toBeTruthy();
+    });
+  });
+
+  it("labels an interrupt the same way", () => {
+    withClampBodyScrollHeight(400, () => {
+      render(
+        <TranscriptList
+          {...listProps([{ kind: "steer", text: "probe ".repeat(40), mode: "interrupt" }])}
+        />,
+      );
+      expect(screen.getByText("interrupt:")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
+    });
+  });
+});

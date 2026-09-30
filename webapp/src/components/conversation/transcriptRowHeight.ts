@@ -45,7 +45,6 @@ const FIXED_ROW_HEIGHT_PX: Partial<Record<GroupedItem["kind"], number>> = {
   verification: 32,
   quality_gate: 32,
   turn_terminal: 36,
-  steer: 28,
   checkpoint: 32,
   pending_review: 40,
   compaction: 36,
@@ -255,15 +254,18 @@ export function rowPretextSpec(
         whiteSpace: "pre-wrap",
         chromePx: 56,
       };
-    case "steer":
+    case "steer": {
+      const label = item.mode === "interrupt" ? "interrupt:" : "steer:";
       return {
-        text: item.text,
-        font: TRANSCRIPT_ASSISTANT_FONT,
-        lineHeight: TRANSCRIPT_ASSISTANT_LINE_HEIGHT_PX,
+        text: `${label} ${item.text}`,
+        font: TRANSCRIPT_CHIP_FONT,
+        lineHeight: TRANSCRIPT_CHIP_LINE_HEIGHT_PX,
         maxWidth: feedInnerWidth,
         whiteSpace: "pre-wrap",
-        chromePx: 16,
+        chromePx: 36,
+        maxProsePx: TRANSCRIPT_USER_CLAMP_PX,
       };
+    }
     default:
       return null;
   }
