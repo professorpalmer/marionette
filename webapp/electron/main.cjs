@@ -111,6 +111,7 @@ const {
   actionAfterBackendExit,
   isFreshIntentionalRestartSignal,
   shouldCountTowardCrashLoop,
+  shouldKeepOwnedLiveBackend,
   shutdownOwnedBackendTree,
   WINDOWS_SHUTDOWN_GRACE_MS,
 } = require("./backend-lifecycle.cjs");
@@ -770,6 +771,10 @@ function startBackend() {
 }
 
 async function _startBackendOnce() {
+  if (backendOwned && shouldKeepOwnedLiveBackend({ child: backend, backendOwned, quitting })) {
+    logMain(`[backend] keeping the live backend this app started on ${backendPort}`);
+    return;
+  }
   if (process.env.MARIONETTE_BACKEND_RECEIPT) {
     const attached = await attachBackend(process.env.MARIONETTE_BACKEND_RECEIPT, resolveRepoRoot());
     backendPort = attached.receipt.port;
