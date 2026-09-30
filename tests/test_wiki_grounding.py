@@ -326,3 +326,48 @@ def test_wiki_section_keeps_excerpt_when_page_fetch_fails(tmp_path, monkeypatch)
     monkeypatch.setattr(s._wiki, "page_body", lambda slug: "")
     section = s._build_turn_wiki_section("what prevention did we choose?")
     assert "Search excerpt stayed after a failed hydrate" in section
+
+
+def test_hydrated_search_reads_the_top_page_in_one_round_trip(tmp_path, monkeypatch):
+    """The wiki returns the top hit's body with the search (?hydrate=1), so a
+    turn waits for one wiki call, not a search and then a page read."""
+    calls = []
+
+    class FakeResp:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    body = "Intro.\n" + ("A" * 3000) + "\nThe prevention is reserving a unique path for each worker.\n"
+
+    def fake_urlopen(req, timeout=20):
+        calls.append(req.full_url)
+        if "/wiki/search" in req.full_url and "hydrate=1" in req.full_url:
+            return FakeResp({"results": [
+                {"title": "Incident", "slug": "incident", "excerpt": "Intro.", "body": body},
+                {"title": "Other", "slug": "other", "excerpt": "Other excerpt."},
+            ]})
+        if "/wiki/search" in req.full_url:
+            return FakeResp({"results": [
+                {"title": "Incident", "slug": "incident", "excerpt": "Intro."},
+                {"title": "Other", "slug": "other", "excerpt": "Other excerpt."},
+            ]})
+        return FakeResp({"slug": "incident", "body": body})
+
+    monkeypatch.setattr("harness.wiki._wiki_safe_urlopen", fake_urlopen)
+    s = _session(tmp_path, wiki_url="https://wiki.example.com", wiki_token="tok",
+                 repo=str(tmp_path / "marionette"))
+    s._task_profile = STANDARD
+    section = s._build_turn_wiki_section("how do we prevent the worker path incident")
+    assert "reserving a unique path for each worker" in section
+    assert len(calls) == 1 and "/wiki/search" in calls[0]
