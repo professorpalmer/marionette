@@ -81,7 +81,7 @@ export default function JobCancellationControl({ job, repo, sessionId, disabled 
     : attempt?.kind === 'pending' ? 'Awaiting cancellation acknowledgement; stop is unconfirmed.'
     : unavailable ? job.job_ref && job.job_ref.version !== 2 ? 'Stop unavailable: legacy identity is read-only. Refresh job metadata to select the current incarnation.' : 'Stop unavailable: missing worker bindings for this job. Refresh the task view.' : '';
   return (
-    <span className="flex flex-col items-start gap-1 text-[10px]" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+    <span className="flex flex-col items-start gap-1 text-ui-10" onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
       <span className="flex gap-2">
         <button type="button" aria-label="Stop selected workers" aria-disabled={disabled || unavailable || busy || settled}
           onClick={() => { if (!disabled && !unavailable && !busy && !settled) void run('request'); }}

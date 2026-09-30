@@ -129,10 +129,10 @@ export default function WorktreesPane() {
   };
 
   return (
-    <div className="flex flex-col h-full text-[12px]">
+    <div className="flex flex-col h-full text-ui-12">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
-        <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
+        <span className="uppercase tracking-wider text-ui-10 text-faint font-medium flex items-center gap-1.5">
           <GitFork size={11} className="text-accent" /> Git Worktrees
         </span>
       </div>
@@ -141,7 +141,7 @@ export default function WorktreesPane() {
       <div className="flex-1 overflow-y-auto p-2.5 flex flex-col gap-3">
         {/* Status messages */}
         {wtNotice && (
-          <div role="alert" className="p-2 bg-risk/10 border border-risk/30 rounded text-risk text-[10.5px] font-medium leading-relaxed">
+          <div role="alert" className="p-2 bg-risk/10 border border-risk/30 rounded text-risk text-ui-10.5 font-medium leading-relaxed">
             {wtNotice}
             <button disabled={loading || pending} onClick={() => {
               setWtError("");
@@ -150,42 +150,42 @@ export default function WorktreesPane() {
           </div>
         )}
         {wtStatus && (
-          <div role="status" className="p-2 bg-good/10 border border-good/30 rounded text-good text-[10.5px] font-medium leading-relaxed">
+          <div role="status" className="p-2 bg-good/10 border border-good/30 rounded text-good text-ui-10.5 font-medium leading-relaxed">
             {wtStatus}
           </div>
         )}
 
         {/* Worktree List Section */}
         <div className="space-y-1.5">
-          <div className="uppercase tracking-wider text-[9px] text-faint font-semibold px-0.5">
+          <div className="uppercase tracking-wider text-ui-9 text-faint font-semibold px-0.5">
             Active Worktrees ({worktrees.length})
           </div>
           
           <div className="space-y-1.5">
             {loading && worktrees.length === 0 ? (
-              <div className="text-muted text-[11px] text-center py-4 bg-panel2/15 border border-edge/35 rounded-lg">
+              <div className="text-muted text-ui-11 text-center py-4 bg-panel2/15 border border-edge/35 rounded-lg">
                 Loading worktrees...
               </div>
             ) : worktrees.length === 0 ? (
-              <div className="text-muted text-[11px] text-center py-6 bg-panel2/15 border border-edge/35 rounded-lg">
+              <div className="text-muted text-ui-11 text-center py-6 bg-panel2/15 border border-edge/35 rounded-lg">
                 {wtError ? "Worktrees unavailable." : "No active worktrees found."}
               </div>
             ) : (
               worktrees.map((wt) => (
                 <div
                   key={wt.path}
-                  className="p-2.5 bg-panel2/40 border border-edge rounded-lg text-[11px] flex flex-col gap-1 hover:border-edge/70 transition-colors"
+                  className="p-2.5 bg-panel2/40 border border-edge rounded-lg text-ui-11 flex flex-col gap-1 hover:border-edge/70 transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2 min-w-0">
                     <span className="font-semibold text-txt flex items-center gap-1.5 min-w-0 flex-1 truncate">
                       <span className="truncate" title={wt.branch || "detached"}>{wt.branch || "detached"}</span>
                       {wt.is_main && (
-                        <span className="bg-accent/15 text-accent text-[8.5px] px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
+                        <span className="bg-accent/15 text-accent text-ui-8.5 px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
                           main
                         </span>
                       )}
                       {wt.locked && (
-                        <span className="bg-risk/15 text-risk text-[8.5px] px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
+                        <span className="bg-risk/15 text-risk text-ui-8.5 px-1 rounded font-bold uppercase tracking-wider flex-shrink-0">
                           locked
                         </span>
                       )}
@@ -203,12 +203,12 @@ export default function WorktreesPane() {
                     )}
                   </div>
                   
-                  <div className="text-faint text-[9px] font-mono truncate" title={wt.path}>
+                  <div className="text-faint text-ui-9 font-mono truncate" title={wt.path}>
                     {wt.path}
                   </div>
                   
                   {wt.head && (
-                    <div className="text-muted text-[9.5px] font-mono bg-panel/35 px-1.5 py-0.5 rounded border border-edge/30 w-fit">
+                    <div className="text-muted text-ui-9.5 font-mono bg-panel/35 px-1.5 py-0.5 rounded border border-edge/30 w-fit">
                       HEAD: {wt.head.slice(0, 7)}
                     </div>
                   )}
@@ -219,17 +219,17 @@ export default function WorktreesPane() {
         </div>
 
         {/* Global actions: Prune & Max limit */}
-        <div className="bg-panel2/20 border border-edge/50 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+        <div className="bg-panel2/20 border border-edge/50 rounded-lg p-2.5 flex flex-wrap items-center justify-between gap-2 text-ui-11">
           <button
             disabled={disabled}
             onClick={handlePruneWorktrees}
-            className="bg-panel2 hover:bg-edge/40 border border-edge text-txt rounded px-2.5 py-1 font-medium transition-colors text-[10.5px]"
+            className="bg-panel2 hover:bg-edge/40 border border-edge text-txt rounded px-2.5 py-1 font-medium transition-colors text-ui-10.5"
           >
             Prune Worktrees
           </button>
 
           <div className="flex items-center gap-2">
-            <span className="text-faint uppercase text-[9px] font-semibold">Max limit:</span>
+            <span className="text-faint uppercase text-ui-9 font-semibold">Max limit:</span>
             <input
               disabled={disabled}
               aria-label="Max worktrees"
@@ -252,12 +252,12 @@ export default function WorktreesPane() {
 
         {/* Add Worktree Section */}
         <div className="border-t border-edge/65 pt-3 mt-1.5 space-y-2">
-          <div className="text-[9px] uppercase tracking-wider text-faint font-semibold px-0.5">
+          <div className="text-ui-9 uppercase tracking-wider text-faint font-semibold px-0.5">
             Add Worktree
           </div>
           <div className="space-y-2 bg-panel2/25 border border-edge/40 rounded-lg p-2.5">
             <div className="space-y-1">
-              <label htmlFor={branchInputId} className="text-[9px] uppercase tracking-wider text-faint font-medium">Branch name</label>
+              <label htmlFor={branchInputId} className="text-ui-9 uppercase tracking-wider text-faint font-medium">Branch name</label>
               <input
                 id={branchInputId}
                 disabled={disabled}
@@ -265,12 +265,12 @@ export default function WorktreesPane() {
                 placeholder="e.g., feature-x"
                 value={newWtBranch}
                 onChange={(e) => setNewWtBranch(e.target.value)}
-                className="w-full bg-panel2 border border-edge rounded px-2.5 py-1.5 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+                className="w-full bg-panel2 border border-edge rounded px-2.5 py-1.5 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent"
               />
             </div>
             
             <div className="space-y-1">
-              <label htmlFor={baseInputId} className="text-[9px] uppercase tracking-wider text-faint font-medium">Base commit-ish</label>
+              <label htmlFor={baseInputId} className="text-ui-9 uppercase tracking-wider text-faint font-medium">Base commit-ish</label>
               <input
                 id={baseInputId}
                 disabled={disabled}
@@ -278,14 +278,14 @@ export default function WorktreesPane() {
                 placeholder="HEAD"
                 value={newWtBase}
                 onChange={(e) => setNewWtBase(e.target.value)}
-                className="w-full bg-panel2 border border-edge rounded px-2.5 py-1.5 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono"
+                className="w-full bg-panel2 border border-edge rounded px-2.5 py-1.5 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent font-mono"
               />
             </div>
 
             <button
               disabled={disabled}
               onClick={handleAddWorktree}
-              className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-1.5 font-semibold text-[11px] transition-colors flex items-center justify-center gap-1 mt-1"
+              className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-1.5 font-semibold text-ui-11 transition-colors flex items-center justify-center gap-1 mt-1"
             >
               <Plus size={12} /> Add Worktree
             </button>

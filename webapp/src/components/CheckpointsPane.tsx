@@ -255,12 +255,12 @@ export default function CheckpointsPane() {
             onChange={(e) => setSnapshotLabel(e.target.value)}
             disabled={isCreatingSnapshot}
             title="Auto-snapshots are taken before agent edits and swarm patches. Restores are fully undoable."
-            className="flex-1 min-w-0 px-1.5 py-0.5 bg-panel2/40 border border-edge/60 rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-[11px]"
+            className="flex-1 min-w-0 px-1.5 py-0.5 bg-panel2/40 border border-edge/60 rounded text-txt placeholder-faint focus:outline-none focus:border-accent/50 text-ui-11"
           />
           <button
             type="submit"
             disabled={isCreatingSnapshot || !snapshotLabel.trim()}
-            className="px-2 py-0.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-[11px] shrink-0"
+            className="px-2 py-0.5 bg-accent/10 hover:bg-accent/20 border border-accent/20 rounded font-medium text-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-ui-11 shrink-0"
           >
             {isCreatingSnapshot ? "..." : "Snap"}
           </button>
@@ -277,13 +277,13 @@ export default function CheckpointsPane() {
 
       {/* Status messages */}
       {errorNotice && (
-        <div className="mx-2 mt-1.5 p-1.5 bg-risk/10 border border-risk/20 text-risk rounded flex items-start gap-1.5 shrink-0 text-[10px]">
+        <div className="mx-2 mt-1.5 p-1.5 bg-risk/10 border border-risk/20 text-risk rounded flex items-start gap-1.5 shrink-0 text-ui-10">
           <ShieldAlert size={12} className="shrink-0 mt-0.5" />
           <span className="leading-snug">{errorNotice}</span>
         </div>
       )}
       {success && (
-        <div className="mx-2 mt-1.5 p-1.5 bg-accent2/10 border border-accent2/20 text-accent rounded flex items-start gap-1.5 shrink-0 text-[10px]">
+        <div className="mx-2 mt-1.5 p-1.5 bg-accent2/10 border border-accent2/20 text-accent rounded flex items-start gap-1.5 shrink-0 text-ui-10">
           <Check size={12} className="shrink-0 mt-0.5" />
           <span className="leading-snug flex-1 min-w-0">{success.text}</span>
           {success.undoId ? (
@@ -308,7 +308,7 @@ export default function CheckpointsPane() {
         ) : checkpoints.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-faint text-center gap-1">
             <span>No restore points available yet.</span>
-            <span className="text-[10px]">Edits from the agent will create checkpoints here.</span>
+            <span className="text-ui-10">Edits from the agent will create checkpoints here.</span>
           </div>
         ) : (
           checkpoints.map((cp) => {
@@ -319,15 +319,15 @@ export default function CheckpointsPane() {
                 className="px-1.5 py-1 bg-panel2/30 hover:bg-panel2/50 border border-edge/60 rounded flex flex-col gap-0.5 transition-colors"
               >
                 <div className="flex items-center justify-between gap-1.5 min-w-0">
-                  <div className="font-medium text-txt truncate leading-snug flex-1 min-w-0 text-[11px]" title={cp.label}>
+                  <div className="font-medium text-txt truncate leading-snug flex-1 min-w-0 text-ui-11" title={cp.label}>
                     {cp.label}
                   </div>
-                  <span className="px-1 py-px text-[8px] uppercase font-semibold tracking-wide bg-panel2/30 border border-edge/60 rounded text-faint shrink-0 select-none">
+                  <span className="px-1 py-px text-ui-8 uppercase font-semibold tracking-wide bg-panel2/30 border border-edge/60 rounded text-faint shrink-0 select-none">
                     {formatTrigger(cp.trigger)}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-[9px] text-faint shrink-0">
+                <div className="flex items-center justify-between text-ui-9 text-faint shrink-0">
                   <span className="font-mono">{cp.id.slice(0, 8)}</span>
                   <span>{formatTime(cp.timestamp)}</span>
                 </div>
@@ -336,7 +336,7 @@ export default function CheckpointsPane() {
                   <button
                     onClick={() => toggleDiff(cp.id)}
                     title={expandedDiffs[cp.id] ? "Hide diff" : "View diff"}
-                    className="py-0.5 px-1.5 bg-panel2/30 border border-edge/60 hover:bg-panel2/50 rounded font-medium text-muted hover:text-txt transition-colors text-[10px] flex items-center gap-1 shrink-0"
+                    className="py-0.5 px-1.5 bg-panel2/30 border border-edge/60 hover:bg-panel2/50 rounded font-medium text-muted hover:text-txt transition-colors text-ui-10 flex items-center gap-1 shrink-0"
                   >
                     {expandedDiffs[cp.id] ? <EyeOff size={10} /> : <Eye size={10} />}
                     <span>Diff</span>
@@ -345,7 +345,7 @@ export default function CheckpointsPane() {
                   <button
                     onClick={() => handleRestore(cp)}
                     disabled={isRestoring !== null}
-                    className="flex-1 py-0.5 px-1.5 bg-accent/5 hover:bg-accent/15 border border-accent/25 hover:border-accent/40 rounded font-medium text-accent hover:text-accent-bright transition-colors text-center text-[10px] flex items-center justify-center gap-1 disabled:opacity-40"
+                    className="flex-1 py-0.5 px-1.5 bg-accent/5 hover:bg-accent/15 border border-accent/25 hover:border-accent/40 rounded font-medium text-accent hover:text-accent-bright transition-colors text-center text-ui-10 flex items-center justify-center gap-1 disabled:opacity-40"
                   >
                     <Play size={10} className="fill-accent/20" />
                     {isPending ? "Restoring..." : "Restore"}
@@ -364,7 +364,7 @@ export default function CheckpointsPane() {
                         const diff = diffData[cp.id];
                         if (!diff.ok) {
                           return (
-                            <div className="p-2 bg-risk/10 border border-risk/20 text-risk rounded text-[10px]">
+                            <div className="p-2 bg-risk/10 border border-risk/20 text-risk rounded text-ui-10">
                               {diff.error || "Failed to load diff."}
                             </div>
                           );
@@ -372,7 +372,7 @@ export default function CheckpointsPane() {
 
                         if (diff.files.length === 0) {
                           return (
-                            <div className="text-faint py-1 italic text-[10.5px]">
+                            <div className="text-faint py-1 italic text-ui-10.5">
                               No changes since this checkpoint
                             </div>
                           );
@@ -395,11 +395,11 @@ export default function CheckpointsPane() {
 
                                 return (
                                   <div key={idx} className="flex items-center justify-between gap-2 py-0.5 border-b border-edge/10 last:border-0">
-                                    <span className="font-mono text-[10px] text-muted truncate max-w-[180px]" title={file.path}>
+                                    <span className="font-mono text-ui-10 text-muted truncate max-w-[180px]" title={file.path}>
                                       {file.path}
                                     </span>
                                     <span
-                                      className={`px-1 py-px text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}
+                                      className={`px-1 py-px text-ui-8 uppercase font-bold tracking-wider rounded border ${badgeColor}`}
                                       aria-label={`${label}: ${file.path}`}
                                     >
                                       {label}
@@ -412,10 +412,10 @@ export default function CheckpointsPane() {
                             {/* Unified Diff Box */}
                             {diff.diff && (
                               <div className="flex flex-col gap-1">
-                                <div className="text-[9px] uppercase tracking-wider text-faint font-semibold">
+                                <div className="text-ui-9 uppercase tracking-wider text-faint font-semibold">
                                   Unified Diff
                                 </div>
-                                <div className="p-1.5 bg-panel2/30 border border-edge/60 rounded max-h-[180px] overflow-auto font-mono text-[10px] leading-relaxed text-muted scrollbar-thin">
+                                <div className="p-1.5 bg-panel2/30 border border-edge/60 rounded max-h-[180px] overflow-auto font-mono text-ui-10 leading-relaxed text-muted scrollbar-thin">
                                   {diff.diff.split("\n").map((line, lineIdx) => {
                                     let lineClass = "text-muted/80";
                                     if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -435,7 +435,7 @@ export default function CheckpointsPane() {
                                   })}
                                 </div>
                                 {diff.truncated && (
-                                  <div className="text-[9px] text-warn italic">
+                                  <div className="text-ui-9 text-warn italic">
                                     Diff truncated (size limit exceeded)
                                   </div>
                                 )}

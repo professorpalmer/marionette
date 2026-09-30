@@ -53,7 +53,7 @@ export default function ComposerTasksPanel({
       >
         {open ? <ChevronDown size={11} className="shrink-0 text-faint" /> : <ChevronRight size={11} className="shrink-0 text-faint" />}
         <ListChecks size={11} className="shrink-0 text-faint" />
-        <span className={`text-[10.5px] font-medium leading-4 ${headerTone}`}>{header}</span>
+        <span className={`text-ui-10.5 font-medium leading-4 ${headerTone}`}>{header}</span>
       </button>
       {open && (
         <div className="space-y-0.5 px-2 pb-1.5">
@@ -75,14 +75,14 @@ export default function ComposerTasksPanel({
                   <TaskIcon state={task.state} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className={`block text-[10.5px] leading-4 ${task.state === "pending" ? "text-faint" : "text-txt"}`}>
+                  <span className={`block text-ui-10.5 leading-4 ${task.state === "pending" ? "text-faint" : "text-txt"}`}>
                     {task.content}
                   </span>
                   {!expanded && task.summary ? (
-                    <span className="block truncate text-[10.5px] leading-4 text-faint">{task.summary}</span>
+                    <span className="block truncate text-ui-10.5 leading-4 text-faint">{task.summary}</span>
                   ) : null}
                   {expanded && (task.detail || task.summary) ? (
-                    <span className="mt-0.5 block whitespace-pre-wrap break-words text-[10.5px] leading-4 text-faint">
+                    <span className="mt-0.5 block whitespace-pre-wrap break-words text-ui-10.5 leading-4 text-faint">
                       {task.detail || task.summary}
                     </span>
                   ) : null}

@@ -29,7 +29,7 @@ export default function ProviderKeyBanner({
     <div
       data-testid="provider-key-banner"
       data-variant={variant}
-      className="flex items-center gap-2.5 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-[11.5px] text-txt select-none shrink-0"
+      className="flex items-center gap-2.5 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-ui-11.5 text-txt select-none shrink-0"
       style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
     >
       <KeyRound size={13} className="text-accent shrink-0" />
@@ -46,7 +46,7 @@ export default function ProviderKeyBanner({
       <div className="flex-1" />
       <button
         onClick={onAddKey}
-        className="px-2.5 py-0.5 rounded-md bg-accent text-panel font-semibold hover:brightness-110 transition text-[11px]"
+        className="px-2.5 py-0.5 rounded-md bg-accent text-panel font-semibold hover:brightness-110 transition text-ui-11"
       >
         Add key
       </button>

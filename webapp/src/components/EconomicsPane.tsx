@@ -179,14 +179,14 @@ export default function EconomicsPane() {
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
       <div className="shrink-0 flex items-center px-3 py-2 border-b border-[var(--shell-panel-border)] select-none">
-        <div className="flex items-center gap-1.5 text-[10px] font-medium text-muted">
+        <div className="flex items-center gap-1.5 text-ui-10 font-medium text-muted">
           <Coins size={11} className="text-faint" />
           <span>Economics</span>
         </div>
       </div>
       <div className="shrink-0 grid grid-cols-[minmax(0,1fr)_110px] gap-2 px-3 pt-3 pb-2">
         <select
-          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-[11px] text-txt"
+          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-ui-11 text-txt"
           value={scope}
           onChange={(event) => {
             const nextScope = event.target.value as EconomicsPaneScope;
@@ -201,7 +201,7 @@ export default function EconomicsPane() {
           ))}
         </select>
         <select
-          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-[11px] text-txt disabled:text-faint"
+          className="min-w-0 rounded border border-edge/60 bg-panel2/40 px-2 py-1.5 text-ui-11 text-txt disabled:text-faint"
           value={periodDays === 30 ? "30" : "all"}
           onChange={(event) => {
             const nextPeriod = event.target.value === "30" ? 30 : null;
@@ -218,10 +218,10 @@ export default function EconomicsPane() {
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {sessionAllTime && processUsage.status === "loading" && (
-          <p className="px-3 py-2 text-[11px] text-faint" role="status">Loading usage…</p>
+          <p className="px-3 py-2 text-ui-11 text-faint" role="status">Loading usage…</p>
         )}
         {sessionAllTime && processUsage.status === "unavailable" && (
-          <button type="button" className="px-3 py-2 text-[11px] text-muted hover:text-txt" onClick={() => void refreshProcessUsage({ manual: true })}>
+          <button type="button" className="px-3 py-2 text-ui-11 text-muted hover:text-txt" onClick={() => void refreshProcessUsage({ manual: true })}>
             Session usage is incomplete or unavailable. Retry
           </button>
         )}
@@ -232,11 +232,11 @@ export default function EconomicsPane() {
         ) : null}
         {!reportCurrent && (
           !projectRoot ? (
-            <p className="px-3 py-3 text-[11px] text-muted">Select a project to see its economics.</p>
+            <p className="px-3 py-3 text-ui-11 text-muted">Select a project to see its economics.</p>
           ) : loadFailed ? (
             <button
               type="button"
-              className="px-3 py-3 text-left text-[11px] text-muted hover:text-txt"
+              className="px-3 py-3 text-left text-ui-11 text-muted hover:text-txt"
               onClick={() => {
                 setLoadFailed(false);
                 void loadEconomics();
@@ -245,7 +245,7 @@ export default function EconomicsPane() {
               Couldn't load economics for {projectLabel}. Retry
             </button>
           ) : (
-            <p className="px-3 py-3 text-[11px] text-muted" role="status">Updating {projectLabel}…</p>
+            <p className="px-3 py-3 text-ui-11 text-muted" role="status">Updating {projectLabel}…</p>
           )
         )}
         {economics && (reportCurrent || !loadFailed) && (

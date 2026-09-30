@@ -112,7 +112,7 @@ export default function PluginInstallModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge/40">
-          <h2 className="text-[13px] font-semibold text-txt">{title}</h2>
+          <h2 className="text-ui-13 font-semibold text-txt">{title}</h2>
           <button
             type="button"
             onClick={handleClose}
@@ -127,18 +127,18 @@ export default function PluginInstallModal({
         <div className="px-4 py-3 space-y-3">
           {installed ? (
             <div data-testid="plugin-install-enable-prompt" className="space-y-2">
-              <p className="text-[12px] text-txt">
+              <p className="text-ui-12 text-txt">
                 Installed {installed.name}
                 {installed.version ? ` v${installed.version}` : ""}. Enable it now?
               </p>
-              <p className="text-[11px] text-muted">
+              <p className="text-ui-11 text-muted">
                 Agent plugins stay disabled until you enable them.
               </p>
             </div>
           ) : (
             <>
               <label className="block space-y-1">
-                <span className="text-[11px] text-muted">Source</span>
+                <span className="text-ui-11 text-muted">Source</span>
                 <input
                   ref={sourceRef}
                   data-testid="plugin-install-source"
@@ -147,10 +147,10 @@ export default function PluginInstallModal({
                   onChange={(e) => setSource(e.target.value)}
                   disabled={Boolean(busy)}
                   placeholder="/absolute/path or https://github.com/owner/repo"
-                  className="w-full bg-panel2 border border-edge rounded px-2 py-1.5 text-txt text-[12px] font-mono focus:outline-none focus:border-accent disabled:opacity-50 placeholder:text-faint"
+                  className="w-full bg-panel2 border border-edge rounded px-2 py-1.5 text-txt text-ui-12 font-mono focus:outline-none focus:border-accent disabled:opacity-50 placeholder:text-faint"
                 />
               </label>
-              <label className="flex items-center gap-2 text-[12px] text-txt">
+              <label className="flex items-center gap-2 text-ui-12 text-txt">
                 <input
                   data-testid="plugin-install-force"
                   type="checkbox"
@@ -164,7 +164,7 @@ export default function PluginInstallModal({
           )}
 
           {errorNotice ? (
-            <div data-testid="plugin-install-error" className="text-[11px] text-risk">
+            <div data-testid="plugin-install-error" className="text-ui-11 text-risk">
               {errorNotice}
             </div>
           ) : null}
@@ -178,7 +178,7 @@ export default function PluginInstallModal({
                 data-testid="plugin-install-skip-enable"
                 onClick={handleClose}
                 disabled={Boolean(busy)}
-                className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-[11px] disabled:opacity-50"
+                className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-ui-11 disabled:opacity-50"
               >
                 Not now
               </button>
@@ -187,7 +187,7 @@ export default function PluginInstallModal({
                 data-testid="plugin-install-enable"
                 onClick={enable}
                 disabled={busy === "enable"}
-                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-[11px] font-medium disabled:opacity-30"
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-ui-11 font-medium disabled:opacity-30"
               >
                 Enable
               </button>
@@ -198,7 +198,7 @@ export default function PluginInstallModal({
                 type="button"
                 onClick={handleClose}
                 disabled={Boolean(busy)}
-                className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-[11px] disabled:opacity-50"
+                className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-ui-11 disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -206,7 +206,7 @@ export default function PluginInstallModal({
                 type="submit"
                 data-testid="plugin-install-submit"
                 disabled={busy === "install"}
-                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-[11px] font-medium disabled:opacity-30"
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-ui-11 font-medium disabled:opacity-30"
               >
                 Install
               </button>

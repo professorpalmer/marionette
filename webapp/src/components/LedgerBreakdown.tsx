@@ -33,8 +33,8 @@ function money(b: LedgerBucket, billing?: string): string {
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div className="min-w-0" title={title}>
-      <div className="text-[10px] text-muted">{label}</div>
-      <div className="mt-0.5 text-[15px] font-medium tabular-nums text-txt">{value}</div>
+      <div className="text-ui-10 text-muted">{label}</div>
+      <div className="mt-0.5 text-ui-15 font-medium tabular-nums text-txt">{value}</div>
     </div>
   );
 }
@@ -46,8 +46,8 @@ export default function LedgerBreakdown({ view }: { view: LedgerView }) {
   const jobs = Object.entries(view.by_job);
   const openrouter = view.reconcile?.openrouter;
   return (
-    <div className="w-full min-h-0 px-3 py-3 text-[11px] text-txt" data-testid="ledger-breakdown">
-      <p className="text-[10px] text-muted mb-2 leading-snug">
+    <div className="w-full min-h-0 px-3 py-3 text-ui-11 text-txt" data-testid="ledger-breakdown">
+      <p className="text-ui-10 text-muted mb-2 leading-snug">
         Every model call this session, recorded once and priced when it was made.
       </p>
       <div className="mb-3 rounded-md border border-edge/50 bg-panel2/20 px-2.5 py-2.5">
@@ -62,20 +62,20 @@ export default function LedgerBreakdown({ view }: { view: LedgerView }) {
           <Stat label="Prompt cache" value={view.cache_hit == null ? "—" : `${Math.round(view.cache_hit * 100)}%`} />
         </div>
         {words.unpriced ? (
-          <p className="mt-2 text-[10px] text-warn/80 leading-snug">
+          <p className="mt-2 text-ui-10 text-warn/80 leading-snug">
             {words.unpriced}: no reported cost and no published rate for that model, so they are not in the total.
           </p>
         ) : null}
       </div>
 
-      <div className="text-[10px] text-faint mb-1">By model</div>
+      <div className="text-ui-10 text-faint mb-1">By model</div>
       <table className="w-full mb-3 tabular-nums">
         <tbody>
           {view.by_route.map((row) => (
             <tr key={`${row.billing}:${row.provider}:${row.model}`} className="align-top">
               <td className="py-0.5 pr-2 min-w-0">
                 <div className="truncate text-txt/90" title={`${row.provider} · ${row.model}`}>{row.model}</div>
-                <div className="text-[10px] text-faint">
+                <div className="text-ui-10 text-faint">
                   {row.provider} · {BILLING_LABELS[row.billing]} · {row.calls} calls
                   {row.cache_hit != null ? ` · ${cachePercent(row)} cache` : ""}
                 </div>
@@ -88,7 +88,7 @@ export default function LedgerBreakdown({ view }: { view: LedgerView }) {
 
       {purposes.length > 1 ? (
         <>
-          <div className="text-[10px] text-faint mb-1">By purpose</div>
+          <div className="text-ui-10 text-faint mb-1">By purpose</div>
           <div className="mb-3">
             {purposes.map(([purpose, b]) => (
               <div key={purpose} className="flex justify-between mb-0.5">
@@ -102,7 +102,7 @@ export default function LedgerBreakdown({ view }: { view: LedgerView }) {
 
       {jobs.length ? (
         <>
-          <div className="text-[10px] text-faint mb-1">Swarm jobs</div>
+          <div className="text-ui-10 text-faint mb-1">Swarm jobs</div>
           <div className="mb-3">
             {jobs.map(([jobId, b]) => (
               <div key={jobId} className="flex justify-between mb-0.5">
@@ -115,7 +115,7 @@ export default function LedgerBreakdown({ view }: { view: LedgerView }) {
       ) : null}
 
       {openrouter ? (
-        <p className="text-[10px] text-muted leading-snug" data-testid="ledger-reconcile">
+        <p className="text-ui-10 text-muted leading-snug" data-testid="ledger-reconcile">
           OpenRouter today: {formatUsd(openrouter.day.ledger_usd)} recorded here,{" "}
           {formatUsd(openrouter.day.account_usd)} on the key
           {openrouter.day.unrecorded_usd > 0.005

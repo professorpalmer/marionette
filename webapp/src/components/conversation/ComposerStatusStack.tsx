@@ -76,19 +76,19 @@ function StatusStackGroup({
           aria-label={groupLabel(kind)}
           aria-expanded={open}
           onClick={() => setUserOpen(!open)}
-          className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/35 ${ICON_FOCUS}`}
+          className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-ui-10.5 leading-4 text-txt hover:bg-panel/35 ${ICON_FOCUS}`}
         >
           {open
             ? <ChevronDown size={11} className="shrink-0 text-faint" aria-hidden />
             : <ChevronRight size={11} className="shrink-0 text-faint" aria-hidden />}
           <span className={`${COMPOSER_FAMILY_LABEL} font-medium`}>{groupLabel(kind)}</span>
-          <span className="ml-auto font-mono text-[10.5px] text-muted tabular-nums">
+          <span className="ml-auto font-mono text-ui-10.5 text-muted tabular-nums">
             {rows.length}
           </span>
         </button>
         {kind === "terminal" && runningIds.length > 0 && (
           runningIds.every((id) => cancelling.has(id)) ? (
-            <span className="shrink-0 px-1.5 text-[9px] italic text-risk/70">cancelling...</span>
+            <span className="shrink-0 px-1.5 text-ui-9 italic text-risk/70">cancelling...</span>
           ) : (
             <button
               type="button"
@@ -124,7 +124,7 @@ function StatusStackGroup({
                   type="button"
                   onClick={onOpen}
                   aria-label={`${openLabel}: ${row.label}`}
-                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[10.5px] leading-4 text-txt transition-colors hover:bg-panel/25 ${ROW_FOCUS}`}
+                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-ui-10.5 leading-4 text-txt transition-colors hover:bg-panel/25 ${ROW_FOCUS}`}
                 >
                   {statusIcon(row)}
                   <span className="min-w-0 flex-1 truncate">{row.label}</span>
@@ -138,7 +138,7 @@ function StatusStackGroup({
                 })()}
                 {(row.kind === "terminal" || row.id.startsWith("local-")) && row.state === "running" && (
                   stopping ? (
-                    <span className="shrink-0 px-1 text-[9px] italic text-risk/70">cancelling...</span>
+                    <span className="shrink-0 px-1 text-ui-9 italic text-risk/70">cancelling...</span>
                   ) : (
                     <button
                       type="button"

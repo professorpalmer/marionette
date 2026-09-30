@@ -7,7 +7,7 @@ import { rosterRoleName } from '../lib/expertRoutingFacts';
 import { ExpertWorkerUsage } from './ExpertUsageDetails';
 import WorkerInstruction from './WorkerInstruction';
 
-const PILL = 'composer-family inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2/80 border border-edge/80 text-[9px] shrink-0';
+const PILL = 'composer-family inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2/80 border border-edge/80 text-ui-9 shrink-0';
 
 function workerGlyph(status: string) {
   if (nativeActiveStatuses.includes(status)) {
@@ -35,7 +35,7 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
   const toggle = () => setOpen(value => !value);
   const role = task.role || task.task_id || 'Task identity unavailable';
   const title = workerTitle(task);
-  return <div className="min-w-0 max-w-full [overflow-wrap:anywhere] py-1.5 flex flex-col text-[10px]">
+  return <div className="min-w-0 max-w-full [overflow-wrap:anywhere] py-1.5 flex flex-col text-ui-10">
     <button type="button" className="group flex items-start gap-2 min-h-11 min-w-0 max-w-full whitespace-normal text-left px-1 py-0.5 hover:bg-panel2/25 focus-visible:outline focus-visible:outline-accent"
       aria-label={`${role}: ${task.status}`}
       aria-controls={id} aria-expanded={open}
@@ -62,7 +62,7 @@ export default function NativeTaskDisclosure({ task, route, kill, usage, onInspe
       </div>
     </button>
     {usage && <div className="px-1"><ExpertWorkerUsage usage={usage} compact /></div>}
-    <div id={id} hidden={!open} className="px-1 pt-1 text-[10px] text-muted space-y-1">
+    <div id={id} hidden={!open} className="px-1 pt-1 text-ui-10 text-muted space-y-1">
       {open && <>
         {onInspect && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" onKeyUp={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onInspect(); }}>Inspect</button>}
         {kill && <button type="button" className="min-h-11 px-2 focus-visible:outline focus-visible:outline-accent" aria-label="Cancel this job"

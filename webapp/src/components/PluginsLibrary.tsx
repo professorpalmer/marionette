@@ -51,7 +51,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
   return (
     <div className={embedded ? "space-y-3" : "space-y-3 max-w-2xl"} data-testid="plugins-library">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-2 text-[12px] text-muted">
+        <div className="flex items-center gap-2 text-ui-12 text-muted">
           <Puzzle size={14} className="text-accent" />
           <span>
             Portable Agent Plugins (skills + stdio MCP). Default-disabled until you enable them.
@@ -60,7 +60,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
         <button
           type="button"
           onClick={() => setInstallOpen(true)}
-          className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-[12px] text-txt hover:bg-panel2/80"
+          className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50 text-ui-12 text-txt hover:bg-panel2/80"
           data-testid="plugins-install-open"
         >
           <FolderPlus size={13} />
@@ -69,13 +69,13 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
       </div>
 
       {(msg || errorNotice) && (
-        <div className={`text-[11px] ${errorNotice ? "text-risk" : "text-muted"}`}>
+        <div className={`text-ui-11 ${errorNotice ? "text-risk" : "text-muted"}`}>
           {errorNotice || msg}
         </div>
       )}
 
       {plugins.length === 0 ? (
-        <div className="text-[12px] text-faint" data-testid="plugins-library-empty">
+        <div className="text-ui-12 text-faint" data-testid="plugins-library-empty">
           No plugins installed.
         </div>
       ) : (
@@ -87,16 +87,16 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
               className="rounded-lg border border-edge/40 bg-panel2/60 p-3 flex flex-col gap-2"
             >
               <div className="min-w-0">
-                <div className="text-[12px] font-medium text-txt truncate">
+                <div className="text-ui-12 font-medium text-txt truncate">
                   {p.name}
                   {p.version ? (
                     <span className="ml-1.5 text-faint font-normal">v{p.version}</span>
                   ) : null}
                 </div>
                 {p.description ? (
-                  <div className="text-[11px] text-muted mt-0.5 line-clamp-2">{p.description}</div>
+                  <div className="text-ui-11 text-muted mt-0.5 line-clamp-2">{p.description}</div>
                 ) : null}
-                <div className="text-[10px] text-faint mt-1">
+                <div className="text-ui-10 text-faint mt-1">
                   {p.enabled ? "enabled" : "disabled"}
                   {" · "}
                   {p.skill_count} skill{p.skill_count === 1 ? "" : "s"}
@@ -109,7 +109,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
                 type="button"
                 onClick={() => toggle(p)}
                 disabled={busy === p.id}
-                className="self-start inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-edge/50 text-txt hover:bg-panel2 disabled:opacity-50"
+                className="self-start inline-flex items-center gap-1 px-2 py-1 rounded-md text-ui-11 border border-edge/50 text-txt hover:bg-panel2 disabled:opacity-50"
                 data-testid={`plugin-toggle-${p.id}`}
               >
                 {p.enabled ? <PowerOff size={12} /> : <Power size={12} />}

@@ -62,9 +62,9 @@ export default function ConversationHeader({
       }}
     >
       <span className="flex items-baseline gap-1.5 select-none flex-1 min-w-0 overflow-hidden" style={noDrag}>
-        <span className="font-semibold text-[12px] text-txt/90 tracking-tight shrink-0">Marionette</span>
-        <span className="text-faint/70 text-[9px] font-normal shrink-0 hidden min-[420px]:inline" aria-hidden>|</span>
-        <span className="text-muted/80 text-[9px] font-medium tracking-wide uppercase truncate hidden min-[420px]:inline">
+        <span className="font-semibold text-ui-12 text-txt/90 tracking-tight shrink-0">Marionette</span>
+        <span className="text-faint/70 text-ui-9 font-normal shrink-0 hidden min-[420px]:inline" aria-hidden>|</span>
+        <span className="text-muted/80 text-ui-9 font-medium tracking-wide uppercase truncate hidden min-[420px]:inline">
           The Puppetmaster Harness
         </span>
       </span>
@@ -73,7 +73,7 @@ export default function ConversationHeader({
           <button
             type="button"
             onClick={recoveryAction.onClick}
-            className="text-[10px] px-2 py-0.5 rounded-md border border-edge/60 bg-panel2/60 text-muted hover:text-txt transition"
+            className="text-ui-10 px-2 py-0.5 rounded-md border border-edge/60 bg-panel2/60 text-muted hover:text-txt transition"
           >
             {recoveryAction.label}
           </button>

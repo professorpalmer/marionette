@@ -506,7 +506,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
         {slowLoad && (
           <>
             <Loader2 className="animate-spin text-accent mb-2" size={24} />
-            <span className="text-[12px] text-muted">Reading file...</span>
+            <span className="text-ui-12 text-muted">Reading file...</span>
           </>
         )}
       </div>
@@ -516,10 +516,10 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   if (docPath === null && notice) {
     return (
       <div data-close-surface="editor" className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
-        <span className="text-risk font-semibold text-[13px] mb-2">{notice}</span>
+        <span className="text-risk font-semibold text-ui-13 mb-2">{notice}</span>
         <button
           onClick={onClose}
-          className="text-[11px] text-muted hover:text-txt underline transition-colors"
+          className="text-ui-11 text-muted hover:text-txt underline transition-colors"
         >
           Close editor
         </button>
@@ -575,7 +575,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
       {pathMenu && (
         <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
           style={{ top: pathMenu.y, left: pathMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -600,7 +600,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       <div className="flex items-center justify-between px-4 py-1.5 border-b border-edge bg-panel select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span
-            className="text-[11px] font-mono text-muted truncate"
+            className="text-ui-11 font-mono text-muted truncate"
             title={path}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -617,13 +617,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             <Loader2 data-testid="editor-reading" className="animate-spin text-accent shrink-0" size={12} />
           )}
           {(readOnly || !isTextEditable) && (
-            <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-[9px] font-mono uppercase text-muted tracking-wider select-none shrink-0">
+            <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-ui-9 font-mono uppercase text-muted tracking-wider select-none shrink-0">
               Read-only
             </span>
           )}
           {contentTruncated && (
             <span
-              className="text-[10px] text-muted truncate min-w-0"
+              className="text-ui-10 text-muted truncate min-w-0"
               title="This file exceeds the 1 MB read cap. Shown content may be incomplete."
             >
               Exceeded 1 MB read cap; content may be incomplete.
@@ -637,7 +637,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               <button
                 type="button"
                 onClick={() => setTextMode("code")}
-                className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors ${
+                className={`flex items-center gap-1 px-2 py-1 text-ui-11 transition-colors ${
                   textMode === "code" ? "bg-panel2 text-txt" : "text-muted hover:text-txt"
                 }`}
                 title="Source"
@@ -648,7 +648,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               <button
                 type="button"
                 onClick={() => setTextMode("preview")}
-                className={`flex items-center gap-1 px-2 py-1 text-[11px] transition-colors border-l border-edge ${
+                className={`flex items-center gap-1 px-2 py-1 text-ui-11 transition-colors border-l border-edge ${
                   textMode === "preview" ? "bg-panel2 text-txt" : "text-muted hover:text-txt"
                 }`}
                 title="Preview"
@@ -663,7 +663,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             <button
               type="button"
               onClick={openInBrowserPanel}
-              className="flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+              className="flex items-center gap-1 px-2 py-1 rounded text-ui-11 border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
               title="Open in browser panel"
             >
               <Globe size={12} />
@@ -674,23 +674,23 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           {isTextEditable && (
             <>
               {saveStatus === "saving" && (
-                <span className="text-[11px] text-muted flex items-center gap-1">
+                <span className="text-ui-11 text-muted flex items-center gap-1">
                   <Loader2 className="animate-spin" size={12} />
                   Saving...
                 </span>
               )}
               {saveStatus === "saved" && (
-                <span className="text-[11px] text-good">Saved</span>
+                <span className="text-ui-11 text-good">Saved</span>
               )}
               {saveStatus === "error" && (
-                <span className="text-[11px] text-risk">Save failed</span>
+                <span className="text-ui-11 text-risk">Save failed</span>
               )}
 
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleRevert}
                   disabled={!isDirty || saving}
-                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] transition-colors border ${
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-ui-11 transition-colors border ${
                     isDirty && !saving
                       ? "border-edge text-muted hover:text-txt hover:bg-panel2"
                       : "border-transparent text-faint cursor-not-allowed"
@@ -703,7 +703,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                 <button
                   onClick={() => handleSave(content)}
                   disabled={!isDirty || saving}
-                  className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] transition-colors border ${
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded text-ui-11 transition-colors border ${
                     isDirty && !saving
                       ? "bg-accent/15 border-accent/30 text-accent hover:bg-accent/25"
                       : "border-transparent text-faint cursor-not-allowed"
@@ -721,7 +721,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             <button
               type="button"
               onClick={onClose}
-              className="flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+              className="flex items-center gap-1 px-2 py-1 rounded text-ui-11 border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
               title="Close editor"
             >
               <X size={12} />
@@ -737,12 +737,12 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           className="flex items-center justify-between gap-3 px-4 py-2 border-b border-risk/40 bg-risk/10 shrink-0"
           role="status"
         >
-          <span className="text-[11px] text-risk min-w-0">{notice}</span>
+          <span className="text-ui-11 text-risk min-w-0">{notice}</span>
           {error && (
             <button
               type="button"
               onClick={() => setError(null)}
-              className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
+              className="px-2 py-1 rounded text-ui-11 border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
             >
               Dismiss
             </button>
@@ -756,7 +756,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           className="flex items-center justify-between gap-3 px-4 py-2 border-b border-warn/40 bg-warn/10 shrink-0"
           role="status"
         >
-          <span className="text-[11px] text-txt min-w-0">
+          <span className="text-ui-11 text-txt min-w-0">
             This file changed on disk while you have unsaved edits.
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -764,7 +764,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               type="button"
               data-testid="disk-conflict-reload"
               onClick={softReloadFromDisk}
-              className="px-2 py-1 rounded text-[11px] border border-warn/40 text-txt hover:bg-warn/20 transition-colors"
+              className="px-2 py-1 rounded text-ui-11 border border-warn/40 text-txt hover:bg-warn/20 transition-colors"
             >
               Reload from disk
             </button>
@@ -772,7 +772,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               type="button"
               data-testid="disk-conflict-keep"
               onClick={() => setDiskConflict(false)}
-              className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
+              className="px-2 py-1 rounded text-ui-11 border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors"
             >
               Keep mine
             </button>
@@ -786,11 +786,11 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           className="flex items-center justify-between gap-3 px-4 py-2 border-b border-risk/40 bg-risk/10 shrink-0"
           role="status"
         >
-          <span className="text-[11px] text-risk min-w-0">{inFileApplyError}</span>
+          <span className="text-ui-11 text-risk min-w-0">{inFileApplyError}</span>
           <button
             type="button"
             onClick={clearInFileApplyError}
-            className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
+            className="px-2 py-1 rounded text-ui-11 border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
           >
             Dismiss
           </button>
@@ -803,7 +803,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           className="flex items-center gap-2 px-4 py-1.5 border-b border-accent/30 bg-accent/5 shrink-0"
           role="status"
         >
-          <span className="text-[11px] text-muted">
+          <span className="text-ui-11 text-muted">
             {inFilePendingCount} pending review hunk{inFilePendingCount === 1 ? "" : "s"} in this file — Accept or Reject on the hunk markers (no confirm).
           </span>
         </div>
@@ -815,7 +815,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             {showInlinePrompt && (
               <div ref={containerRef} className="absolute top-2 right-4 z-50 w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
+                  <span className="text-ui-11 font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
                     <Wand2 size={12} className="text-accent shrink-0 animate-pulse" />
                     Inline Edit
                   </span>
@@ -824,7 +824,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                       setShowInlinePrompt(false);
                       setInlineRange(null);
                     }}
-                    className="text-[10px] text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
+                    className="text-ui-10 text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
                   >
                     Esc
                   </button>
@@ -836,7 +836,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                     value={inlineInstruction}
                     onChange={(e) => setInlineInstruction(e.target.value)}
                     placeholder="Describe the edit... (Enter to apply)"
-                    className="w-full bg-panel border border-edge rounded px-2.5 py-1.5 text-[12px] text-txt placeholder:text-muted outline-none focus:border-accent transition-colors"
+                    className="w-full bg-panel border border-edge rounded px-2.5 py-1.5 text-ui-12 text-txt placeholder:text-muted outline-none focus:border-accent transition-colors"
                     disabled={inlineLoading}
                     onKeyDown={async (e) => {
                       if (e.key === "Enter") {
@@ -851,13 +851,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                   />
                 </div>
                 {inlineLoading && (
-                  <div className="text-[11px] text-muted flex items-center gap-1.5 py-0.5">
+                  <div className="text-ui-11 text-muted flex items-center gap-1.5 py-0.5">
                     <Loader2 className="animate-spin text-accent" size={12} />
                     Thinking...
                   </div>
                 )}
                 {inlineError && (
-                  <div className="text-[11px] text-risk break-words font-medium py-0.5">
+                  <div className="text-ui-11 text-risk break-words font-medium py-0.5">
                     {inlineError}
                   </div>
                 )}
@@ -867,7 +867,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               value={content}
               theme={okaidia}
               height="100%"
-              className="h-full text-[13px]"
+              className="h-full text-ui-13"
               extensions={extensions}
               onCreateEditor={(view) => {
                 editorViewRef.current = view;
@@ -905,13 +905,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                   <h1 className="text-base font-semibold text-txt mt-3 mb-2 border-b border-edge pb-1">{children}</h1>
                 ),
                 h2: ({ children }: any) => (
-                  <h2 className="text-[13px] font-semibold text-txt mt-3 mb-1.5">{children}</h2>
+                  <h2 className="text-ui-13 font-semibold text-txt mt-3 mb-1.5">{children}</h2>
                 ),
                 h3: ({ children }: any) => (
-                  <h3 className="text-[12px] font-semibold text-muted mt-2 mb-1">{children}</h3>
+                  <h3 className="text-ui-12 font-semibold text-muted mt-2 mb-1">{children}</h3>
                 ),
                 p: ({ children }: any) => (
-                  <p className="text-[13px] leading-relaxed my-2 first:mt-0 last:mb-0">{children}</p>
+                  <p className="text-ui-13 leading-relaxed my-2 first:mt-0 last:mb-0">{children}</p>
                 ),
                 ul: ({ children }: any) => (
                   <ul className="list-disc pl-5 my-2 space-y-1 text-txt/90">{children}</ul>
@@ -920,19 +920,19 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                   <ol className="list-decimal pl-5 my-2 space-y-1 text-txt/90">{children}</ol>
                 ),
                 li: ({ children }: any) => (
-                  <li className="text-[13px] leading-relaxed">{children}</li>
+                  <li className="text-ui-13 leading-relaxed">{children}</li>
                 ),
                 code: ({ className, children }: any) => {
                   const inline = !className;
                   if (inline) {
                     return (
-                      <code className="bg-panel2 px-1 py-0.5 rounded text-[12px] font-mono text-accent/90">
+                      <code className="bg-panel2 px-1 py-0.5 rounded text-ui-12 font-mono text-accent/90">
                         {children}
                       </code>
                     );
                   }
                   return (
-                    <pre className="bg-panel2 border border-edge rounded p-3 my-2 overflow-auto text-[12px] font-mono">
+                    <pre className="bg-panel2 border border-edge rounded p-3 my-2 overflow-auto text-ui-12 font-mono">
                       <code className={className}>{children}</code>
                     </pre>
                   );
@@ -982,23 +982,23 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
         {kind === "binary" && (
           <div className="h-full overflow-auto flex flex-col items-center justify-center px-8 py-10 text-center gap-3">
-            <div className="text-[13px] font-medium text-txt">
+            <div className="text-ui-13 font-medium text-txt">
               {binaryMeta?.name || path.split(/[/\\]/).pop() || path}
             </div>
-            <div className="text-[12px] text-muted font-mono">
+            <div className="text-ui-12 text-muted font-mono">
               {formatBytes(binaryMeta?.size)}
               {binaryMeta?.mime ? ` · ${binaryMeta.mime}` : ""}
               {binaryMeta?.ext ? ` · ${binaryMeta.ext}` : ""}
             </div>
-            <p className="text-[12px] text-muted max-w-md leading-relaxed">
+            <p className="text-ui-12 text-muted max-w-md leading-relaxed">
               This file exists in the workspace, but a binary preview is not available in the editor.
             </p>
             {binaryMeta?.sqlite_tables && binaryMeta.sqlite_tables.length > 0 && (
               <div className="mt-2 w-full max-w-md text-left rounded border border-edge bg-panel2 px-3 py-2">
-                <div className="text-[10px] uppercase tracking-wider text-muted mb-1.5">
+                <div className="text-ui-10 uppercase tracking-wider text-muted mb-1.5">
                   SQLite tables
                 </div>
-                <ul className="text-[12px] font-mono text-txt space-y-0.5 max-h-40 overflow-auto">
+                <ul className="text-ui-12 font-mono text-txt space-y-0.5 max-h-40 overflow-auto">
                   {binaryMeta.sqlite_tables.map((t) => (
                     <li key={t}>{t}</li>
                   ))}
@@ -1006,12 +1006,12 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
               </div>
             )}
             {binaryMeta?.sqlite_tables && binaryMeta.sqlite_tables.length === 0 && (
-              <p className="text-[11px] text-muted">SQLite database (no tables listed).</p>
+              <p className="text-ui-11 text-muted">SQLite database (no tables listed).</p>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="mt-2 text-[11px] text-muted hover:text-txt underline transition-colors"
+              className="mt-2 text-ui-11 text-muted hover:text-txt underline transition-colors"
             >
               Close editor
             </button>

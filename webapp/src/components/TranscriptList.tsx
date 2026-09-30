@@ -448,8 +448,8 @@ function CompactionReceipt({
   const handles = it.handles || [];
   const story = it.story || [];
   const pillClass = fold
-    ? "flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono"
-    : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-[10.5px] ${
+    ? "flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono"
+    : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-ui-10.5 ${
         it.aborted
           ? "bg-warn/10 border border-warn/25 text-warn/90"
           : "bg-panel2/10 border border-edge/10 text-faint"
@@ -464,7 +464,7 @@ function CompactionReceipt({
         <span>{chrome.label}</span>
       </div>
       {!fold && counts ? (
-        <div className="text-[10.5px] text-faint font-mono px-3">{counts}</div>
+        <div className="text-ui-10.5 text-faint font-mono px-3">{counts}</div>
       ) : null}
       {handles.length > 0 && !fold ? (
         <div className="flex flex-wrap gap-1 px-3">
@@ -474,7 +474,7 @@ function CompactionReceipt({
               key={handle}
               title={handle}
               onClick={() => setOpenHandle((cur) => (cur === handle ? null : handle))}
-              className="text-[10.5px] text-faint font-mono bg-transparent border-0 p-0 cursor-pointer hover:underline underline-offset-2"
+              className="text-ui-10.5 text-faint font-mono bg-transparent border-0 p-0 cursor-pointer hover:underline underline-offset-2"
             >
               {handle}
             </button>
@@ -482,12 +482,12 @@ function CompactionReceipt({
         </div>
       ) : null}
       {handles.length > 0 && fold ? (
-        <span className="text-[10px] text-faint/70 font-mono" title={handles.join(" · ")}>
+        <span className="text-ui-10 text-faint/70 font-mono" title={handles.join(" · ")}>
           {handles.length} handle{handles.length === 1 ? "" : "s"}
         </span>
       ) : null}
       {openHandle && !fold ? (
-        <div className="text-[10.5px] text-faint font-mono px-3 whitespace-pre-wrap break-all">
+        <div className="text-ui-10.5 text-faint font-mono px-3 whitespace-pre-wrap break-all">
           <div>{openHandle}</div>
           {story.map((line) => (
             <div key={line}>{line}</div>
@@ -516,8 +516,8 @@ function VaultCiteChip({
       onClick={() => setOpen((v) => !v)}
       className={
         fold
-          ? "flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
-          : "flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 w-fit my-0.5 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+          ? "flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/70 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+          : "flex items-center gap-1.5 py-0.5 text-ui-10 text-accent/70 w-fit my-0.5 select-none bg-transparent border-0 p-0 cursor-pointer text-left"
       }
     >
       <History size={9} className={fold ? "text-faint/60" : "text-accent/70"} />
@@ -526,7 +526,7 @@ function VaultCiteChip({
         {snippet ? ` -- ${snippet}` : ""}
       </span>
       {open && it.snippets.length > 1 ? (
-        <span className="block text-[10px] text-faint font-mono whitespace-pre-wrap">
+        <span className="block text-ui-10 text-faint font-mono whitespace-pre-wrap">
           {it.snippets.slice(1).join("\n")}
         </span>
       ) : null}
@@ -1427,7 +1427,7 @@ function AuthFailureBanner({
   return (
     <div
       role="alert"
-      className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-risk/10 border border-risk/50 text-[12px] text-risk w-full max-w-full my-1.5 shadow-sm"
+      className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-risk/10 border border-risk/50 text-ui-12 text-risk w-full max-w-full my-1.5 shadow-sm"
     >
       <XCircle size={15} className="text-risk shrink-0 mt-0.5" />
       <span className="min-w-0 flex-1">
@@ -1437,7 +1437,7 @@ function AuthFailureBanner({
           Fix the named credential (e.g. OPENAI_API_KEY), then re-run.
         </span>
         {message ? (
-          <code className="block mt-1 text-[10.5px] text-risk/80 font-mono break-all whitespace-pre-wrap">
+          <code className="block mt-1 text-ui-10.5 text-risk/80 font-mono break-all whitespace-pre-wrap">
             {message}
           </code>
         ) : null}
@@ -1450,7 +1450,7 @@ function AuthFailureBanner({
           <button
             type="button"
             onClick={handleRetry}
-            className="rounded-md border border-risk/40 bg-risk/10 px-2.5 py-1 text-[11px] font-medium text-risk hover:bg-risk/20 transition"
+            className="rounded-md border border-risk/40 bg-risk/10 px-2.5 py-1 text-ui-11 font-medium text-risk hover:bg-risk/20 transition"
           >
             Fix key and retry
           </button>
@@ -1802,7 +1802,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <div
           key={key}
-          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[10px] text-faint w-fit my-1 select-none"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-ui-10 text-faint w-fit my-1 select-none"
           role="status"
           aria-label={`restore point created: ${it.label}`}
         >
@@ -1818,7 +1818,7 @@ export const TranscriptList = memo(function TranscriptList({
           data-testid="pending-review-receipt"
           onClick={() => focusReviewTabAndRefresh()}
           title="Open Review tab"
-          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-accent/10 border border-accent/25 text-[10px] text-accent w-fit my-1 select-none cursor-pointer hover:bg-accent/15 transition-colors"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-accent/10 border border-accent/25 text-ui-10 text-accent w-fit my-1 select-none cursor-pointer hover:bg-accent/15 transition-colors"
         >
           <Eye size={11} className="text-accent shrink-0" />
           <span>review ready: {it.summary} ({it.id.slice(0, 12)})</span>
@@ -1826,7 +1826,7 @@ export const TranscriptList = memo(function TranscriptList({
       );
     } else if (it.kind === "codegraph_context") {
       return (
-        <div key={key} className="flex items-center gap-1.5 py-0.5 text-[10px] text-accent/70 w-fit my-0.5 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
+        <div key={key} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-accent/70 w-fit my-0.5 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
           <Share2 size={9} className="text-accent/70" />
           <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
         </div>
@@ -1838,7 +1838,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <div
           key={key}
-          className="flex items-start gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-risk/25 text-[10.5px] text-muted w-fit max-w-full my-1 select-none"
+          className="flex items-start gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-risk/25 text-ui-10.5 text-muted w-fit max-w-full my-1 select-none"
           title={it.matched ? `matched: ${it.matched}` : "Full-auto did not execute this command"}
         >
           <span className="font-medium shrink-0 text-risk/80">{blocked.label}</span>
@@ -1853,7 +1853,7 @@ export const TranscriptList = memo(function TranscriptList({
                   openAgentCommand(it.command, { id: it.command, run: false });
                 }}
                 title="Reveal command"
-                className="block mt-0.5 max-w-full text-left text-[10px] text-accent/80 hover:underline underline-offset-2 font-mono truncate bg-transparent border-0 p-0 cursor-pointer"
+                className="block mt-0.5 max-w-full text-left text-ui-10 text-accent/80 hover:underline underline-offset-2 font-mono truncate bg-transparent border-0 p-0 cursor-pointer"
               >
                 {it.command}
               </button>
@@ -1871,7 +1871,7 @@ export const TranscriptList = memo(function TranscriptList({
         <div
           key={key}
           role="alert"
-          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-[11px] text-txt my-1.5"
+          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-ui-11 text-txt my-1.5"
         >
           <div className="flex items-start gap-2">
             <XCircle size={15} className="mt-0.5 shrink-0 text-risk/80" />
@@ -1882,7 +1882,7 @@ export const TranscriptList = memo(function TranscriptList({
                 {it.reason || it.category || "Safety policy requires an explicit decision."}
               </div>
               {(it.category || it.matched) ? (
-                <div className="mt-1 text-[10px] text-faint font-mono">
+                <div className="mt-1 text-ui-10 text-faint font-mono">
                   {it.category ? <span>category: {it.category}</span> : null}
                   {it.category && it.matched ? <span> · </span> : null}
                   {it.matched ? <span>matched: {it.matched}</span> : null}
@@ -1896,12 +1896,12 @@ export const TranscriptList = memo(function TranscriptList({
                   openAgentCommand(it.command, { id: it.command, run: false });
                 }}
                 title="Reveal command"
-                className="mt-2 block w-full max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-[10.5px] text-accent/85 hover:underline underline-offset-2 whitespace-pre-wrap break-all select-text text-left cursor-pointer"
+                className="mt-2 block w-full max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-ui-10.5 text-accent/85 hover:underline underline-offset-2 whitespace-pre-wrap break-all select-text text-left cursor-pointer"
               >
                 {it.command}
               </button>
               {amendment ? (
-                <div className="mt-1.5 text-[10px] text-muted">
+                <div className="mt-1.5 text-ui-10 text-muted">
                   Suggested safer rewrite:{" "}
                   <span className="font-mono text-accent/85">{amendment}</span>
                 </div>
@@ -1948,7 +1948,7 @@ export const TranscriptList = memo(function TranscriptList({
         <div
           key={key}
           data-testid="secret-request-card"
-          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-[11px] text-txt my-1.5"
+          className="w-full max-w-2xl rounded-md border border-edge bg-panel2/40 px-3.5 py-3 text-ui-11 text-txt my-1.5"
         >
           <div className="font-medium text-txt">{it.label}</div>
           {it.description ? <div className="mt-0.5 text-muted">{it.description}</div> : null}
@@ -1970,7 +1970,7 @@ export const TranscriptList = memo(function TranscriptList({
                 type="password"
                 autoComplete="off"
                 placeholder={`Paste your ${it.label}`}
-                className="w-full rounded border border-edge bg-panel px-2 py-1.5 text-[12px] text-txt"
+                className="w-full rounded border border-edge bg-panel px-2 py-1.5 text-ui-12 text-txt"
               />
               {it.error ? <div className="text-risk/90">{it.error}</div> : null}
               <div className="flex items-center gap-2">
@@ -1988,7 +1988,7 @@ export const TranscriptList = memo(function TranscriptList({
                   Dismiss
                 </button>
               </div>
-              <div className="flex items-center gap-1 text-[10.5px] text-muted">
+              <div className="flex items-center gap-1 text-ui-10.5 text-muted">
                 <Shield className="h-3 w-3" aria-hidden="true" />
                 Stored securely, never shown to your Bot.
               </div>
@@ -2003,7 +2003,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <div
           key={key}
-          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-[10.5px] text-faint w-fit my-1 select-none font-mono"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/10 border border-edge/10 text-ui-10.5 text-faint w-fit my-1 select-none font-mono"
           title="AutoBudget progress — not a completion or compaction receipt"
         >
           <span>{status.label}</span>
@@ -2015,7 +2015,7 @@ export const TranscriptList = memo(function TranscriptList({
       return (
         <div
           key={key}
-          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-10.5 w-fit my-1 select-none font-mono ${
             halt.metObjective
               ? "bg-panel2/15 border-edge/20 text-muted"
               : "bg-panel2/10 border-edge/15 text-faint"
@@ -2062,7 +2062,7 @@ export const TranscriptList = memo(function TranscriptList({
           key={key}
           role="status"
           title={it.output ? it.output.slice(0, 400) : gate.label}
-          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${toneClass}`}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-10.5 w-fit my-1 select-none font-mono ${toneClass}`}
         >
           <span className={labelClass}>{gate.label}</span>
           {gate.detail ? <span className="text-faint">· {gate.detail}</span> : null}
@@ -2101,7 +2101,7 @@ export const TranscriptList = memo(function TranscriptList({
           key={key}
           role="status"
           title={excerpt ? excerpt.slice(0, 400) : receipt.label}
-          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[10.5px] w-fit my-1 select-none font-mono ${toneClass}`}
+          className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-10.5 w-fit my-1 select-none font-mono ${toneClass}`}
         >
           <span className={labelClass}>{receipt.label}</span>
           {receipt.detail ? <span className="text-faint">· {receipt.detail}</span> : null}
@@ -2124,7 +2124,7 @@ export const TranscriptList = memo(function TranscriptList({
           data-testid="turn-terminal-chip"
           data-cause={it.cause}
           data-state={it.state}
-          className="flex items-center gap-1.5 py-1 px-3 rounded-md border border-edge/50 text-[10.5px] w-fit my-1 select-none font-mono text-muted"
+          className="flex items-center gap-1.5 py-1 px-3 rounded-md border border-edge/50 text-ui-10.5 w-fit my-1 select-none font-mono text-muted"
         >
           <span>{it.text}</span>
         </div>
@@ -2261,29 +2261,29 @@ export const TranscriptList = memo(function TranscriptList({
       {list}
       {liveTailList}
       {compactingStatus && (
-        <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-[11px] text-faint w-fit my-1 select-none animate-pulse">
+        <div className="flex items-center gap-1.5 py-1 px-3 rounded-full bg-panel2/15 border border-edge/20 text-ui-11 text-faint w-fit my-1 select-none animate-pulse">
           <Loader2 size={11} className="animate-spin text-accent" />
           <span>{compactingStatus}</span>
         </div>
       )}
       {showBusyFooter && !compactingStatus && (
         <div
-          className="flex items-center gap-1.5 py-1 text-[12px] text-muted select-none mt-1 pl-0.5 min-w-0"
+          className="flex items-center gap-1.5 py-1 text-ui-12 text-muted select-none mt-1 pl-0.5 min-w-0"
           title={busyProgress.runningGoal || busyProgress.label}
         >
           <Loader2 size={12} className="animate-spin text-muted shrink-0" />
-          <span className="truncate font-mono text-[11.5px] tracking-tight">
+          <span className="truncate font-mono text-ui-11.5 tracking-tight">
             {busyProgress.label || "Still working…"}
           </span>
         </div>
       )}
       {showStall && (
         <div
-          className="flex items-center gap-1.5 py-1 text-[12px] text-muted/90 select-none mt-1 pl-0.5 min-w-0"
+          className="flex items-center gap-1.5 py-1 text-ui-12 text-muted/90 select-none mt-1 pl-0.5 min-w-0"
           data-testid="stream-stall"
         >
           <Loader2 size={12} className="animate-spin text-faint shrink-0" />
-          <span className="truncate font-mono text-[11.5px] tracking-tight">
+          <span className="truncate font-mono text-ui-11.5 tracking-tight">
             Still working…
           </span>
         </div>
@@ -2421,7 +2421,7 @@ function ExplorationShelf({
             return next;
           });
         }}
-        className="flex items-center gap-1.5 py-0.5 text-[11px] font-sans font-normal text-faint/80 hover:text-muted transition w-fit max-w-full select-none bg-transparent border-0 p-0 cursor-pointer text-left"
+        className="flex items-center gap-1.5 py-0.5 text-ui-11 font-sans font-normal text-faint/80 hover:text-muted transition w-fit max-w-full select-none bg-transparent border-0 p-0 cursor-pointer text-left"
       >
         {open ? <ChevronDown size={10} className="text-faint/55 shrink-0" /> : <ChevronRight size={10} className="text-faint/55 shrink-0" />}
         {anyRunning ? <Loader2 size={10} className="animate-spin text-faint/60 shrink-0" /> : null}
@@ -2620,8 +2620,8 @@ function ActivityGroup({
         );
       }
       return (
-        <div key={it.msg.id || objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
-          <pre className="whitespace-pre-wrap font-sans font-normal text-[12px] leading-relaxed text-muted/90 m-0">
+        <div key={it.msg.id || objKey(it.msg)} className="text-ui-12 text-muted/90 py-0.5 leading-relaxed">
+          <pre className="whitespace-pre-wrap font-sans font-normal text-ui-12 leading-relaxed text-muted/90 m-0">
             {normalizePlainTextNarration(it.msg.text)}
           </pre>
         </div>
@@ -2629,7 +2629,7 @@ function ActivityGroup({
     }
     if (it.kind === "codegraph_context") {
       return (
-        <div key={`cg-${idx}-${it.symbols}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
+        <div key={`cg-${idx}-${it.symbols}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/70 select-none" title={it.query ? `CodeGraph consulted for: ${it.query}` : "CodeGraph consulted"}>
           <Share2 size={9} className="text-faint/60" />
           <span>CodeGraph consulted{it.symbols > 0 ? ` -- ${it.symbols} symbols` : ""}</span>
         </div>
@@ -2642,7 +2642,7 @@ function ActivityGroup({
       return (
         <div
           key={`ckpt-${it.id}`}
-          className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none"
+          className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none"
           role="status"
           aria-label={`restore point created: ${it.label}`}
         >
@@ -2694,7 +2694,7 @@ function ActivityGroup({
     if (it.kind === "command_blocked") {
       const blocked = commandBlockedPresentation(it);
       return (
-        <div key={`blocked-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none">
+        <div key={`blocked-${idx}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none">
           <span>{blocked.label}{blocked.detail ? ` · ${blocked.detail}` : ""}</span>
         </div>
       );
@@ -2702,7 +2702,7 @@ function ActivityGroup({
     if (it.kind === "auto_status") {
       const status = autoStatusPresentation(it.cycle, it.snapshot);
       return (
-        <div key={`auto-status-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+        <div key={`auto-status-${idx}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono">
           <span>{status.label}{status.detail ? ` · ${status.detail}` : ""}</span>
         </div>
       );
@@ -2710,7 +2710,7 @@ function ActivityGroup({
     if (it.kind === "auto_halt") {
       const halt = autoHaltPresentation(it.reason, it.snapshot);
       return (
-        <div key={`auto-halt-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+        <div key={`auto-halt-${idx}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono">
           <span>{halt.label} · {halt.detail}</span>
         </div>
       );
@@ -2718,7 +2718,7 @@ function ActivityGroup({
     if (it.kind === "quality_gate") {
       const gate = qualityGatePresentation(it);
       return (
-        <div key={`gate-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono" title={it.output ? it.output.slice(0, 400) : gate.label}>
+        <div key={`gate-${idx}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono" title={it.output ? it.output.slice(0, 400) : gate.label}>
           <span>{gate.label}{gate.detail ? ` · ${gate.detail}` : ""}</span>
         </div>
       );
@@ -2732,7 +2732,7 @@ function ActivityGroup({
             : { kind: "verification", passed: it.passed, cmd: it.cmd },
       );
       return (
-        <div key={`verify-${idx}`} className="flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono">
+        <div key={`verify-${idx}`} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono">
           <span>{receipt.label}{receipt.detail ? ` · ${receipt.detail}` : ""}</span>
         </div>
       );
@@ -2827,7 +2827,7 @@ function ActivityGroup({
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
-        className="transcript-fold-chrome flex items-center gap-1.5 py-0.5 text-[12px] font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 py-0.5 text-ui-12 font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
       >
         {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
         {investigating ? <Loader2 size={11} className="animate-spin text-faint/60 shrink-0" /> : null}
@@ -2846,13 +2846,13 @@ function ActivityGroup({
             </span>
           ) : null}
         {cgItems.length > 0 && (
-          <span className="ml-0.5 text-[10px] text-faint/40">+ CodeGraph</span>
+          <span className="ml-0.5 text-ui-10 text-faint/40">+ CodeGraph</span>
         )}
         {checkpointItems.length > 0 && (
-          <span className="ml-0.5 text-[10px] text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
+          <span className="ml-0.5 text-ui-10 text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
         )}
         {swarmResults.length > 0 && actionCount > 0 && (
-          <span className="ml-0.5 text-[10px] text-faint/40">+ swarm</span>
+          <span className="ml-0.5 text-ui-10 text-faint/40">+ swarm</span>
         )}
       </button>
       {open && (
@@ -2982,7 +2982,7 @@ function SwarmDoneFold({
           });
         }}
         aria-expanded={open}
-        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"
         title={open ? "Collapse swarm receipts" : "Expand swarm receipts"}
       >
         {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
@@ -3041,7 +3041,7 @@ function CommandFold({
           });
         }}
         aria-expanded={open}
-        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"
         title={open ? "Collapse commands" : "Expand commands"}
       >
         {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
@@ -3211,7 +3211,7 @@ function ThinkingBlock({
             return next;
           });
         }}
-        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-[12px] text-left w-full min-w-0 select-none"
+        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"
         aria-expanded={expanded}
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
@@ -3244,7 +3244,7 @@ function ThinkingBlock({
               }
             }
           }}
-          className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-[11px] leading-[1.65] max-w-[92%] max-h-[34dvh] [&_p]:my-1 [&_p]:text-[11px] [&_p]:leading-[1.65] [&_p]:text-faint/85"
+          className="mt-0.5 pl-2.5 ml-1 border-l-2 border-edge/40 overflow-y-auto overscroll-contain text-faint/85 text-ui-11 leading-[1.65] max-w-[92%] max-h-[34dvh] [&_p]:my-1 [&_p]:text-ui-11 [&_p]:leading-[1.65] [&_p]:text-faint/85"
         >
           <Markdown text={normalizePlainTextNarration(text)} />
         </div>
@@ -3650,7 +3650,7 @@ function ClampedProse({
         <button
           type="button"
           onClick={clamp.toggle}
-          className="mt-1 flex items-center gap-0.5 text-[11px] text-muted/90 hover:text-txt transition-colors select-none"
+          className="mt-1 flex items-center gap-0.5 text-ui-11 text-muted/90 hover:text-txt transition-colors select-none"
         >
           {clamp.expanded
             ? (<><ChevronUp size={12} /> Show less</>)
@@ -3671,7 +3671,7 @@ function SteerNote({
   return (
     <div
       data-testid="steer-note"
-      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-[10.5px] text-faint my-1 font-mono"
+      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-ui-10.5 text-faint my-1 font-mono"
     >
       <span className="shrink-0 select-none text-muted">
         {mode === "interrupt" ? "interrupt:" : "steer:"}
@@ -3729,12 +3729,12 @@ function Bubble({
     if (!displayedText.trim()) return null;
     return (
       <div className="flex flex-col items-start gap-0.5 my-1 w-full">
-        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-mono">
+        <span className="flex items-center gap-1.5 text-ui-10 uppercase tracking-wider text-faint px-0.5 select-none font-mono">
           <Loader2 size={10} className="animate-spin text-faint/70" /> worker streaming
         </span>
         <div
           ref={workerScrollRef}
-          className="w-full max-w-[95%] max-h-[7.5rem] overflow-y-auto overscroll-contain pl-2.5 border-l-2 border-edge/40 text-[10.5px] leading-[1.7] text-faint/70 whitespace-pre-wrap font-mono"
+          className="w-full max-w-[95%] max-h-[7.5rem] overflow-y-auto overscroll-contain pl-2.5 border-l-2 border-edge/40 text-ui-10.5 leading-[1.7] text-faint/70 whitespace-pre-wrap font-mono"
           style={{
             maskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
             WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 24%, black 100%)",
@@ -3750,7 +3750,7 @@ function Bubble({
     return (
       <div className="flex flex-col items-end gap-0.5 my-1 w-full group relative">
         {showLabel && (
-          <span className="text-[10px] uppercase tracking-wider text-faint px-1 select-none font-semibold mt-1">you</span>
+          <span className="text-ui-10 uppercase tracking-wider text-faint px-1 select-none font-semibold mt-1">you</span>
         )}
         <div className="flex items-center gap-1.5 min-w-0 max-w-[85%] relative pr-1">
           {onEdit && (
@@ -3762,7 +3762,7 @@ function Bubble({
               <Pencil size={12} />
             </button>
           )}
-          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-full text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-colors ${
+          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-full text-ui-13 leading-relaxed whitespace-pre-wrap break-words border transition-colors ${
             isEditing
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"
@@ -3803,7 +3803,7 @@ function Bubble({
   return (
     <div className={`flex flex-col items-start gap-0.5 my-1 w-full group relative${isIntermediate ? " pl-2 border-l border-edge/40" : ""}`}>
       {showLabel && (
-        <span className="text-[10px] uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
+        <span className="text-ui-10 uppercase tracking-wider text-faint px-0.5 select-none font-semibold mt-1">pilot</span>
       )}
       <div className={`transcript-msg-body select-text font-normal text-[0.8125rem] leading-[1.7] break-words min-w-0 max-w-[95%] py-0.5 w-full relative pr-14 ${isIntermediate ? "text-txt/75" : "text-txt/95"}`}>
         {/* Plan/progress stays ordinary text; final answers keep Markdown
@@ -3844,7 +3844,7 @@ function Bubble({
                 setExecuted(true);
                 onExecutePlan(msg.text);
               }}
-              className="bg-accent text-black/90 rounded-md px-3 h-[26px] text-[12px] font-semibold hover:brightness-110 flex items-center gap-1.5 transition shadow-sm"
+              className="bg-accent text-black/90 rounded-md px-3 h-[26px] text-ui-12 font-semibold hover:brightness-110 flex items-center gap-1.5 transition shadow-sm"
             >
               <Play size={11} fill="currentColor" />
               <span>Execute this plan</span>
@@ -3968,13 +3968,13 @@ function ActionCard({
 
   return (
     <div className="flex flex-col w-full select-none">
-      <div className="flex items-center justify-between w-full py-0.5 px-1 rounded-sm hover:bg-panel2/20 text-left text-[12px] font-sans font-normal group transition-colors">
+      <div className="flex items-center justify-between w-full py-0.5 px-1 rounded-sm hover:bg-panel2/20 text-left text-ui-12 font-sans font-normal group transition-colors">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={card.open}
-            className="flex items-center gap-2 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer font-sans font-normal text-[12px]"
+            className="flex items-center gap-2 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer font-sans font-normal text-ui-12"
           >
             <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
               {effectivelyRunning ? (
@@ -4008,7 +4008,7 @@ function ActionCard({
           {!ranLine && goalPreview && linkKind !== "none" && goalValue ? (            <button
               type="button"
               onClick={onGoalClick}
-              className="text-accent/75 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer bg-transparent border-0 p-0 text-[12px] font-sans"
+              className="text-accent/75 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer bg-transparent border-0 p-0 text-ui-12 font-sans"
               title={
                 linkKind === "file"
                   ? `Open ${goalValue}`
@@ -4030,12 +4030,12 @@ function ActionCard({
           ) : null}
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-[10px] text-faint/50 select-none tabular-nums ml-2">
+        <div className="flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2">
           {linkKind === "command" && goalValue && (
             <button
               type="button"
               onClick={onRunCommand}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/35 hover:bg-panel2/40 hover:text-txt cursor-pointer bg-transparent text-[10px] font-sans"
+              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/35 hover:bg-panel2/40 hover:text-txt cursor-pointer bg-transparent text-ui-10 font-sans"
               title="Run in terminal"
             >
               <Play size={9} />
@@ -4057,7 +4057,7 @@ function ActionCard({
             return (
               <div
                 key={action.action_id}
-                className="flex items-center gap-2 py-0.5 px-1 text-[11px] font-sans font-normal text-faint/80"
+                className="flex items-center gap-2 py-0.5 px-1 text-ui-11 font-sans font-normal text-faint/80"
                 data-testid="nested-worker-action"
                 data-action-id={action.action_id}
                 data-status={action.status}
@@ -4089,7 +4089,7 @@ function ActionCard({
                       else if (nestedLink.linkKind === "job") openSwarmJob(v);
                       else if (nestedLink.linkKind === "spill") openAgentSpill(v);
                     }}
-                    className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-[11px]"
+                    className="truncate text-accent/75 hover:underline underline-offset-2 bg-transparent border-0 p-0 text-left cursor-pointer font-sans text-ui-11"
                     title={action.goal}
                   >
                     {nestedGoal}
@@ -4113,7 +4113,7 @@ function ActionCard({
       )}
 
       {card.open && (
-        <div className="mt-1 ml-5 pl-3 border-l border-edge/50 py-1.5 pr-3 bg-panel2/25 rounded-r-sm text-[11px] max-w-full text-txt/85 space-y-1 font-sans">
+        <div className="mt-1 ml-5 pl-3 border-l border-edge/50 py-1.5 pr-3 bg-panel2/25 rounded-r-sm text-ui-11 max-w-full text-txt/85 space-y-1 font-sans">
           {/* Never render an empty key row — that was the "goal" with no value. */}
           {commandKv ? (
             <KV
@@ -4156,7 +4156,7 @@ function ActionCard({
                 e.stopPropagation();
                 openAgentSpill(spillUri);
               }}
-              className="mt-1 inline-flex items-center gap-1 text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-sans text-[11px]"
+              className="mt-1 inline-flex items-center gap-1 text-accent/85 hover:underline underline-offset-2 cursor-pointer bg-transparent border-0 p-0 font-sans text-ui-11"
               title={`Open full spilled output (${spillUri})`}
             >
               {spillChars != null
@@ -4184,7 +4184,7 @@ function ActionCard({
                 <KV k="status" v={card.result.message || card.result.status || ""} />
               ) : null}
               {(card.result.adapter === "demo" || card.result.adapter === "refused-demo") && (
-                <div className="text-warn text-[10px] mt-1 font-sans">
+                <div className="text-warn text-ui-10 mt-1 font-sans">
                   demo substrate refused -- not real codebase analysis
                 </div>
               )}
@@ -4192,7 +4192,7 @@ function ActionCard({
               {card.result.adapter !== "demo" && card.result.adapter !== "refused-demo" &&
                 (card.result.artifacts || []).map((a, i) => (
                 <div key={i} className="flex gap-2 py-0.5 border-t border-edge/30 mt-1 items-center font-sans">
-                  <span className="text-[9px] uppercase px-1.5 rounded bg-panel2 text-faint h-fit leading-none py-0.5 border border-edge/50">{a.type}</span>
+                  <span className="text-ui-9 uppercase px-1.5 rounded bg-panel2 text-faint h-fit leading-none py-0.5 border border-edge/50">{a.type}</span>
                   <span className="text-txt/80 truncate">{a.headline}</span>
                 </div>
               ))}
@@ -4207,7 +4207,7 @@ function ClickableProcessOutput({ text }: { text: string }) {
   const segments = tokenizeClickableOutput(text);
   return (
     <pre
-      className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] leading-snug text-txt/85 bg-panel/60 border border-edge/40 rounded px-2 py-1.5"
+      className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-ui-10 leading-snug text-txt/85 bg-panel/60 border border-edge/40 rounded px-2 py-1.5"
       data-testid="run-command-output"
     >
       {segments.map((seg, i) => {
@@ -4403,7 +4403,7 @@ function SwarmPendingPill({
           ? "bg-good/40"
           : "bg-faint/40";
   return (
-    <div className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-[11px] w-fit my-1 select-none ${shell}`}>
+    <div className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}>
       {status === "running"
         ? <Loader2 size={11} className="animate-spin text-accent" />
         : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
@@ -4575,7 +4575,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
           if (tone === "held") focusReviewTabAndRefresh();
           if (hasBody) setOpen((v) => !v);
         }}
-        className={`flex items-center gap-2 px-2.5 py-1.5 text-[11px] w-full text-left transition-colors ${hasBody ? "hover:bg-panel2/40 cursor-pointer" : "cursor-default"}`}
+        className={`flex items-center gap-2 px-2.5 py-1.5 text-ui-11 w-full text-left transition-colors ${hasBody ? "hover:bg-panel2/40 cursor-pointer" : "cursor-default"}`}
         title={tone === "held" ? "Open Review tab" : (objective || undefined)}
       >
         {tone === "applied"
@@ -4591,7 +4591,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
         </span>
         {reuseLabel && (
           <span
-            className="text-[9px] font-mono text-muted bg-panel2/70 border border-edge/50 px-1.5 py-0.5 rounded shrink-0"
+            className="text-ui-9 font-mono text-muted bg-panel2/70 border border-edge/50 px-1.5 py-0.5 rounded shrink-0"
             title={pathSummary || reuseReasonLabel || sourceJobId || reuseLabel}
           >
             {reuseLabel}
@@ -4618,23 +4618,23 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
           {primaryJobId ? (
-            <div className="text-[10px] text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1.5 flex-wrap">
+            <div className="text-ui-10 text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1.5 flex-wrap">
               <span>job</span>
               <SwarmJobIdButton jobId={primaryJobId} />
             </div>
           ) : null}
           {objective ? (
-            <div className="text-[10px] leading-relaxed text-muted whitespace-normal break-words">
+            <div className="text-ui-10 leading-relaxed text-muted whitespace-normal break-words">
               <span className="text-faint">goal </span>{objective}
             </div>
           ) : null}
           {cwd ? (
-            <div className="text-[10px] leading-relaxed text-muted font-mono whitespace-normal break-words">
+            <div className="text-ui-10 leading-relaxed text-muted font-mono whitespace-normal break-words">
               <span className="text-faint font-sans">cwd </span>{cwd}
             </div>
           ) : null}
           {(reuseLabel || reuseReasonLabel || sourceJobId) && (
-            <div className="text-[10px] text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1 flex-wrap">
+            <div className="text-ui-10 text-muted font-mono leading-relaxed break-words inline-flex items-center gap-1 flex-wrap">
               <span>{reuseLabel || "validation"}</span>
               {sourceJobId ? (
                 <>
@@ -4662,7 +4662,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                   event.stopPropagation();
                   setArtifactsOpen((value) => !value);
                 }}
-                className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 text-left text-[10px] text-muted hover:text-txt"
+                className="flex w-full flex-wrap items-center gap-x-4 gap-y-1 text-left text-ui-10 text-muted hover:text-txt"
               >
                 {artifactsOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                 <span>Artifacts <strong className="text-txt font-medium">{artifactDelivery.pm_artifacts}</strong></span>
@@ -4674,7 +4674,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                 </span>
               </button>
               {!artifactDelivery.complete ? (
-                <div className="text-[10px] text-warn space-y-0.5" data-testid="swarm-delivery-warning">
+                <div className="text-ui-10 text-warn space-y-0.5" data-testid="swarm-delivery-warning">
                   <div>Synthesis continued with incomplete PM evidence.</div>
                   {(artifactDelivery.missing || []).map((row) => (
                     <div key={`${row.id}:${row.task_id || ""}`} className="font-mono break-words">
@@ -4696,11 +4696,11 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                       className="block w-full rounded border border-edge/30 bg-panel/30 px-2 py-1.5 text-left hover:bg-panel2/35 transition-colors"
                       title={artifact.id ? `Inspect ${artifact.id} in Jobs` : "Inspect job artifacts"}
                     >
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[9px]">
+                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-ui-9">
                         <span className="uppercase text-faint">{artifact.type}</span>
                         {artifact.id ? <span className="font-mono text-accent/80 break-all">{artifact.id}</span> : null}
                       </span>
-                      <span className="mt-1 block text-[10.5px] leading-relaxed text-muted whitespace-normal break-words">
+                      <span className="mt-1 block text-ui-10.5 leading-relaxed text-muted whitespace-normal break-words">
                         {artifact.headline}
                       </span>
                     </button>
@@ -4711,7 +4711,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
           ) : null}
           {Array.isArray(invalidatedPaths) && invalidatedPaths.length > 0 && (
             <div className="flex flex-col gap-1">
-              <div className="text-[10px] text-muted font-mono">invalidated paths</div>
+              <div className="text-ui-10 text-muted font-mono">invalidated paths</div>
               <div className="flex flex-wrap gap-1">
                 {invalidatedPaths.map((p) => {
                   const path = String(p || "").trim();
@@ -4725,7 +4725,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                         e.stopPropagation();
                         openAgentFile(path);
                       }}
-                      className="text-[9px] font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
+                      className="text-ui-9 font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
                       title={`Open ${path}`}
                     >
                       {path.replace(/\\/g, "/")}
@@ -4742,7 +4742,7 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
                   key={f}
                   type="button"
                   onClick={() => openAgentFile(f)}
-                  className="text-[9px] font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
+                  className="text-ui-9 font-mono text-accent/85 bg-panel2/60 border border-edge/50 rounded px-1 py-0.5 hover:underline underline-offset-2 cursor-pointer"
                   title={`Open ${f}`}
                 >
                   {f}
@@ -4751,10 +4751,10 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
             </div>
           )}
           {!applied && error && (
-            <div className="text-[10px] text-risk/90 font-mono whitespace-pre-wrap leading-relaxed break-words">{error}</div>
+            <div className="text-ui-10 text-risk/90 font-mono whitespace-pre-wrap leading-relaxed break-words">{error}</div>
           )}
           {displaySummary && (
-            <div className="text-[10.5px] text-muted whitespace-pre-wrap leading-relaxed break-words">{displaySummary}</div>
+            <div className="text-ui-10.5 text-muted whitespace-pre-wrap leading-relaxed break-words">{displaySummary}</div>
           )}
         </div>
       )}

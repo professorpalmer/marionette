@@ -49,7 +49,7 @@ export default function EditorTabStrip({
         <div data-close-surface="editor" className="flex items-center gap-1 px-4 bg-panel border-b border-edge h-9 shrink-0 overflow-x-auto scrollbar-none select-none">
           <button
             onClick={() => onSelectTab("chat")}
-            className={`flex items-center h-full px-3 text-[12px] font-medium transition-colors border-b-2 ${
+            className={`flex items-center h-full px-3 text-ui-12 font-medium transition-colors border-b-2 ${
               activeTab === "chat"
                 ? "border-accent text-accent bg-bg/50"
                 : "border-transparent text-muted hover:text-txt"
@@ -63,7 +63,7 @@ export default function EditorTabStrip({
             return (
               <div
                 key={t.path}
-                className={`flex items-center h-full px-2 text-[12px] font-medium transition-colors border-b-2 group relative ${
+                className={`flex items-center h-full px-2 text-ui-12 font-medium transition-colors border-b-2 group relative ${
                   isSelected
                     ? "border-accent text-accent bg-bg/50"
                     : "border-transparent text-muted hover:text-txt"
@@ -101,7 +101,7 @@ export default function EditorTabStrip({
 
       {tabContextMenu && (
         <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
           style={{ top: tabContextMenu.y, left: tabContextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >

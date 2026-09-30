@@ -89,7 +89,7 @@ export default function SettingsShell({
         className="flex items-center justify-between pr-4 h-11 border-b border-edge/40 shrink-0"
         style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_SM_PX }}
       >
-        <span className="text-[13px] font-semibold text-txt">Settings</span>
+        <span className="text-ui-13 font-semibold text-txt">Settings</span>
         <button
           type="button"
           onClick={onClose}
@@ -110,7 +110,7 @@ export default function SettingsShell({
               <button
                 key={item.id}
                 onClick={() => setPage(item.id)}
-                className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] text-left transition
+                className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-ui-12 text-left transition
                   ${active ? "bg-panel2 text-txt font-medium" : "text-muted hover:text-txt hover:bg-panel2/50"}`}
               >
                 <Icon size={13} className={active ? "text-accent" : "text-faint"} />
@@ -126,13 +126,13 @@ export default function SettingsShell({
           {page === "local-models" && <LocalModelsSettingsPage />}
           {page === "plugins" && (
             <div className="max-w-2xl">
-              <h2 className="text-[15px] font-semibold text-txt mb-3">Plugins</h2>
+              <h2 className="text-ui-15 font-semibold text-txt mb-3">Plugins</h2>
               <PluginsPane />
             </div>
           )}
           {page === "about" && (
-            <div className="max-w-2xl text-[12px] text-muted">
-              <h2 className="text-[15px] font-semibold text-txt mb-2">About</h2>
+            <div className="max-w-2xl text-ui-12 text-muted">
+              <h2 className="text-ui-15 font-semibold text-txt mb-2">About</h2>
               <p>Marionette -- a desktop AI coding harness over Puppetmaster durable state.</p>
             </div>
           )}

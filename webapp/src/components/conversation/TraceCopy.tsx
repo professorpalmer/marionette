@@ -19,7 +19,7 @@ export default function TraceCopy({ correlationId }: { correlationId: string }) 
       type="button"
       onClick={handleCopy}
       data-testid="trace-copy"
-      className="text-[10px] font-mono text-faint/90 hover:text-muted truncate max-w-[28ch] flex items-center gap-1"
+      className="text-ui-10 font-mono text-faint/90 hover:text-muted truncate max-w-[28ch] flex items-center gap-1"
       title="Copy trace id for support"
     >
       <span className="truncate">Trace: {id}</span>

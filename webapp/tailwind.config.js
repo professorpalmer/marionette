@@ -24,6 +24,14 @@ export default {
       // index.css reads the same tokens through theme().
       transitionDuration: { DEFAULT: "120ms", fast: "120ms", base: "200ms" },
       transitionTimingFunction: { DEFAULT: "cubic-bezier(0.2, 0, 0, 1)", base: "cubic-bezier(0.2, 0, 0, 1)" },
+      // The one type scale: every text size is a ui-N token (class text-ui-10,
+      // CSS theme('fontSize.ui-10')), N px. Label sizes stay fixed while the
+      // responsive root (index.css) zooms spacing: scaling them with it put
+      // 9-10px labels at 7.6-8.4px in narrow windows, and a legibility floor
+      // collapsed the 9/10/10.5 tiers into one. Change the policy here, once.
+      fontSize: Object.fromEntries(
+        [8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 15].map((px) => [`ui-${px}`, `${px}px`]),
+      ),
       fontFamily: {
         sans: ["-apple-system","BlinkMacSystemFont","Segoe UI","Roboto","sans-serif"],
         mono: ["ui-monospace","SFMono-Regular","Menlo","monospace"],

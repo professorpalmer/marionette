@@ -327,7 +327,7 @@ export default function UpdateBanner({
     // active state without ever firing.
     <div
       data-testid="update-banner"
-      className="flex items-center gap-3 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-[12px] text-txt select-none shrink-0"
+      className="flex items-center gap-3 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-ui-12 text-txt select-none shrink-0"
       style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
     >
       <ArrowUpCircle size={15} className="text-accent shrink-0" />
@@ -345,7 +345,7 @@ export default function UpdateBanner({
           <div className="flex-1" />
           <button
             onClick={() => restart()}
-            className="px-2.5 py-1 rounded-md bg-accent text-panel font-semibold hover:brightness-110 transition text-[11px]"
+            className="px-2.5 py-1 rounded-md bg-accent text-panel font-semibold hover:brightness-110 transition text-ui-11"
           >
             Restart now
           </button>

@@ -7,4 +7,4 @@ export const COMPOSER_FAMILY_SURFACE =
 
 export const COMPOSER_FAMILY_SECTION = COMPOSER_FAMILY_CLASS;
 
-export const COMPOSER_FAMILY_LABEL = "composer-family-label text-[10.5px] text-faint";
+export const COMPOSER_FAMILY_LABEL = "composer-family-label text-ui-10.5 text-faint";

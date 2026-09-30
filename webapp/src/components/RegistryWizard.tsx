@@ -102,15 +102,15 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
           <h1 className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
             Let&apos;s get you set up with Marionette
           </h1>
-          <p className="mt-2 text-[13px] text-muted leading-relaxed">
+          <p className="mt-2 text-ui-13 text-muted leading-relaxed">
             Connect a model provider to start chatting. One key runs chat and swarms.
           </p>
         </header>
 
         {loading ? (
-          <p className="text-center text-muted text-[13px] py-10">Loading providers…</p>
+          <p className="text-center text-muted text-ui-13 py-10">Loading providers…</p>
         ) : tiles.length === 0 ? (
-          <p className="text-center text-muted text-[13px] py-8">
+          <p className="text-center text-muted text-ui-13 py-8">
             No Full stack providers available. You can add a key later from Settings.
           </p>
         ) : (
@@ -139,10 +139,10 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
                     {active ? (
                       <span className="absolute inset-y-0 right-0 w-[3px] rounded-r-lg bg-accent" />
                     ) : null}
-                    <div className="text-[13px] font-semibold text-txt leading-tight pr-2">
+                    <div className="text-ui-13 font-semibold text-txt leading-tight pr-2">
                       {p.display_name || p.name}
                     </div>
-                    <div className="text-[11px] text-muted mt-0.5 leading-snug pr-2">
+                    <div className="text-ui-11 text-muted mt-0.5 leading-snug pr-2">
                       {tileCopy.tagline}
                     </div>
                   </button>
@@ -151,14 +151,14 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
             </div>
 
             <div className="mt-5 flex items-start justify-between gap-3">
-              <p className="text-[12.5px] text-muted leading-relaxed min-h-[2.5rem]">
+              <p className="text-ui-12.5 text-muted leading-relaxed min-h-[2.5rem]">
                 {copy.blurb}
               </p>
               {copy.keyUrl ? (
                 <button
                   type="button"
                   onClick={() => openOnboardingKeyUrl(copy.keyUrl!)}
-                  className="shrink-0 inline-flex items-center gap-1 text-[12px] text-accent hover:underline pt-0.5"
+                  className="shrink-0 inline-flex items-center gap-1 text-ui-12 text-accent hover:underline pt-0.5"
                 >
                   Get a key
                   <ExternalLink size={11} />
@@ -181,10 +181,10 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
                 value={keyValue}
                 onChange={(e) => setKeyValue(e.target.value)}
                 disabled={saving || !selected}
-                className="w-full bg-bg border border-edge rounded-lg px-3 py-2.5 text-[13px] font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-50"
+                className="w-full bg-bg border border-edge rounded-lg px-3 py-2.5 text-ui-13 font-mono text-txt placeholder:text-faint focus:outline-none focus:border-accent disabled:opacity-50"
               />
               {errorNotice ? (
-                <p className="mt-2 text-[12px] text-risk" role="alert">
+                <p className="mt-2 text-ui-12 text-risk" role="alert">
                   {errorNotice}
                 </p>
               ) : null}
@@ -192,7 +192,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
                 <button
                   type="submit"
                   disabled={!canConnect}
-                  className="inline-flex items-center gap-1.5 bg-accent text-panel font-semibold rounded-lg px-4 py-2 text-[13px] hover:brightness-110 disabled:opacity-35 disabled:hover:brightness-100 transition"
+                  className="inline-flex items-center gap-1.5 bg-accent text-panel font-semibold rounded-lg px-4 py-2 text-ui-13 hover:brightness-110 disabled:opacity-35 disabled:hover:brightness-100 transition"
                 >
                   <KeyRound size={14} />
                   {saving ? "Connecting…" : "Connect"}
@@ -206,7 +206,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
           <button
             type="button"
             onClick={skip}
-            className="text-[12.5px] text-muted hover:text-txt transition-colors"
+            className="text-ui-12.5 text-muted hover:text-txt transition-colors"
           >
             I&apos;ll choose a provider later
           </button>

@@ -120,7 +120,7 @@ export default function ComposerTodoPanel({
           type="button"
           aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/35"
+          className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-ui-10.5 leading-4 text-txt hover:bg-panel/35"
         >
           {open ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
           <ListTree size={11} className="text-faint" />
@@ -186,7 +186,7 @@ function PhaseBlock({
         type="button"
         aria-expanded={expanded}
         onClick={onToggle}
-        className="flex w-full items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-[10.5px] leading-4 text-txt hover:bg-panel/30"
+        className="flex w-full items-center gap-1.5 rounded-md px-0.5 py-0.5 text-left text-ui-10.5 leading-4 text-txt hover:bg-panel/30"
       >
         {expanded ? <ChevronDown size={11} className="text-faint" /> : <ChevronRight size={11} className="text-faint" />}
         <span className="font-medium tabular-nums">
@@ -203,7 +203,7 @@ function PhaseBlock({
                 key={task.content}
                 title={task.blocker || task.content}
                 data-todo-lit={lit ? "1" : undefined}
-                className={`flex items-start gap-1.5 text-[10.5px] leading-4 ${taskTone(task.status, lit)}`}
+                className={`flex items-start gap-1.5 text-ui-10.5 leading-4 ${taskTone(task.status, lit)}`}
               >
                 <TaskMark status={task.status} lit={lit} />
                 <span className="whitespace-pre-wrap break-words">

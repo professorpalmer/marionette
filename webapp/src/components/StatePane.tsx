@@ -542,7 +542,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
           aria-label="Status card visibility"
           className="flex items-center gap-0.5 shrink-0 px-0.5"
         >
-          <span className="text-[9px] uppercase tracking-wider text-faint/80 mr-0.5 select-none" aria-hidden>
+          <span className="text-ui-9 uppercase tracking-wider text-faint/80 mr-0.5 select-none" aria-hidden>
             View
           </span>
           {STATE_PANE_CARD_META.map(({ id, label, short }) => {
@@ -555,7 +555,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                 aria-label={`${on ? "Hide" : "Show"} ${label}`}
                 title={`${on ? "Hide" : "Show"} ${label}`}
                 onClick={() => toggleCardVisibility(id)}
-                className={`h-5 min-w-[1.65rem] px-1 rounded text-[9px] font-medium border transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent ${
+                className={`h-5 min-w-[1.65rem] px-1 rounded text-ui-9 font-medium border transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent ${
                   on
                     ? "bg-panel2/50 text-muted border-edge/50"
                     : "bg-transparent text-faint/55 border-transparent hover:border-edge/35 hover:text-faint"
@@ -572,7 +572,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
         <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0" data-testid="state-card-codegraph">
           <button
             onClick={toggleCg}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-ui-10 hover:bg-panel2/30 transition-colors"
             title={cgOpen ? "Hide CodeGraph details" : "Show CodeGraph details"}
           >
             {cgOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
@@ -589,7 +589,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
             <div className="px-2.5 pb-2 pt-1 border-t border-edge/30">
               {cgNeedsScope && (
                 <div className="mb-2 space-y-1.5">
-                  <div className="text-[10px] text-warn leading-snug">
+                  <div className="text-ui-10 text-warn leading-snug">
                     {cg.reason || "This workspace is too large or asset-heavy to index as a whole."}
                   </div>
                   <div className="flex flex-wrap gap-1.5">
@@ -597,7 +597,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                       <button
                         type="button"
                         onClick={handleOpenSuggestedRoot}
-                        className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-1.5 py-0.5 rounded transition-colors font-medium border border-accent/30"
+                        className="text-ui-9 bg-accent/15 hover:bg-accent/25 text-accent px-1.5 py-0.5 rounded transition-colors font-medium border border-accent/30"
                       >
                         Open source subdir
                       </button>
@@ -606,7 +606,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                       type="button"
                       onClick={handleApplyExcludes}
                       disabled={applyingExcludes || reindexing}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
+                      className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
                     >
                       {applyingExcludes ? "Applying..." : "Apply asset excludes"}
                     </button>
@@ -614,7 +614,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                       type="button"
                       onClick={handleReindex}
                       disabled={reindexing || applyingExcludes}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
+                      className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2"
                     >
                       {reindexing ? "Indexing..." : "Retry index"}
                     </button>
@@ -622,22 +622,22 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                 </div>
               )}
 
-              <div className="grid grid-cols-3 gap-2 text-[11px]">
+              <div className="grid grid-cols-3 gap-2 text-ui-11">
                 <div>
-                  <div className="text-faint text-[9px] uppercase tracking-wide">Nodes</div>
-                  <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                  <div className="text-faint text-ui-9 uppercase tracking-wide">Nodes</div>
+                  <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                     {cg?.nodes != null ? cg.nodes.toLocaleString() : "-"}
                   </div>
                 </div>
                 <div>
-                  <div className="text-faint text-[9px] uppercase tracking-wide">Edges</div>
-                  <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                  <div className="text-faint text-ui-9 uppercase tracking-wide">Edges</div>
+                  <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                     {cg?.edges != null ? cg.edges.toLocaleString() : "-"}
                   </div>
                 </div>
                 <div>
-                  <div className="text-faint text-[9px] uppercase tracking-wide">Files</div>
-                  <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                  <div className="text-faint text-ui-9 uppercase tracking-wide">Files</div>
+                  <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                     {cg?.files != null ? cg.files.toLocaleString() : "-"}
                   </div>
                 </div>
@@ -646,7 +646,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
               {cg?.languages && cg.languages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {cg.languages.map((l) => (
-                    <span key={l} className="bg-panel2 px-1 py-px rounded border border-edge/60 text-[9px] text-faint">
+                    <span key={l} className="bg-panel2 px-1 py-px rounded border border-edge/60 text-ui-9 text-faint">
                       {l}
                     </span>
                   ))}
@@ -655,13 +655,13 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
 
               <div className="mt-2 flex items-center justify-between gap-2">
                 {cg?.last_indexed
-                  ? <span className="text-[8px] text-faint truncate">Indexed {new Date(cg.last_indexed).toLocaleString()}</span>
+                  ? <span className="text-ui-8 text-faint truncate">Indexed {new Date(cg.last_indexed).toLocaleString()}</span>
                   : <span />}
                 {!cgNeedsScope && (
                   <button
                     onClick={handleReindex}
                     disabled={reindexing || cgIndexing}
-                    className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
+                    className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
                   >
                     {reindexing || cgIndexing ? "Indexing..." : "Re-index"}
                   </button>
@@ -669,7 +669,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
               </div>
 
               {(cgIndexing || cg?.status === "unsupported") && cg?.reason && (
-                <div className="mt-1.5 text-[9px] text-accent/80">{cg.reason}</div>
+                <div className="mt-1.5 text-ui-9 text-accent/80">{cg.reason}</div>
               )}
             </div>
           )}
@@ -681,7 +681,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
         <div className="rounded-md border border-edge/40 bg-panel/40 overflow-hidden shrink-0" data-testid="state-card-wiki">
           <button
             onClick={toggleWiki}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-ui-10 hover:bg-panel2/30 transition-colors"
             title={wikiOpen ? "Hide Wiki details" : "Show Wiki details"}
           >
             {wikiOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
@@ -695,18 +695,18 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
           </button>
 
           {wikiOpen && (
-            <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 text-[10px]">
+            <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 text-ui-10">
               {wikiErr ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="text-risk italic">{wikiStatusNotice || wiki?.error || "Failed to fetch wiki status"}</div>
                   <div className="flex items-center justify-between gap-2">
                     {wiki?.base_url
-                      ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
+                      ? <span className="text-ui-8 text-faint truncate">{wiki.base_url}</span>
                       : <span />}
                     <button
                       onClick={() => void revalidateWiki()}
                       disabled={wikiValidating}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
                       title="Re-check wiki connection"
                     >
                       <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
@@ -719,16 +719,16 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                     {wiki?.hint
                       || "Connected at public tier only. Paste your personal LLM URL or owner token in Settings → Wiki Graph."}
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="grid grid-cols-2 gap-2 text-ui-11">
                     <div>
-                      <div className="text-faint text-[9px] uppercase tracking-wide">Pages</div>
-                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                      <div className="text-faint text-ui-9 uppercase tracking-wide">Pages</div>
+                      <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                         {(wiki?.page_count ?? 0).toLocaleString()}
                       </div>
                     </div>
                     <div>
-                      <div className="text-faint text-[9px] uppercase tracking-wide">Links</div>
-                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                      <div className="text-faint text-ui-9 uppercase tracking-wide">Links</div>
+                      <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                         {(wiki?.link_count ?? 0).toLocaleString()}
                       </div>
                     </div>
@@ -736,14 +736,14 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       onClick={() => void openWikiSetup()}
-                      className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
+                      className="text-ui-9 bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
                       title="Open portablellm.wiki Owner console"
                     >
                       <ExternalLink className="w-2.5 h-2.5" /> Owner console
                     </button>
                     <button
                       onClick={() => void disconnectWiki()}
-                      className="text-[9px] bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
+                      className="text-ui-9 bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2 shrink-0"
                       title="Clear wiki URL and token so you can reconnect"
                     >
                       Disconnect
@@ -751,14 +751,14 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                     <button
                       onClick={() => void revalidateWiki()}
                       disabled={wikiValidating}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
                       title="Re-check wiki connection"
                     >
                       <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
                     </button>
                   </div>
                   {wiki?.base_url
-                    ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
+                    ? <span className="text-ui-8 text-faint truncate">{wiki.base_url}</span>
                     : null}
                 </div>
               ) : !wikiOk ? (
@@ -772,7 +772,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => void openWikiSetup()}
-                      className="text-[9px] bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
+                      className="text-ui-9 bg-accent/15 hover:bg-accent/25 text-accent px-2 py-0.5 rounded transition-colors font-medium border border-accent/30 flex items-center gap-1 shrink-0"
                       title="Open portablellm.wiki signup in a pop-out browser"
                     >
                       <ExternalLink className="w-2.5 h-2.5" /> Connect portablellm.wiki
@@ -780,7 +780,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                     <button
                       onClick={() => void revalidateWiki()}
                       disabled={wikiValidating}
-                      className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
+                      className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center shrink-0"
                       title="Re-check wiki connection"
                     >
                       <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating ? "animate-spin" : ""}`} />
@@ -789,42 +789,42 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="grid grid-cols-2 gap-2 text-ui-11">
                     <div>
-                      <div className="text-faint text-[9px] uppercase tracking-wide">Pages</div>
-                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                      <div className="text-faint text-ui-9 uppercase tracking-wide">Pages</div>
+                      <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                         {(wiki?.page_count ?? 0).toLocaleString()}
                       </div>
                     </div>
                     <div>
-                      <div className="text-faint text-[9px] uppercase tracking-wide">Links</div>
-                      <div className="font-semibold text-muted text-[11px] mt-0.5 tabular-nums">
+                      <div className="text-faint text-ui-9 uppercase tracking-wide">Links</div>
+                      <div className="font-semibold text-muted text-ui-11 mt-0.5 tabular-nums">
                         {(wiki?.link_count ?? 0).toLocaleString()}
                       </div>
                     </div>
                   </div>
 
                   {wikiGraphValidating && !wikiGraph ? (
-                    <div className="flex items-center gap-1.5 text-faint text-[9px]">
+                    <div className="flex items-center gap-1.5 text-faint text-ui-9">
                       <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" />
                       Loading graph…
                     </div>
                   ) : wikiGraph?.status === "error" ? (
-                    <div className="text-[9px] text-risk/90 leading-snug">
+                    <div className="text-ui-9 text-risk/90 leading-snug">
                       {wikiGraphNotice || wikiGraph.error || "Could not load wiki graph"}
                     </div>
                   ) : wikiGraph?.status === "needs_auth" ? (
-                    <div className="text-[9px] text-warn leading-snug">
+                    <div className="text-ui-9 text-warn leading-snug">
                       {wikiGraph.hint || "Owner token required for graph preview"}
                     </div>
                   ) : wikiTopLinked.length > 0 ? (
                     <div>
-                      <div className="text-faint text-[9px] uppercase tracking-wide mb-1">Top linked</div>
+                      <div className="text-faint text-ui-9 uppercase tracking-wide mb-1">Top linked</div>
                       <ul className="space-y-0.5">
                         {wikiTopLinked.map((node) => (
                           <li
                             key={node.id}
-                            className="flex items-baseline gap-1.5 text-[9px] text-muted leading-snug"
+                            className="flex items-baseline gap-1.5 text-ui-9 text-muted leading-snug"
                             title={node.id}
                           >
                             <span className="truncate flex-1 min-w-0">
@@ -837,17 +837,17 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                       </ul>
                     </div>
                   ) : wikiGraph?.status === "ok" && (wikiGraph.edges?.length ?? 0) === 0 ? (
-                    <div className="text-[9px] text-faint italic">No links in graph yet</div>
+                    <div className="text-ui-9 text-faint italic">No links in graph yet</div>
                   ) : null}
 
                   <div className="flex items-center justify-between gap-2">
                     {wiki?.base_url
-                      ? <span className="text-[8px] text-faint truncate">{wiki.base_url}</span>
+                      ? <span className="text-ui-8 text-faint truncate">{wiki.base_url}</span>
                       : <span />}
                     <div className="flex items-center gap-1.5 shrink-0">
                       <button
                         onClick={() => void disconnectWiki()}
-                        className="text-[9px] bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2"
+                        className="text-ui-9 bg-edge hover:bg-risk/20 text-muted hover:text-risk px-2 py-0.5 rounded transition-colors font-medium border border-edge2"
                         title="Clear wiki URL and token"
                       >
                         Disconnect
@@ -858,7 +858,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                           void revalidateWikiGraph();
                         }}
                         disabled={wikiValidating || wikiGraphValidating}
-                        className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center"
+                        className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center justify-center"
                         title="Refresh Wiki Stats"
                       >
                         <RefreshCw className={`w-2.5 h-2.5 ${wikiValidating || wikiGraphValidating ? "animate-spin" : ""}`} />
@@ -878,7 +878,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
           <button
             onClick={toggleEnv}
             aria-expanded={envOpen}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors"
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-ui-10 hover:bg-panel2/30 transition-colors"
             title={envOpen ? "Hide environment readiness" : "Show environment readiness"}
           >
             {envOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
@@ -895,19 +895,19 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
               {envNotice && (
                 <div
                   role="alert"
-                  className="text-risk text-[10px] leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
+                  className="text-risk text-ui-10 leading-snug bg-risk/10 border border-risk/35 rounded px-2 py-1.5 break-words"
                 >
                   {envNotice}
                 </div>
               )}
               {!envReady && !envNotice && (
-                <div role="status" className="text-[9px] text-faint leading-snug">
+                <div role="status" className="text-ui-9 text-faint leading-snug">
                   {envLoading ? "Checking optional tools…" : "No readiness data yet."}
                 </div>
               )}
               {envReady && (
                 <>
-                  <div className="text-[9px] text-faint leading-snug">
+                  <div className="text-ui-9 text-faint leading-snug">
                     Optional tools for the active workspace. Missing items are not product failures —
                     install locally when you need them. Browser tools stay hidden without standalone Chrome.
                   </div>
@@ -918,7 +918,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                   ] as const).map(([label, item, hint]) => (
                     <div key={label} className="space-y-0.5">
                       <div
-                        className="flex items-center gap-1.5 text-[10px]"
+                        className="flex items-center gap-1.5 text-ui-10"
                         role="status"
                         aria-label={`${label}: ${item?.available ? "available" : "unavailable"}`}
                       >
@@ -930,9 +930,9 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                         <span className="text-muted">{item?.available ? "available" : "unavailable"}</span>
                       </div>
                       {item?.available && item.path ? (
-                        <div className="text-[9px] text-faint font-mono truncate pl-3" title={item.path}>{item.path}</div>
+                        <div className="text-ui-9 text-faint font-mono truncate pl-3" title={item.path}>{item.path}</div>
                       ) : (
-                        <div className="text-[9px] text-muted leading-snug pl-3">
+                        <div className="text-ui-9 text-muted leading-snug pl-3">
                           {item?.remedy || hint}
                         </div>
                       )}
@@ -945,7 +945,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                   type="button"
                   onClick={() => void refreshEnvReady({ refresh: true })}
                   disabled={envLoading}
-                  className="text-[9px] bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center gap-1"
+                  className="text-ui-9 bg-edge hover:bg-edge2 disabled:opacity-50 text-muted px-1.5 py-0.5 rounded transition-colors font-medium border border-edge2 flex items-center gap-1"
                   title="Re-probe Chrome and analyzers"
                 >
                   <RefreshCw className={`w-2.5 h-2.5 ${envLoading ? "animate-spin" : ""}`} />
@@ -965,7 +965,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
         >
           <button
             onClick={toggleMcp}
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-[10px] hover:bg-panel2/30 transition-colors shrink-0"
+            className="w-full flex items-center gap-2 px-2.5 py-1.5 text-ui-10 hover:bg-panel2/30 transition-colors shrink-0"
             title={mcpOpen ? "Hide MCP servers" : "Show MCP servers"}
           >
             {mcpOpen ? <ChevronDown className="w-3 h-3 text-faint shrink-0" /> : <ChevronRight className="w-3 h-3 text-faint shrink-0" />}
@@ -990,7 +990,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
         <>
           <button
             onClick={toggleArtifacts}
-            className="text-[10px] px-3 pt-1.5 pb-1 flex justify-between items-center shrink-0 border-t border-edge/30 hover:bg-panel2/20 transition-colors"
+            className="text-ui-10 px-3 pt-1.5 pb-1 flex justify-between items-center shrink-0 border-t border-edge/30 hover:bg-panel2/20 transition-colors"
             title={artifactsOpen ? "Hide artifacts" : "Show artifacts"}
           >
             <span className="font-semibold uppercase tracking-wider text-muted flex items-center gap-1">
@@ -1002,7 +1002,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
           {artifactsOpen && (
           <div className="flex-1 overflow-y-auto px-2 pb-2 flex flex-col gap-1.5">
             {artifacts.length === 0 && (
-              <div className="text-[11px] text-muted italic px-2 py-1">Findings appear here as the pilot investigates.</div>
+              <div className="text-ui-11 text-muted italic px-2 py-1">Findings appear here as the pilot investigates.</div>
             )}
 
             {sortedGroupNames.map((groupName) => {
@@ -1017,7 +1017,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                       eye stays on findings/decisions/risks. */}
                   <button
                     onClick={() => toggleGroup(groupName)}
-                    className={`w-full flex items-center justify-between text-[10px] font-semibold py-1 px-1.5 border rounded mb-1 select-none transition-colors ${
+                    className={`w-full flex items-center justify-between text-ui-10 font-semibold py-1 px-1.5 border rounded mb-1 select-none transition-colors ${
                       isPlumbing
                         ? "text-faint hover:text-muted bg-panel/20 border-edge/20"
                         : "text-muted hover:text-txt bg-panel/40 border-edge/30"
@@ -1026,7 +1026,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                     <span className="flex items-center gap-1">
                       {isCollapsed ? <ChevronRight className="w-3 h-3 text-faint" /> : <ChevronDown className="w-3 h-3 text-faint" />}
                       <span className="uppercase tracking-wider">{groupName}</span>
-                      <span className="text-[9px] text-faint px-1 bg-edge/40 rounded-full border border-edge font-normal ml-1">
+                      <span className="text-ui-9 text-faint px-1 bg-edge/40 rounded-full border border-edge font-normal ml-1">
                         {count}
                       </span>
                     </span>
@@ -1051,22 +1051,22 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                           return (
                             <div
                               key={idx}
-                              className={`flex items-center justify-between bg-panel border ${borderHighlightClass} rounded px-2 py-1 text-[11px]`}
+                              className={`flex items-center justify-between bg-panel border ${borderHighlightClass} rounded px-2 py-1 text-ui-11`}
                             >
                               <div className="flex items-center gap-1.5 truncate">
-                                <span className="text-[8px] uppercase tracking-wider text-accent bg-accent2 px-1 py-px rounded border border-accent/10 font-bold">
+                                <span className="text-ui-8 uppercase tracking-wider text-accent bg-accent2 px-1 py-px rounded border border-accent/10 font-bold">
                                   {item.type}
                                 </span>
-                                <span className="text-muted italic truncate text-[11px]">{displayHeadline}</span>
+                                <span className="text-muted italic truncate text-ui-11">{displayHeadline}</span>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0 ml-2">
                                 {hasConfidence && (
-                                  <span className="text-[9px] font-mono text-faint">
+                                  <span className="text-ui-9 font-mono text-faint">
                                     c:{item.confidence.toFixed(2)}
                                   </span>
                                 )}
                                 {item.count > 1 && (
-                                  <span className="text-[9px] font-bold text-accent px-1 py-px rounded-full bg-accent2 border border-accent/20">
+                                  <span className="text-ui-9 font-bold text-accent px-1 py-px rounded-full bg-accent2 border border-accent/20">
                                     x{item.count}
                                   </span>
                                 )}
@@ -1082,17 +1082,17 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                             className={`bg-panel2 border ${borderHighlightClass} rounded-lg p-2.5 transition-colors`}
                           >
                             <div className="flex items-start justify-between gap-2">
-                              <div className="text-[12px] text-txt leading-relaxed break-words flex-1">
+                              <div className="text-ui-12 text-txt leading-relaxed break-words flex-1">
                                 {displayHeadline}
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0">
                                 {hasConfidence && (
-                                  <span className="text-[9px] font-mono text-muted bg-edge px-1 rounded border border-edge2">
+                                  <span className="text-ui-9 font-mono text-muted bg-edge px-1 rounded border border-edge2">
                                     {item.confidence.toFixed(2)}
                                   </span>
                                 )}
                                 {item.count > 1 && (
-                                  <span className="text-[9px] font-bold text-accent px-1.5 py-px rounded bg-accent2 border border-accent/20">
+                                  <span className="text-ui-9 font-bold text-accent px-1.5 py-px rounded bg-accent2 border border-accent/20">
                                     x{item.count}
                                   </span>
                                 )}

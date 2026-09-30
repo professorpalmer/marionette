@@ -28,10 +28,10 @@ export default function WindowGlassSettings() {
     const build = caps.windowsBuild && caps.windowsBuild > 0 ? ` (build ${caps.windowsBuild})` : "";
     return (
       <div className="space-y-1.5" data-testid="window-glass-settings">
-        <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+        <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
           Transparent background
         </label>
-        <p className="text-[10px] text-muted">
+        <p className="text-ui-10 text-muted">
           Glass needs Windows 11 22H2 or later{build}. This PC is below that
           floor, so frost is unavailable here.
         </p>
@@ -48,7 +48,7 @@ export default function WindowGlassSettings() {
 
   return (
     <div className="space-y-1.5" data-testid="window-glass-settings">
-      <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+      <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
         Transparent background
       </label>
       <button
@@ -63,13 +63,13 @@ export default function WindowGlassSettings() {
           on ? "bg-accent/10 border-accent/30 text-accent" : "bg-panel2 border-edge text-muted"
         }`}
       >
-        <span className="font-medium text-[11px]">Glass window (Cursor-style frost)</span>
-        <span className="text-[10px] uppercase font-bold tracking-wider">{on ? "on" : "off"}</span>
+        <span className="font-medium text-ui-11">Glass window (Cursor-style frost)</span>
+        <span className="text-ui-10 uppercase font-bold tracking-wider">{on ? "on" : "off"}</span>
       </button>
       {on && (
         <>
           <div className="flex items-center gap-2 pt-1">
-            <span className="text-[10px] text-muted w-10 shrink-0">Tint</span>
+            <span className="text-ui-10 text-muted w-10 shrink-0">Tint</span>
             <input
               type="range"
               min={1}
@@ -81,7 +81,7 @@ export default function WindowGlassSettings() {
               }}
               className="flex-1 accent-accent"
             />
-            <span className="text-[10px] font-mono text-faint w-8 text-right">{state.intensity}</span>
+            <span className="text-ui-10 font-mono text-faint w-8 text-right">{state.intensity}</span>
           </div>
           <div className="flex flex-wrap gap-1 pt-0.5">
             {caps.materials.map((material) => {
@@ -94,7 +94,7 @@ export default function WindowGlassSettings() {
                   onClick={() => {
                     void commit({ material: material as GlassMaterial });
                   }}
-                  className={`px-2 py-1 rounded border text-[10px] uppercase tracking-wider font-semibold transition ${
+                  className={`px-2 py-1 rounded border text-ui-10 uppercase tracking-wider font-semibold transition ${
                     active
                       ? "bg-accent/15 border-accent/40 text-accent"
                       : "bg-panel2 border-edge text-muted hover:text-txt"
@@ -107,7 +107,7 @@ export default function WindowGlassSettings() {
           </div>
         </>
       )}
-      <p className="text-[10px] text-muted">
+      <p className="text-ui-10 text-muted">
         Lets the desktop show through a matte blur. Raise Tint toward bare glass;
         Frost picks the native material (macOS vibrancy or Windows acrylic/mica).
       </p>
