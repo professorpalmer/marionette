@@ -20,6 +20,9 @@ import {
 } from "../lib/workspaceMutationEvents";
 import { useInFileReview } from "./useInFileReview";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
+import { useDelayedFlag } from "../lib/useDelayedFlag";
+
+const SLOW_READ_MS = 150;
 
 interface FileEditorPaneProps {
   path: string;
@@ -156,6 +159,9 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [content, setContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
   const [loading, setLoading] = useState(true);
+  const slowLoad = useDelayedFlag(loading, SLOW_READ_MS);
+  /** Path of the document on screen; null until a read lands, or after a failed switch. */
+  const [docPath, setDocPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const notice = usePanelNotice(error);
   const [isDirty, setIsDirty] = useState(false);
@@ -315,7 +321,6 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
       // Soft reload (agent mutated open buffer): keep scroll, skip full loading flash.
       if (!softReload) {
         setLoading(true);
-        setTextMode("code");
         setDiskConflict(false);
       }
       setError(null);
@@ -335,6 +340,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           }
           setContent(res.content || "");
           setOriginalContent(res.content || "");
+          setDocPath(path);
           setReadOnly(!!res.truncated || !!res.read_only);
           setContentTruncated(!!res.truncated);
           setIsDirty(false);
@@ -367,6 +373,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
             ext: res.ext,
             sqlite_tables: res.sqlite_tables,
           });
+          setDocPath(path);
           setContent("");
           setOriginalContent("");
           setReadOnly(true);
@@ -378,11 +385,13 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
         } else {
           setKind(detectEditorKind(path, false));
           setError(res.error || "Failed to read file");
+          if (!softReload) setDocPath(null);
           preserveScrollTopRef.current = null;
         }
       } catch (err: any) {
         if (active) {
           setError(err.message || "Error reading file contents");
+          if (!softReload) setDocPath(null);
         }
         preserveScrollTopRef.current = null;
       } finally {
@@ -427,7 +436,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   }, []);
 
   const handleSave = async (currentContent: string = content) => {
-    if (saving || !isDirty || !isTextEditable) return;
+    if (saving || loading || !isDirty || !isTextEditable) return;
     setSaving(true);
     setSaveStatus("saving");
     setError(null);
@@ -491,16 +500,20 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [content, isDirty, saving, path, originalContent, isTextEditable]);
 
-  if (loading) {
+  if (docPath === null && loading) {
     return (
       <div data-close-surface="editor" className="flex-1 flex flex-col items-center justify-center bg-bg">
-        <Loader2 className="animate-spin text-accent mb-2" size={24} />
-        <span className="text-[12px] text-muted">Reading file...</span>
+        {slowLoad && (
+          <>
+            <Loader2 className="animate-spin text-accent mb-2" size={24} />
+            <span className="text-[12px] text-muted">Reading file...</span>
+          </>
+        )}
       </div>
     );
   }
 
-  if (notice && kind !== "binary" && kind !== "pdf" && kind !== "image") {
+  if (docPath === null && notice) {
     return (
       <div data-close-surface="editor" className="flex-1 flex flex-col items-center justify-center bg-bg px-6 text-center">
         <span className="text-risk font-semibold text-[13px] mb-2">{notice}</span>
@@ -599,6 +612,9 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           </span>
           {isDirty && (
             <span className="w-2 h-2 rounded-full bg-warn shrink-0" title="Unsaved changes" />
+          )}
+          {slowLoad && (
+            <Loader2 data-testid="editor-reading" className="animate-spin text-accent shrink-0" size={12} />
           )}
           {(readOnly || !isTextEditable) && (
             <span className="px-1.5 py-0.5 rounded bg-panel2 border border-edge text-[9px] font-mono uppercase text-muted tracking-wider select-none shrink-0">
@@ -714,6 +730,25 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
           )}
         </div>
       </div>
+
+      {notice && (
+        <div
+          data-testid="editor-notice"
+          className="flex items-center justify-between gap-3 px-4 py-2 border-b border-risk/40 bg-risk/10 shrink-0"
+          role="status"
+        >
+          <span className="text-[11px] text-risk min-w-0">{notice}</span>
+          {error && (
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="px-2 py-1 rounded text-[11px] border border-edge text-muted hover:text-txt hover:bg-panel2 transition-colors shrink-0"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
 
       {diskConflict && (
         <div
@@ -847,7 +882,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                 setIsDirty(true);
                 onDirtyChangeRef.current(true);
               }}
-              readOnly={readOnly}
+              readOnly={readOnly || loading}
               basicSetup={{
                 lineNumbers: true,
                 highlightActiveLine: true,
