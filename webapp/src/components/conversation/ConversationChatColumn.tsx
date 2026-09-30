@@ -8,7 +8,7 @@ import type { TranscriptViewportHandle } from "./sessionViewport";
  * that currently owns them — never paint session A rows under B's id.
  */
 
-import { type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useCallback, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import {
@@ -28,6 +28,7 @@ import {
 } from "./feedScroll";
 import { peekTranscriptCache } from "./transcriptCache";
 import { retainSessionPanes } from "./sessionPanes";
+import { useDockClearance } from "../../lib/dockClearance";
 
 const DORMANT_SCROLL_REF: RefObject<HTMLDivElement | null> = { current: null };
 
@@ -123,6 +124,11 @@ export default function ConversationChatColumn({
   // Dim only when stale rows are on screen (refresh flake). Empty cold-miss
   // dim was the swap blink — nothing to honesty-dim.
   const feedDimmed = transcriptStale && paintCount > 0;
+  const [dockPad, setDockEl] = useDockClearance();
+  const contentRef = useCallback((el: HTMLDivElement | null) => {
+    if (feedContentRef) feedContentRef.current = el;
+    setDockEl(el);
+  }, [feedContentRef, setDockEl]);
   return (
     <div
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
@@ -150,10 +156,10 @@ export default function ConversationChatColumn({
               style={feedScrollportStyle()}
             >
               <div
-                ref={visible ? feedContentRef : undefined}
+                ref={visible ? contentRef : undefined}
                 data-testid={visible ? "transcript-feed-content" : undefined}
                 className={feedContentLayoutClass()}
-                style={{ paddingBottom: seatingReservePx }}
+                style={{ paddingBottom: seatingReservePx, paddingRight: visible ? dockPad : undefined }}
               >
                 {visible ? (
                   <TranscriptEmptyState
