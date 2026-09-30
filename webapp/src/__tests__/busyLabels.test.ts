@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveBusyProgress, headlineFocusCard, type TurnItem } from "../lib/turnProgress";
+import { currentTurnStep, deriveBusyProgress, headlineFocusCard, type TurnItem } from "../lib/turnProgress";
 
 const user: TurnItem = { kind: "msg", msg: { role: "user", text: "run the probes" } };
 const done = (id: string, goal: string): TurnItem => ({
@@ -32,5 +32,18 @@ describe("busy labels say what is happening", () => {
     const b2 = { id: "b", goal: "echo probe 2" };
     expect(headlineFocusCard([a, b2], b2, goal)).toBe(b2);
     expect(headlineFocusCard([a], undefined, goal)).toBeUndefined();
+  });
+});
+
+describe("currentTurnStep", () => {
+  it("names the latest tool of the open turn, skipping todo bookkeeping", () => {
+    const items: TurnItem[] = [
+      { kind: "msg", msg: { role: "user", text: "go" } },
+      { kind: "card", card: { id: "t", kind: "todo", goal: "init", running: false } },
+      done("a", "echo probe 1"),
+      done("b", "echo probe 2"),
+    ];
+    expect(currentTurnStep(items)).toMatch(/echo probe 2$/);
+    expect(currentTurnStep(items.slice(0, 2))).toBeNull();
   });
 });

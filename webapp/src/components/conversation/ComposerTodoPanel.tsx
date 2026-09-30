@@ -44,14 +44,30 @@ function todoPhaseKey(sessionId: string, phaseIndex: number, phaseName: string):
   return `${sessionId}:${phaseIndex}:${phaseName}`;
 }
 
+/**
+ * The task the pilot is working on right now: the one it marked in progress,
+ * else the next pending one. Between todo updates this item shows the live
+ * step, so the list moves with the work without claiming anything is done.
+ */
+function activeTaskContent(snapshot: SessionTodoSnapshot): string | null {
+  for (const phase of snapshot.phases) {
+    const task = phase.tasks.find((t) => t.status === "in_progress");
+    if (task) return task.content;
+  }
+  return snapshot.next || null;
+}
+
 export default function ComposerTodoPanel({
   jobs = [],
   sessionId,
   active = true,
+  pilotStep = null,
 }: {
   jobs?: readonly Job[];
   sessionId: string;
   active?: boolean;
+  /** The pilot's running step (tool and goal) while its turn is open. */
+  pilotStep?: string | null;
 }) {
   const snapshot = useSyncExternalStore(
     subscribeSessionTodos,
@@ -90,6 +106,7 @@ export default function ComposerTodoPanel({
   if (!todoHasWork(snapshot) || storedSid !== sessionId || (!active && !hasLiveOwner)) return null;
   const { done, total } = todoSnapshotProgress(snapshot);
   const next = snapshot.next;
+  const liveStep = active && pilotStep ? { task: activeTaskContent(snapshot), step: pilotStep } : null;
 
   const dismiss = () => {
     clearSessionTodos();
@@ -131,6 +148,7 @@ export default function ComposerTodoPanel({
                 phase={phase}
                 expanded={!collapsedPhaseKeys.has(key)}
                 litContents={lit}
+                liveStep={liveStep}
                 onToggle={() => setCollapsedPhaseKeys((current) => {
                   const next = new Set(current);
                   if (next.has(key)) next.delete(key);
@@ -151,12 +169,14 @@ function PhaseBlock({
   phase,
   expanded,
   litContents,
+  liveStep,
   onToggle,
 }: {
   index: number;
   phase: SessionTodoSnapshot["phases"][number];
   expanded: boolean;
   litContents: ReadonlySet<string>;
+  liveStep: { task: string | null; step: string } | null;
   onToggle: () => void;
 }) {
   const { done, total } = todoPhaseProgress(phase);
@@ -176,7 +196,8 @@ function PhaseBlock({
       {expanded ? (
         <div className="pl-4 space-y-0.5">
           {phase.tasks.map((task) => {
-            const lit = litContents.has(task.content);
+            const step = liveStep && liveStep.task === task.content ? liveStep.step : null;
+            const lit = litContents.has(task.content) || step != null;
             return (
               <div
                 key={task.content}
@@ -188,6 +209,7 @@ function PhaseBlock({
                 <span className="whitespace-pre-wrap break-words">
                   {task.content}
                   {task.blocker ? <span className="mt-0.5 block text-faint">{task.blocker}</span> : null}
+                  {step ? <span className="block truncate font-mono text-faint">{step}</span> : null}
                 </span>
               </div>
             );

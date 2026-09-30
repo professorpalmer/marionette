@@ -853,6 +853,19 @@ function cardsInTurn(items: TurnItem[]): TurnCard[] {
   return out;
 }
 
+/**
+ * The step the open turn is on, for the todo list: the latest tool card of the
+ * current turn, running or just finished. Latest rather than running, so the
+ * line steps from one command to the next instead of blinking out between them.
+ */
+export function currentTurnStep(items: TurnItem[]): string | null {
+  const card = [...cardsInTurn(items)].reverse().find((c) => (c.kind || "") !== "todo");
+  if (!card) return null;
+  const goal = shortenGoal(resolveCardCliInput(card) || "");
+  const kind = toolFocusPhrase(card.kind || "");
+  return [kind, goal].filter(Boolean).join(" ") || null;
+}
+
 /** Prefer basename-ish tail of a path/goal so the pill stays readable. */
 export function shortenGoal(goal: string, max = 42): string {
   const g = (goal || "").trim().replace(/\s+/g, " ");
