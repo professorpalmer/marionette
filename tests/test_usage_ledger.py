@@ -225,3 +225,22 @@ def test_reconciliation_reports_unrecorded_spend_and_never_blocks(tmp_path):
         _time.sleep(0.02)
     assert got["day"] == {"ledger_usd": 0.4, "account_usd": 1.0, "unrecorded_usd": 0.6}
     assert got["month"]["unrecorded_usd"] == pytest.approx(2.6)
+
+
+def test_overlapping_read_and_write_never_exceed_the_prompt():
+    # OpenRouter's Gemini cache reports the same prompt as read AND written.
+    t = TokenClasses.split(tokens_in=8_478, tokens_out=134, cache_read=8_478, cache_write=8_478)
+    assert (t.input_uncached, t.cache_read, t.cache_write_5m, t.prompt) == (0, 8_478, 0, 8_478)
+    t = TokenClasses.split(tokens_in=10_000, tokens_out=0, cache_read=6_000, cache_write=9_000)
+    assert (t.input_uncached, t.cache_read, t.cache_write_5m) == (0, 6_000, 4_000)
+
+
+def test_a_provider_alias_is_priced_under_its_published_id(monkeypatch):
+    from harness import models_dev
+    from harness.usage_ledger.rates import rate_card
+
+    published = {"deepseek-v4.1-flash": {"input": 0.15, "output": 0.6, "cache_read": 0.003}}
+    monkeypatch.setattr(models_dev, "lookup_cost",
+                        lambda provider, mid, allow_network=False: (published[mid], 1.0) if mid in published else None)
+    lookup = rate_card("opencode-go", "deepseek-flash")
+    assert (lookup.source, lookup.card.cache_read) == ("models.dev", 0.003)

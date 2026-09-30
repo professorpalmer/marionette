@@ -95,6 +95,12 @@ class TokenClasses:
             write_5m, write_1h = cache_write_5m, cache_write_1h
         else:
             write_5m, write_1h = cache_write, 0
+        # Some providers report the same tokens as both read and written
+        # (OpenRouter's Gemini cache: read == write == prompt). Classes may
+        # never add up to more than the prompt: writes take what reads left.
+        room = max(0, tokens_in - cache_read)
+        write_1h = min(write_1h, room)
+        write_5m = min(write_5m, room - write_1h)
         uncached = max(0, tokens_in - cache_read - write_5m - write_1h)
         return cls(uncached, cache_read, write_5m, write_1h, max(0, tokens_out))
 
@@ -146,6 +152,19 @@ def card_from_models_dev(cost: dict) -> Optional[RateCard]:
     )
 
 
+def _equivalent_ids(provider: str, model: str) -> tuple:
+    """Other ids the provider serves this model under (the rate card may list
+    only one of them), from the provider module that owns the aliases."""
+    if provider == "opencode-go":
+        try:
+            from harness.opencode_go import flash_model_keys
+
+            return tuple(sorted(flash_model_keys(model) - {model}))
+        except Exception:
+            return ()
+    return ()
+
+
 @dataclass(frozen=True)
 class RateLookup:
     card: Optional[RateCard]
@@ -155,7 +174,7 @@ class RateLookup:
 
 def rate_card(provider: str, model: str, *, candidates: Sequence[str] = ()) -> RateLookup:
     """The rate in force for ``model`` at ``provider`` right now. Never raises."""
-    ids = [m for m in (model, *candidates) if m]
+    ids = [m for m in (model, *candidates, *_equivalent_ids(provider, model)) if m]
     try:
         from harness.models_dev import lookup_cost
 

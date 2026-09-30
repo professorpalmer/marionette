@@ -91,3 +91,16 @@ def install_for_state_dir(state_dir: str) -> None:
 
     if _installed is None:
         _installed = install(ledger_for(state_dir))
+        # Rate cards are read without the network on the call path; fetch the
+        # published rates once in the background so the first calls are priced.
+        import threading
+
+        def warm() -> None:
+            try:
+                from harness.models_dev import _registry
+
+                _registry(allow_network=True)
+            except Exception:
+                pass
+
+        threading.Thread(target=warm, name="ledger-rates-warm", daemon=True).start()
