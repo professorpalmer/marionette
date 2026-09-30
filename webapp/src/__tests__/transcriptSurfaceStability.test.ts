@@ -230,7 +230,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(surfaceKinds(next)).toEqual(["thinking", "msg:assistant*", "thinking*"]);
   });
 
-  it("folds structurally proven native progress while keeping the trailing answer visible", () => {
+  it("never re-files painted prose as progress when a native card follows", () => {
     const preTool: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "I will look" },
@@ -259,12 +259,12 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     ];
 
     const whileOpen = collectIntermediateAssistantItems(items, true);
-    // Untyped legacy progress is proven by the following native card.
-    expect(whileOpen.has(preTool)).toBe(true);
+    // Untyped prose painted as a Bubble stays one, whatever follows it.
+    expect(whileOpen.has(preTool)).toBe(false);
     expect(whileOpen.has(postTool)).toBe(false);
 
     const whenDone = collectIntermediateAssistantItems(items, false);
-    expect(whenDone.has(preTool)).toBe(true);
+    expect(whenDone.has(preTool)).toBe(false);
     // Trailing answer with no card after it stands alone once the loop closes.
     expect(whenDone.has(postTool)).toBe(false);
   });
@@ -360,7 +360,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(whenDone.has(finale)).toBe(false);
   });
 
-  it("folds untyped prose only when a later native card proves progress", () => {
+  it("keeps untyped prose standalone whether a card or a swarm follows it", () => {
     const firstCard: Item = {
       kind: "card",
       card: {
@@ -408,7 +408,7 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
       laterSwarm,
     ];
     for (const open of [true, false]) {
-      expect(collectIntermediateAssistantItems(withCard, open).has(spoken)).toBe(true);
+      expect(collectIntermediateAssistantItems(withCard, open).has(spoken)).toBe(false);
       expect(collectIntermediateAssistantItems(withSwarm, open).has(spoken)).toBe(false);
     }
 

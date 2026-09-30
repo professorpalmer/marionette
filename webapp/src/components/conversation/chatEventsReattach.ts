@@ -146,6 +146,11 @@ function liveRunSwarmMatchesTerminal(
   return Boolean(live.id && terminal.id && live.id === terminal.id);
 }
 
+/** Delay before sampling session state to confirm a single idle event. */
+export const IDLE_CONFIRM_SAMPLE_MS = 1500;
+/** Samples per idle stretch; a card still running after these stays held. */
+const IDLE_CONFIRM_MAX_SAMPLES = 4;
+
 export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   const {
     cancelled,
@@ -186,6 +191,30 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
   let consecutiveIdlePolls = 0;
   let staleStreamIdlePolls = 0;
   let sawRunnerBusyThisStream = false;
+  // The session event store appends a `runners` event only when session state
+  // changes, so a finished turn yields ONE idle event. The idle confirmations
+  // below need a second sighting; take it by sampling session state directly
+  // instead of waiting for an event that will not come.
+  let idleConfirmTimer: ReturnType<typeof setTimeout> | null = null;
+  let idleConfirmSamples = 0;
+  const scheduleIdleConfirm = () => {
+    if (idleConfirmTimer != null || idleConfirmSamples >= IDLE_CONFIRM_MAX_SAMPLES) return;
+    idleConfirmTimer = setTimeout(() => {
+      idleConfirmTimer = null;
+      if (cancelled() || !fenceOk() || userStoppedRef.current) return;
+      idleConfirmSamples += 1;
+      void api.getSessionState({ sessionId: reattachSid }).then((st) => {
+        if (cancelled() || !fenceOk()) return;
+        return applyRunnersEvent({
+          state: st?.state,
+          pending_swarms: !!st?.pending_swarms,
+          runners: st?.runners,
+        });
+      }).catch(() => {
+        // Unknown state: the next store event or sample decides.
+      });
+    }, IDLE_CONFIRM_SAMPLE_MS);
+  };
 
   const fenceOk = () => shouldApplyStoreEvent({
     streamGen: streamGenRef.current,
@@ -301,6 +330,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       if (running || awaitingSwarm) {
         sawRunnerBusyThisStream = true;
         staleStreamIdlePolls = 0;
+        idleConfirmSamples = 0;
         return true;
       }
       const nextIdlePolls = staleStreamIdlePolls + 1;
@@ -315,6 +345,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       });
       if (staleTick.kind === "hold_unconfirmed") {
         staleStreamIdlePolls = nextIdlePolls;
+        scheduleIdleConfirm();
         return true;
       }
       if (staleTick.kind === "abandon") {
@@ -327,6 +358,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
 
     if (running || awaitingSwarm) {
       consecutiveIdlePolls = 0;
+      idleConfirmSamples = 0;
       if (awaitingSwarm) {
         detachedBusyRef.current = running;
         setTurnOpen(false);
@@ -398,6 +430,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         tick.kind === "hold_live_investigation"
         || tick.kind === "hold_idle_unconfirmed"
       ) {
+        scheduleIdleConfirm();
         return true;
       }
       // `noop` (e.g. a new local stream) is not authorization to idle.

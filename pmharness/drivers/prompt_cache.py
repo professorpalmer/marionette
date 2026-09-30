@@ -166,7 +166,7 @@ def cache_control(*, stable: bool, family: str = "claude") -> dict:
     5m arm.
     """
     marker: dict[str, str] = {"type": "ephemeral"}
-    if family == "qwen":
+    if family in ("qwen", "gemini"):
         return marker
     _ = stable  # call-site intent only; Claude TTL is all-1h or all-ephemeral
     ttl = (os.environ.get("HARNESS_ANTHROPIC_CACHE_TTL") or "1h").strip().lower()
@@ -177,16 +177,19 @@ def cache_control(*, stable: bool, family: str = "claude") -> dict:
 
 
 def explicit_cache_family(model: str | None) -> str | None:
-    """Return 'claude' | 'qwen' when the model needs explicit cache_control.
+    """Return 'claude' | 'qwen' | 'gemini' when the model needs explicit cache_control.
 
-    Automatic-cache providers (gpt, gemini, deepseek, grok, moonshot, …) return
-    None so callers never invent fake markers.
+    Automatic-cache providers (gpt, deepseek, grok, moonshot, …) return None so
+    callers never invent fake markers. Gemini is served with implicit caching
+    too, but through OpenRouter it cached nothing without a marker.
     """
     m = (model or "").strip().lower()
     if not m:
         return None
     if "anthropic/" in m or "claude" in m:
         return "claude"
+    if "gemini" in m:
+        return "gemini"
     if "qwen/" in m or m.startswith("qwen") or "/qwen" in m:
         return "qwen"
     for slug in _QWEN_EXPLICIT_SLUGS:
@@ -295,6 +298,7 @@ def apply_openai_compat_cache_control(
     *,
     model: str | None = None,
     family: str | None = None,
+    base_url: str | None = None,
 ) -> str | None:
     """Stamp explicit cache_control on an OpenAI-compat chat body in place.
 
@@ -311,6 +315,8 @@ def apply_openai_compat_cache_control(
         fam = family or explicit_cache_family(model or body.get("model"))
         if fam is None:
             return None
+        if fam == "gemini" and "openrouter.ai" not in (base_url or "").lower():
+            return None
 
         messages = body.get("messages")
         if not isinstance(messages, list):
@@ -321,6 +327,21 @@ def apply_openai_compat_cache_control(
         tools = body.get("tools")
         if isinstance(tools, list):
             _strip_cache_control(tools)
+
+        if fam == "gemini":
+            # OpenRouter keeps only one Gemini breakpoint. On the message
+            # before the newest it caches the whole prior conversation; on the
+            # newest message OpenRouter billed the prompt twice. First turn:
+            # the system prompt.
+            earlier = history_cache_carriers(messages[:-1], limit=1)
+            if earlier:
+                _mark_content_block(earlier[0], cache_control(stable=False, family=fam))
+            else:
+                for msg in messages:
+                    if isinstance(msg, dict) and msg.get("role") == "system":
+                        _mark_content_block(msg, cache_control(stable=True, family=fam))
+                        break
+            return fam
 
         # Stable: system text — skip empty/whitespace envelopes
         for msg in messages:

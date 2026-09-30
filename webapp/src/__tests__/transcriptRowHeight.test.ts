@@ -203,6 +203,26 @@ describe("transcriptRowHeight", () => {
     expect(height).toBeLessThanOrEqual(TRANSCRIPT_USER_CLAMP_PX + 40);
   });
 
+  it("caps long steer notes at the same clamp as user messages", () => {
+    const cache = createTranscriptRowHeightCache();
+    const wall = "word ".repeat(400);
+    const item: GroupedItem = { kind: "steer", text: wall, mode: "steer" };
+    const height = cache.estimateRowHeight(item, "s-wall", 600);
+    expect(height).toBeGreaterThan(80);
+    expect(height).toBeLessThanOrEqual(TRANSCRIPT_USER_CLAMP_PX + 48);
+    const spec = rowPretextSpec(item, 600);
+    expect(spec?.maxProsePx).toBe(TRANSCRIPT_USER_CLAMP_PX);
+    expect(spec?.text.startsWith("steer:")).toBe(true);
+    const interrupt: GroupedItem = { kind: "steer", text: "stop", mode: "interrupt" };
+    expect(rowPretextSpec(interrupt, 600)?.text.startsWith("interrupt:")).toBe(true);
+    const short = cache.estimateRowHeight(
+      { kind: "steer", text: "try again" },
+      "s-short",
+      600,
+    );
+    expect(short).toBeLessThan(TRANSCRIPT_USER_CLAMP_PX);
+  });
+
   it("returns fixed heights for chip rows", () => {
     const cache = createTranscriptRowHeightCache();
     const chip: GroupedItem = {

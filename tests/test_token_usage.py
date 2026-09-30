@@ -272,3 +272,16 @@ def test_modality_rejects_bool_negative_fractional_and_non_finite():
     assert coerce_token_usage_detail(usage) == (10, 3, 0.02, 0, 0)
     assert coerce_token_usage(usage) == (10, 3, 0.02)
     assert coerce_token_usage_record(usage).modality_dict() == {}
+
+
+def test_openrouter_gemini_overlapping_cache_buckets_are_not_added_back():
+    # Real OpenRouter usage for google/gemini-3.8-flash with a cache marker:
+    # the same 10,996 tokens are reported as both read and write, inside
+    # prompt_tokens_details, so they are a subset of prompt_tokens.
+    usage = {"usage": {
+        "prompt_tokens": 11564, "completion_tokens": 1, "cost": 0.0017,
+        "prompt_tokens_details": {"cached_tokens": 10996, "cache_write_tokens": 10996},
+    }}
+    tin, tout, cost, cached, write = coerce_token_usage_detail(usage)
+    assert (tin, cached, write) == (11564, 10996, 10996)
+    assert coerce_token_usage_record(usage).tokens_in == 11564

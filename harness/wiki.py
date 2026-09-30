@@ -390,7 +390,9 @@ class WikiClient:
     def search_pages(self, query: str, *, limit: int = 5) -> list[dict]:
         """Retrieval-only wiki search (GET /wiki/search). No RAG LLM call.
 
-        Returns a list of ``{"title", "slug", "snippet"}`` dicts. Never raises.
+        Returns a list of ``{"title", "slug", "snippet"}`` dicts; the top hit
+        also carries ``body`` when the server supports ``?hydrate=1``, which
+        saves the page read a turn would otherwise wait for. Never raises.
         """
         if not self.configured:
             return []
@@ -398,7 +400,7 @@ class WikiClient:
         if not q:
             return []
         try:
-            url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(q)
+            url = f"{self.base_url}/wiki/search?q=" + urllib.parse.quote(q) + "&hydrate=1"
             headers = self._auth_headers()
             req = urllib.request.Request(url, method="GET", headers=headers)
             with _wiki_safe_urlopen(req, timeout=self.timeout) as r:
@@ -412,11 +414,15 @@ class WikiClient:
                     continue
                 slug = str(hit.get("slug") or "")
                 title = str(hit.get("title") or slug)
-                hits.append({
+                row = {
                     "title": title,
                     "slug": slug,
                     "snippet": search_hit_snippet(hit),
-                })
+                }
+                body = hit.get("body")
+                if isinstance(body, str) and body.strip():
+                    row["body"] = body.strip()
+                hits.append(row)
             return hits
         except Exception:
             return []

@@ -168,3 +168,38 @@ export function staleLocalStreamTickDecision(opts: {
   if (opts.consecutiveIdlePolls < needed) return { kind: "hold_unconfirmed" };
   return { kind: "abandon" };
 }
+
+/** Silence on a live local stream before it is checked against the backend. */
+export const LOCAL_STREAM_QUIET_MS = 8000;
+/** Consecutive idle samples of a quiet stream before it is abandoned. */
+export const LOCAL_STREAM_IDLE_SAMPLES = 2;
+
+export type QuietLocalStreamDecision =
+  | { kind: "skip"; idleSamples: 0 }
+  | { kind: "sample" }
+  | { kind: "count"; idleSamples: number }
+  | { kind: "abandon" };
+
+/**
+ * Watchdog for a local chat stream that went quiet. The session event store
+ * records runner transitions only when it is read, and it is not read while a
+ * local stream is live, so a stream that missed assistant_done never saw
+ * busy→idle and the stale-stream breaker above never fired: the answer was on
+ * screen under Investigating / Still working. Ask the backend directly
+ * instead. Without `backendIdle` the caller should sample; with it, count.
+ */
+export function quietLocalStreamDecision(opts: {
+  localStreamActive: boolean;
+  turnSettled: boolean;
+  userStopped: boolean;
+  quietMs: number;
+  idleSamples: number;
+  backendIdle?: boolean;
+}): QuietLocalStreamDecision {
+  if (!opts.localStreamActive || opts.turnSettled || opts.userStopped) return { kind: "skip", idleSamples: 0 };
+  if (opts.quietMs < LOCAL_STREAM_QUIET_MS) return { kind: "skip", idleSamples: 0 };
+  if (opts.backendIdle === undefined) return { kind: "sample" };
+  if (!opts.backendIdle) return { kind: "skip", idleSamples: 0 };
+  const next = opts.idleSamples + 1;
+  return next >= LOCAL_STREAM_IDLE_SAMPLES ? { kind: "abandon" } : { kind: "count", idleSamples: next };
+}

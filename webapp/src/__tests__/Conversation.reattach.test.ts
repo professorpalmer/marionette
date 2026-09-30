@@ -2534,3 +2534,130 @@ describe("completed local stream durable replay", () => {
     expect(answers[0].kind === "msg" && answers[0].msg.text).toBe("Replay is fixed.");
   });
 });
+
+describe("idle confirmation when the backend sends idle once", () => {
+  // The session event store appends a `runners` event only when session
+  // state changes, so a finished turn produces exactly one idle event. The
+  // two-sighting idle confirmation used to wait for a second event that
+  // never came, leaving Investigating / Still working up after the turn.
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("confirms idle by sampling session state and closes the reattached turn", async () => {
+    vi.useFakeTimers();
+    let turnOpen = true;
+    let status: string = "thinking";
+    const detachedBusyRef = { current: true };
+    const deps = {
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef: { current: 1 },
+      reattachGen: 1,
+      reattachSid: "sess-idle",
+      cachedSessionIdRef: { current: "sess-idle" },
+      localStreamActiveRef: { current: false },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef: { current: 0 },
+      lastAppliedRingCursorRef: { current: 0 },
+      ringGenerationRef: { current: 1 },
+      detachedBusyRef,
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef: { current: [] as Item[] },
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
+      applyStreamEventRef: { current: () => {} },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {},
+      setItems: () => {},
+      setTranscriptStale: () => {},
+      setTurnOpen: (next: boolean) => { turnOpen = next; },
+      setStatus: (next: any) => { status = typeof next === "function" ? next(status) : next; },
+    } as unknown as ChatEventsReattachDeps;
+    vi.spyOn(api, "readEventsSince")
+      .mockResolvedValueOnce({
+        cursor: 1,
+        events: [{ id: 1, kind: "runners", data: { state: "idle", runners: { "sess-idle": "idle" } } }],
+      } as any)
+      .mockResolvedValue({ cursor: 1, events: [] } as any);
+    const state = vi.spyOn(api, "getSessionState").mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-idle": "idle" },
+    } as any);
+    vi.spyOn(api, "sessionTranscript").mockResolvedValue({ display: [] } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps);
+    await pullChatEvents();
+    expect(turnOpen).toBe(true); // one idle sighting is not enough
+
+    await pullChatEvents(); // no new events: the store never repeats idle
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(state).toHaveBeenCalled();
+    expect(turnOpen).toBe(false);
+    expect(status).toBe("idle");
+    expect(detachedBusyRef.current).toBe(false);
+  });
+
+  it("abandons a live stream that missed assistant_done once idle is confirmed", async () => {
+    vi.useFakeTimers();
+    const abandoned: number[] = [];
+    const deps = {
+      cancelled: () => false,
+      loadGen: 1,
+      transcriptLoadGenRef: { current: 1 },
+      streamGenRef: { current: 1 },
+      reattachGen: 1,
+      reattachSid: "sess-zombie",
+      cachedSessionIdRef: { current: "sess-zombie" },
+      localStreamActiveRef: { current: true },
+      userStoppedRef: { current: false },
+      lastAppliedCursorRef: { current: 0 },
+      lastAppliedRingCursorRef: { current: 0 },
+      ringGenerationRef: { current: 1 },
+      detachedBusyRef: { current: false },
+      runnerBusyPollGenRef: { current: 0 },
+      itemsRef: { current: [] as Item[] },
+      transcriptFpRef: { current: "" },
+      chatEventsPollTimerRef: { current: null },
+      chatEventsLiveCancelRef: { current: null },
+      applyStreamEventRef: { current: () => {} },
+      flushTypewriterRef: { current: () => {} },
+      maybeRunQueuedResumeRef: { current: () => {} },
+      maybeDrainQueueRef: { current: () => {} },
+      clearChatEventsPoll: () => {},
+      setItems: () => {},
+      setTranscriptStale: () => {},
+      setTurnOpen: () => {},
+      setStatus: () => {},
+      turnSettledRef: { current: false },
+      abandonStaleLocalStreamRef: { current: () => { abandoned.push(1); } },
+    } as unknown as ChatEventsReattachDeps;
+    vi.spyOn(api, "readEventsSince")
+      .mockResolvedValueOnce({
+        cursor: 2,
+        events: [
+          { id: 1, kind: "runners", data: { state: "running", runners: { "sess-zombie": "running" } } },
+          { id: 2, kind: "runners", data: { state: "idle", runners: { "sess-zombie": "idle" } } },
+        ],
+      } as any)
+      .mockResolvedValue({ cursor: 2, events: [] } as any);
+    vi.spyOn(api, "getSessionState").mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      runners: { "sess-zombie": "idle" },
+    } as any);
+
+    const { pullChatEvents } = createChatEventsReattach(deps);
+    await pullChatEvents();
+    expect(abandoned).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(abandoned).toHaveLength(1);
+  });
+});

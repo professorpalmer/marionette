@@ -110,7 +110,9 @@ class WikiDistillMixin:
             # not the page prefix. Failed fetch keeps the search excerpt.
             try:
                 top_slug = str(hits[0].get("slug") or "").strip()
-                top_body = self._wiki.page_body(top_slug) if top_slug else ""
+                top_body = hits[0].get("body") or (
+                    self._wiki.page_body(top_slug) if top_slug else ""
+                )
                 if top_body:
                     passage = query_relevant_passage(top_body, user_message, per_hit)
                     if passage:

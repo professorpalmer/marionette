@@ -212,9 +212,12 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
     thread.start()
     try:
         deadline = time.monotonic() + 5
-        while not pid_file.exists() and thread.is_alive() and time.monotonic() < deadline:
+        # write_text creates the file before it writes the pid: wait for the
+        # content, not just the path (a fast macOS runner read '').
+        while not (pid_file.exists() and pid_file.read_text().strip()) \
+                and thread.is_alive() and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert pid_file.exists(), errors
+        assert pid_file.exists() and pid_file.read_text().strip(), errors
         pid = int(pid_file.read_text())
         assert _pid_alive(pid)
         # The child writes its pid while the worker thread is still binding the

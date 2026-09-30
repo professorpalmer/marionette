@@ -1082,7 +1082,7 @@ class OpenAICompatDriver:
         system: str | None = None,
         session_id: str | None = None,
     ) -> dict:
-        """Stamp provider extras, explicit cache_control (Claude/Qwen), and the
+        """Stamp provider extras, explicit cache_control (Claude/Qwen/Gemini), and the
         OpenRouter session_id.
 
         Best-effort: never raises; automatic-cache models are left untouched.
@@ -1097,7 +1097,7 @@ class OpenAICompatDriver:
             if "openrouter.ai" in (self.base_url or "").lower():
                 # Ask OpenRouter for prompt_tokens_details (cached / cache_write).
                 body.setdefault("usage", {"include": True})
-            apply_openai_compat_cache_control(body, model=self.model)
+            apply_openai_compat_cache_control(body, model=self.model, base_url=self.base_url)
             maybe_attach_openrouter_session_id(
                 body,
                 base_url=self.base_url,

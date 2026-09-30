@@ -1251,7 +1251,17 @@ class SendLoopMixin:
         ):
             with timed_phase(timing, "auto_codegraph"):
                 from .codegraph_inject import working_query
-                cg_context = self._get_codegraph_context(working_query(self, user_message))
+                from .conversation import (
+                    TURN_CONTEXT_BUDGET_S,
+                    _submit_turn_context,
+                    _turn_context_result,
+                )
+                # A `codegraph search` subprocess: bounded like the other
+                # pre-request lookups, left out when it is late.
+                cg_context = _turn_context_result(
+                    _submit_turn_context(self._get_codegraph_context, working_query(self, user_message)),
+                    time.monotonic() + TURN_CONTEXT_BUDGET_S,
+                )
                 if cg_context:
                     self._history.append({"role": "user", "content": cg_context})
         return user_message
@@ -1369,44 +1379,64 @@ class SendLoopMixin:
             append_only = self._resolve_append_only()
             _skip_cg, _skip_wiki = profile_skips_auto_inject(self, user_message)
             cg_event = None
-            if self.config.repo and not _no_deleg and not append_only and not _skip_cg:
+            want_cg = bool(self.config.repo) and not _no_deleg and not append_only and not _skip_cg
+            want_wiki = self._wiki.configured and not append_only and not _skip_wiki
+            # CodeGraph (a Node subprocess) and the wiki search (HTTP) are
+            # independent: start both, then wait for them together under one
+            # budget. The slices are cached per user message, so later steps
+            # of this turn reuse them; a lookup that misses the budget is left
+            # out rather than holding the pilot request.
+            from .conversation import (
+                TURN_CONTEXT_BUDGET_S,
+                _submit_turn_context,
+                _turn_context_result,
+            )
+            deadline = time.monotonic() + TURN_CONTEXT_BUDGET_S
+            cg_future = wiki_future = None
+            _cg_query = ""
+            if want_cg:
+                from .codegraph_inject import working_query, wrap_slice
+                _cg_query = working_query(self, user_message)
+                if self._cg_cache_key == _cg_query:
+                    cg_section = self._cg_cache_section
+                    cg_symbol_count = self._cg_cache_symbols
+                else:
+                    try:
+                        from puppetmaster.codegraph import codegraph_context
+                        cg_future = _submit_turn_context(codegraph_context, _cg_query, self.config.repo)
+                    except Exception:
+                        pass
+            if want_wiki and self._wiki_cache_key != user_message:
+                wiki_future = _submit_turn_context(self._build_turn_wiki_section, user_message)
+            if cg_future is not None:
                 with timed_phase(timing, "step_codegraph"):
-                    # Cache the CodeGraph slice per user message: the underlying
-                    # codegraph_context() is a blocking Node subprocess (~270-500ms).
-                    # Recomputing it on every step of a multi-step turn (identical
-                    # query) just stacks dead time in front of the model. Compute it
-                    # once on the first step, reuse it for the rest of this turn.
-                    from .codegraph_inject import working_query, wrap_slice
-                    _cg_query = working_query(self, user_message)
-                    if self._cg_cache_key == _cg_query:
-                        cg_section = self._cg_cache_section
-                        cg_symbol_count = self._cg_cache_symbols
-                    else:
-                        try:
-                            from puppetmaster.codegraph import codegraph_context
-                            cg_slice = codegraph_context(task=_cg_query, cwd=self.config.repo)
-                            if cg_slice:
-                                cg_section, cg_symbol_count = wrap_slice(cg_slice)
-                            self._cg_cache_key = _cg_query
-                            self._cg_cache_section = cg_section
-                            self._cg_cache_symbols = cg_symbol_count
-                            if cg_section and not _no_deleg:
-                                cg_event = {
-                                    "symbols": cg_symbol_count,
-                                    "query": (_cg_query or "")[:120],
-                                }
-                        except Exception:
-                            pass
+                    try:
+                        cg_slice = _turn_context_result(cg_future, deadline)
+                        if cg_slice:
+                            cg_section, cg_symbol_count = wrap_slice(cg_slice)
+                        self._cg_cache_key = _cg_query
+                        self._cg_cache_section = cg_section
+                        self._cg_cache_symbols = cg_symbol_count
+                        if cg_section:
+                            cg_event = {
+                                "symbols": cg_symbol_count,
+                                "query": (_cg_query or "")[:120],
+                            }
+                    except Exception:
+                        pass
             if cg_event is not None:
                 yield ConvEvent("codegraph_context", cg_event)
 
             wiki_section = ""
-            if self._wiki.configured and not append_only and not _skip_wiki:
+            if want_wiki:
                 with timed_phase(timing, "step_wiki"):
-                    if self._wiki_cache_key == user_message:
+                    if wiki_future is None:
                         wiki_section = self._wiki_cache_section
                     else:
-                        wiki_section = self._build_turn_wiki_section(user_message)
+                        wiki_section = _turn_context_result(wiki_future, deadline)
+                        if not wiki_future.done():
+                            self._wiki_cache_key = user_message
+                            self._wiki_cache_section = ""
             vault_section, vault_cite = self._turn_vault_context(
                 user_message, append_only
             )
