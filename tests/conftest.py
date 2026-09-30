@@ -149,6 +149,69 @@ _checkpoint_module.Path = SimpleNamespace(
 
 def pytest_unconfigure(config):
     _checkpoint_module.Path = _checkpoint_paths
+    _report_lingering_work()
+
+
+def _lingering_children() -> list:
+    """Child processes of this pytest process (best effort, no psutil)."""
+    import subprocess as _sp
+
+    pid = os.getpid()
+    try:
+        if os.name == "nt":
+            out = _sp.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | "
+                 "ForEach-Object { \"$($_.ProcessId) $($_.CommandLine)\" }"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+        else:
+            out = _sp.run(["ps", "-o", "pid=,command=", "--ppid", str(pid)],
+                          capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip() and "Get-CimInstance" not in line and " ps -o" not in line]
+
+
+def _report_lingering_work() -> None:
+    """A suite that passes but never exits (a Windows shard hung for 30+ min
+    after '2132 passed') leaks a non-daemon thread or a child process. Name
+    them and fail loudly instead of hanging the job until its timeout."""
+    import sys as _sys
+    import threading as _threading
+    import traceback as _traceback
+
+    frames = _sys._current_frames()
+
+    def idle_pool_worker(t) -> bool:
+        # concurrent.futures workers waiting for work are released by the
+        # interpreter's shutdown hooks; only one stuck inside a task hangs exit.
+        # SimpleQueue.get is C, so an idle worker's top Python frame is _worker
+        # itself; a busy one has its task's frame on top.
+        frame = frames.get(t.ident)
+        return bool(frame and frame.f_code.co_name == "_worker"
+                    and frame.f_code.co_filename.replace("\\", "/").endswith("concurrent/futures/thread.py"))
+
+    threads = [t for t in _threading.enumerate()
+               if t is not _threading.main_thread() and t.is_alive() and not t.daemon
+               and not idle_pool_worker(t)]
+    children = _lingering_children()
+    if not threads and not children:
+        return
+    lines = ["", "=== pytest finished with work still running ==="]
+    for t in threads:
+        lines.append(f"-- non-daemon thread {t.name!r} (target={getattr(t, '_target', None)!r})")
+        frame = frames.get(t.ident)
+        if frame is not None:
+            lines.extend(l.rstrip() for l in _traceback.format_stack(frame)[-8:])
+    for child in children:
+        lines.append(f"-- child process {child}")
+    _sys.stderr.write("\n".join(lines) + "\n")
+    _sys.stderr.flush()
+    # xdist tears its workers down itself; the single-process run (Windows CI,
+    # -n 0) is the one that hangs, so exit it now with a failing status.
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        os._exit(3)
 
 
 def _clear_live_puppetmaster_state_dir() -> None:
