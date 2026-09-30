@@ -1,3 +1,4 @@
+from tests._isolation import isolate_module_attr
 from copy import deepcopy
 from types import SimpleNamespace
 import queue
@@ -137,7 +138,7 @@ def test_stream_snapshot_precedes_thread_handoff_and_pilot_swap(monkeypatch):
         return '', response
         yield
 
-    monkeypatch.setattr(threading, 'Thread', DelayedThread)
+    isolate_module_attr(monkeypatch, phases, 'threading', Thread=DelayedThread)
     monkeypatch.setattr(phases, 'drain_stream_queue', drain)
     try:
         list(phases.dispatch_pilot_provider_call(

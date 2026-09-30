@@ -1,6 +1,7 @@
 """Characterization tests for workspace API peel (forget/get/symbols/workspaces)."""
 from __future__ import annotations
 
+from tests._isolation import isolate_module_attr
 import json
 import os
 import subprocess
@@ -253,9 +254,7 @@ def test_workspace_open_uses_canonical_git_root(monkeypatch, tmp_path):
         lambda path: str(canonical),
     )
     monkeypatch.setattr("harness.paths.os.path.samefile", lambda a, b: True)
-    monkeypatch.setattr(
-        "harness.api.workspace.subprocess.run",
-        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="main\n"),
+    isolate_module_attr(monkeypatch, "harness.api.workspace", "subprocess", run=lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="main\n"),
     )
     sessions = _fresh_sessions()
     svc, _, _, _ = _svc(cfg, tmp_path)
@@ -276,9 +275,7 @@ def test_workspace_open_keeps_nested_dir_when_not_samefile(monkeypatch, tmp_path
     nested.mkdir(parents=True)
     cfg = SimpleNamespace(repo="", driver="m1")
     monkeypatch.setattr("harness.paths.git_toplevel", lambda path: str(root))
-    monkeypatch.setattr(
-        "harness.api.workspace.subprocess.run",
-        lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="dev\n"),
+    isolate_module_attr(monkeypatch, "harness.api.workspace", "subprocess", run=lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="dev\n"),
     )
     sessions = _fresh_sessions()
     svc, _, _, _ = _svc(cfg, tmp_path)

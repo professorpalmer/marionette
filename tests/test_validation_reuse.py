@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._isolation import isolate_module_attr
 import subprocess
 import tempfile
 import threading
@@ -1135,7 +1136,7 @@ def test_search_codegraph_affected_routing(monkeypatch):
         captured["cmd"] = cmd
         return SimpleNamespace(returncode=0, stdout="tests/test_auth.py\n")
 
-    monkeypatch.setattr("harness.tool_dispatch.subprocess.run", fake_run)
+    isolate_module_attr(monkeypatch, "harness.tool_dispatch", "subprocess", run=fake_run)
     host = Host()
     act = PilotAction(
         kind="search_codegraph",

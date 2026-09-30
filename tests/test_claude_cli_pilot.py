@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from tests._isolation import isolate_module_attr
 import json
 
 from harness import providers as prov
@@ -176,7 +177,7 @@ def test_chat_spawn_strips_api_key(monkeypatch):
         return _Proc()
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-must-not-leak")
-    monkeypatch.setattr("pmharness.drivers.claude_cli.subprocess.Popen", fake_popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.claude_cli", "subprocess", Popen=fake_popen)
     driver = ClaudeCliDriver(
         name="claude-code:claude-haiku-4-5",
         model="claude-haiku-4-5",

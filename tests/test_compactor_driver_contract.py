@@ -1,4 +1,5 @@
 """Real driver transports under abandoned summarizer/live request overlap."""
+from tests._isolation import isolate_module_attr
 import copy
 import io
 import json
@@ -317,7 +318,7 @@ def test_cursor_cli_timeout_preserves_resume_binding(tmp_path, monkeypatch, late
                 raise ValueError("late CLI failure")
         return Proc(model)
 
-    monkeypatch.setattr("pmharness.drivers.cursor_cli.subprocess.Popen", popen)
+    isolate_module_attr(monkeypatch, "pmharness.drivers.cursor_cli", "subprocess", Popen=popen)
     pilot = CursorCliDriver("cursor", "live-model", cwd=str(tmp_path))
     pilot._harness_session_id = "live-session"
     pilot._native_chat_id = "old-native"

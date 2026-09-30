@@ -19,6 +19,7 @@ route_task / memory dispatch lives in ``send_loop_dispatch``.
 import inspect
 import queue as queue_mod
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -1154,10 +1155,8 @@ def dispatch_pilot_provider_call(
             and callable(getattr(session.pilot, "chat_stream", None))
         )
         if is_interactive and _can_stream:
-            import queue
-            import threading
             request = _freeze_chat_request(session, tools_schema, sys_prompt, stream=True)
-            q = queue.Queue()
+            q = queue_mod.Queue()
             t = threading.Thread(
                 target=copy_context().run,
                 args=(run_stream, session, q, tools_schema, sys_prompt),

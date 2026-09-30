@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests._isolation import isolated_patch
 import os
 import sys
 from unittest import mock
@@ -20,7 +21,7 @@ def test_reveal_windows_invokes_explorer(tmp_path):
     target = tmp_path / "keep.txt"
     target.write_text("x", encoding="utf-8")
     with mock.patch.object(sys, "platform", "win32"):
-        with mock.patch("harness.file_reveal.subprocess.Popen") as popen:
+        with isolated_patch("harness.file_reveal", "subprocess", "Popen") as popen:
             assert reveal_in_file_manager(str(target)) is None
             args = popen.call_args[0][0]
             assert args[0] == "explorer"
