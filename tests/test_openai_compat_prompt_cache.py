@@ -1,7 +1,8 @@
 """OpenAI-compat / OpenRouter explicit prompt-cache stamping.
 
 OpenRouter requires EXPLICIT cache_control for Anthropic Claude and Alibaba
-Qwen. Automatic-cache models (gpt, gemini, …) must NOT get invented markers.
+Qwen, and Gemini caches nothing through OpenRouter without one. Automatic-cache
+models (gpt, grok, …) must NOT get invented markers.
 Hermetic: builds request bodies via OpenAICompatDriver._prepare_body, no network.
 """
 from __future__ import annotations
@@ -89,7 +90,8 @@ def test_explicit_cache_family_detection():
     assert explicit_cache_family("qwen/qwen3-coder-plus") == "qwen"
     assert explicit_cache_family("qwen3-coder-flash") == "qwen"
     assert explicit_cache_family("openai/gpt-4o") is None
-    assert explicit_cache_family("google/gemini-2.5-pro") is None
+    assert explicit_cache_family("google/gemini-2.5-pro") == "gemini"
+    assert explicit_cache_family("google/gemma-3-27b-it") is None
     assert explicit_cache_family("deepseek/deepseek-chat") is None
 
 
@@ -125,7 +127,6 @@ def test_qwen_stamps_ephemeral_without_ttl():
 def test_gpt_gemini_grok_get_no_cache_control():
     for model in (
         "openai/gpt-4o",
-        "google/gemini-2.5-pro",
         "gpt-4o",
         "x-ai/grok-3",
         "grok-3",
@@ -313,3 +314,32 @@ def test_prepare_body_is_idempotent_safe():
     apply_openai_compat_cache_control(body, model="anthropic/claude-sonnet-4")
     assert _count_cache_markers(body) == _count_cache_markers(first)
     assert _count_cache_markers(body) <= 4
+
+
+def test_gemini_via_openrouter_marks_only_the_message_before_the_newest():
+    """Measured on OpenRouter (gemini-3.8-flash, 4 growing steps): no marker
+    cached 0 tokens; this marker cached 10.7k-15.4k at 4-5x lower cost and
+    survived a 6-minute idle gap. A marker on the newest message (alone or
+    with the system one) made OpenRouter bill the prompt twice."""
+    d = _driver("google/gemini-3.8-flash")
+    body = _sample_body()
+    d._prepare_body(body, messages=body["messages"], system="You are helpful.")
+    assert _count_cache_markers(body) == 1
+    assert _marker_on_msg(body["messages"][-2]) == {"type": "ephemeral"}
+    assert _marker_on_msg(body["messages"][-1]) is None
+
+
+def test_gemini_first_turn_marks_the_system_prompt():
+    d = _driver("google/gemini-3.8-flash")
+    body = _sample_body(tools=False)
+    body["messages"] = body["messages"][:2]
+    d._prepare_body(body, messages=body["messages"], system="You are helpful.")
+    assert _count_cache_markers(body) == 1
+    assert _marker_on_msg(body["messages"][0]) == {"type": "ephemeral"}
+
+
+def test_gemini_off_openrouter_gets_no_marker():
+    d = _driver("gemini-3.8-flash", base_url="https://generativelanguage.googleapis.com/v1beta/openai")
+    body = _sample_body()
+    d._prepare_body(body, messages=body["messages"], system="You are helpful.")
+    assert _count_cache_markers(body) == 0
