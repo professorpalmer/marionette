@@ -3925,10 +3925,12 @@ def dispatch_local_action(
             )
             return
         try:
+            # Replay identity is the provider's call id (a re-sent call must
+            # reconcile its earlier batch); aid is only the card's UI identity.
             receipt = start_command_batch(
                 session,
                 list(getattr(act, "commands", None) or []),
-                aid,
+                str(getattr(act, "tool_call_id", None) or "").strip() or aid,
                 max_concurrency=int(getattr(act, "max_concurrency", 0) or 0) or None,
             )
         except Exception as exc:
