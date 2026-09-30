@@ -400,11 +400,9 @@ _HARD_PILOT_STEPS_DEFAULT = 40  # safety cap on pilot<->swarm round-trips per us
 
 def _driver_is_plan_billing(driver_spec: str) -> bool:
     """True when the pilot burns a subscription (not a metered API key)."""
-    prov = (driver_spec or "").split(":", 1)[0].strip().lower()
-    return prov in (
-        "cursor-cli", "cursor-agent", "openai-codex", "xai-oauth", "nous",
-        "claude-code", "claude-cli", "claude-max",
-    )
+    from .usage_ledger.accounts import PLAN, billing_for_spec
+
+    return billing_for_spec(driver_spec) == PLAN
 
 
 def _friendly_pilot_model_name(model_id: str) -> str:
@@ -689,6 +687,22 @@ def _turn_context_result(future, deadline: float) -> str:
         return ""
 
 
+def _tag_pilot_for_metering(driver: Any, session: "ConversationalSession") -> None:
+    """Attribute every call this pilot makes to its session (usage ledger)."""
+    import weakref
+
+    owner = weakref.ref(session)
+
+    def tags() -> dict:
+        s = owner()
+        return {"session_id": getattr(s, "harness_session_id", "") or None, "purpose": "pilot"} if s else {}
+
+    try:
+        driver.metering_tags = tags
+    except Exception:
+        pass
+
+
 class ConversationalSession(
     PromptQueueMixin,
     SteerMixin,
@@ -702,6 +716,15 @@ class ConversationalSession(
     BusyControlMixin,
     ToolDispatchMixin,
 ):
+    @property
+    def pilot(self) -> Any:
+        return self.__dict__.get("_pilot")
+
+    @pilot.setter
+    def pilot(self, driver: Any) -> None:
+        self.__dict__["_pilot"] = driver
+        _tag_pilot_for_metering(driver, self)
+
     def __init__(self, config: HarnessConfig) -> None:
         self.config = config
         import tempfile
@@ -3457,10 +3480,13 @@ class ConversationalSession(
                     "You are answering ONLY from the provided context entries. "
                     "Be concise. Cite entries by number as [n]."
                 )
-                if hasattr(pilot, "chat"):
-                    resp = pilot.chat([{"role": "user", "content": prompt}], system=sysmsg)
-                else:
-                    resp = pilot.complete(prompt, system=sysmsg)
+                from pmharness.drivers.metering import attribution
+
+                with attribution(purpose="wiki_synthesis"):
+                    if hasattr(pilot, "chat"):
+                        resp = pilot.chat([{"role": "user", "content": prompt}], system=sysmsg)
+                    else:
+                        resp = pilot.complete(prompt, system=sysmsg)
                 if resp is None:
                     raise RuntimeError("empty pilot response")
                 if getattr(resp, "error", None):

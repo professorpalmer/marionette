@@ -126,7 +126,11 @@ def test_consume_stream_json_result_and_deltas():
 def test_plan_billing_includes_claude_code():
     from harness.conversation import _driver_is_plan_billing
     assert _driver_is_plan_billing("claude-code:claude-opus-4-8")
+    assert _driver_is_plan_billing("claude-cli:claude-opus-4-8")
+    assert _driver_is_plan_billing("cursor-agent:grok-4.6")
+    assert _driver_is_plan_billing("opencode-go:mimo-v2.6-pro")
     assert not _driver_is_plan_billing("anthropic:claude-opus-4-8")
+    assert not _driver_is_plan_billing("openrouter:z-ai/glm-5.3")
 
 
 def test_model_fetch_returns_curated_claude_cli():

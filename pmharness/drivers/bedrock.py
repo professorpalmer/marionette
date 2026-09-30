@@ -29,6 +29,7 @@ from . import http_pool
 from .base import DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
+from .metering import metered
 
 
 def _crc32(data: bytes) -> int:
@@ -187,6 +188,7 @@ def _safe_callback(cb: Optional[Callable], *args) -> None:
         pass
 
 
+@metered
 class BedrockDriver:
     # Real mid-invoke deltas via ConverseStream (or bedrock_chat_stream).
     supports_streaming = True

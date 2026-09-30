@@ -34,6 +34,7 @@ from .retry import (
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 from pmharness.think_scrubber import StreamingThinkScrubber
 from pmharness.stream_snapshot import absorb_stream_snapshot
+from .metering import metered
 
 _SUCCESS_CHAT_FINISH = frozenset({"stop", "stop_sequence", "end_turn"})
 _TOOL_CHAT_FINISH = frozenset({"tool_calls", "function_call"})
@@ -632,6 +633,7 @@ def _consume_openai_chat_sse(
     return acc.finalize(transport_error=transport_error)
 
 
+@metered
 class OpenAICompatDriver:
     # Explicit capability flag the conversation loop checks (is True) before using the
     # streaming path -- prevents MagicMock test doubles from accidentally streaming.

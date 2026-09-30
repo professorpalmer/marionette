@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .base import SYSTEM_PROMPT, DriverResponse
+from .metering import metered
 
 DEFAULT_CLAUDE_CLI_MODELS = (
     "claude-opus-4-8",
@@ -235,6 +236,7 @@ def consume_stream_json(
     }
 
 
+@metered
 class ClaudeCliDriver:
     """Pilot driver backed by the Claude Code CLI subprocess."""
 
