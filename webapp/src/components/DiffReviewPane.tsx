@@ -261,23 +261,6 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
 
   return (
     <div className="flex-1 overflow-y-auto p-3 space-y-4 select-text">
-      <style>{`
-        @keyframes green-sweep-overlay {
-          0% { transform: translateY(-100%); }
-          100% { transform: translateY(200%); }
-        }
-        .animate-sweep-overlay {
-          animation: green-sweep-overlay 1.2s infinite linear;
-        }
-        @keyframes scale-up {
-          0% { transform: scale(0.6); opacity: 0; }
-          50% { transform: scale(1.1); }
-          100% { transform: scale(1); opacity: 1; }
-        }
-        .animate-scale-up {
-          animation: scale-up 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
-        }
-      `}</style>
       {reviewsNotice && (
         <div
           data-testid="reviews-load-error"
@@ -377,7 +360,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
 
                       // Style/class for hunk container
                       let containerStyle: React.CSSProperties = {};
-                      let containerClass = "relative border rounded overflow-hidden transition-all duration-300 ";
+                      let containerClass = "relative border rounded overflow-hidden transition-[max-height,opacity,transform,margin,padding,border-width] duration-base ease-base ";
 
                       if (isApplied || isFadingOut) {
                         containerClass += "opacity-0 scale-95 pointer-events-none ";
@@ -388,9 +371,6 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                           paddingTop: "0px",
                           paddingBottom: "0px",
                           borderWidth: "0px",
-                          transition: prefersReduced
-                            ? "opacity 150ms ease"
-                            : "max-height 350ms cubic-bezier(0.4, 0, 0.2, 1), opacity 300ms ease, margin 350ms, padding 350ms, border-width 350ms"
                         };
                       } else {
                         containerClass += isAccepted ? "border-edge" : "border-edge/40 opacity-70";
@@ -408,19 +388,14 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                           {/* Green Sweep Overlay */}
                           {isApplying && !prefersReduced && (
                             <div className="absolute inset-0 pointer-events-none overflow-hidden z-10">
-                              <div
-                                className="absolute inset-x-0 h-1/2 bg-gradient-to-b from-transparent via-accent/20 to-transparent animate-sweep-overlay"
-                                style={{
-                                  background: "linear-gradient(to bottom, transparent, rgba(63, 185, 80, 0.25), transparent)"
-                                }}
-                              />
+                              <div className="absolute inset-x-0 h-1/2 bg-gradient-to-b from-transparent via-good/25 to-transparent diff-apply-sweep" />
                             </div>
                           )}
 
                           {/* Green Applied Checkmark Overlay */}
                           {isApplied && !prefersReduced && (
-                            <div className="absolute inset-0 bg-accent/5 flex items-center justify-center z-20">
-                              <div className="bg-panel border border-accent/40 rounded-full p-2 text-accent shadow-lg shadow-accent/10 animate-scale-up">
+                            <div className="absolute inset-0 bg-good/5 flex items-center justify-center z-20">
+                              <div className="bg-panel border border-good/40 rounded-full p-2 text-good shadow-lg shadow-good/10 diff-applied-pop">
                                 <Check size={18} className="stroke-[3]" />
                               </div>
                             </div>
@@ -459,8 +434,8 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                               let lineClass = "";
                               if (isAdd) {
                                 lineClass = isApplying
-                                  ? "bg-accent/25 text-accent border-l-2 border-accent/80 px-1 transition-all duration-300"
-                                  : "bg-accent/10 text-accent border-l-2 border-accent/40 px-1 transition-all duration-300";
+                                  ? "bg-good/25 text-good border-l-2 border-good/80 px-1 transition-colors"
+                                  : "bg-good/10 text-good border-l-2 border-good/40 px-1 transition-colors";
                               } else if (isDel) {
                                 lineClass = "bg-risk/10 text-risk border-l-2 border-risk/40 px-1";
                               } else {

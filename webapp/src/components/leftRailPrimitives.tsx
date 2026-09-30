@@ -6,7 +6,7 @@ export type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
 export function JobStatusIcon({ status }: { status: JobStatus }) {
   if (status === "completed") return <CheckCircle2 size={12} className="text-good shrink-0" />;
   if (status === "in_progress") return <Loader2 size={12} className="animate-spin text-accent shrink-0" />;
-  if (status === "cancelled") return <XCircle size={12} className="text-red-400 shrink-0" />;
+  if (status === "cancelled") return <XCircle size={12} className="text-risk shrink-0" />;
   return <Circle size={12} className="text-muted shrink-0" />;
 }
 

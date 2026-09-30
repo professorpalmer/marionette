@@ -349,9 +349,9 @@ body {
   text-align: center;
   font-size: 10px;
   line-height: 1.3;
-  border: 1px dashed rgba(154, 168, 255, 0.45);
+  border: 1px dashed theme('colors.accent / 45%');
   border-radius: 7px;
-  background: rgba(154, 168, 255, 0.08);
+  background: theme('colors.accent / 8%');
 }
 
 .right-pane-board-grid {
@@ -445,7 +445,7 @@ body {
   width: 7px;
   cursor: col-resize;
   opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease;
+  transition: opacity theme('transitionDuration.fast') theme('transitionTimingFunction.base'), background theme('transitionDuration.fast') theme('transitionTimingFunction.base');
 }
 
 .right-pane-card:hover .right-pane-card-resize-handle {
@@ -458,7 +458,7 @@ body {
 .right-pane-card-row-resize-handle:focus-visible {
   opacity: 1;
   outline: none;
-  background: rgba(154, 168, 255, 0.28);
+  background: color-mix(in srgb, theme('colors.accent') 28%, transparent);
 }
 
 .right-pane-card-row-resize-handle {
@@ -470,7 +470,7 @@ body {
   height: 7px;
   cursor: row-resize;
   opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease;
+  transition: opacity theme('transitionDuration.fast') theme('transitionTimingFunction.base'), background theme('transitionDuration.fast') theme('transitionTimingFunction.base');
 }
 
 .right-pane-card:hover .right-pane-card-row-resize-handle {
@@ -504,7 +504,7 @@ body.is-row-resizing iframe {
   padding: 2px;
   color: var(--text-faint, #78808b);
   border-radius: 4px;
-  transition: color 120ms ease, background 120ms ease;
+  transition: color theme('transitionDuration.fast') theme('transitionTimingFunction.base'), background theme('transitionDuration.fast') theme('transitionTimingFunction.base');
 }
 
 .right-pane-icon-btn:hover,
@@ -676,7 +676,8 @@ body.is-row-resizing iframe {
   color: theme('colors.muted');
   text-align: left;
   transition-property: background-color, color;
-  transition-duration: 120ms;
+  transition-duration: theme('transitionDuration.fast');
+  transition-timing-function: theme('transitionTimingFunction.base');
 }
 .swarm-worker-row:hover,
 .swarm-worker-row[aria-pressed="true"] { background: color-mix(in srgb, var(--swarm-accent) 9%, transparent); color: theme('colors.txt'); }
@@ -793,7 +794,7 @@ body.is-row-resizing iframe {
   padding: 0 3px;
   color: var(--shell-panel);
   border-radius: 999px;
-  background: var(--accent, #9aa8ff);
+  background: theme('colors.accent');
   font-size: 8px;
   font-weight: 700;
 }
@@ -802,7 +803,7 @@ body.is-row-resizing iframe {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--accent, #9aa8ff);
+  background: theme('colors.accent');
   animation: pulse 1.6s ease-in-out infinite;
 }
 
@@ -849,7 +850,22 @@ body.is-row-resizing iframe {
   to { opacity: 1; transform: translateY(0); }
 }
 .onboarding-card {
-  animation: onboarding-rise 320ms ease-out;
+  animation: onboarding-rise theme('transitionDuration.base') theme('transitionTimingFunction.base');
+}
+
+@keyframes diff-apply-sweep {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(200%); }
+}
+.diff-apply-sweep {
+  animation: diff-apply-sweep 1.2s linear infinite;
+}
+@keyframes diff-applied-pop {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+.diff-applied-pop {
+  animation: diff-applied-pop theme('transitionDuration.base') theme('transitionTimingFunction.base') forwards;
 }
 
 /* Body-portaled overlays (conversation lightbox/spill, command palette).
