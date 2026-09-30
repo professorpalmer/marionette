@@ -253,15 +253,16 @@ export function applyActionResultCard(
   const callId = d.call_id ? String(d.call_id).trim() : "";
   if (!id && !callId) return items;
   const sealed = finalizeStreamingBubbleOnActionResult(items);
-  const matchIdx = sealed.findIndex((it) => {
-    if (it.kind !== "card") return false;
-    const card = it.card;
-    if (id && card.id === id) return true;
-    if (callId && (card.call_id === callId || card.id === callId || card.id === `tool-prep:${callId}`)) {
-      return true;
-    }
-    return false;
-  });
+  // The action id is unique per session, so it wins wherever the card is (a
+  // background job can settle a card from an earlier turn). Providers reuse
+  // call ids across turns, so a call-id match only counts in the current turn.
+  const byId = id ? sealed.findIndex((it) => it.kind === "card" && it.card.id === id) : -1;
+  const turnStart = sealed.findLastIndex((it) => it.kind === "msg" && it.msg.role === "user") + 1;
+  const matchIdx = byId >= 0 || !callId ? byId : sealed.findIndex((it, i) => (
+    i >= turnStart
+    && it.kind === "card"
+    && (it.card.call_id === callId || it.card.id === callId || it.card.id === `tool-prep:${callId}`)
+  ));
   const outcome: TerminalJobOutcome = d.error
     || String(d.status || "").toLowerCase() === "failed"
     ? "failed"
