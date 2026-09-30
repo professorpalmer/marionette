@@ -138,6 +138,7 @@ import {
   feedWheelUnpinListenerOptions,
   shouldUnpinOnWheel,
   type FeedResizeObservationSnapshot,
+  runProgrammaticScroll,
 } from "./conversation/feedScroll";
 import {
   ADD_TERMINAL_SELECTION_EVENT,
@@ -1341,6 +1342,7 @@ export default function Conversation({
   const scrollReleasedByGestureRef = useRef(false);
   const userScrollGestureRef = useRef(false);
   const programmaticScrollRef = useRef(false);
+  const programmaticScroll = (write: () => void) => runProgrammaticScroll(feedRef.current, programmaticScrollRef, write);
   const gestureIdleTimerRef = useRef<number | null>(null);
   const prevFeedScrollTopRef = useRef<number | null>(null);
   // Hermes session-switch settle: while true, height-driven follow keeps
@@ -1379,12 +1381,14 @@ export default function Conversation({
     setShowJumpToBottom(false);
     const scrollToEnd = scrollFeedToEndRef.current;
     if (scrollToEnd) {
-      programmaticScrollRef.current = true;
-      scrollToEnd();
+      programmaticScroll(() => {
+        scrollToEnd();
+      });
     } else if (feedRef.current) {
-      programmaticScrollRef.current = true;
       const el = feedRef.current;
-      el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
+      programmaticScroll(() => {
+        el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
+      });
     }
   };
   useEffect(() => {
@@ -1411,8 +1415,9 @@ export default function Conversation({
       pinnedToBottomRef.current = true;
       const maxScrollTop = scrollToFeedEnd(node.scrollHeight, node.clientHeight);
       if (Math.abs(node.scrollTop - maxScrollTop) >= FEED_TAIL_EPSILON_PX) {
-        programmaticScrollRef.current = true;
-        node.scrollTop = maxScrollTop;
+        programmaticScroll(() => {
+          node.scrollTop = maxScrollTop;
+        });
       }
       prevFeedScrollTopRef.current = node.scrollTop;
       publishJumpVisibilityRef.current();
@@ -1543,8 +1548,9 @@ export default function Conversation({
     });
     if (result.kind === "noop") return;
     if (result.kind === "follow") {
-      programmaticScrollRef.current = true;
-      el.scrollTop = result.scrollTop;
+      programmaticScroll(() => {
+        el.scrollTop = result.scrollTop;
+      });
     }
     pinnedToBottomRef.current = true;
     prevFeedScrollTopRef.current = el.scrollTop;
@@ -1646,8 +1652,9 @@ export default function Conversation({
         // Switch hydrate runs in a passive effect; do not restore over outgoing rows.
         if (cachedSessionIdRef.current === activeSessionId && itemsRef.current.length > 0) {
           restoredAt ??= performance.now();
-          programmaticScrollRef.current = true;
-          transcriptViewportRef.current?.restore(saved);
+          programmaticScroll(() => {
+            transcriptViewportRef.current?.restore(saved);
+          });
           prevFeedScrollTopRef.current = el.scrollTop;
           if (performance.now() - restoredAt > 1000) {
             restoring = false;
@@ -1668,11 +1675,13 @@ export default function Conversation({
     setShowJumpToBottom(false);
     const scrollToEnd = scrollFeedToEndRef.current;
     if (scrollToEnd) {
-      programmaticScrollRef.current = true;
-      scrollToEnd();
+      programmaticScroll(() => {
+        scrollToEnd();
+      });
     } else {
-      programmaticScrollRef.current = true;
-      el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
+      programmaticScroll(() => {
+        el.scrollTop = scrollToFeedEnd(el.scrollHeight, el.clientHeight);
+      });
     }
     let frame = 0;
     let stableFrames = 0;
@@ -1703,11 +1712,13 @@ export default function Conversation({
       lastHeight = height;
       const scrollToEnd = scrollFeedToEndRef.current;
       if (scrollToEnd) {
-        programmaticScrollRef.current = true;
-        scrollToEnd();
+        programmaticScroll(() => {
+          scrollToEnd();
+        });
       } else {
-        programmaticScrollRef.current = true;
-        node.scrollTop = height;
+        programmaticScroll(() => {
+          node.scrollTop = height;
+        });
       }
       pinnedToBottomRef.current = true;
       if (step.done) {
@@ -1744,12 +1755,13 @@ export default function Conversation({
         raf2 = window.requestAnimationFrame(() => {
           const node = feedRef.current;
           if (!node) return;
-          programmaticScrollRef.current = true;
-          node.scrollTop = restoreFeedScrollAfterFocus({
-            savedScrollTop: saved,
-            pinned: pinnedToBottomRef.current,
-            settling: scrollSettlingRef.current,
-            scrollHeight: node.scrollHeight,
+          programmaticScroll(() => {
+            node.scrollTop = restoreFeedScrollAfterFocus({
+              savedScrollTop: saved,
+              pinned: pinnedToBottomRef.current,
+              settling: scrollSettlingRef.current,
+              scrollHeight: node.scrollHeight,
+            });
           });
         });
       });
@@ -1785,12 +1797,13 @@ export default function Conversation({
       return;
     }
     if (!isChatColumnActive(prev) && isChatColumnActive(activeTab)) {
-      programmaticScrollRef.current = true;
-      node.scrollTop = restoreFeedScrollAfterFocus({
-        savedScrollTop: fileTabScrollTopRef.current,
-        pinned: pinnedToBottomRef.current,
-        settling: scrollSettlingRef.current,
-        scrollHeight: node.scrollHeight,
+      programmaticScroll(() => {
+        node.scrollTop = restoreFeedScrollAfterFocus({
+          savedScrollTop: fileTabScrollTopRef.current,
+          pinned: pinnedToBottomRef.current,
+          settling: scrollSettlingRef.current,
+          scrollHeight: node.scrollHeight,
+        });
       });
     }
   }, [activeTab]);
@@ -3232,15 +3245,17 @@ export default function Conversation({
         const el = feedRef.current;
         const scrollToEnd = scrollFeedToEndRef.current;
         if (scrollToEnd) {
-          programmaticScrollRef.current = true;
-          scrollToEnd();
+          programmaticScroll(() => {
+            scrollToEnd();
+          });
         } else if (el) {
           const next = applyUserSubmitFeedPin({
             scrollHeight: el.scrollHeight,
             clientHeight: el.clientHeight,
           });
-          programmaticScrollRef.current = true;
-          el.scrollTop = next.scrollTop;
+          programmaticScroll(() => {
+            el.scrollTop = next.scrollTop;
+          });
         }
         pinnedToBottomRef.current = true;
         return true;

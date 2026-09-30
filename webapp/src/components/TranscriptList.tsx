@@ -1105,6 +1105,21 @@ export function transcriptViewportKeys(items: readonly GroupedItem[]): string[] 
   });
 }
 
+/**
+ * React and virtualizer keys for the grouped rows. Built without the row's
+ * position (an occurrence count separates rows that share a base key), so a
+ * row inserted or dropped above does not remount every row below it.
+ */
+export function transcriptRowKeys(items: readonly GroupedItem[]): string[] {
+  const occurrences = new Map<string, number>();
+  return items.map((item) => {
+    const base = stableItemKey(item, 0);
+    const n = occurrences.get(base) ?? 0;
+    occurrences.set(base, n + 1);
+    return n ? `${base}:${n}` : base;
+  });
+}
+
 export function stableItemKey(it: GroupedItem, i: number): string {
   switch (it.kind) {
     case "msg": {
@@ -1552,6 +1567,7 @@ export const TranscriptList = memo(function TranscriptList({
     return { intermediateItems: intermediate, grouped: groupAgentActivity(items, intermediate) };
   }, [items, agentLoopOpen]);
   const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
+  const rowKeys = useMemo(() => transcriptRowKeys(grouped), [grouped]);
   const rawIndexByMsg = useMemo(() => {
     const index = new Map<Msg, number>();
     items.forEach((raw, i) => { if (raw.kind === "msg" && !index.has(raw.msg)) index.set(raw.msg, i); });
@@ -1618,12 +1634,12 @@ export const TranscriptList = memo(function TranscriptList({
     estimateSize: (index) => {
       const item = virtualGrouped[index];
       if (!item) return TRANSCRIPT_ROW_FALLBACK_PX;
-      const rowId = stableItemKey(item, index);
+      const rowId = rowKeys[index] ?? stableItemKey(item, index);
       return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth);
     },
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,
-    getItemKey: (index) => stableItemKey(virtualGrouped[index]!, index),
+    getItemKey: (index) => rowKeys[index] ?? stableItemKey(virtualGrouped[index]!, index),
   });
   const measureVirtualRowDom = useCallback(
     (element: HTMLElement) => {
@@ -1715,7 +1731,7 @@ export const TranscriptList = memo(function TranscriptList({
   const renderGroupedItem = (i: number) => {
     const it = grouped[i];
     if (!it) return null;
-    const key = stableItemKey(it, i);
+    const key = rowKeys[i] ?? stableItemKey(it, i);
     if (it.kind === "msg") {
       const rawIdx = rawIndexByMsg.get(it.msg) ?? -1;
 
@@ -2157,7 +2173,7 @@ export const TranscriptList = memo(function TranscriptList({
     >
       {virtualItems.map((virtualRow) => {
           const item = virtualGrouped[virtualRow.index]!;
-          const rowId = stableItemKey(item, virtualRow.index);
+          const rowId = rowKeys[virtualRow.index]!;
           return (
             <VirtualTranscriptRow
               key={virtualRow.key}
@@ -2182,7 +2198,7 @@ export const TranscriptList = memo(function TranscriptList({
       className="relative flex flex-col gap-1 w-full"
     >
       {grouped.map((_, i) => {
-        const key = stableItemKey(grouped[i]!, i);
+        const key = rowKeys[i]!;
         return (
           <div key={key} data-viewport-key={viewportKeys[i]} className="transcript-virtual-row pb-1 select-none">
             {renderGroupedItem(i)}
@@ -2198,7 +2214,7 @@ export const TranscriptList = memo(function TranscriptList({
     >
       {liveTailGrouped.map((_, i) => {
         const idx = tailStartIndex + i;
-        const key = stableItemKey(grouped[idx]!, idx);
+        const key = rowKeys[idx]!;
         return (
           <LiveTailRow
             key={key}
