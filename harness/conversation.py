@@ -662,6 +662,10 @@ def _unchanged_section(kind: str) -> str:
 
 _TURN_CONTEXT_POOL = None
 _TURN_CONTEXT_POOL_LOCK = threading.Lock()
+# CodeGraph and wiki lookups share this many seconds before the pilot request.
+# A lookup still running then is left out of the turn: its own timeouts are
+# 30 s (CodeGraph) and two HTTP calls (wiki), which users felt as a frozen turn.
+TURN_CONTEXT_BUDGET_S = 2.5
 
 
 def _submit_turn_context(fn, *args):
@@ -676,11 +680,11 @@ def _submit_turn_context(fn, *args):
     return _TURN_CONTEXT_POOL.submit(contextvars.copy_context().run, fn, *args)
 
 
-def _turn_context_result(future) -> str:
+def _turn_context_result(future, deadline: float) -> str:
     if future is None:
         return ""
     try:
-        return future.result() or ""
+        return future.result(timeout=max(0.0, deadline - time.monotonic())) or ""
     except Exception:
         return ""
 
@@ -3049,6 +3053,7 @@ class ConversationalSession(
             # and sit before the pilot request: run them side by side so the
             # turn waits for the slower one, not both. Order in the prompt is
             # unchanged.
+            deadline = time.monotonic() + TURN_CONTEXT_BUDGET_S
             cg_future = (None if skip_cg
                          else _submit_turn_context(self._build_turn_cg_section, user_message))
             wiki_future = None
@@ -3062,13 +3067,13 @@ class ConversationalSession(
                     wiki_unchanged = True
                 else:
                     wiki_future = _submit_turn_context(self._build_turn_wiki_section, user_message)
-            cg_section = _turn_context_result(cg_future)
+            cg_section = _turn_context_result(cg_future, deadline)
             if cg_section:
                 parts.append(cg_section)
             if wiki_unchanged:
                 parts.append(_unchanged_section("Wiki"))
             else:
-                wiki_section = _turn_context_result(wiki_future)
+                wiki_section = _turn_context_result(wiki_future, deadline)
                 if wiki_section:
                     parts.append(wiki_section)
             try:

@@ -171,3 +171,76 @@ def test_codegraph_and_wiki_lookups_run_side_by_side(monkeypatch):
     elapsed = _time.monotonic() - started
     assert out.index("### CodeGraph for fix it") < out.index("### Wiki for fix it")
     assert elapsed < 0.7, elapsed
+
+
+def test_a_hung_lookup_cannot_hold_the_turn(monkeypatch):
+    """A stuck CodeGraph or wiki call costs the turn its slice, not 30 seconds."""
+    import threading
+    import time as _time
+    import harness.conversation as conv
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+    monkeypatch.setattr("harness.task_profile.profile_skips_wiki", lambda *a, **k: False)
+    monkeypatch.setattr(conv, "TURN_CONTEXT_BUDGET_S", 0.3, raising=False)
+    release = threading.Event()
+
+    def hung(msg):
+        release.wait(10)
+        return "### CodeGraph late"
+
+    monkeypatch.setattr(s, "_build_turn_cg_section", hung)
+    monkeypatch.setattr(s, "_build_turn_wiki_section", lambda msg: "### Wiki on time")
+    monkeypatch.setattr(s, "_build_turn_vault_section", lambda msg: "")
+    started = _time.monotonic()
+    try:
+        out = s._append_turn_context_trailer("fix it", "fix it")
+    finally:
+        release.set()
+    assert _time.monotonic() - started < 1.5
+    assert "### Wiki on time" in out
+    assert "CodeGraph late" not in out
+
+
+def test_a_hung_codegraph_cannot_hold_a_hosted_turn(tmp_path, monkeypatch):
+    """Per-step path (hosted providers): same budget, lookups side by side."""
+    import threading
+    import time as _time
+    from types import SimpleNamespace
+    import harness.conversation as conv
+    import puppetmaster.codegraph as cg
+    from pmharness.drivers.base import DriverResponse
+
+    seen = {}
+
+    class Pilot:
+        name = "scripted"
+
+        def chat(self, messages, tools=None, system=None):
+            seen["system"] = (system or "") + "".join(str(m.get("content")) for m in messages)
+            return DriverResponse(text='{"say": "done", "actions": []}', tokens_out=1,
+                                  latency_ms=1.0, meta={"finish_reason": "stop"})
+
+        def complete(self, prompt, system=None):
+            return self.chat([])
+
+    monkeypatch.setattr("harness.send_loop.profile_skips_auto_inject",
+                        lambda session, user_message="": (False, False))
+    monkeypatch.setattr(conv, "TURN_CONTEXT_BUDGET_S", 0.3, raising=False)
+    release = threading.Event()
+    monkeypatch.setattr(cg, "codegraph_context", lambda *a, **k: release.wait(10) and "late")
+    s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path)))
+    s.pilot = Pilot()
+    monkeypatch.setattr(s, "_resolve_append_only", lambda: False)
+    monkeypatch.setattr(s, "_maybe_compact_history", lambda **k: iter(()))
+    monkeypatch.setattr(s, "_wiki", SimpleNamespace(configured=True))
+    monkeypatch.setattr(s, "_build_turn_wiki_section", lambda msg: "### Wiki on time")
+    started = _time.monotonic()
+    try:
+        events = list(s.send("fix the parser"))
+    finally:
+        release.set()
+    assert any(e.kind == "assistant_done" for e in events)
+    assert _time.monotonic() - started < 2.0
+    assert "### Wiki on time" in seen["system"]
