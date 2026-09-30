@@ -5,8 +5,7 @@ import { describe, expect, it } from "vitest";
 const src = (rel: string) => resolve(__dirname, "..", rel);
 const read = (rel: string) => readFileSync(src(rel), "utf8");
 
-// Files whose palette and motion are closed. Extend as other files are swept;
-// files owned elsewhere stay out until their own sweep lands.
+// Files whose palette and motion are closed. Extend as other files are swept.
 const CLOSED_FILES = [
   "index.css",
   "components/RightDock.tsx",
@@ -21,6 +20,15 @@ const CLOSED_FILES = [
   "components/MemoryPane.tsx",
   "components/conversation/ImageLightbox.tsx",
   "components/ui/Switch.tsx",
+  "components/TranscriptList.tsx",
+  "components/conversation/ComposerDock.tsx",
+  "components/StatusBar.tsx",
+  "components/LeftRail.tsx",
+  "components/RightPane.tsx",
+  "components/StatePane.tsx",
+  "components/EconomicsPane.tsx",
+  "components/FileEditorPane.tsx",
+  "components/PilotPicker.tsx",
 ];
 
 const FORBIDDEN: Array<[string, RegExp]> = [

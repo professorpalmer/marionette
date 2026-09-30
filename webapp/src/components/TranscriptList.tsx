@@ -451,7 +451,7 @@ function CompactionReceipt({
     ? "flex items-center gap-1.5 py-0.5 text-[10px] text-faint/80 select-none font-mono"
     : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-[10.5px] ${
         it.aborted
-          ? "bg-amber-500/10 border border-amber-500/25 text-amber-200/90"
+          ? "bg-warn/10 border border-warn/25 text-warn/90"
           : "bg-panel2/10 border border-edge/10 text-faint"
       }`;
   return (
@@ -1412,17 +1412,17 @@ function AuthFailureBanner({
   return (
     <div
       role="alert"
-      className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-red-500/12 border border-red-500/50 text-[12px] text-red-200 w-full max-w-full my-1.5 shadow-sm animate-in fade-in duration-200"
+      className="flex items-start gap-2 py-2.5 px-3.5 rounded-lg bg-risk/10 border border-risk/50 text-[12px] text-risk w-full max-w-full my-1.5 shadow-sm"
     >
-      <XCircle size={15} className="text-red-400 shrink-0 mt-0.5" />
+      <XCircle size={15} className="text-risk shrink-0 mt-0.5" />
       <span className="min-w-0 flex-1">
-        <span className="font-semibold text-red-300">Provider auth failure.</span>{" "}
-        <span className="text-red-200/90">
+        <span className="font-semibold text-risk">Provider auth failure.</span>{" "}
+        <span className="text-risk/90">
           The API key was rejected -- this is a dead, revoked, or wrong key, not a weak model or bad prompt.
           Fix the named credential (e.g. OPENAI_API_KEY), then re-run.
         </span>
         {message ? (
-          <code className="block mt-1 text-[10.5px] text-red-200/80 font-mono break-all whitespace-pre-wrap">
+          <code className="block mt-1 text-[10.5px] text-risk/80 font-mono break-all whitespace-pre-wrap">
             {message}
           </code>
         ) : null}
@@ -1435,7 +1435,7 @@ function AuthFailureBanner({
           <button
             type="button"
             onClick={handleRetry}
-            className="rounded-md border border-red-400/40 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-100 hover:bg-red-500/20 transition"
+            className="rounded-md border border-risk/40 bg-risk/10 px-2.5 py-1 text-[11px] font-medium text-risk hover:bg-risk/20 transition"
           >
             Fix key and retry
           </button>
@@ -2031,7 +2031,7 @@ export const TranscriptList = memo(function TranscriptList({
           : gate.tone === "risk"
             ? "bg-risk/10 border-risk/30 text-risk/90"
             : gate.tone === "warn"
-              ? "bg-amber-500/10 border-amber-500/25 text-amber-200/90"
+              ? "bg-warn/10 border-warn/25 text-warn/90"
               : "bg-panel2/10 border-edge/15 text-faint";
       const labelClass =
         gate.tone === "good"
@@ -2039,7 +2039,7 @@ export const TranscriptList = memo(function TranscriptList({
           : gate.tone === "risk"
             ? "text-risk/90"
             : gate.tone === "warn"
-              ? "text-amber-200/90"
+              ? "text-warn/90"
               : "text-muted";
       return (
         <div
@@ -3655,7 +3655,7 @@ function SteerNote({
   return (
     <div
       data-testid="steer-note"
-      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-[10.5px] text-faint my-1 font-mono animate-in fade-in duration-200"
+      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-[10.5px] text-faint my-1 font-mono"
     >
       <span className="shrink-0 select-none text-muted">
         {mode === "interrupt" ? "interrupt:" : "steer:"}
@@ -3746,7 +3746,7 @@ function Bubble({
               <Pencil size={12} />
             </button>
           )}
-          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-full text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-all ${
+          <div className={`transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-full text-[13px] leading-relaxed whitespace-pre-wrap break-words border transition-colors ${
             isEditing
               ? "bg-accent/10 text-txt border-accent"
               : "bg-accent2 text-txt border-edge/30"

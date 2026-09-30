@@ -467,7 +467,7 @@ export default function ComposerDock({
                   onDragLeave={() => handleQueueDragLeave(idx)}
                   onDrop={(e) => handleQueueDrop(e, idx)}
                   onDragEnd={handleQueueDragEnd}
-                  className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-all duration-150 select-none
+                  className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-colors select-none
                     ${isDragging ? "opacity-40" : ""}
                     ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
                 >
@@ -510,7 +510,7 @@ export default function ComposerDock({
                     onClick={() => handleQueueRemove(item.id)}
                     title="Remove from queue"
                     aria-label={`Remove queued prompt ${idx + 1}`}
-                    className="min-w-6 min-h-6 flex items-center justify-center rounded text-faint hover:text-risk hover:bg-risk/10 focus-visible:outline focus-visible:outline-accent border border-transparent hover:border-risk/20 transition-all shrink-0"
+                    className="min-w-6 min-h-6 flex items-center justify-center rounded text-faint hover:text-risk hover:bg-risk/10 focus-visible:outline focus-visible:outline-accent border border-transparent hover:border-risk/20 transition-colors shrink-0"
                   >
                     <X size={11} />
                   </button>
@@ -646,7 +646,7 @@ export default function ComposerDock({
                   return (
                     <div
                       key={cat.name}
-                      className={`${CONTEXT_USAGE_COLORS[idx % CONTEXT_USAGE_COLORS.length]} h-full transition-all duration-300`}
+                      className={`${CONTEXT_USAGE_COLORS[idx % CONTEXT_USAGE_COLORS.length]} h-full transition-[width] duration-base ease-base`}
                       style={{ width: `${pct}%` }}
                       title={`${cat.name}: ${formatTokenK(cat.tokens)}K tokens (${Math.round(pct)}%)`}
                     />

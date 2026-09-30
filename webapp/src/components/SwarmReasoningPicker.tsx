@@ -6,7 +6,8 @@ import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { useOverlayFocus } from "../lib/overlayFocus";
 
 export default function SwarmReasoningPicker({ config, sessionId = "" }: { config: Config | null; sessionId?: string }) {
-  const [effort, setEffort] = useState<ReasoningEffort>("medium");
+  // Remounts on session switch: seed from config so the first paint is right.
+  const [effort, setEffort] = useState<ReasoningEffort>(() => config?.swarm_reasoning_effort || "medium");
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLButtonElement>(null);

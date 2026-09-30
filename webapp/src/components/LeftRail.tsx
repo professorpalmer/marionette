@@ -1951,7 +1951,7 @@ export default function LeftRail({
                                       setConfirmDeleteId(s.id);
                                     }}
                                     title="Delete session"
-                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-risk hover:bg-panel2 motion-safe:transition-all shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-0.5 rounded text-faint hover:text-risk hover:bg-panel2 motion-safe:transition-[opacity,color,background-color] shrink-0 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
                                   >
                                     <Trash2 size={11} />
                                   </button>

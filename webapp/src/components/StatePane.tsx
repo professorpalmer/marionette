@@ -646,7 +646,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
               {cg?.languages && cg.languages.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {cg.languages.map((l) => (
-                    <span key={l} className="bg-panel2 px-1 py-0.2 rounded border border-edge/60 text-[9px] text-faint">
+                    <span key={l} className="bg-panel2 px-1 py-px rounded border border-edge/60 text-[9px] text-faint">
                       {l}
                     </span>
                   ))}
@@ -1054,7 +1054,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                               className={`flex items-center justify-between bg-panel border ${borderHighlightClass} rounded px-2 py-1 text-[11px]`}
                             >
                               <div className="flex items-center gap-1.5 truncate">
-                                <span className="text-[8px] uppercase tracking-wider text-accent bg-accent2 px-1 py-0.2 rounded border border-accent/10 font-bold">
+                                <span className="text-[8px] uppercase tracking-wider text-accent bg-accent2 px-1 py-px rounded border border-accent/10 font-bold">
                                   {item.type}
                                 </span>
                                 <span className="text-muted italic truncate text-[11px]">{displayHeadline}</span>
@@ -1066,7 +1066,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                                   </span>
                                 )}
                                 {item.count > 1 && (
-                                  <span className="text-[9px] font-bold text-accent px-1 py-0.2 rounded-full bg-accent2 border border-accent/20">
+                                  <span className="text-[9px] font-bold text-accent px-1 py-px rounded-full bg-accent2 border border-accent/20">
                                     x{item.count}
                                   </span>
                                 )}
@@ -1079,7 +1079,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                         return (
                           <div
                             key={idx}
-                            className={`bg-panel2 border ${borderHighlightClass} rounded-lg p-2.5 transition-all`}
+                            className={`bg-panel2 border ${borderHighlightClass} rounded-lg p-2.5 transition-colors`}
                           >
                             <div className="flex items-start justify-between gap-2">
                               <div className="text-[12px] text-txt leading-relaxed break-words flex-1">
@@ -1092,7 +1092,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
                                   </span>
                                 )}
                                 {item.count > 1 && (
-                                  <span className="text-[9px] font-bold text-accent px-1.5 py-0.2 rounded bg-accent2 border border-accent/20">
+                                  <span className="text-[9px] font-bold text-accent px-1.5 py-px rounded bg-accent2 border border-accent/20">
                                     x{item.count}
                                   </span>
                                 )}
