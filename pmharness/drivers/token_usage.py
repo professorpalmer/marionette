@@ -220,7 +220,7 @@ def expand_uncached_prompt_tokens(
     return tin, cached, cache_write
 
 
-def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
+def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int, bool]:
     tin = _as_int(
         usage.get("input_tokens")
         or usage.get("prompt_tokens")
@@ -260,6 +260,10 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
         cost = _as_cost(usage.get(key))
         if cost is not None:
             break
+    # Buckets found in prompt_tokens_details / input_tokens_details (OpenAI
+    # semantics) are a subset of the prompt total; only top-level buckets
+    # (Anthropic / Cursor) may mean the total is uncached-only.
+    in_details = False
     cached = _as_int(
         usage.get("cache_read_tokens")
         or usage.get("cache_read_input_tokens")
@@ -291,6 +295,7 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
                 or details.get("cacheReadInputTokens")
                 or details.get("cacheReadInputTokenCount")
             )
+            in_details = cached > 0
     if cached <= 0:
         inp = usage.get("input") or usage.get("prompt")
         if isinstance(inp, dict):
@@ -330,6 +335,7 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
                 or details.get("cache_creation_tokens")
                 or details.get("cacheCreationTokens")
             )
+            in_details = in_details or cache_write > 0
     if cache_write <= 0:
         inp = usage.get("input") or usage.get("prompt")
         if isinstance(inp, dict):
@@ -341,8 +347,9 @@ def _from_usage_dict(usage: dict) -> Tuple[int, int, Optional[float], int, int]:
                 or inp.get("cacheWriteInputTokenCount")
                 or inp.get("cache_creation_tokens")
             )
-    tin, cached, cache_write = expand_uncached_prompt_tokens(tin, cached, cache_write)
-    return tin, tout, cost, cached, cache_write
+    if not in_details:
+        tin, cached, cache_write = expand_uncached_prompt_tokens(tin, cached, cache_write)
+    return tin, tout, cost, cached, cache_write, in_details
 
 
 def _iter_usage_candidates(blob: Any) -> list:
@@ -378,11 +385,13 @@ def _iter_usage_candidates(blob: Any) -> list:
 def coerce_token_usage_record(*blobs: Any) -> TokenUsageDetail:
     """Return full usage detail including optional modality buckets."""
     detail = TokenUsageDetail()
+    in_details = False
     for blob in blobs:
         if blob is None:
             continue
         for cand in _iter_usage_candidates(blob):
-            tin, tout, cost, cached, cache_write = _from_usage_dict(cand)
+            tin, tout, cost, cached, cache_write, subset = _from_usage_dict(cand)
+            in_details = in_details or subset
             if tin > 0:
                 detail.tokens_in = tin
             if tout > 0:
@@ -406,11 +415,12 @@ def coerce_token_usage_record(*blobs: Any) -> TokenUsageDetail:
             detail.encrypted_opaque_tokens = _merge_modality(
                 detail.encrypted_opaque_tokens, mods["encrypted_opaque_tokens"]
             )
-    detail.tokens_in, detail.cache_read, detail.cache_write = (
-        expand_uncached_prompt_tokens(
-            detail.tokens_in, detail.cache_read, detail.cache_write
+    if not in_details:
+        detail.tokens_in, detail.cache_read, detail.cache_write = (
+            expand_uncached_prompt_tokens(
+                detail.tokens_in, detail.cache_read, detail.cache_write
+            )
         )
-    )
     return detail
 
 
