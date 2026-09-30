@@ -72,7 +72,7 @@ import {
   derivePillStatus,
   isSwarmPausePoint,
 } from "./conversation/pillStatus";
-import { isAgentLoopOpen, isPilotMouthBusy } from "./conversation/runnersBusy";
+import { isAgentLoopOpen, isPilotMouthBusy, quietLocalStreamDecision } from "./conversation/runnersBusy";
 import {
   appendPendingReview,
   appendStopHonestyNotice,
@@ -222,6 +222,8 @@ import SpillPreviewModal, {
 } from "./conversation/SpillPreviewModal";
 import {
   beginChatStreamGeneration,
+  chatFrameToStreamEvent,
+  isTerminalStreamKind,
   recordPrimaryStreamFrame,
 } from "./conversation/chatEvents";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
@@ -360,6 +362,8 @@ export default function Conversation({
   // a turn begins without a local EventSource (e.g. Discord Bridge queue drain).
   const ensureChatEventsReattachRef = useRef<() => void>(() => {});
   const abandonStaleLocalStreamRef = useRef<() => void>(() => {});
+  // Last frame on the live local stream (quiet-stream watchdog).
+  const lastLocalStreamEventAtRef = useRef(0);
 
   const clearChatEventsPoll = () => {
     if (chatEventsPollTimerRef.current != null) {
@@ -3089,6 +3093,80 @@ export default function Conversation({
     }).catch(() => {});
   };
 
+  // A live stream that missed assistant_done stays "active" with the answer
+  // already on screen, and runner transitions are not recorded while it is
+  // live, so no store event ever settles it. When it has gone quiet, ask the
+  // backend; two idle answers in a row abandon it through the normal settle.
+  useEffect(() => {
+    let idleSamples = 0;
+    let inFlight = false;
+    const tick = async () => {
+      if (inFlight) return;
+      const base = {
+        localStreamActive: localStreamActiveRef.current,
+        turnSettled: turnSettledRef.current,
+        userStopped: userStoppedRef.current,
+        quietMs: Date.now() - lastLocalStreamEventAtRef.current,
+        idleSamples,
+      };
+      const first = quietLocalStreamDecision(base);
+      if (first.kind === "skip") { idleSamples = 0; return; }
+      const sid = streamSessionIdRef.current;
+      if (!sid) return;
+      inFlight = true;
+      try {
+        const st = await api.getSessionState({ sessionId: sid });
+        if (streamSessionIdRef.current !== sid) return;
+        const backendIdle = st?.runners?.[sid] === "idle" && !sessionStateShowsAwaitingSwarm({
+          state: st?.state,
+          pendingSwarms: !!st?.pending_swarms,
+          userStopped: userStoppedRef.current,
+        });
+        const next = quietLocalStreamDecision({
+          ...base,
+          quietMs: Date.now() - lastLocalStreamEventAtRef.current,
+          backendIdle,
+        });
+        if (next.kind === "abandon") {
+          idleSamples = 0;
+          // The backend usually recorded the terminal we missed: replay the
+          // ring after our last frame and settle from it (Done, not a lost
+          // stream). Only when it holds no terminal is the stream abandoned.
+          let recovered = false;
+          try {
+            const replay = await api.chatEvents({
+              session: sid,
+              since: lastAppliedRingCursorRef.current,
+              generation: ringGenerationRef.current,
+            });
+            const frames = replay && !replay.missed && replay.ok !== false ? replay.events || [] : [];
+            if (streamSessionIdRef.current === sid && frames.some((f) => isTerminalStreamKind(f.kind))) {
+              for (const frame of frames) {
+                recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, frame);
+                applyStreamEventRef.current(chatFrameToStreamEvent(frame));
+              }
+              cancelRef.current?.();
+              cancelRef.current = null;
+              localStreamActiveRef.current = false;
+              recovered = true;
+            }
+          } catch {
+            // Ring unavailable: fall through to the honest abandon.
+          }
+          if (!recovered) abandonStaleLocalStreamRef.current();
+        } else if (next.kind === "count" || next.kind === "skip") {
+          idleSamples = next.idleSamples;
+        }
+      } catch {
+        // Unknown backend state: try again next tick.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(() => { void tick(); }, 3000);
+    return () => window.clearInterval(timer);
+  }, []);
+
 
 
   // Shared path for live SSE and mid-turn chatEvents reattach. Callers must
@@ -3245,6 +3323,7 @@ export default function Conversation({
       : (cb: any, done: any, err: any) => api.chat(msg, cb, done, err, usePlan, imgPaths, requestSubmission);
     clearChatEventsPoll();
     localStreamActiveRef.current = true;
+    lastLocalStreamEventAtRef.current = Date.now();
     detachedBusyRef.current = false;
     const streamSid = activeSessionId;
     const streamGen = beginChatStreamGeneration({
@@ -3263,6 +3342,7 @@ export default function Conversation({
       // session A never append onto B (bleed) or re-append onto A (infinite
       // Investigated repeats while the busy poll also replaces from disk).
       if (!streamLive()) return;
+      lastLocalStreamEventAtRef.current = Date.now();
       if (!admissionAcknowledged && ev.kind === "input_receipt" && typeof ev.data?.input_id === "string"
         && ev.data.input_id && (!requestSubmission.input_id || ev.data.input_id === requestSubmission.input_id)
         && ["accepted", "delivering", "injected"].includes(ev.data.status)) {
