@@ -26,6 +26,8 @@ export function formatUsd(num: number): string {
 }
 
 export type LedgerFooter = {
+  /** Session total; null when the plan or local part already is the whole total. */
+  tokens: string | null;
   spend: string;
   spendTitle: string;
   unpriced: string | null;
@@ -59,8 +61,13 @@ export function ledgerFooter(view: LedgerView): LedgerFooter {
     ? "Included in your subscription: $0 extra cash. List price is what the same usage would cost pay-as-you-go."
     : null;
   const local = view.local.calls > 0 ? `${formatTokenCount(view.local.tokens)} tok local` : null;
-  const cache = view.cache_hit != null && view.tokens > 0 ? `${Math.round(view.cache_hit * 100)}% cache` : null;
-  return { spend, spendTitle, unpriced, plan, planTitle, local, cache };
+  const wholeTotalShown = (plan !== null && view.plan.tokens === view.tokens)
+    || (local !== null && view.local.tokens === view.tokens);
+  const tokens = wholeTotalShown ? null : `${formatTokenCount(view.tokens)} tok`;
+  // Local models never cache, so only non-local tokens could have hit one.
+  const cacheable = view.tokens - view.local.tokens;
+  const cache = view.cache_hit != null && cacheable > 0 ? `${Math.round(view.cache_hit * 100)}% cache` : null;
+  return { tokens, spend, spendTitle, unpriced, plan, planTitle, local, cache };
 }
 
 /** A session with ledger rows is shown from the ledger; older sessions are not. */

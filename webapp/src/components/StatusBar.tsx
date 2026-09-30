@@ -91,15 +91,23 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   const [branch, setBranch] = useState("");
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
+    id: number;
     message: string;
     actionLabel?: string;
     actionEvent?: string;
   } | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
+  // True between a session switch and the first feed reply for a session with
+  // no last-known state: the footer shows neither A's state nor a guessed Idle.
+  const [statePending, setStatePending] = useState(false);
   const [taskProfile, setTaskProfile] = useState<TaskProfileChip | null>(null);
   const [goalBusy, setGoalBusy] = useState(false);
 
   const sessionOwnerRef = useRef({ id: "", generation: 0 });
+  const lastKnownRef = useRef(new Map<string, { state?: SessionState; profile?: TaskProfileChip }>());
+  const remember = (id: string, patch: { state?: SessionState; profile?: TaskProfileChip }) => {
+    if (id) lastKnownRef.current.set(id, { ...lastKnownRef.current.get(id), ...patch });
+  };
   const stateRequestRef = useRef(0);
   const mutationBusyRef = useRef(false);
 
@@ -119,7 +127,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       owner.id = stateRes.active_view_id || "";
       setSessionStateFeedSession(owner.id);
     }
+    remember(owner.id, { state: stateRes });
     setSessionState(stateRes);
+    setStatePending(false);
   });
 
   const applyGoalMutation = (
@@ -139,6 +149,8 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           void refreshSessionState(true);
           return;
         }
+        const known = lastKnownRef.current.get(owner.id)?.state;
+        if (known) remember(owner.id, { state: { ...known, goal: res.goal } });
         setSessionState((prev) => prev ? { ...prev, goal: res.goal } : prev);
       })
       .catch((err) => console.error("Session GOAL action failed", err))
@@ -152,13 +164,15 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
   // Transient toast (e.g. a refused model switch). Auto-dismisses; never blocks.
   // detail may be a string or { message, actionLabel?, actionEvent? } for Undo.
   useEffect(() => {
+    let lastId = 0;
     const onToast = (e: Event) => {
       const detail = (e as CustomEvent).detail;
-      let next: { message: string; actionLabel?: string; actionEvent?: string } | null = null;
+      let next: { id: number; message: string; actionLabel?: string; actionEvent?: string } | null = null;
       if (typeof detail === "string" && detail) {
-        next = { message: detail };
+        next = { id: ++lastId, message: detail };
       } else if (detail && typeof detail === "object" && typeof detail.message === "string" && detail.message) {
         next = {
+          id: ++lastId,
           message: detail.message,
           actionLabel: typeof detail.actionLabel === "string" ? detail.actionLabel : undefined,
           actionEvent: typeof detail.actionEvent === "string" ? detail.actionEvent : undefined,
@@ -168,7 +182,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       setToast(next);
       const snapshot = next;
       window.setTimeout(
-        () => setToast((cur) => (cur?.message === snapshot.message ? null : cur)),
+        () => setToast((cur) => (cur?.id === snapshot.id ? null : cur)),
         toastDurationMs(snapshot.message),
       );
     };
@@ -176,7 +190,10 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     return () => window.removeEventListener("harness-toast", onToast);
   }, []);
 
-  useEffect(() => subscribeTaskProfile(setTaskProfile), []);
+  useEffect(() => subscribeTaskProfile((chip) => {
+    remember(sessionOwnerRef.current.id, { profile: chip });
+    setTaskProfile(chip);
+  }), []);
 
 
   // The UpdateBanner owns the single, robust apply() path (latching, error
@@ -260,8 +277,11 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       sessionOwnerRef.current = { id, generation: sessionOwnerRef.current.generation + 1 };
       mutationBusyRef.current = false;
       setGoalBusy(false);
-      setSessionState(null);
-      setTaskProfile(null);
+      // Seed from this session's own last-known reply; never keep the prior session's.
+      const known = id ? lastKnownRef.current.get(id) : undefined;
+      setSessionState(known?.state ?? null);
+      setStatePending(!known?.state);
+      setTaskProfile(known?.profile ?? null);
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
       void refreshSessionState();
@@ -304,17 +324,24 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       <button onClick={onToggleRight} title="Toggle floating panels (Ctrl/Cmd+J)"
         className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
       <span className="w-px h-3 bg-edge shrink-0" />
-      <span
-        className={`flex items-center gap-1 shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
-        title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
-        data-runtime-status={runtimeStatus}
-      >
-        <Circle
-          size={7}
-          className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
-        />
-        <span className="status-bar-optional-sm">{footerRuntimeStatusLabel(runtimeStatus)}</span>
-      </span>
+      {statePending ? (
+        <span className="flex items-center gap-1 shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
+          <Circle size={7} className="text-faint" />
+          <span className="status-bar-optional-sm">…</span>
+        </span>
+      ) : (
+        <span
+          className={`flex items-center gap-1 shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
+          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
+          data-runtime-status={runtimeStatus}
+        >
+          <Circle
+            size={7}
+            className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
+          />
+          <span className="status-bar-optional-sm">{footerRuntimeStatusLabel(runtimeStatus)}</span>
+        </span>
+      )}
       {branch && <span className="status-bar-optional-sm flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
       {taskProfile && (
         <span
@@ -337,7 +364,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           <span className="uppercase tracking-wide text-faint shrink-0">GOAL</span>
           <span className="truncate">{truncateGoalText(sessionGoal.text)}</span>
           {sessionGoal.status === "paused" ? (
-            <span className="text-amber-300/80 shrink-0">paused</span>
+            <span className="text-warn/80 shrink-0">paused</span>
           ) : null}
           {sessionGoal.status === "complete" ? (
             <span className="text-good/80 shrink-0">done</span>
@@ -405,11 +432,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
         <>
           <span className="w-px h-3 bg-edge/40 shrink-0" />
           <span
-            className="flex items-center gap-1.5 text-muted/80 min-w-0"
+            className="flex items-center gap-1.5 text-muted/80 min-w-0 tabular-nums"
             title="This session, all time: every model call recorded once and priced when it was made. Click for the breakdown."
           >
             <Coins size={10} className="text-faint shrink-0" />
-            <span className="status-bar-optional-xs">{formatTokenCount(ledger.tokens)} tok</span>
+            {ledgerWords.tokens ? (
+              <span className="status-bar-optional-xs">{ledgerWords.tokens}</span>
+            ) : null}
             {ledgerWords.cache ? (
               <span className="status-bar-optional-sm text-good/65">{ledgerWords.cache}</span>
             ) : null}
@@ -448,7 +477,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           <button
             type="button"
             onClick={openSessionEconomics}
-            className="flex items-center gap-1.5 text-muted/80 min-w-0 hover:text-muted"
+            className="flex items-center gap-1.5 text-muted/80 min-w-0 hover:text-muted tabular-nums"
             title="This session started before usage was recorded per call, so its figures are an estimate."
           >
             <Coins size={10} className="text-faint shrink-0" />
@@ -462,12 +491,12 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       </div>
       <div className="status-bar-cluster status-bar-cluster-end">
       {toast && (
-        <span className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300/90">
-          <span>{toast.message}</span>
+        <span className="flex items-center gap-1.5 min-w-0 max-w-[40ch] px-2 py-0.5 rounded bg-warn/10 border border-warn/30 text-warn/90">
+          <span className="truncate" title={toast.message}>{toast.message}</span>
           {toast.actionLabel && toast.actionEvent ? (
             <button
               type="button"
-              className="underline font-semibold hover:text-amber-200 focus-visible:outline focus-visible:outline-1 focus-visible:outline-amber-300 rounded-sm"
+              className="shrink-0 underline font-semibold hover:text-warn focus-visible:outline focus-visible:outline-1 focus-visible:outline-warn rounded-sm"
               onClick={() => {
                 window.dispatchEvent(new CustomEvent(toast.actionEvent!));
                 setToast(null);

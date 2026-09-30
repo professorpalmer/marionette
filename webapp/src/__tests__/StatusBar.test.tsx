@@ -824,3 +824,94 @@ describe("StatusBar branch label", () => {
     await waitFor(() => expect(screen.queryByText("dev")).toBeNull());
   });
 });
+
+describe("StatusBar session switch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("never paints a guessed Idle or the prior session's GOAL while switching", async () => {
+    mockGetSessionState.mockResolvedValue({ active_view_id: "A", state: "idle", runners: {}, goal: { text: "Goal A", status: "active" } });
+    render(<StatusBar {...statusBarProps} />);
+    await screen.findByText("Goal A");
+    const runtime = () => document.querySelector("[data-runtime-status]");
+
+    let resolveB!: (value: Awaited<ReturnType<typeof api.getSessionState>>) => void;
+    mockGetSessionState.mockReturnValueOnce(new Promise((resolve) => { resolveB = resolve; }));
+    act(() => window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "B" } })));
+    expect(screen.queryByText("Goal A")).not.toBeInTheDocument();
+    expect(runtime()).toHaveAttribute("data-runtime-status", "pending");
+
+    await act(async () => {
+      resolveB({ active_view_id: "B", state: "thinking", runners: {}, goal: { text: "Goal B", status: "active" } });
+    });
+    expect(await screen.findByText("Goal B")).toBeInTheDocument();
+    expect(runtime()).toHaveAttribute("data-runtime-status", "thinking");
+
+    let resolveA!: (value: Awaited<ReturnType<typeof api.getSessionState>>) => void;
+    mockGetSessionState.mockReturnValueOnce(new Promise((resolve) => { resolveA = resolve; }));
+    act(() => window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: "A" } })));
+    // Seeded from A's own last reply before the feed answers.
+    expect(screen.getByText("Goal A")).toBeInTheDocument();
+    expect(screen.queryByText("Goal B")).not.toBeInTheDocument();
+    expect(runtime()).toHaveAttribute("data-runtime-status", "ready");
+    await act(async () => {
+      resolveA({ active_view_id: "A", state: "idle", runners: {}, goal: { text: "Goal A", status: "active" } });
+    });
+  });
+});
+
+describe("StatusBar toast", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, runners: {} });
+    mockSessions.mockResolvedValue([]);
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("truncates a long toast from the end and keeps the full text in its title", () => {
+    render(<StatusBar {...statusBarProps} />);
+    const message = "Model switch refused because the session is mid-turn; try again after it settles";
+    act(() => { window.dispatchEvent(new CustomEvent("harness-toast", { detail: message })); });
+    const text = screen.getByText(message);
+    expect(text).toHaveClass("truncate");
+    expect(text).toHaveAttribute("title", message);
+    expect(text.parentElement).toHaveClass("min-w-0");
+  });
+
+  it("does not let the first toast's timer close a repeat of the same message", () => {
+    vi.useFakeTimers();
+    render(<StatusBar {...statusBarProps} />);
+    const fire = () => act(() => { window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Saved" })); });
+    fire();
+    act(() => { vi.advanceTimersByTime(3000); });
+    fire();
+    act(() => { vi.advanceTimersByTime(1500); });
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  });
+});
+
+describe("StatusBar ledger words", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspaces.mockResolvedValue([]);
+    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, runners: {} });
+    mockSessions.mockResolvedValue([]);
+  });
+
+  it("shows an all-local session's tokens once, without a cache rate, in tabular digits", async () => {
+    mockGetUsage.mockResolvedValue({ ...processUsage, ledger: ledgerView({
+      calls: 2, tokens: 960, cache_hit: 0, local: { ...emptyBucket, calls: 2, tokens: 960, cache_hit: 0 },
+    }) });
+    render(<StatusBar {...statusBarProps} />);
+    const local = await screen.findByText("960 tok local");
+    expect(screen.queryByText("960 tok")).not.toBeInTheDocument();
+    expect(screen.queryByText(/% cache/)).not.toBeInTheDocument();
+    expect(local.parentElement).toHaveClass("tabular-nums");
+  });
+});

@@ -19,7 +19,11 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 const noop = () => {};
 
 function renderBusyDock(input: string, overrides: Partial<ComponentProps<typeof ComposerDock>> = {}) {
-  return render(
+  return render(busyDock(input, overrides));
+}
+
+function busyDock(input: string, overrides: Partial<ComponentProps<typeof ComposerDock>> = {}) {
+  return (
     <ComposerDock
       config={{ driver: "codex:gpt-6-astra", models: ["codex:gpt-6-astra"], model_labels: { "codex:gpt-6-astra": "GPT-6 Astra Long Model Name" }, reach: "local", budget: 1, reasoning_effort: "high" }}
       taRef={createRef<HTMLTextAreaElement>()}
@@ -106,7 +110,7 @@ function renderBusyDock(input: string, overrides: Partial<ComponentProps<typeof 
       stop={noop}
       send={noop}
       {...overrides}
-    />,
+    />
   );
 }
 
@@ -144,6 +148,27 @@ describe("ComposerDock busy chrome", () => {
     expect(screen.getByRole("button", { name: /interrupt/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /steer/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
+  });
+});
+
+describe("ComposerDock session switch chrome", () => {
+  it.each(["", "draft for the target session"])("shows a disabled Send, never Stop/Steer/Interrupt, while switching (input %j)", (input) => {
+    renderBusyDock(input, { sessionSwitching: true });
+    expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /steer/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /interrupt/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+});
+
+describe("ComposerDock attached image thumbnails", () => {
+  it("keeps the remaining thumbnail's DOM node when an earlier image is removed", () => {
+    const a = { path: "input:s:a", name: "a.png", previewUrl: "blob:a" };
+    const b = { path: "input:s:b", name: "b.png", previewUrl: "blob:b" };
+    const view = renderBusyDock("", { attachedImages: [a, b] });
+    const before = screen.getByRole("button", { name: "Preview b.png" });
+    view.rerender(busyDock("", { attachedImages: [b] }));
+    expect(screen.getByRole("button", { name: "Preview b.png" })).toBe(before);
   });
 });
 
