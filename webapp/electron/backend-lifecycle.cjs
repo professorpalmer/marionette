@@ -107,6 +107,18 @@ function childProcessStillAlive(child) {
 }
 
 /**
+ * Re-ensuring the backend (macOS Dock reopen after the last window closed)
+ * must keep a live child this app spawned. Probing its marker treats it as a
+ * foreign backend: a reuse drops ownership (Cmd+Q then orphans the tree and a
+ * crash is never respawned) and a probe that times out on a busy backend
+ * refuses it as not owned.
+ */
+function shouldKeepOwnedLiveBackend({ child, backendOwned, quitting }) {
+  if (quitting || backendOwned !== true) return false;
+  return childProcessStillAlive(child);
+}
+
+/**
  * Shut down an owned backend process tree with a bounded graceful opportunity.
  * On Windows: soft taskkill /T, await graceMs while the child can exit, then
  * force /T /F only if still alive. Does not target unrelated processes.
@@ -210,5 +222,6 @@ module.exports = {
   shouldCountTowardCrashLoop,
   windowsBackendShutdownPlan,
   childProcessStillAlive,
+  shouldKeepOwnedLiveBackend,
   shutdownOwnedBackendTree,
 };
