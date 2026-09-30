@@ -40,6 +40,7 @@ import {
   tokenizeClickableOutput,
 } from "../lib/clickableOutput";
 import { splitMarkdownBlocks, splitStreamingMarkdown } from "../lib/streamMarkdown";
+import { rehypeStreamCaret, STREAM_CARET_CLASS } from "../lib/streamCaret";
 import {
   activityWorkDurationMs,
   aggregateExplorationSummary,
@@ -64,6 +65,8 @@ import {
   workFoldLabel,
   ranGoalLine,
   resolveSealedWorkMs,
+  turnSpanMs,
+  maxKnown,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -163,6 +166,9 @@ export type Card = {
   actions?: NestedAction[];
   /** Owning local job id when actions were mirrored from a worker. */
   worker_id?: string;
+  /** Epoch ms the card entered the saved transcript, and its turn's user message. */
+  ts?: number;
+  turn_ts?: number;
   // Fields are optional because a card's result can be a full tool outcome
   // (num/types/artifacts) OR a lightweight dispatch ack (status/message) for a
   // backgrounded run_implement/run_parallel job. Rendering must not assume the
@@ -2669,7 +2675,7 @@ function ActivityGroup({
 
   const sealedWorkMs = (() => {
     const { durationMs, rememberMs } = resolveSealedWorkMs({
-      fromItems: activityWorkDurationMs(items),
+      fromItems: maxKnown(activityWorkDurationMs(items), turnSpanMs(items)),
       busyElapsedMs,
       isLiveFold,
       rememberedMs: __sealedWorkMs.get(groupId) ?? null,
@@ -3446,6 +3452,7 @@ const MARKDOWN_COMPONENTS = {
 
 const REMARK_PLUGINS = [remarkGfm];
 const REHYPE_PLUGINS = [rehypeHighlight];
+const REHYPE_PLUGINS_CARET = [rehypeHighlight, rehypeStreamCaret];
 
 const markdownUrlTransform = (url: string, key: string, node: { tagName: string }) => (
   key === "href" && node.tagName === "a" && /^file:/i.test(url) && parseFileHref(url)
@@ -3454,12 +3461,13 @@ const markdownUrlTransform = (url: string, key: string, node: { tagName: string 
 );
 
 // Pretty tree only. Streaming passes finished blocks here one at a time.
-const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) {
+// `caret` marks the block still streaming: the caret goes inside its last text.
+const PrettyMarkdown = memo(function PrettyMarkdown({ text, caret = false }: { text: string; caret?: boolean }) {
   return (
     <ReactMarkdown
       urlTransform={markdownUrlTransform}
       remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REHYPE_PLUGINS}
+      rehypePlugins={caret ? REHYPE_PLUGINS_CARET : REHYPE_PLUGINS}
       components={MARKDOWN_COMPONENTS}
     >
       {autolinkAgentText(text || "")}
@@ -3469,12 +3477,16 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text }: { text: string }) 
 
 function StreamingMarkdown({ text }: { text: string }) {
   const buf = splitStreamingMarkdown(text || "");
-  const caret = <span className="transcript-stream-caret" aria-hidden="true" />;
+  const caret = <span className={STREAM_CARET_CLASS} aria-hidden="true" />;
   // Finished top-level blocks are memo hits frame to frame; only the block
   // still growing re-parses. One tree over all of `flushed` re-highlighted
   // every earlier code block on every token (O(n^2) over an answer).
   const blocks = splitMarkdownBlocks(buf.flushed);
-  const pretty = blocks.map((block, i) => <PrettyMarkdown key={i} text={block} />);
+  // The caret always rides inside the last text, never beside a block.
+  const caretInBlocks = !buf.open && !buf.hold && blocks.length > 0;
+  const pretty = blocks.map((block, i) => (
+    <PrettyMarkdown key={i} text={block} caret={caretInBlocks && i === blocks.length - 1} />
+  ));
   // Never paint flushed-as-markdown plus a sibling lag <span>. That remounts
   // the trailing sentence as <p> then <span> then <p> again — the blink.
   if (buf.open) {
@@ -3487,8 +3499,8 @@ function StreamingMarkdown({ text }: { text: string }) {
           className="block bg-panel/80 border border-accent/20 rounded-md p-3 overflow-x-auto font-mono text-[0.719rem] leading-[1.55] text-txt/90 my-2 whitespace-pre"
         >
           {buf.open.body + buf.hold}
+          {caret}
         </pre>
-        {caret}
       </>
     );
   }
@@ -3496,9 +3508,9 @@ function StreamingMarkdown({ text }: { text: string }) {
     <>
       {pretty}
       {buf.hold ? (
-        <span data-md-hold className="font-mono">{buf.hold}</span>
+        <span data-md-hold className="font-mono">{buf.hold}{caret}</span>
       ) : null}
-      {caret}
+      {blocks.length === 0 && !buf.hold ? caret : null}
     </>
   );
 }
@@ -3507,7 +3519,7 @@ function StreamingMarkdown({ text }: { text: string }) {
 // The typewriter re-renders the parent every animation frame; without this the
 // full remark/rehype pipeline would run each frame even when no character was
 // added. Restores formatted-while-streaming without the old ~40% CPU cost.
-const Markdown = memo(function Markdown({
+export const Markdown = memo(function Markdown({
   text,
   streaming: streamingProp,
 }: {
