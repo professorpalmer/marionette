@@ -16,7 +16,7 @@ import { historyCursors } from '../lib/selectedMetadataEvidence';
 import type { HistoryLaneName, SelectedMetric } from '../lib/selectedMetadataEvidence';
 
 const button = 'min-h-11 px-2 text-sm text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
-const compactButton = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
+const compactButton = 'px-1.5 py-0.5 text-ui-10.5 text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
 const tabs = ['Tasks', 'Artifacts', 'Routing', 'Checks', 'History', 'Economics'] as const;
 type Panel = typeof tabs[number];
 function metricText(metric: SelectedMetric | undefined, dollars = false): string {
@@ -52,7 +52,7 @@ export default function MetadataExpertPanels({ detail, store, busy, stale, navig
   };
   const lanes: HistoryLaneName[] = ['attempts', 'runs', 'process_outcomes', 'observations'];
   const chrome = compact ? compactButton : button;
-  return <section aria-label="Selected job inspector" className={`space-y-2 border-t border-edge pt-2 ${compact ? 'text-[11px] text-muted' : ''}`}>
+  return <section aria-label="Selected job inspector" className={`space-y-2 border-t border-edge pt-2 ${compact ? 'text-ui-11 text-muted' : ''}`}>
     {display?.kind === 'available' && <div>
       <p className="text-txt break-words">{display.goal_preview}{display.goal_preview_truncated ? ' (preview truncated)' : ''}</p>
       <p>Delivery: {display.delivery}. Quality: {expert ? expertJobQuality(expert) : display.quality}. Publication and lifecycle do not certify verification.</p>

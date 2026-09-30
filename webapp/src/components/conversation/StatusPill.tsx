@@ -87,7 +87,7 @@ export default function StatusPill({
   const hoverText = statusPillHoverText(status, detail);
   const clickable = statusPillClickable(status, detail, onDetailClick);
   const className =
-    `text-[10.5px] font-normal flex items-center gap-1.5 min-w-0 max-w-full sm:max-w-[42ch] ${statusPillTextClass(status)}`
+    `text-ui-10.5 font-normal flex items-center gap-1.5 min-w-0 max-w-full sm:max-w-[42ch] ${statusPillTextClass(status)}`
     + (clickable ? " cursor-pointer hover:underline underline-offset-2" : "");
   if (clickable) {
     return (

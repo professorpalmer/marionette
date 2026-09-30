@@ -65,10 +65,10 @@ export default function SpillPreviewModal({
         >
           <div className="flex items-center gap-2 px-3 py-2 border-b border-edge/60">
             <div className="min-w-0 flex-1">
-              <div className="font-mono text-[11px] text-accent/90 truncate" title={preview.uri}>
+              <div className="font-mono text-ui-11 text-accent/90 truncate" title={preview.uri}>
                 {preview.uri}
               </div>
-              <div className="text-[10px] text-faint/70 tabular-nums">
+              <div className="text-ui-10 text-faint/70 tabular-nums">
                 {preview.error
                   ? "Failed to load"
                   : `${preview.chars.toLocaleString()} chars${
@@ -86,7 +86,7 @@ export default function SpillPreviewModal({
               <X size={14} />
             </button>
           </div>
-          <pre className="m-0 px-3 py-2 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-snug text-txt/90 min-h-[12rem]">
+          <pre className="m-0 px-3 py-2 overflow-auto whitespace-pre-wrap break-all font-mono text-ui-11 leading-snug text-txt/90 min-h-[12rem]">
             {preview.error || preview.content || "(empty)"}
           </pre>
         </div>

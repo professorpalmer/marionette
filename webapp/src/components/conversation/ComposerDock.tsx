@@ -325,7 +325,7 @@ export default function ComposerDock({
       <div className="max-w-3xl mx-auto min-w-0">
         <div data-testid="composer-context" className="max-h-[25dvh] overflow-y-auto overscroll-contain">
         {wikiPrepared && wikiPrepared.pages.length > 0 && (
-          <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-[11px] text-txt/85">
+          <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-center gap-2 text-ui-11 text-txt/85">
             <Share2 size={11} className="text-accent shrink-0" />
             <span className="flex-1">
               Wiki: {wikiPrepared.pages.length} structured page{wikiPrepared.pages.length === 1 ? "" : "s"} ready
@@ -344,7 +344,7 @@ export default function ComposerDock({
                   onSetDistillNotice("Wiki ingest failed");
                 }
               }}
-              className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
+              className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-ui-10.5"
             >
               Ingest
             </button>
@@ -362,11 +362,11 @@ export default function ComposerDock({
             {memoryProposals.map((prop) => (
               <div
                 key={prop.id}
-                className="px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-start gap-2 text-[11px] text-txt/85"
+                className="px-2.5 py-1.5 rounded-lg bg-accent/5 border border-accent/20 flex items-start gap-2 text-ui-11 text-txt/85"
               >
                 <Brain size={11} className="text-accent shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-faint text-[10px] mb-0.5">
+                  <div className="text-faint text-ui-10 mb-0.5">
                     {prop.refine
                       ? `Save harness refine (${prop.refine.kind}/${prop.refine.scope})?`
                       : "Save to durable memory?"}
@@ -395,7 +395,7 @@ export default function ComposerDock({
                       onSetDistillNotice(prop.refine ? "Refine save failed" : "Memory save failed");
                     }
                   }}
-                  className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-[10.5px]"
+                  className="shrink-0 px-2 py-0.5 rounded bg-accent/15 hover:bg-accent/25 text-accent font-medium transition text-ui-10.5"
                 >
                   Save
                 </button>
@@ -413,7 +413,7 @@ export default function ComposerDock({
                       /* ignore -- card already dismissed locally */
                     }
                   }}
-                  className="shrink-0 px-2 py-0.5 rounded text-faint hover:text-muted transition text-[10.5px]"
+                  className="shrink-0 px-2 py-0.5 rounded text-faint hover:text-muted transition text-ui-10.5"
                 >
                   Skip
                 </button>
@@ -422,7 +422,7 @@ export default function ComposerDock({
           </div>
         )}
         {distillNotice && (
-          <div className="mb-2 px-1 flex items-center gap-2 text-[10.5px] text-faint/80">
+          <div className="mb-2 px-1 flex items-center gap-2 text-ui-10.5 text-faint/80">
             <span className="flex-1 truncate">
               {distillNotice}
             </span>
@@ -443,13 +443,13 @@ export default function ComposerDock({
         {queueItems.length > 0 && (
           <div className="mb-2 space-y-1">
             <div className="flex items-center justify-between px-1">
-              <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+              <span className="text-ui-10 uppercase tracking-wider text-faint font-semibold">
                 {queueItems.length} queued to send
               </span>
               {queueItems.length >= 2 && (
                 <button
                   onClick={handleQueueClearAll}
-                  className="text-[10px] text-faint hover:text-muted transition font-semibold"
+                  className="text-ui-10 text-faint hover:text-muted transition font-semibold"
                 >
                   Clear all
                 </button>
@@ -467,7 +467,7 @@ export default function ComposerDock({
                   onDragLeave={() => handleQueueDragLeave(idx)}
                   onDrop={(e) => handleQueueDrop(e, idx)}
                   onDragEnd={handleQueueDragEnd}
-                  className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-[11px] text-muted transition-colors select-none
+                  className={`flex items-center gap-2 bg-panel2/60 border rounded-lg px-2.5 py-1 text-ui-11 text-muted transition-colors select-none
                     ${isDragging ? "opacity-40" : ""}
                     ${isDragOverQ ? "border-accent/40 bg-accent/5" : "border-edge/60 hover:border-edge2"}`}
                 >
@@ -477,7 +477,7 @@ export default function ComposerDock({
                   {idx === 0 && (
                     <span
                       title="Runs next"
-                      className="shrink-0 text-[9px] uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
+                      className="shrink-0 text-ui-9 uppercase font-bold px-1 py-0.5 bg-accent/15 text-accent rounded"
                     >
                       next
                     </span>
@@ -501,7 +501,7 @@ export default function ComposerDock({
                   {item.images && item.images.length > 0 && (
                     <span
                       title={`${item.images.length} image attachment(s)`}
-                      className="shrink-0 flex items-center gap-0.5 text-[9px] font-semibold px-1 py-0.5 bg-panel border border-edge/60 text-faint rounded"
+                      className="shrink-0 flex items-center gap-0.5 text-ui-9 font-semibold px-1 py-0.5 bg-panel border border-edge/60 text-faint rounded"
                     >
                       <ImageIcon size={9} />{item.images.length}
                     </span>
@@ -521,7 +521,7 @@ export default function ComposerDock({
         )}
         </div>
         {queueNotice && (
-          <div role="alert" className="mb-2 px-1 text-[10px] text-risk">
+          <div role="alert" className="mb-2 px-1 text-ui-10 text-risk">
             {queueNotice}
           </div>
         )}
@@ -536,7 +536,7 @@ export default function ComposerDock({
           }`}
         >
           {(editingIndex !== null || canRevertEdit || editNotice) && (
-            <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-panel border-b border-edge text-[11.5px] text-accent select-none rounded-t-2xl">
+            <div className="flex items-center justify-between gap-2 px-3.5 py-1.5 bg-panel border-b border-edge text-ui-11.5 text-accent select-none rounded-t-2xl">
               <span className="flex items-center gap-1.5 min-w-0">
                 <Pencil size={11} className="shrink-0" />
                 <span className="truncate">
@@ -551,7 +551,7 @@ export default function ComposerDock({
                     type="button"
                     disabled={editBusy || !input.trim()}
                     onClick={() => send()}
-                    className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
+                    className="text-accent hover:text-txt transition font-semibold text-ui-10 px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
                     title="Wipe back to this message and run the edited prompt"
                   >
                     Resubmit
@@ -562,7 +562,7 @@ export default function ComposerDock({
                     type="button"
                     disabled={editBusy}
                     onClick={() => handleCancelEdit()}
-                    className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2 disabled:opacity-50"
+                    className="text-faint hover:text-muted transition font-medium text-ui-10 px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2 disabled:opacity-50"
                     title="Restore the conversation from before this edit"
                   >
                     Cancel
@@ -573,7 +573,7 @@ export default function ComposerDock({
                     type="button"
                     disabled={editBusy}
                     onClick={() => handleRevertEdit()}
-                    className="text-accent hover:text-txt transition font-semibold text-[10px] px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
+                    className="text-accent hover:text-txt transition font-semibold text-ui-10 px-1.5 py-0.5 rounded border border-accent/40 bg-accent/10 hover:bg-accent/20 disabled:opacity-50"
                     title="Restore the conversation from before this edit"
                   >
                     Revert?
@@ -583,7 +583,7 @@ export default function ComposerDock({
                   <button
                     type="button"
                     onClick={() => { onSetCanRevertEdit(false); onSetEditNotice(null); }}
-                    className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
+                    className="text-faint hover:text-muted transition font-medium text-ui-10 px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
                   >
                     Dismiss
                   </button>
@@ -592,7 +592,7 @@ export default function ComposerDock({
                   <button
                     type="button"
                     onClick={() => onSetEditNotice(null)}
-                    className="text-faint hover:text-muted transition font-medium text-[10px] px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
+                    className="text-faint hover:text-muted transition font-medium text-ui-10 px-1.5 py-0.5 rounded border border-edge bg-panel2/50 hover:bg-panel2"
                     title="Dismiss notice"
                     aria-label="Dismiss notice"
                   >
@@ -604,7 +604,7 @@ export default function ComposerDock({
           )}
 
           {showContextPanel && !contextUsage && (
-            <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl">
+            <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-ui-11.5 select-none rounded-t-2xl">
               <div className="flex items-center gap-2 text-faint">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span className="font-semibold text-txt">Context Usage</span>
@@ -616,16 +616,16 @@ export default function ComposerDock({
             </div>
           )}
           {showContextPanel && contextUsage && (
-            <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl">
+            <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-ui-11.5 select-none rounded-t-2xl">
               <div className="flex items-center justify-between font-medium mb-2.5">
                 <div className="flex items-center gap-1.5">
                   <span className="font-semibold text-txt">Context Usage</span>
-                  <span className="text-[10px] bg-accent/15 text-accent px-1.5 py-0.5 rounded-full font-mono">
+                  <span className="text-ui-10 bg-accent/15 text-accent px-1.5 py-0.5 rounded-full font-mono">
                     {contextUsagePercent(contextUsage.total, contextUsage.limit)}% Full
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-faint font-mono text-[11px]">
+                  <span className="text-faint font-mono text-ui-11">
                     ~{formatTokenK(contextUsage.total)}K / {formatTokenK(contextUsage.limit, 0)}K Tokens
                   </span>
                   <button
@@ -658,7 +658,7 @@ export default function ComposerDock({
                 {contextCategories.map((cat, idx) => {
                   if (cat.tokens <= 0) return null;
                   return (
-                    <div key={cat.name} className="flex items-center justify-between text-[11px] font-mono py-0.5 border-b border-edge/10">
+                    <div key={cat.name} className="flex items-center justify-between text-ui-11 font-mono py-0.5 border-b border-edge/10">
                       <div className="flex items-center gap-1.5 truncate">
                         <span className={`w-2 h-2 rounded-full ${CONTEXT_USAGE_COLORS[idx % CONTEXT_USAGE_COLORS.length]} shrink-0`} />
                         <span className="truncate text-muted">{cat.name}</span>
@@ -684,7 +684,7 @@ export default function ComposerDock({
                     <button
                       type="button"
                       onClick={() => window.dispatchEvent(new Event("harness-compact-session"))}
-                      className="shrink-0 rounded border border-warn/40 bg-warn/15 px-1.5 py-0.5 text-[10px] font-medium text-warn hover:bg-warn/25"
+                      className="shrink-0 rounded border border-warn/40 bg-warn/15 px-1.5 py-0.5 text-ui-10 font-medium text-warn hover:bg-warn/25"
                     >
                       Compact now
                     </button>
@@ -698,7 +698,7 @@ export default function ComposerDock({
               )}
 
               {showContextHonesty && (
-                <div className="mt-2.5 pt-2 border-t border-edge/30 space-y-1 text-[10.5px] text-faint font-mono">
+                <div className="mt-2.5 pt-2 border-t border-edge/30 space-y-1 text-ui-10.5 text-faint font-mono">
                   {toolOutputSavingsUsd > 0 && (
                     <div className="flex items-center justify-between gap-3">
                       <span>Compact tool outputs saved</span>
@@ -742,7 +742,7 @@ export default function ComposerDock({
                 && symbolResults.length === 0
                 && !mentionListingCap && (
                 <div
-                  className="px-3 py-2 text-[11px] text-muted select-none"
+                  className="px-3 py-2 text-ui-11 text-muted select-none"
                   data-testid="mention-no-matches"
                 >
                   No matches
@@ -750,7 +750,7 @@ export default function ComposerDock({
               )}
               {showCodebaseMention && (
                 <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
                     Scope
                   </div>
                   <div
@@ -759,13 +759,13 @@ export default function ComposerDock({
                     aria-selected={selectedFileIndex === 0}
                     onClick={() => insertCodebase()}
                     onMouseEnter={() => onSetSelectedFileIndex(0)}
-                    className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                    className={`flex items-center gap-2 px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
                       selectedFileIndex === 0 ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
                     }`}
                   >
                     <Library size={11.5} className="shrink-0 opacity-60" />
                     <span className="truncate flex-1 font-mono">Codebase</span>
-                    <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
+                    <span className="text-ui-9 font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                       codebase
                     </span>
                   </div>
@@ -774,7 +774,7 @@ export default function ComposerDock({
 
               {filteredFiles.length > 0 && (
                 <>
-                  <div aria-hidden="true" className={`px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none ${showCodebaseMention ? "mt-1" : ""}`}>
+                  <div aria-hidden="true" className={`px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none ${showCodebaseMention ? "mt-1" : ""}`}>
                     Files
                   </div>
                   {filteredFiles.map((file, idx) => {
@@ -788,7 +788,7 @@ export default function ComposerDock({
                         aria-selected={isSelected}
                         onClick={() => insertMention(file)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                        className={`flex items-center gap-2 px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
                           isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
                         }`}
                       >
@@ -802,7 +802,7 @@ export default function ComposerDock({
 
               {filteredFolders.length > 0 && (
                 <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none">
                     Folders
                   </div>
                   {filteredFolders.map((folder, idx) => {
@@ -817,13 +817,13 @@ export default function ComposerDock({
                         aria-selected={isSelected}
                         onClick={() => insertFolder(folder)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
-                        className={`flex items-center gap-2 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                        className={`flex items-center gap-2 px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
                           isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
                         }`}
                       >
                         <Folder size={11.5} className="shrink-0 opacity-60" />
                         <span className="truncate flex-1 font-mono">{folder}</span>
-                        <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
+                        <span className="text-ui-9 font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                           folder
                         </span>
                       </div>
@@ -834,10 +834,10 @@ export default function ComposerDock({
 
               {symbolResults.length > 0 && (
                 <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 mt-1 select-none flex items-center justify-between">
                     <span>Symbols</span>
                     {codegraphStatus === "indexing" && (
-                      <span className="text-[9px] text-muted normal-case font-normal animate-pulse">indexing...</span>
+                      <span className="text-ui-9 text-muted normal-case font-normal animate-pulse">indexing...</span>
                     )}
                   </div>
                   {symbolResults.map((sym, idx) => {
@@ -855,18 +855,18 @@ export default function ComposerDock({
                         aria-selected={isSelected}
                         onClick={() => insertSymbol(sym.name)}
                         onMouseEnter={() => onSetSelectedFileIndex(globalIdx)}
-                        className={`flex flex-col gap-0.5 px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+                        className={`flex flex-col gap-0.5 px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
                           isSelected ? "bg-panel2 text-accent" : "text-txt/90 hover:bg-panel2/50"
                         }`}
                       >
                         <div className="flex items-center gap-1.5">
                           <Code size={11.5} className="shrink-0 opacity-60" />
                           <span className="font-mono font-medium truncate flex-1 text-left">{sym.name}</span>
-                          <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
+                          <span className="text-ui-9 font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                             {sym.kind}
                           </span>
                         </div>
-                        <span className="text-[10px] text-muted font-mono truncate pl-5 text-left">
+                        <span className="text-ui-10 text-muted font-mono truncate pl-5 text-left">
                           {sym.path}:{sym.line}
                         </span>
                       </div>
@@ -876,13 +876,13 @@ export default function ComposerDock({
               )}
 
               {(filteredFiles.length > 0 || filteredFolders.length > 0) && symbolResults.length === 0 && codegraphStatus === "indexing" && (
-                <div className="px-3 py-1 text-[10px] text-muted/60 select-none italic text-right">
+                <div className="px-3 py-1 text-ui-10 text-muted/60 select-none italic text-right">
                   symbols indexing...
                 </div>
               )}
 
               {mentionListingCap && (
-                <div className="px-3 py-1.5 text-[10px] text-muted border-t border-edge/20 select-none">
+                <div className="px-3 py-1.5 text-ui-10 text-muted border-t border-edge/20 select-none">
                   {formatMentionListingCapMessage(mentionListingCap)}
                 </div>
               )}
@@ -893,14 +893,14 @@ export default function ComposerDock({
             <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
               {matchingSlash.length === 0 ? (
                 <div
-                  className="px-3 py-2 text-[11px] text-muted select-none"
+                  className="px-3 py-2 text-ui-11 text-muted select-none"
                   data-testid="slash-no-matches"
                 >
                   No matches
                 </div>
               ) : (
                 <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-[10px] uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
+                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
                     Commands
                   </div>
                   {matchingSlash.map((s, idx) => {
@@ -917,10 +917,10 @@ export default function ComposerDock({
                           isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
                         }`}
                       >
-                        <div className="flex items-center gap-1.5 text-[11.5px] font-mono font-semibold">
+                        <div className="flex items-center gap-1.5 text-ui-11.5 font-mono font-semibold">
                           <span>{s.cmd}</span>
                         </div>
-                        <span className="text-[10px] text-muted leading-tight">{s.desc}</span>
+                        <span className="text-ui-10 text-muted leading-tight">{s.desc}</span>
                       </div>
                     );
                   })}
@@ -970,7 +970,7 @@ export default function ComposerDock({
                 </div>
               ))}
               {attachedImages.length > 1 && (
-                <span className="text-[10px] text-muted self-center ml-1 select-none font-medium">
+                <span className="text-ui-10 text-muted self-center ml-1 select-none font-medium">
                   {attachedImages.length} images
                 </span>
               )}
@@ -978,7 +978,7 @@ export default function ComposerDock({
           )}
 
           {uploadError && (
-            <div className="text-[11px] text-risk px-3 pt-1">
+            <div className="text-ui-11 text-risk px-3 pt-1">
               {uploadError}
             </div>
           )}
@@ -1003,7 +1003,7 @@ export default function ComposerDock({
                 return next;
               });
             }} aria-label="Autopilot" aria-pressed={auto} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
+              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
                 ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
               <Zap size={11} aria-hidden="true" />
             </button>
@@ -1014,7 +1014,7 @@ export default function ComposerDock({
                 return next;
               });
             }} aria-label="Plan mode" aria-pressed={plan} title="Plan mode -- get an actionable plan instead of execution (read-only)"
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] flex items-center gap-1 shrink-0 transition
+              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
                 ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
               <ListChecks size={11} aria-hidden="true" />
             </button>
@@ -1044,7 +1044,7 @@ export default function ComposerDock({
               title="View context window usage breakdown"
               aria-label="Context window usage"
               aria-expanded={showContextPanel}
-              className={`px-1.5 h-[20px] rounded-md text-[10.5px] font-mono flex items-center gap-1 shrink-0 transition
+              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 font-mono flex items-center gap-1 shrink-0 transition
                 ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
             >
               <FileText size={11} />
@@ -1061,7 +1061,7 @@ export default function ComposerDock({
                 type="button"
                 onClick={handleQueueAdd}
                 title="Queue: runs after the current turn finishes (same as Cmd/Ctrl+Enter)"
-                className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition"
+                className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition"
               >
                 <ListChecks size={9} /><span className="composer-toolbar-send-label">Queue</span>
               </button>
@@ -1073,7 +1073,7 @@ export default function ComposerDock({
                 disabled={editBusy || transcriptStale}
                 title="Stop this turn, then run this prompt next (Alt+Enter)"
                 aria-label="Interrupt"
-                className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
               >
                 <span className="composer-toolbar-send-label">Interrupt</span>
               </button>
@@ -1086,7 +1086,7 @@ export default function ComposerDock({
                   disabled={editBusy || transcriptStale || !onContinue}
                   title={recoveryCause ? `Continue the incomplete reply (${recoveryCause})` : "Continue from the preserved partial answer"}
                   aria-label="Continue"
-                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
                 >
                   <span className="composer-toolbar-send-label">Continue</span>
                 </button>
@@ -1096,7 +1096,7 @@ export default function ComposerDock({
                   disabled={editBusy || transcriptStale || !recoveryRetryAvailable || !onRetry}
                   title="Retry the latest user ask"
                   aria-label="Retry"
-                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
                 >
                   <RefreshCw size={9} /><span className="composer-toolbar-send-label">Retry</span>
                 </button>
@@ -1110,7 +1110,7 @@ export default function ComposerDock({
                       onClick={() => send()}
                       disabled={editBusy || transcriptStale}
                       title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes. Alt+Enter or Interrupt = stop this turn, then run this prompt next."
-                      className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-[10.5px] font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+                      className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
                     >
                       <Send size={9} /><span className="composer-toolbar-send-label">Steer</span>
                     </button>
@@ -1118,7 +1118,7 @@ export default function ComposerDock({
                   <button
                     type="button"
                     onClick={stop}
-                    className="px-2.5 h-[20px] rounded-md bg-risk/15 text-risk text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110"
+                    className="px-2.5 h-[20px] rounded-md bg-risk/15 text-risk text-ui-10.5 font-semibold flex items-center gap-1 hover:brightness-110"
                     title="Stop this turn. Does not steer or queue an empty prompt."
                     aria-label="Stop"
                   >
@@ -1128,7 +1128,7 @@ export default function ComposerDock({
               : <button type="button" onClick={() => send()} disabled={sessionSwitching || editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)}
                   aria-label={auto ? "Run" : plan ? "Plan" : "Send"}
                   title={sessionSwitching || transcriptStale ? "Loading this session…" : editBusy ? "Saving your edit…" : undefined}
-                  className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
+                  className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-ui-10.5 font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                   <Send size={9} /><span className="composer-toolbar-send-label">{auto ? "Run" : plan ? "Plan" : "Send"}</span></button>}
             </div>
           </div>

@@ -60,7 +60,7 @@ function TreeNode({ node, onFileSelect, selectedPath, onContextMenu }: TreeNodeP
       <div
         onClick={toggleExpand}
         onContextMenu={(e) => onContextMenu(e, node)}
-        className={`flex items-center gap-1.5 py-1 px-1.5 rounded cursor-pointer text-[12px] hover:bg-panel2/80 transition ${
+        className={`flex items-center gap-1.5 py-1 px-1.5 rounded cursor-pointer text-ui-12 hover:bg-panel2/80 transition ${
           selectedPath === node.path ? "bg-panel2 text-accent" : "text-txt"
         }`}
       >
@@ -561,7 +561,7 @@ export default function FileTree() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-transparent">
-      <div className="text-[10px] text-muted px-3 py-2 uppercase tracking-wider flex items-center justify-between shrink-0 border-b border-edge/30">
+      <div className="text-ui-10 text-muted px-3 py-2 uppercase tracking-wider flex items-center justify-between shrink-0 border-b border-edge/30">
         <span>Files ({repoName || "unknown"})</span>
         <button
           onClick={() => { void loadFiles(); }}
@@ -574,7 +574,7 @@ export default function FileTree() {
       </div>
 
       {listingCap && (
-        <div className="text-[10px] text-muted px-3 py-1.5 shrink-0 border-b border-edge/20">
+        <div className="text-ui-10 text-muted px-3 py-1.5 shrink-0 border-b border-edge/20">
           {formatListingCapMessage(listingCap)}
         </div>
       )}
@@ -588,11 +588,11 @@ export default function FileTree() {
         }}
       >
         {loading && rootNodes.length === 0 && (
-          <div className="text-[11px] text-muted p-2">Loading workspace...</div>
+          <div className="text-ui-11 text-muted p-2">Loading workspace...</div>
         )}
-        {notice && <div className="text-[11px] text-risk p-2">{notice}</div>}
+        {notice && <div className="text-ui-11 text-risk p-2">{notice}</div>}
         {!loading && !notice && rootNodes.length === 0 && (
-          <div className="text-[11px] text-muted italic p-2">No files found</div>
+          <div className="text-ui-11 text-muted italic p-2">No files found</div>
         )}
         {rootNodes.map((n) => (
           <div key={n.path} data-file-tree-node>
@@ -608,7 +608,7 @@ export default function FileTree() {
 
       {contextMenu && (
         <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-[12px] py-1 min-w-[160px]"
+          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -711,7 +711,7 @@ export default function FileTree() {
             className="w-[min(360px,92vw)] rounded-lg border border-edge bg-panel shadow-xl p-3 flex flex-col gap-2"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="text-[12px] font-medium text-txt">{namePrompt.title}</div>
+            <div className="text-ui-12 font-medium text-txt">{namePrompt.title}</div>
             <input
               ref={nameInputRef}
               value={nameValue}
@@ -726,7 +726,7 @@ export default function FileTree() {
                   setNamePrompt(null);
                 }
               }}
-              className="w-full rounded border border-edge bg-bg px-2 py-1.5 text-[12px] text-txt outline-none focus:border-accent"
+              className="w-full rounded border border-edge bg-bg px-2 py-1.5 text-ui-12 text-txt outline-none focus:border-accent"
               placeholder={namePrompt.mode === "new-folder" ? "folder-name" : "name"}
               spellCheck={false}
             />
@@ -734,14 +734,14 @@ export default function FileTree() {
               <button
                 type="button"
                 onClick={() => setNamePrompt(null)}
-                className="px-2.5 py-1 rounded text-[11px] text-muted hover:bg-panel2"
+                className="px-2.5 py-1 rounded text-ui-11 text-muted hover:bg-panel2"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={() => void submitNamePrompt()}
-                className="px-2.5 py-1 rounded text-[11px] bg-accent/20 text-accent hover:bg-accent/30 font-medium"
+                className="px-2.5 py-1 rounded text-ui-11 bg-accent/20 text-accent hover:bg-accent/30 font-medium"
               >
                 OK
               </button>

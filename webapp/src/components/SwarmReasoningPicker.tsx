@@ -63,7 +63,7 @@ export default function SwarmReasoningPicker({ config, sessionId = "" }: { confi
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
         title="Worker reasoning for swarms and implement (not the chat pilot)"
-        className="flex items-center gap-1 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+        className="flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
       >
         <span className="composer-toolbar-label">Workers</span>
         <span className="truncate max-w-[72px]">{labelForEffort(effort)}</span>

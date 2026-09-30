@@ -262,7 +262,7 @@ export default function RightDock({
               className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0"
               onKeyDown={(e) => { if (moveMenuFocus(addMenuListRef.current, e.key)) e.preventDefault(); }}
             >
-              <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-faint">Add panel</div>
+              <div className="px-2 py-1 text-ui-9 uppercase tracking-wider text-faint">Add panel</div>
               {(() => {
                 const stored = readStoredList("pmharness.tabOrder");
                 const fallback = PANEL_OPTIONS.map(option => option.tab);
@@ -322,7 +322,7 @@ export default function RightDock({
               />
             )}
             {link.id === "review" && reviewCount > 0 && (
-              <span className="absolute -top-0.5 -right-0.5 min-w-[0.875rem] h-3.5 px-0.5 rounded-full bg-accent text-panel text-[8px] font-bold flex items-center justify-center border border-panel">
+              <span className="absolute -top-0.5 -right-0.5 min-w-[0.875rem] h-3.5 px-0.5 rounded-full bg-accent text-panel text-ui-8 font-bold flex items-center justify-center border border-panel">
                 {reviewCount > 9 ? "9+" : reviewCount}
               </span>
             )}

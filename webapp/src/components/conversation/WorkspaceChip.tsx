@@ -104,7 +104,7 @@ export default function WorkspaceChip() {
   const recents = workspaceChipRecents(ws?.recents, ws?.repo, home);
 
   return (
-    <div className="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] relative">
+    <div className="flex items-center gap-1.5 px-1 pb-1.5 text-ui-11 relative">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
         className="flex items-center gap-1 text-muted hover:text-txt transition rounded px-1 py-0.5 hover:bg-panel2/60">
@@ -124,7 +124,7 @@ export default function WorkspaceChip() {
                 type="button"
                 onClick={() => openPath(home)}
                 title={home}
-                className={`${WORKSPACE_CHIP_ROW_CLASS} flex items-center gap-2 text-[11px] ${
+                className={`${WORKSPACE_CHIP_ROW_CLASS} flex items-center gap-2 text-ui-11 ${
                   homeActive ? "bg-panel2/70 text-txt font-medium" : "text-txt"
                 }`}
               >
@@ -136,19 +136,19 @@ export default function WorkspaceChip() {
           ) : null}
           {recents.length > 0 && (
             <>
-              <div className="text-[9px] uppercase tracking-wider text-faint px-3 py-1">Recents</div>
+              <div className="text-ui-9 uppercase tracking-wider text-faint px-3 py-1">Recents</div>
               {recents.map((r) => (
                 <button key={r} type="button" onClick={() => openPath(r)} title={r}
                   className={`${WORKSPACE_CHIP_ROW_CLASS} flex flex-col`}>
-                  <span className="text-txt font-medium text-[11px] truncate">{base(r)}</span>
-                  <span className="text-faint text-[9px] font-mono truncate">{r}</span>
+                  <span className="text-txt font-medium text-ui-11 truncate">{base(r)}</span>
+                  <span className="text-faint text-ui-9 font-mono truncate">{r}</span>
                 </button>
               ))}
               <div className="border-t border-edge/50 my-1" />
             </>
           )}
           <button onClick={browse}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-txt text-[11px]">
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-txt text-ui-11">
             <Folder size={12} className="text-accent" /> Open Folder...
           </button>
         </div>

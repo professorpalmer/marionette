@@ -277,7 +277,7 @@ export default function PilotPicker({
         data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
         onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}
-        className={`flex items-center justify-between px-3 py-1.5 text-[11.5px] cursor-pointer transition select-none ${
+        className={`flex items-center justify-between px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
           isActive ? "bg-panel2" : ""
         } ${isSelected ? "text-accent font-medium" : "text-txt/90"}`}
       >
@@ -295,7 +295,7 @@ export default function PilotPicker({
       {floatingNotice ? (
         <div
           role="status"
-          className="absolute left-0 bottom-full mb-1 z-40 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md bg-panel border border-warn/30 px-2 py-1 text-[9.5px] text-warn/90 leading-snug shadow-lg"
+          className="absolute left-0 bottom-full mb-1 z-40 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md bg-panel border border-warn/30 px-2 py-1 text-ui-9.5 text-warn/90 leading-snug shadow-lg"
           data-testid="pilot-reroute-notice"
         >
           {floatingNotice}
@@ -313,7 +313,7 @@ export default function PilotPicker({
             setModelOpen((prev) => !prev);
           }}
           title={current || "Pilot model"}
-          className="flex items-center gap-1 min-w-0 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+          className="flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
         >
           <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
           {binding
@@ -354,18 +354,18 @@ export default function PilotPicker({
                 aria-activedescendant={activeModel ? optionId(activeModel) : undefined}
                 aria-label="Search models or providers"
                 placeholder="Search models or providers"
-                className="bg-transparent text-[11.5px] text-txt placeholder:text-faint outline-none w-full"
+                className="bg-transparent text-ui-11.5 text-txt placeholder:text-faint outline-none w-full"
               />
             </div>
             <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[280px] overflow-y-auto">
               {!hasRows ? (
-                <div className="px-3 py-2 text-[11px] text-faint">No matching models</div>
+                <div className="px-3 py-2 text-ui-11 text-faint">No matching models</div>
               ) : (
                 <>
                   {organized.current && renderRow(organized.current)}
                   {organized.groups.map((g) => (
                     <div key={g.provider} role="group" aria-label={providerLabelOf(g.provider)}>
-                      <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-[10px] text-faint font-medium select-none">
+                      <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-ui-10 text-faint font-medium select-none">
                         {providerLabelOf(g.provider)}
                       </div>
                       {g.items.map((m) => renderRow(m))}
@@ -388,7 +388,7 @@ export default function PilotPicker({
               setReasonOpen((prev) => !prev);
             }}
             title={`Reasoning effort (${labelForEffort(reasoning)})`}
-            className="flex items-center gap-1 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+            className="flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
           >
             <span className="truncate max-w-[90px]">{labelForEffort(reasoning)}</span>
             <ChevronDown size={11} className="shrink-0 opacity-60" />
@@ -405,7 +405,7 @@ export default function PilotPicker({
               <ReasoningLevelOptions value={reasoning} onSelect={setReasoningEffort} selectedRef={reasonSelectedRef} />
               {sessionId && retainReady && reasoning !== "none" ? (
                 <label
-                  className="flex items-center gap-2 px-3 py-1.5 text-[11.5px] text-txt/90 border-t border-edge/50 select-none cursor-pointer"
+                  className="flex items-center gap-2 px-3 py-1.5 text-ui-11.5 text-txt/90 border-t border-edge/50 select-none cursor-pointer"
                   title="Off by default. Retains signed or encrypted provider output in this session for cache reuse. Replay stays with the same provider and model."
                 >
                   <input

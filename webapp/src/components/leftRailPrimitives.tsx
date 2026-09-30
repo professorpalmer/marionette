@@ -58,7 +58,7 @@ export function Section({ title, action, headerSpinner, children, className }: {
   return (
     <div className={`px-2 shrink-0 min-w-0 ${className || "pt-3"}`}>
       <div className="flex items-center justify-between px-1.5 mb-1.5 mt-0.5">
-        <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.12em] text-faint font-semibold">
+        <span className="flex items-center gap-1.5 text-ui-10 uppercase tracking-[0.12em] text-faint font-semibold">
           {title}
           {headerSpinner && <Loader2 size={10} className="animate-spin text-muted shrink-0" />}
         </span>
@@ -83,4 +83,4 @@ export const IconBtn = ({ onClick, children, title, disabled }: {
     {children}
   </button>
 );
-export const Empty = ({ children }: any) => <div className="text-[11px] text-faint italic px-1.5 py-1">{children}</div>;
+export const Empty = ({ children }: any) => <div className="text-ui-11 text-faint italic px-1.5 py-1">{children}</div>;

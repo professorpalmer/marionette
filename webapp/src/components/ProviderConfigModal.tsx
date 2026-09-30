@@ -102,7 +102,7 @@ export default function ProviderConfigModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge/40">
-          <h2 className="text-[13px] font-semibold text-txt">{title}</h2>
+          <h2 className="text-ui-13 font-semibold text-txt">{title}</h2>
           <button
             type="button"
             onClick={onClose}
@@ -120,7 +120,7 @@ export default function ProviderConfigModal({
               data-testid={`provider-config-group-${group.id}`}
               className="space-y-2"
             >
-              <legend className="text-[10px] uppercase tracking-wide text-muted font-medium">
+              <legend className="text-ui-10 uppercase tracking-wide text-muted font-medium">
                 {group.label}
               </legend>
               {group.fields.map((id) => {
@@ -133,7 +133,7 @@ export default function ProviderConfigModal({
                   : PROVIDER_CONFIG_LABELS[id];
                 return (
                   <label key={id} className="block space-y-1">
-                    <span className="text-[11px] text-muted">{PROVIDER_CONFIG_LABELS[id]}</span>
+                    <span className="text-ui-11 text-muted">{PROVIDER_CONFIG_LABELS[id]}</span>
                     {id === "name" && manual ? (
                       <select
                         ref={nameRef}
@@ -142,7 +142,7 @@ export default function ProviderConfigModal({
                         value={draft.name}
                         onChange={(e) => setField("name", e.target.value)}
                         disabled={busy}
-                        className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] font-mono focus:outline-none focus:border-accent disabled:opacity-50"
+                        className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-ui-11 font-mono focus:outline-none focus:border-accent disabled:opacity-50"
                       >
                         <option value="">Choose a provider</option>
                         {providerChoices.map((c) => <option key={c.name} value={c.name}>{c.label}</option>)}
@@ -159,11 +159,11 @@ export default function ProviderConfigModal({
                       disabled={busy || locked}
                       placeholder={placeholder}
                       readOnly={locked}
-                      className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] font-mono focus:outline-none focus:border-accent disabled:opacity-50"
+                      className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-ui-11 font-mono focus:outline-none focus:border-accent disabled:opacity-50"
                     />
                     )}
                     {secret && provider?.has_key ? (
-                      <span className="block text-[10px] text-faint">
+                      <span className="block text-ui-10 text-faint">
                         Leave blank to keep the current key. Retype to replace.
                       </span>
                     ) : null}
@@ -175,13 +175,13 @@ export default function ProviderConfigModal({
         </div>
 
         {error ? (
-          <div role="alert" className="px-4 pb-2 text-[11px] text-risk">{error}</div>
+          <div role="alert" className="px-4 pb-2 text-ui-11 text-risk">{error}</div>
         ) : null}
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-edge/40">
           <button
             type="button"
             onClick={onClose}
-            className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-[11px]"
+            className="text-muted hover:text-txt border border-edge rounded px-2.5 py-1 text-ui-11"
           >
             Cancel
           </button>
@@ -189,7 +189,7 @@ export default function ProviderConfigModal({
             type="submit"
             data-testid="provider-config-submit"
             disabled={!canSubmit}
-            className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-[11px] font-medium disabled:opacity-30"
+            className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-1 text-ui-11 font-medium disabled:opacity-30"
           >
             Save
           </button>

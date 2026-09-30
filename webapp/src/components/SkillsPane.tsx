@@ -88,14 +88,14 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
   const active = skills.filter((s) => s.state === "active");
 
   return (
-    <div className={embedded ? "text-[12px] flex flex-col gap-2" : "flex flex-col h-full text-[12px]"}>
+    <div className={embedded ? "text-ui-12 flex flex-col gap-2" : "flex flex-col h-full text-ui-12"}>
       {!embedded && (
         <div className="flex items-center justify-between px-3 py-2 border-b border-edge">
-          <span className="uppercase tracking-wider text-[10px] text-faint font-medium flex items-center gap-1.5">
+          <span className="uppercase tracking-wider text-ui-10 text-faint font-medium flex items-center gap-1.5">
             <GraduationCap size={11} /> Skills
           </span>
           <button onClick={distill} disabled={busy === "distill"}
-            className="text-[10px] flex items-center gap-1 px-1.5 h-5 rounded bg-accent2 text-accent hover:brightness-125 disabled:opacity-40">
+            className="text-ui-10 flex items-center gap-1 px-1.5 h-5 rounded bg-accent2 text-accent hover:brightness-125 disabled:opacity-40">
             <Sparkles size={10} /> Distill session
           </button>
         </div>
@@ -104,18 +104,18 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
       <div className={embedded ? "space-y-2" : "flex-1 overflow-y-auto p-2 flex flex-col gap-2"}>
         {embedded && (
           <div className="flex justify-between items-center bg-panel2/40 border border-edge/30 rounded p-2 mb-1">
-            <span className="text-faint text-[10px]">Analyze current session to propose new skills and rules.</span>
+            <span className="text-faint text-ui-10">Analyze current session to propose new skills and rules.</span>
             <button onClick={distill} disabled={busy === "distill"}
-              className="text-[10px] flex items-center gap-1 px-2 py-1 rounded bg-accent2 text-accent hover:brightness-125 disabled:opacity-40">
+              className="text-ui-10 flex items-center gap-1 px-2 py-1 rounded bg-accent2 text-accent hover:brightness-125 disabled:opacity-40">
               <Sparkles size={10} /> Distill session
             </button>
           </div>
         )}
-        {msg && <div className="text-[10px] text-muted px-1">{msg}</div>}
-        {formError && <div className="text-[10px] text-risk px-1">{formError}</div>}
+        {msg && <div className="text-ui-10 text-muted px-1">{msg}</div>}
+        {formError && <div className="text-ui-10 text-risk px-1">{formError}</div>}
 
         <div className="border border-edge/50 rounded-lg p-2 bg-panel2/30 space-y-2">
-          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+          <div className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
             <Plus size={10} /> Add rule
           </div>
           <input
@@ -123,23 +123,23 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
             placeholder="Always run tests before claiming done"
             value={newRuleText}
             onChange={(e) => setNewRuleText(e.target.value)}
-            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent"
           />
           <input
             type="text"
             placeholder="Scope (default: global)"
             value={newRuleScope}
             onChange={(e) => setNewRuleScope(e.target.value)}
-            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono"
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent font-mono"
           />
           <button onClick={addRule} disabled={busy === "add-rule"}
-            className="w-full h-6 rounded bg-accent2 text-accent text-[10px] font-medium hover:brightness-125 disabled:opacity-40">
+            className="w-full h-6 rounded bg-accent2 text-accent text-ui-10 font-medium hover:brightness-125 disabled:opacity-40">
             Add rule
           </button>
         </div>
 
         <div className="border border-edge/50 rounded-lg p-2 bg-panel2/30 space-y-2">
-          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+          <div className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
             <Plus size={10} /> Add skill
           </div>
           <input
@@ -147,43 +147,43 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
             placeholder="Skill name"
             value={newSkillName}
             onChange={(e) => setNewSkillName(e.target.value)}
-            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent"
           />
           <input
             type="text"
             placeholder="When to use this skill"
             value={newSkillDesc}
             onChange={(e) => setNewSkillDesc(e.target.value)}
-            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent"
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent"
           />
           <textarea
             placeholder="Numbered steps (markdown)"
             value={newSkillBody}
             onChange={(e) => setNewSkillBody(e.target.value)}
             rows={3}
-            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono resize-y"
+            className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent font-mono resize-y"
           />
           <button onClick={addSkill} disabled={busy === "add-skill"}
-            className="w-full h-6 rounded bg-accent2 text-accent text-[10px] font-medium hover:brightness-125 disabled:opacity-40">
+            className="w-full h-6 rounded bg-accent2 text-accent text-ui-10 font-medium hover:brightness-125 disabled:opacity-40">
             Add skill
           </button>
         </div>
 
         {pending.length > 0 && (
           <div>
-            <div className="uppercase tracking-wider text-[10px] text-warn mb-1 px-1">Pending review ({pending.length})</div>
+            <div className="uppercase tracking-wider text-ui-10 text-warn mb-1 px-1">Pending review ({pending.length})</div>
             {pending.map((s) => (
               <div key={s.slug} className="border border-warn/30 rounded-lg p-2 bg-warn/5 mb-1.5">
                 <div className="font-medium text-txt">{s.name}</div>
-                <div className="text-faint text-[10px] mt-0.5">{s.description}</div>
+                <div className="text-faint text-ui-10 mt-0.5">{s.description}</div>
                 <button onClick={() => setExpanded(expanded === s.slug ? "" : s.slug)}
-                  className="text-accent text-[10px] mt-1">{expanded === s.slug ? "hide" : "view steps"}</button>
-                {expanded === s.slug && <pre className="text-[10px] text-muted whitespace-pre-wrap mt-1 font-mono">{s.body}</pre>}
+                  className="text-accent text-ui-10 mt-1">{expanded === s.slug ? "hide" : "view steps"}</button>
+                {expanded === s.slug && <pre className="text-ui-10 text-muted whitespace-pre-wrap mt-1 font-mono">{s.body}</pre>}
                 <div className="flex gap-1.5 mt-2">
                   <button onClick={() => approve(s.slug)} disabled={busy === s.slug}
-                    className="flex-1 h-6 rounded bg-good/20 text-good text-[10px] font-medium flex items-center justify-center gap-1"><Check size={11} /> Approve</button>
+                    className="flex-1 h-6 rounded bg-good/20 text-good text-ui-10 font-medium flex items-center justify-center gap-1"><Check size={11} /> Approve</button>
                   <button onClick={() => reject(s.slug)} disabled={busy === s.slug}
-                    className="flex-1 h-6 rounded bg-risk/15 text-risk text-[10px] font-medium flex items-center justify-center gap-1"><X size={11} /> Reject</button>
+                    className="flex-1 h-6 rounded bg-risk/15 text-risk text-ui-10 font-medium flex items-center justify-center gap-1"><X size={11} /> Reject</button>
                 </div>
               </div>
             ))}
@@ -191,31 +191,31 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
         )}
 
         <div>
-          <div className="uppercase tracking-wider text-[10px] text-faint mb-1 px-1">Active ({active.length})</div>
-          {active.length === 0 && <div className="text-faint text-[10px] px-1">No active skills yet. Distill a finished session to propose one.</div>}
+          <div className="uppercase tracking-wider text-ui-10 text-faint mb-1 px-1">Active ({active.length})</div>
+          {active.length === 0 && <div className="text-faint text-ui-10 px-1">No active skills yet. Distill a finished session to propose one.</div>}
           {active.map((s) => (
             <div key={s.slug} className="border border-edge rounded-lg p-2 bg-panel2/40 mb-1.5">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-txt flex-1 truncate">{s.name}</span>
-                <span className="text-faint text-[10px]">used {s.used_count}x</span>
+                <span className="text-faint text-ui-10">used {s.used_count}x</span>
                 <button onClick={() => reject(s.slug)} title="Archive" className="text-muted hover:text-risk"><Archive size={11} /></button>
               </div>
-              <div className="text-faint text-[10px] mt-0.5">{s.description}</div>
+              <div className="text-faint text-ui-10 mt-0.5">{s.description}</div>
             </div>
           ))}
         </div>
 
         {pendingRules.length > 0 && (
           <div>
-            <div className="uppercase tracking-wider text-[10px] text-warn mb-1 px-1">Pending rules ({pendingRules.length})</div>
+            <div className="uppercase tracking-wider text-ui-10 text-warn mb-1 px-1">Pending rules ({pendingRules.length})</div>
             {pendingRules.map((r) => (
               <div key={r.slug} className="border border-warn/30 rounded-lg p-2 bg-warn/5 mb-1.5">
-                <div className="text-txt text-[11px]">{r.text}</div>
+                <div className="text-txt text-ui-11">{r.text}</div>
                 <div className="flex gap-1.5 mt-1.5">
                   <button onClick={() => approveRule(r.slug)} disabled={busy === r.slug}
-                    className="flex-1 h-6 rounded bg-good/20 text-good text-[10px] font-medium flex items-center justify-center gap-1"><Check size={11} /> Approve</button>
+                    className="flex-1 h-6 rounded bg-good/20 text-good text-ui-10 font-medium flex items-center justify-center gap-1"><Check size={11} /> Approve</button>
                   <button onClick={() => rejectRule(r.slug)} disabled={busy === r.slug}
-                    className="flex-1 h-6 rounded bg-risk/15 text-risk text-[10px] font-medium flex items-center justify-center gap-1"><X size={11} /> Reject</button>
+                    className="flex-1 h-6 rounded bg-risk/15 text-risk text-ui-10 font-medium flex items-center justify-center gap-1"><X size={11} /> Reject</button>
                 </div>
               </div>
             ))}
@@ -223,11 +223,11 @@ export default function SkillsPane({ embedded = false }: { embedded?: boolean })
         )}
 
         <div>
-          <div className="uppercase tracking-wider text-[10px] text-faint mb-1 px-1">Active rules ({activeRules.length})</div>
-          {activeRules.length === 0 && <div className="text-faint text-[10px] px-1">No active rules yet.</div>}
+          <div className="uppercase tracking-wider text-ui-10 text-faint mb-1 px-1">Active rules ({activeRules.length})</div>
+          {activeRules.length === 0 && <div className="text-faint text-ui-10 px-1">No active rules yet.</div>}
           {activeRules.map((r) => (
             <div key={r.slug} className="border border-edge rounded-lg p-2 bg-panel2/40 mb-1.5 flex items-center gap-2">
-              <span className="text-txt text-[11px] flex-1">{r.text}</span>
+              <span className="text-txt text-ui-11 flex-1">{r.text}</span>
               <button onClick={() => rejectRule(r.slug)} title="Archive" className="text-muted hover:text-risk"><Archive size={11} /></button>
             </div>
           ))}

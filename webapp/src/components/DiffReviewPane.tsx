@@ -243,7 +243,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
           <button
             type="button"
             onClick={onRefresh}
-            className="mt-3 text-[10px] px-2 py-1 rounded border border-edge text-muted hover:text-txt hover:bg-panel2/40 transition"
+            className="mt-3 text-ui-10 px-2 py-1 rounded border border-edge text-muted hover:text-txt hover:bg-panel2/40 transition"
           >
             Retry
           </button>
@@ -254,7 +254,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
       <div className="flex flex-col items-center justify-center h-full p-6 text-center text-muted">
         <Eye size={24} className="mb-2 text-faint" />
         <span className="text-xs font-medium">No pending edits to review</span>
-        <span className="text-[10px] text-faint mt-1">Enable "Review edits before applying" in Settings.</span>
+        <span className="text-ui-10 text-faint mt-1">Enable "Review edits before applying" in Settings.</span>
       </div>
     );
   }
@@ -264,21 +264,21 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
       {reviewsNotice && (
         <div
           data-testid="reviews-load-error"
-          className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
+          className="p-2 rounded text-ui-11 flex items-start gap-1.5 bg-risk/10 border border-risk/20 text-risk"
         >
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
           <span className="flex-1">{reviewsNotice}</span>
           <button
             type="button"
             onClick={onRefresh}
-            className="shrink-0 text-[10px] underline underline-offset-2 hover:text-txt"
+            className="shrink-0 text-ui-10 underline underline-offset-2 hover:text-txt"
           >
             Retry
           </button>
         </div>
       )}
       {msg && (
-        <div className={`p-2 rounded text-[11px] flex items-start gap-1.5 ${
+        <div className={`p-2 rounded text-ui-11 flex items-start gap-1.5 ${
           msg.type === "success" ? "bg-accent/10 border border-accent/20 text-accent" : "bg-risk/10 border border-risk/20 text-risk"
         }`}>
           <AlertCircle size={12} className="shrink-0 mt-0.5" />
@@ -302,21 +302,21 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
           <div key={rev.id} className="bg-panel2/40 border border-edge rounded p-3 space-y-3">
             <div className="flex flex-col gap-1 border-b border-edge/60 pb-2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-mono text-accent uppercase font-bold tracking-wider bg-accent/10 px-1.5 py-0.5 rounded">
+                <span className="text-ui-10 font-mono text-accent uppercase font-bold tracking-wider bg-accent/10 px-1.5 py-0.5 rounded">
                   {rev.id}
                 </span>
-                <span className="text-[9px] text-faint font-mono">
+                <span className="text-ui-9 text-faint font-mono">
                   {new Date(rev.created_at * 1000).toLocaleTimeString()}
                 </span>
               </div>
               <span className="text-xs font-semibold text-txt">{rev.objective}</span>
-              <span className="text-[10px] text-muted font-mono leading-tight">Job ID: {rev.job_id.slice(0, 12)}...</span>
+              <span className="text-ui-10 text-muted font-mono leading-tight">Job ID: {rev.job_id.slice(0, 12)}...</span>
             </div>
 
             {rev.error ? (
               <div
                 data-testid="pending-review-error"
-                className="p-2 rounded text-[11px] flex items-start gap-1.5 bg-risk/10 border border-risk/25 text-risk"
+                className="p-2 rounded text-ui-11 flex items-start gap-1.5 bg-risk/10 border border-risk/25 text-risk"
               >
                 <AlertCircle size={12} className="shrink-0 mt-0.5" />
                 <span className="leading-snug">
@@ -329,19 +329,19 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
               {rev.files.map((file, fIdx) => (
                 <div key={fIdx} className="space-y-2">
                   <div className="flex items-center justify-between border-b border-edge/30 pb-1">
-                    <span className="text-[11px] font-mono text-muted truncate max-w-[180px]" title={file.path}>
+                    <span className="text-ui-11 font-mono text-muted truncate max-w-[180px]" title={file.path}>
                       {file.path}
                     </span>
                     <div className="flex gap-1.5">
                       <button
                         onClick={() => handleSetFileDecisions(rev.id, file, "accept")}
-                        className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-accent hover:bg-accent/10 hover:border-accent/30 transition font-medium"
+                        className="text-ui-9 px-1.5 py-0.5 rounded bg-panel border border-edge text-accent hover:bg-accent/10 hover:border-accent/30 transition font-medium"
                       >
                         Accept All
                       </button>
                       <button
                         onClick={() => handleSetFileDecisions(rev.id, file, "reject")}
-                        className="text-[9px] px-1.5 py-0.5 rounded bg-panel border border-edge text-faint hover:text-risk hover:bg-risk/10 hover:border-risk/30 transition font-medium"
+                        className="text-ui-9 px-1.5 py-0.5 rounded bg-panel border border-edge text-faint hover:text-risk hover:bg-risk/10 hover:border-risk/30 transition font-medium"
                       >
                         Reject All
                       </button>
@@ -402,7 +402,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                           )}
 
                           <div className="bg-panel flex items-center justify-between px-2 py-1 border-b border-edge/50">
-                            <span className="text-[9px] font-mono text-faint">{hunk.header.trim()}</span>
+                            <span className="text-ui-9 font-mono text-faint">{hunk.header.trim()}</span>
                             <div className="flex gap-1">
                               <button
                                 onClick={() => handleSetHunkDecision(rev.id, decisionId, "accept")}
@@ -427,7 +427,7 @@ export default function DiffReviewPane({ reviews, onRefresh, loadError = null }:
                             </div>
                           </div>
 
-                          <pre className="p-2 overflow-x-auto text-[10px] font-mono leading-relaxed bg-black/30 max-h-[200px] scrollbar-thin">
+                          <pre className="p-2 overflow-x-auto text-ui-10 font-mono leading-relaxed bg-black/30 max-h-[200px] scrollbar-thin">
                             {hunk.lines.map((line, lIdx) => {
                               const isAdd = line.startsWith("+");
                               const isDel = line.startsWith("-");

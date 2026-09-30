@@ -317,7 +317,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     : (config?.reach || "");
 
   return (
-    <div className="shell-inset-footer status-bar px-3 h-7 text-[10px] text-muted select-none">
+    <div className="shell-inset-footer status-bar px-3 h-7 text-ui-10 text-muted select-none">
       <div className="status-bar-cluster status-bar-cluster-start">
       <button onClick={onToggleLeft} title="Toggle sessions panel (Ctrl/Cmd+B)"
         className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${leftOpen ? "text-txt" : "text-muted"}`}><PanelLeft size={12} /></button>

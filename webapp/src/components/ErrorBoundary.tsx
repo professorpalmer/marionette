@@ -59,13 +59,13 @@ export default class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="flex flex-col items-center justify-center h-full min-h-[120px] gap-2 p-4 text-center bg-panel">
           <AlertTriangle size={18} className="text-risk" />
-          <span className="text-[12px] text-txt font-medium">{label} hit an error</span>
-          <span className="text-[10.5px] text-faint font-mono break-all max-w-full">
+          <span className="text-ui-12 text-txt font-medium">{label} hit an error</span>
+          <span className="text-ui-10.5 text-faint font-mono break-all max-w-full">
             {String(error.message || error)}
           </span>
           <button
             onClick={this.reset}
-            className="mt-1 px-2.5 h-[24px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110"
+            className="mt-1 px-2.5 h-[24px] rounded-md bg-accent text-black/90 text-ui-10.5 font-semibold flex items-center gap-1 hover:brightness-110"
           >
             <RotateCw size={11} /> Try again
           </button>
@@ -76,25 +76,25 @@ export default class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="h-full w-full flex flex-col items-center justify-center gap-4 p-8 bg-bg text-txt overflow-auto">
         <AlertTriangle size={28} className="text-risk" />
-        <div className="text-[15px] font-semibold">{label} crashed</div>
-        <div className="text-[12px] text-muted max-w-[560px] text-center leading-relaxed">
+        <div className="text-ui-15 font-semibold">{label} crashed</div>
+        <div className="text-ui-12 text-muted max-w-[560px] text-center leading-relaxed">
           A UI error was caught before it could take down the whole window. Your
           session and backend are still running -- try again, or reload the view.
         </div>
-        <div className="w-full max-w-[720px] rounded-lg border border-edge bg-panel p-3 text-[11px] font-mono text-risk/90 whitespace-pre-wrap break-words max-h-[260px] overflow-auto">
+        <div className="w-full max-w-[720px] rounded-lg border border-edge bg-panel p-3 text-ui-11 font-mono text-risk/90 whitespace-pre-wrap break-words max-h-[260px] overflow-auto">
           {String(error.stack || error.message || error)}
           {info?.componentStack ? `\n\nComponent stack:${info.componentStack}` : ""}
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={this.reset}
-            className="px-3 h-[30px] rounded-md bg-accent text-black/90 text-[12px] font-semibold flex items-center gap-1.5 hover:brightness-110"
+            className="px-3 h-[30px] rounded-md bg-accent text-black/90 text-ui-12 font-semibold flex items-center gap-1.5 hover:brightness-110"
           >
             <RotateCw size={13} /> Try again
           </button>
           <button
             onClick={() => window.location.reload()}
-            className="px-3 h-[30px] rounded-md bg-panel2 border border-edge text-txt text-[12px] font-medium hover:bg-panel2/70"
+            className="px-3 h-[30px] rounded-md bg-panel2 border border-edge text-txt text-ui-12 font-medium hover:bg-panel2/70"
           >
             Reload window
           </button>

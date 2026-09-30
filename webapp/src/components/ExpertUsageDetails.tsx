@@ -6,7 +6,7 @@ import type { ExpertEconomicsHeader, ExpertUsageFacts } from '../lib/expertEcono
 export type ExpertCostProps = { header: ExpertHeader | ExpertEconomicsHeader | null; now?: number; compact?: boolean };
 export type ExpertWorkerUsageProps = { usage: ExpertUsageFacts; planBilled?: boolean; compact?: boolean };
 const pill = 'min-w-0 rounded border border-edge px-2 py-1 text-xs text-muted break-words [overflow-wrap:anywhere]';
-const usageLink = 'text-[10px] text-faint hover:text-muted focus-visible:outline focus-visible:outline-accent';
+const usageLink = 'text-ui-10 text-faint hover:text-muted focus-visible:outline focus-visible:outline-accent';
 
 export function ExpertWorkerUsage({ usage, planBilled = false, compact = false }: ExpertWorkerUsageProps) {
   const [open, setOpen] = useState(false);
@@ -33,7 +33,7 @@ export function ExpertCost({ header, now = Date.now(), compact = false }: Expert
   const savings = live?.savings, age = expertAge(header.created_at, now);
   const partialCost = live !== null && !live.cost.complete;
   const meter = compact ? usageLink : pill;
-  return <div className={`min-w-0 flex flex-wrap items-start gap-1 ${compact ? 'text-[10px] text-muted' : 'text-xs'}`}>
+  return <div className={`min-w-0 flex flex-wrap items-start gap-1 ${compact ? 'text-ui-10 text-muted' : 'text-xs'}`}>
     {!compact && live && <span>{live.completed_workers}/{live.selected_workers} workers completed{live.workers_complete ? '' : ' (selected)'}</span>}
     {!compact && age && <time dateTime={header.created_at ?? undefined} title={`Created ${header.created_at}`}>{age}</time>}
     {live?.usage?.tokens !== null && live?.usage?.tokens !== undefined && <span>{live.usage?.tokens.toLocaleString('en-US')}t{!live.usage?.complete || live.usage?.tokens_known_workers !== live.usage?.selected_workers ? ' (partial)' : ''}</span>}

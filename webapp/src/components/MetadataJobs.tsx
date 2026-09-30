@@ -30,8 +30,8 @@ import type { MetadataActionResult } from '../lib/useJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
 import WorkerOperations from './WorkerOperations';
 
-const button = 'px-1.5 py-0.5 text-[10.5px] text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
-const compactSelect = 'w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-[10px] text-muted focus:outline-none focus:border-accent/60';
+const button = 'px-1.5 py-0.5 text-ui-10.5 text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
+const compactSelect = 'w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-ui-10 text-muted focus:outline-none focus:border-accent/60';
 export function MetadataStatus({ hidden = false }: { hidden?: boolean }) {
   const { store, state } = useSharedJobMetadata();
   const activity = metadataActivity(state);
@@ -39,9 +39,9 @@ export function MetadataStatus({ hidden = false }: { hidden?: boolean }) {
   useEffect(() => { const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 10000); return () => clearInterval(clock); }, []);
   const times = [...Object.values(state.observedAt), ...(state.local.observedAt === null ? [] : [state.local.observedAt]), ...(state.localActive.observedAt === null ? [] : [state.localActive.observedAt])];
   const oldest = times.length ? Math.max(0, Math.floor((now - Math.min(...times)) / 1000)) : null;
-  return <div className={hidden ? 'sr-only' : 'px-2 py-1 text-[10px] text-muted'}>
+  return <div className={hidden ? 'sr-only' : 'px-2 py-1 text-ui-10 text-muted'}>
     {!hidden && state.error && <p role="alert">Job updates unavailable ({state.error.replaceAll('_', ' ')}). Retained observations may be stale.</p>}
-    <p role="status" className={activity.count > 0 ? "text-[10px] text-accent" : "sr-only"}>{activity.label}{oldest === null ? '' : ` · Oldest observation ${oldest}s ago`}</p>
+    <p role="status" className={activity.count > 0 ? "text-ui-10 text-accent" : "sr-only"}>{activity.label}{oldest === null ? '' : ` · Oldest observation ${oldest}s ago`}</p>
     <div className="flex flex-wrap gap-1">
       <button className={button} disabled={state.working} onClick={() => { store.restartTraversal(); void store.readView(); }}>Retry updates</button>
       <button className={button} disabled={state.working} onClick={() => void store.advance()}>Next page</button>
@@ -352,12 +352,12 @@ function SelectedInspection({ job, navigation, compact, onReveal, onOpenDashboar
     </> : null;
   return <div className="px-2 pb-2 pt-1 flex flex-col gap-2 bg-panel2/10 text-xs text-muted">
     <div className="flex flex-col gap-1.5 border-b border-edge/20 pb-2">
-      <button className="self-start font-mono text-[9px] text-faint hover:text-muted" aria-label={`Job ${headerJobId}`} onClick={() => {
+      <button className="self-start font-mono text-ui-9 text-faint hover:text-muted" aria-label={`Job ${headerJobId}`} onClick={() => {
         void navigator.clipboard.writeText(headerJobId).then(() => setNotice('Job ID copied.'), () => setNotice('Unable to copy job ID.'));
       }}>Job {headerJobId}</button>
       {compact && !showDump && <ExpertCost header={costHeader} now={now} compact />}
       {adapter && <p className="text-faint lowercase">{adapter}</p>}
-      {since && <div className="flex items-center gap-1 text-[9px] text-faint tabular-nums">
+      {since && <div className="flex items-center gap-1 text-ui-9 text-faint tabular-nums">
         <Activity size={9} className="text-accent/60 animate-pulse" />
         {since}
       </div>}
@@ -653,17 +653,17 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-8' : 'pr-5'}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
         <span className="shrink-0 text-faint">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
         <span className="shrink-0">{runningIcon ? <MetadataActivityIndicator /> : isLiveObservation(job) ? <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" /> : failedOutcomeStatuses.has(job.status) ? <XCircle size={12} className="text-risk" /> : quality(job) === 'degraded' ? <AlertTriangle size={12} className="text-warn" /> : ['completed', 'complete', 'done'].includes(job.status) ? <CheckCircle2 size={12} className="text-faint" /> : job.status === 'cancelled' ? <XCircle size={12} className="text-muted" /> : <Circle size={12} className="text-muted" />}</span>
-        <span className="font-semibold text-[11px] text-txt truncate min-w-0 flex-1">{title}</span>
+        <span className="font-semibold text-ui-11 text-txt truncate min-w-0 flex-1">{title}</span>
         {showWorkerProgress && <span className="inline-flex items-center gap-1 shrink-0">
           <span className="h-0.5 w-8 rounded-full bg-edge/50 overflow-hidden" aria-hidden>
             <span className={`block h-full rounded-full ${workerProgressFull ? (quality(job) === 'degraded' ? 'bg-warn/70 w-full' : 'bg-good/70 w-full') : 'bg-accent/70'}`} style={{ width: workerProgressFull ? '100%' : `${Math.max(8, Math.round((finishedWorkers / workerCount) * 100))}%` }} />
           </span>
-          <span className={`text-[9px] tabular-nums font-mono ${quality(job) === 'degraded' ? 'text-warn/80' : 'text-muted'}`}>{finishedWorkers}/{workerCount}</span>
+          <span className={`text-ui-9 tabular-nums font-mono ${quality(job) === 'degraded' ? 'text-warn/80' : 'text-muted'}`}>{finishedWorkers}/{workerCount}</span>
         </span>}
-        {adapter && <span title={`Adapter: ${adapter}`} className="min-w-0 truncate text-[9px] text-faint">{adapter}</span>}
+        {adapter && <span title={`Adapter: ${adapter}`} className="min-w-0 truncate text-ui-9 text-faint">{adapter}</span>}
         {model && <span title={`Model: ${model}`} className="min-w-0 truncate text-faint"> · {model}</span>}
         {routing && <span className="shrink-0"> · routing…</span>}
-        <span className={`text-[9px] font-medium tabular-nums shrink-0 ${job.status === 'cancelled' ? 'text-muted' : failedOutcomeStatuses.has(job.status) ? 'text-risk/80' : quality(job) === 'degraded' ? 'text-warn/80' : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? 'text-good' : 'text-accent/80'}`}>{quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span>
+        <span className={`text-ui-9 font-medium tabular-nums shrink-0 ${job.status === 'cancelled' ? 'text-muted' : failedOutcomeStatuses.has(job.status) ? 'text-risk/80' : quality(job) === 'degraded' ? 'text-warn/80' : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? 'text-good' : 'text-accent/80'}`}>{quality(job) === 'degraded' ? <span className="text-warn">degraded</span> : quality(job) === 'ok' && ['complete', 'completed', 'done'].includes(job.status) ? <span className="text-good">done</span> : <MetadataOutcomeLabel status={job.status} />}</span>
       </button>
       <button type="button" className="absolute right-1 top-1 text-faint/50 hover:text-muted" aria-label="Open Puppetmaster board" title="Open Puppetmaster board" onClick={(event) => { event.stopPropagation(); popOutBoard(job); }}><ExternalLink size={11} /></button>
       {isFinished(job) && job.read_status !== 'unavailable' && <button type="button" className="absolute right-5 top-1 text-faint/50 hover:text-risk" aria-label={`Dismiss from Jobs: ${title}`} title="Dismiss from Jobs (stays in Puppetmaster history)" onClick={() => setPreferences(p => ({ ...p, dismissed: [...p.dismissed.filter(k => k !== key), key].slice(-200) }))}><X size={12} /></button>}
@@ -675,14 +675,14 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   for (const job of [...activeRows, ...finishedRows]) {
     if (job === activeRows[0]) {
       jobList.push(<div key="active-head" className="flex items-center px-1 pt-0.5">
-        <span className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+        <span className="text-ui-10 uppercase tracking-wider text-faint font-semibold">
           Active <span className="text-faint/60 normal-case tracking-normal">({activeRows.length})</span>
         </span>
       </div>);
     }
     if (job === finishedRows[0]) {
       jobList.push(<div key="finished-head" className="swarm-finished-head flex items-center justify-between px-1 pt-0.5">
-        <button type="button" aria-expanded={finishedOpen} onClick={() => setFinishedOpen(open => !open)} className="flex items-center gap-1 min-w-0 text-[10px] uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none">
+        <button type="button" aria-expanded={finishedOpen} onClick={() => setFinishedOpen(open => !open)} className="flex items-center gap-1 min-w-0 text-ui-10 uppercase tracking-wider text-faint font-semibold hover:text-muted focus:outline-none">
           {finishedOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
           <span className="whitespace-nowrap">Finished <span className="text-faint/60 normal-case tracking-normal">({finishedRows.length})</span></span>
           <span className="swarm-finished-chips flex flex-wrap items-center min-w-0">
@@ -691,14 +691,14 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
           </span>
         </button>
         {/* Clear acts on the runs you can see; collapsed, it would do nothing. */}
-        {finishedOpen && <button type="button" aria-label="Hide finished" title="Hide all finished runs from Jobs (stays in Puppetmaster history)" onClick={hideFinished} className="shrink-0 whitespace-nowrap text-[9px] text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none">Clear</button>}
+        {finishedOpen && <button type="button" aria-label="Hide finished" title="Hide all finished runs from Jobs (stays in Puppetmaster history)" onClick={hideFinished} className="shrink-0 whitespace-nowrap text-ui-9 text-faint/70 hover:text-risk uppercase tracking-wider focus:outline-none">Clear</button>}
       </div>);
     }
     jobList.push(renderJob(job));
   }
   return <section aria-label="Jobs" className="flex flex-col h-full overflow-hidden text-txt">
     <div className="shrink-0 flex items-center justify-between h-[var(--shell-rail-row-height)] px-2 border-b border-[var(--shell-panel-border)] select-none">
-      <h2 className="flex items-center gap-1.5 text-[10px] uppercase tracking-normal text-faint font-medium">
+      <h2 className="flex items-center gap-1.5 text-ui-10 uppercase tracking-normal text-faint font-medium">
         <span className="relative inline-flex">
           <Network size={11} className={anyRunning ? "text-accent" : "text-faint/70"} />
           {anyRunning ? <span className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent animate-pulse" title={`${runningCount} running`} aria-hidden /> : null}
@@ -706,7 +706,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
         <span>Swarm Tracker</span>
         {trackerCount > 0 && <span className="text-faint/60 normal-case tracking-normal">({trackerCount})</span>}
       </h2>
-      <div className="flex items-center gap-2.5 text-[10px]">
+      <div className="flex items-center gap-2.5 text-ui-10">
         {anyRunning && <span className="flex items-center gap-1 text-accent"><Loader2 size={10} className="animate-spin semantic-activity-spinner" /> {runningCount} running</span>}
         {completedCount > 0 && <span className="flex items-center gap-1 text-good/80"><CheckCircle2 size={10} /> {completedCount}</span>}
       </div>
@@ -741,7 +741,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
             aria-pressed={jobScope === scope}
             aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
             onClick={() => saveJobScope(scope, activeSessionId)}
-            className={`flex-1 text-[10px] ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
+            className={`flex-1 text-ui-10 ${jobScope === scope ? "bg-accent/15 text-txt" : "bg-panel2/40 text-muted hover:text-txt"}`}
           >
             {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
           </button>
@@ -758,7 +758,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     <div className="flex-1 min-h-0 overflow-y-auto px-2 py-1 flex flex-col gap-0.5">
     {!shown.length && filter !== 'untrustworthy' && <div className="flex flex-col items-center justify-center h-48 text-center px-6 gap-2">
       <Network size={20} className="text-faint/50" />
-      <span className="text-[12px] text-muted font-medium">{failedRead
+      <span className="text-ui-12 text-muted font-medium">{failedRead
         ? jobsListEmptyTruth({ failedRead: true, viewReady: true, working: false, hiddenCount: 0, filter: 'all', hasJobs: false }).title
         : state.view.kind !== 'view' || !jobs.length && state.working
           ? <><span>Loading jobs...</span> Waiting for job metadata; no lifecycle result is known yet.</>
@@ -766,12 +766,12 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
             : !jobs.length ? 'No jobs yet'
               : otherSessionsOnly ? 'No jobs in this session'
                 : 'No jobs match this filter'}</span>
-      {failedRead ? <span className="text-[10.5px] text-faint">Retry updates; an empty view does not establish no work.</span>
-        : filter !== 'all' && (jobs.length > 0 || hidden.length > 0) ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setFilter('all')}>Clear filter</button>
-        : hidden.length > 0 ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>
-        : otherSessionsOnly ? <button type="button" className="text-[10.5px] text-accent hover:underline focus:outline-none" onClick={() => saveJobScope('all', activeSessionId)}>Show {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'} from other sessions</button>
+      {failedRead ? <span className="text-ui-10.5 text-faint">Retry updates; an empty view does not establish no work.</span>
+        : filter !== 'all' && (jobs.length > 0 || hidden.length > 0) ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => setFilter('all')}>Clear filter</button>
+        : hidden.length > 0 ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>
+        : otherSessionsOnly ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => saveJobScope('all', activeSessionId)}>Show {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'} from other sessions</button>
         : !failedRead && state.view.kind === 'view' && !jobs.length && !state.working && (
-        <span className="text-[10.5px] text-faint leading-relaxed">
+        <span className="text-ui-10.5 text-faint leading-relaxed">
           Every dispatched worker lands here -- run_implement, run_parallel,
           and run_swarm alike -- with its phase, router choice, live workers,
           and streamed findings. Inline tool calls stay in the chat.

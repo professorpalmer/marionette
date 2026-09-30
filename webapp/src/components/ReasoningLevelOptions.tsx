@@ -30,7 +30,7 @@ export default function ReasoningLevelOptions({
         aria-checked={isSelected}
         onClick={() => onSelect(level)}
         onKeyDown={moveFocus}
-        className={`w-full flex items-center justify-between px-3 py-1.5 text-[11.5px] text-left hover:bg-panel2 focus-visible:bg-panel2 focus:outline-none cursor-pointer transition select-none ${
+        className={`w-full flex items-center justify-between px-3 py-1.5 text-ui-11.5 text-left hover:bg-panel2 focus-visible:bg-panel2 focus:outline-none cursor-pointer transition select-none ${
           isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
         }`}
       >

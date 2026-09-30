@@ -92,7 +92,7 @@ export default function ComposerContextMenu({
       ref={menuRef}
       role="menu"
       aria-label="Composer menu"
-      className="fixed z-50 min-w-[220px] rounded border border-edge bg-panel py-1 text-[12px] text-txt shadow-lg"
+      className="fixed z-50 min-w-[220px] rounded border border-edge bg-panel py-1 text-ui-12 text-txt shadow-lg"
       style={position}
       onMouseDown={(event) => event.stopPropagation()}
     >
@@ -113,20 +113,20 @@ export default function ComposerContextMenu({
       )}
       <button type="button" role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("cut")}>
         <Scissors size={12} className="text-muted" />
-        <span>Cut</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}X</span>
+        <span>Cut</span><span className="ml-auto font-mono text-ui-10 text-faint">{modifier}X</span>
       </button>
       <button type="button" role="menuitem" className={itemClass} disabled={!hasSelection} onClick={() => edit("copy")}>
         <Clipboard size={12} className="text-muted" />
-        <span>Copy</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}C</span>
+        <span>Copy</span><span className="ml-auto font-mono text-ui-10 text-faint">{modifier}C</span>
       </button>
       <button type="button" role="menuitem" className={itemClass} onClick={() => edit("paste")}>
         <ClipboardPaste size={12} className="text-muted" />
-        <span>Paste</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}V</span>
+        <span>Paste</span><span className="ml-auto font-mono text-ui-10 text-faint">{modifier}V</span>
       </button>
       <div className="border-t border-edge my-1" />
       <button type="button" role="menuitem" className={itemClass} disabled={!hasText} onClick={() => run(() => textareaRef.current?.select())}>
         <TextSelect size={12} className="text-muted" />
-        <span>Select all</span><span className="ml-auto font-mono text-[10px] text-faint">{modifier}A</span>
+        <span>Select all</span><span className="ml-auto font-mono text-ui-10 text-faint">{modifier}A</span>
       </button>
     </div>
   );

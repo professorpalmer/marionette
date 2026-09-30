@@ -1050,14 +1050,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const canRenderWithoutSettings = section === "providers" || searchActive;
   if (!settings && !canRenderWithoutSettings) {
     return (
-      <div className="flex flex-col h-full text-[12px] p-4 text-faint">
+      <div className="flex flex-col h-full text-ui-12 p-4 text-faint">
         {errorNotice ? errorNotice : "Loading settings..."}
       </div>
     );
   }
 
   return (
-    <div className="text-[12px] max-w-3xl">
+    <div className="text-ui-12 max-w-3xl">
       {/* Floating save/error toast: fixed to the bottom-right so it overlays
           instead of inserting a block at the top that shoves every setting down
           (the reflow was the annoyance). Auto-dismiss handled by the callers
@@ -1066,8 +1066,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         <div className="fixed bottom-4 right-4 z-50 pointer-events-none flex items-center gap-2
                         px-3 py-1.5 rounded-lg border shadow-lg bg-panel2/95 backdrop-blur
                         border-edge">
-          {status && <span className="text-good text-[11px] font-medium">{status}</span>}
-          {errorNotice && <span className="text-risk text-[11px] font-medium">{errorNotice}</span>}
+          {status && <span className="text-good text-ui-11 font-medium">{status}</span>}
+          {errorNotice && <span className="text-risk text-ui-11 font-medium">{errorNotice}</span>}
         </div>
       )}
 
@@ -1085,7 +1085,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search settings..."
-            className="w-full bg-panel border border-edge rounded text-[11px] text-txt
+            className="w-full bg-panel border border-edge rounded text-ui-11 text-txt
                        pl-7 pr-7 py-1.5 outline-none focus:border-accent placeholder:text-faint"
           />
           {filter && (
@@ -1107,11 +1107,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         <div className="space-y-1.5 border-b border-edge/65 pb-3">
           <button
             onClick={onOpenWizard}
-            className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-2 font-bold transition-colors text-[11px]"
+            className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-2 font-bold transition-colors text-ui-11"
           >
             Connect a provider
           </button>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Pick a provider, paste a key, start chatting. One Full stack key runs chat and swarms.
           </p>
         </div>
@@ -1123,7 +1123,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("general", "budget steps per run") && settings && (<>
         {/* Budget Stepper / Number */}
         <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
             Budget (Steps)
           </label>
           <div className="flex items-center gap-2">
@@ -1141,9 +1141,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               disabled={saving}
               className="w-20 bg-panel2 border border-edge rounded px-2.5 py-1 text-txt focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
-            <span className="text-[10px] text-muted">steps per run (1-50)</span>
+            <span className="text-ui-10 text-muted">steps per run (1-50)</span>
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Maximum Orchestration steps/budget allocated per task execution.
           </p>
         </div>
@@ -1154,7 +1154,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         )}
         {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>
         <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
             Compact Residual
           </label>
           <button
@@ -1174,14 +1174,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 : "bg-panel2 border-edge text-muted"
             } disabled:opacity-50`}
           >
-            <span className="font-medium text-[11px]">
+            <span className="font-medium text-ui-11">
               {settings.compactionResidual === "hybrid"
                 ? "Pin handle index after compact"
                 : settings.compactionResidual === "summary"
                   ? "LLM snapshot after compact"
                   : "Handle catalog; vault retrieve"}
             </span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {settings.compactionResidual === "hybrid"
                 ? "hybrid"
                 : settings.compactionResidual === "summary"
@@ -1189,7 +1189,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   : "catalog"}
             </span>
           </button>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Default is catalog: keep files, decisions, and the last-wins
             story after compact, then retrieve matching slices later.
             The live pilot never writes the residual, including a local
@@ -1210,12 +1210,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 : "bg-panel2 border-edge text-muted"
             } disabled:opacity-50`}
           >
-            <span className="font-medium text-[11px]">Use my Chrome login</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="font-medium text-ui-11">Use my Chrome login</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {(settings.browserRealProfile ?? false) ? "on" : "off"}
             </span>
           </button>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Copies cookies into a Marionette-owned profile so the agent browser is already
             signed in. Off by default. Closing Chrome may be required on Windows if copy
             fails.
@@ -1225,7 +1225,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("safety", "full-auto safety command guard timeout max investigation steps per-turn tool-call cap iteration budget guard") && settings && (<>
         {/* Full-Auto Safety: command guard + timeout */}
         <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
             Full-Auto Safety
           </label>
           <button
@@ -1237,18 +1237,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 : "bg-panel2 border-edge text-muted"
             } disabled:opacity-50`}
           >
-            <span className="font-medium text-[11px]">Guard dangerous commands in full-auto</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="font-medium text-ui-11">Guard dangerous commands in full-auto</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {(settings.autoCommandGuard ?? true) ? "on" : "off"}
             </span>
           </button>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             In unattended (full-auto) mode, irreversible/remote/escalating shell commands
             (rm -rf, ssh, curl pipe-to-shell, force-push, sudo, disk writes) are blocked
             and reported instead of running. Interactive co-working is unaffected.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Command timeout (s)</label>
+            <label className="text-ui-11 text-muted shrink-0">Command timeout (s)</label>
             <input
               type="text"
               defaultValue={settings.commandTimeout || "120"}
@@ -1257,18 +1257,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.commandTimeout || "120")) update({ commandTimeout: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="120"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Per-command shell timeout. Use 0 or "off" for unbounded (needed for long SSH
             sessions or builds). Even when off, a 15m safety ceiling still applies unless
             HARNESS_COMMAND_HARD_CEILING is set to off — hung shells otherwise pin the turn
             until Stop. Unbounded plus full-auto is why the guard above matters.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Max investigation steps</label>
+            <label className="text-ui-11 text-muted shrink-0">Max investigation steps</label>
             <input
               type="text"
               defaultValue={settings.maxPilotSteps || "40"}
@@ -1277,18 +1277,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.maxPilotSteps || "40")) update({ maxPilotSteps: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="40"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Send-loop step ceiling per user message (model rounds through the tool loop).
             Use 0 or "unlimited" for unbounded autopilot until the pilot finishes, the budget
             governor halts, or you stop it. Distinct from Budget (Steps) and Per-turn tool-call
             cap below. Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Reply output cap</label>
+            <label className="text-ui-11 text-muted shrink-0">Reply output cap</label>
             <input
               type="text"
               defaultValue={settings.maxOutputTokens || "unlimited"}
@@ -1297,11 +1297,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.maxOutputTokens || "unlimited")) update({ maxOutputTokens: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="unlimited"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Completion-token ceiling for the next pilot request (HARNESS_MAX_TOKENS).
             The factory default lets the provider decide. APIs that require a ceiling use
             32000. Enter a positive number to set a custom cap, or use 0, off, or unlimited
@@ -1310,7 +1310,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Per-turn tool-call cap</label>
+            <label className="text-ui-11 text-muted shrink-0">Per-turn tool-call cap</label>
             <input
               type="text"
               defaultValue={settings.pilotToolBudget || "25"}
@@ -1319,17 +1319,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.pilotToolBudget || "25")) update({ pilotToolBudget: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="25"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Iteration-budget guard: hard cap on native tool calls within one pilot turn.
             Loop breaker, swarm gate, and delegate gate stay active when set to 0 or "unlimited"
             (only this cap is disabled). Applies on the next turn — no restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Full-auto token ceiling</label>
+            <label className="text-ui-11 text-muted shrink-0">Full-auto token ceiling</label>
             <input
               type="text"
               defaultValue={settings.autoMaxTokens || "500000"}
@@ -1338,18 +1338,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.autoMaxTokens || "500000")) update({ autoMaxTokens: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="500000"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Tree-wide token ceiling for a full-auto run (HARNESS_AUTO_MAX_TOKENS, default
             500k). Use 0 or "unlimited" so tokens do not stop the run. Time, swarm, idle,
             and killswitch still apply. Takes effect on the next full-auto start — no
             restart needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Worker run token ceiling</label>
+            <label className="text-ui-11 text-muted shrink-0">Worker run token ceiling</label>
             <input
               type="text"
               defaultValue={settings.workerTokenBudget || "250000"}
@@ -1358,11 +1358,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 if (v !== (settings.workerTokenBudget || "250000")) update({ workerTokenBudget: v });
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
               placeholder="250000"
             />
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Default token ceiling for a single native worker run when no ambient AutoBudget
             is governing the tree (default 250k). Use 0 or "unlimited" for no per-worker
             token cap. Values from 1 through 39999 reset to 250k so a typo cannot
@@ -1371,7 +1371,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             needed.
           </p>
           <div className="flex items-center gap-2 pt-1">
-            <label className="text-[11px] text-muted shrink-0">Worker reasoning</label>
+            <label className="text-ui-11 text-muted shrink-0">Worker reasoning</label>
             <select
               value={settings.swarm_reasoning_effort || "medium"}
               onChange={(e) => {
@@ -1381,7 +1381,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 }
               }}
               disabled={saving}
-              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-[11px] text-txt disabled:opacity-50"
+              className="flex-1 px-2 py-1 rounded border border-edge bg-panel2 text-ui-11 text-txt disabled:opacity-50"
             >
               {REASONING_LEVELS.map((level) => (
                 <option key={level.value} value={level.value}>
@@ -1390,7 +1390,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               ))}
             </select>
           </div>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Blanket reasoning for swarm, implement, and parallel workers. Factory
             default is medium. The composer Workers chip writes this same setting;
             the pilot picker stays chat-only. Omit the tool argument to use this
@@ -1428,20 +1428,20 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           {keyBootstrapIssues.length > 0 && (
             <div
               data-testid="settings-key-bootstrap-issues"
-              className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-txt space-y-1"
+              className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-ui-11 text-txt space-y-1"
             >
               <div className="font-medium">Key store did not finish saving on startup.</div>
               <div className="text-muted">
                 The app kept running. Re-save keys here if a provider looks missing.
               </div>
               {keyBootstrapIssues.map((issue, i) => (
-                <div key={`${issue.step}-${i}`} className="font-mono text-[10px] text-faint break-all">
+                <div key={`${issue.step}-${i}`} className="font-mono text-ui-10 text-faint break-all">
                   {issue.step}: {issue.message}
                 </div>
               ))}
             </div>
           )}
-          <div className="text-[10px] text-muted">
+          <div className="text-ui-10 text-muted">
             One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
             pilot and agentic swarm/implement workers. No other platform install.
             Env-imported keys get an on/off toggle (keeps the key) and Disconnect
@@ -1466,14 +1466,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       data-testid="provider-account-drilldown"
                       data-provider={p.name}
                       onClick={() => setProviderConfig({ manual: false, provider: p })}
-                      className="text-txt font-medium text-[11px] hover:text-accent text-left"
+                      className="text-txt font-medium text-ui-11 hover:text-accent text-left"
                     >
                       {p.display_name || p.name}
                     </button>
                     {p.worker_capability_label ? (
                       <span
                         title={p.worker_capability_hint || undefined}
-                        className={`text-[10px] shrink-0 ${
+                        className={`text-ui-10 shrink-0 ${
                           p.worker_capability === "full_stack"
                             ? "text-good/80"
                             : p.worker_capability === "platform_worker"
@@ -1486,7 +1486,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     ) : null}
                     <span
                       title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
-                      className="text-faint text-[10px] font-mono truncate"
+                      className="text-faint text-ui-10 font-mono truncate"
                     >
                       {envBacked
                         ? `${enabled ? "connected" : "disabled"} - via env`
@@ -1512,7 +1512,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       <button
                         onClick={() => handleClearProviderKey(p.name)}
                         disabled={busy}
-                        className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                        className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors shrink-0"
                       >
                         Disconnect
                       </button>
@@ -1527,12 +1527,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       value={provKeyInput[p.name] || ""}
                       onChange={(e) => setProvKeyInput((prev) => ({ ...prev, [p.name]: e.target.value }))}
                       disabled={busy}
-                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
                     />
                     <button
                       onClick={() => handleSetProviderKey(p.name)}
                       disabled={busy || !(provKeyInput[p.name] || "").trim()}
-                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors shrink-0"
+                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors shrink-0"
                     >
                       Connect
                     </button>
@@ -1546,7 +1546,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             type="button"
             data-testid="add-provider"
             onClick={() => setProviderConfig({ manual: true })}
-            className="flex items-center gap-1 text-accent hover:text-accent/80 text-[11px] font-medium"
+            className="flex items-center gap-1 text-accent hover:text-accent/80 text-ui-11 font-medium"
           >
             <Plus size={12} />
             Add provider
@@ -1584,7 +1584,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             return n > 0 ? `${n} signed in` : "plan accounts";
           })()}
         >
-          <p className="text-[10px] text-muted leading-normal">
+          <p className="text-ui-10 text-muted leading-normal">
             Optional. A Full stack API key below is enough for chat and swarms — no
             Cursor, Claude, or Codex CLI install. Plan logins that are Full stack
             (Codex, Claude Max, OpenCode Go, Nous) also drive workers. Cursor CLI is Pilot only.
@@ -1592,11 +1592,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           <div className="space-y-1.5">
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   ChatGPT Codex{" "}
                   <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {planAccountStatusLine("openai-codex")}
                 </span>
               </div>
@@ -1605,7 +1605,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleCodexSignIn}
                   disabled={oauthBusy || poolBusy === "openai-codex"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
@@ -1614,7 +1614,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={() => handlePlanPoolSignOut("openai-codex")}
                     disabled={oauthBusy || poolBusy === "openai-codex"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1623,7 +1623,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                   >
                     Cancel
                   </button>
@@ -1631,7 +1631,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1640,15 +1640,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   Claude Max{" "}
                   <span className="text-good/80 font-normal" title="Subscription auth stamps Anthropic credentials used by agentic workers.">Full stack</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {planAccountStatusLine("anthropic")}
                 </span>
               </div>
-              <p className="text-[10px] text-muted mt-1 leading-normal">
+              <p className="text-ui-10 text-muted mt-1 leading-normal">
                 Claude Pro/Max subscription via claude.ai. Enterprise org keys use API Keys below (or Bedrock) — not this Sign in.
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
@@ -1656,7 +1656,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleAnthropicSignIn}
                   disabled={oauthBusy || poolBusy === "anthropic"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for code..." : "Sign in"}
                 </button>
@@ -1665,7 +1665,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={() => handlePlanPoolSignOut("anthropic")}
                     disabled={oauthBusy || poolBusy === "anthropic"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1674,7 +1674,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                   >
                     Cancel
                   </button>
@@ -1682,7 +1682,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1694,13 +1694,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     value={oauthPasteCode}
                     onChange={(e) => setOauthPasteCode(e.target.value)}
                     placeholder="paste authorization code#state"
-                    className="flex-1 bg-panel border border-edge rounded px-2 py-1 text-[11px] font-mono"
+                    className="flex-1 bg-panel border border-edge rounded px-2 py-1 text-ui-11 font-mono"
                   />
                   <button
                     type="button"
                     onClick={handleAnthropicComplete}
                     disabled={oauthBusy || !oauthPasteCode.trim()}
-                    className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                    className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                   >
                     Complete
                   </button>
@@ -1710,11 +1710,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   Cursor CLI (plan){" "}
                   <span className="text-warn/90 font-normal" title="Agent login powers the chat pilot only. Swarm/implement workers need a Full stack provider or a Cursor API key in Credential pools.">Pilot only</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {cursorCliStatus?.installed === false
                     ? (cursorCliStatus.error || "agent binary not found")
                     : cursorCliStatus?.authenticated
@@ -1722,7 +1722,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       : (cursorCliStatus?.error || "Not signed in")}
                 </span>
               </div>
-              <p className="text-[10px] text-muted mt-1 leading-normal">
+              <p className="text-ui-10 text-muted mt-1 leading-normal">
                 Optional Cursor plan via Agent CLI or CURSOR_API_KEY. Skip if a Full stack chat key is already set.
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
@@ -1730,7 +1730,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleCursorCliSignIn}
                   disabled={oauthBusy}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for login..." : "Sign in"}
                 </button>
@@ -1739,7 +1739,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={handleCursorCliLogout}
                     disabled={oauthBusy}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1748,7 +1748,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                   >
                     Cancel
                   </button>
@@ -1756,7 +1756,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshCursorCliStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1765,11 +1765,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   Claude Code (Max){" "}
                   <span className="text-warn/90 font-normal" title="Claude Code login powers the chat pilot. Puppetmaster claude-code workers can use the same login when that adapter is enabled. It is not an Anthropic API key.">Pilot</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {claudeCliStatus?.installed === false
                     ? (claudeCliStatus.error || "claude binary not found")
                     : claudeCliStatus?.authenticated
@@ -1777,7 +1777,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       : (claudeCliStatus?.error || "Not signed in")}
                 </span>
               </div>
-              <p className="text-[10px] text-muted mt-1 leading-normal">
+              <p className="text-ui-10 text-muted mt-1 leading-normal">
                 Official Claude Code CLI. Uses your Max/Pro login, not ANTHROPIC_API_KEY.
               </p>
               <div className="flex items-center gap-2 flex-wrap mt-1.5">
@@ -1785,7 +1785,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleClaudeCliSignIn}
                   disabled={oauthBusy}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for login..." : "Sign in"}
                 </button>
@@ -1794,7 +1794,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={handleClaudeCliLogout}
                     disabled={oauthBusy}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1802,7 +1802,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshClaudeCliStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1811,11 +1811,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   xAI SuperGrok{" "}
                   <span className="text-good/80 font-normal" title="OAuth stamps an xAI key that syncs into agentic workers.">Full stack</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {planAccountStatusLine("xai-oauth")}
                 </span>
               </div>
@@ -1824,7 +1824,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleXaiSignIn}
                   disabled={oauthBusy || poolBusy === "xai-oauth"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
@@ -1833,7 +1833,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={() => handlePlanPoolSignOut("xai-oauth")}
                     disabled={oauthBusy || poolBusy === "xai-oauth"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1842,7 +1842,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                   >
                     Cancel
                   </button>
@@ -1850,7 +1850,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1859,11 +1859,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
             <div className="bg-panel2 border border-edge/50 rounded p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-[11px]">
+                <span className="text-txt font-medium text-ui-11">
                   Nous{" "}
                   <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
                 </span>
-                <span className="text-faint text-[10px] font-mono truncate">
+                <span className="text-faint text-ui-10 font-mono truncate">
                   {planAccountStatusLine("nous")}
                 </span>
               </div>
@@ -1872,7 +1872,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   type="button"
                   onClick={handleNousSignIn}
                   disabled={oauthBusy || poolBusy === "nous"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
                   {oauthBusy ? "Waiting for browser..." : "Sign in"}
                 </button>
@@ -1881,7 +1881,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     type="button"
                     onClick={() => handlePlanPoolSignOut("nous")}
                     disabled={oauthBusy || poolBusy === "nous"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px] disabled:opacity-30"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
                   >
                     Sign out
                   </button>
@@ -1890,7 +1890,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                   >
                     Cancel
                   </button>
@@ -1898,7 +1898,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   type="button"
                   onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-[10px]"
+                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
                 >
                   Refresh status
                 </button>
@@ -1906,7 +1906,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             </div>
           </div>
           {oauthHint ? (
-            <p className="text-[10px] text-accent font-mono leading-normal">{oauthHint}</p>
+            <p className="text-ui-10 text-accent font-mono leading-normal">{oauthHint}</p>
           ) : null}
         </SettingsCollapse>
         </>)}
@@ -1924,7 +1924,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             return `${entries} key${entries === 1 ? "" : "s"} · ${pools.length} provider${pools.length === 1 ? "" : "s"}`;
           })()}
         >
-          <p className="text-[10px] text-muted leading-normal">
+          <p className="text-ui-10 text-muted leading-normal">
             Add multiple API keys for the same provider. On plan-limit / 429 / 402 the pilot
             rotates to the next healthy entry (prompt cache may reset on rotate).
             Plan accounts (ChatGPT Codex, Claude Max, Cursor CLI, xAI, Nous) come from
@@ -1938,7 +1938,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 key={p}
                 type="button"
                 onClick={() => setPoolProvider(p)}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-colors ${
+                className={`px-2 py-0.5 rounded text-ui-10 font-mono border transition-colors ${
                   poolProvider === p
                     ? "bg-accent/15 border-accent/40 text-accent"
                     : "bg-panel2 border-edge text-muted hover:bg-panel"
@@ -1951,7 +1951,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           <div className="space-y-1.5 bg-panel2 border border-edge/50 rounded p-2">
             {(PLAN_POOL_PROVIDERS as readonly string[]).includes(poolProvider) ? (
               <>
-                <p className="text-[10px] font-mono text-faint">
+                <p className="text-ui-10 font-mono text-faint">
                   {poolProvider === "cursor-cli"
                     ? (cursorCliStatus?.installed === false
                       ? (cursorCliStatus.error || "agent binary not found")
@@ -1960,7 +1960,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                         : (cursorCliStatus?.error || "Not signed in"))
                     : planAccountStatusLine(poolProvider)}
                 </p>
-                <p className="text-[10px] text-muted">
+                <p className="text-ui-10 text-muted">
                   <span className="text-accent">Sign in above</span> to connect your plan account.
                 </p>
                 <select
@@ -1969,7 +1969,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     || "fill_first"
                   }
                   onChange={(e) => handlePoolStrategy(poolProvider, e.target.value)}
-                  className="bg-panel border border-edge rounded px-1.5 py-0.5 text-[10px] text-muted"
+                  className="bg-panel border border-edge rounded px-1.5 py-0.5 text-ui-10 text-muted"
                 >
                   {(authPools?.strategies || ["fill_first", "round_robin", "least_used", "random"]).map((s) => (
                     <option key={s} value={s}>{s}</option>
@@ -1980,17 +1980,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   const entries = pool?.entries || [];
                   if (!entries.length) {
                     return (
-                      <p className="text-[10px] text-faint italic">No pooled credentials for {poolProvider} yet.</p>
+                      <p className="text-ui-10 text-faint italic">No pooled credentials for {poolProvider} yet.</p>
                     );
                   }
                   return (
                     <ul className="space-y-1 pt-1 border-t border-edge/40">
                       {entries.map((e) => (
-                        <li key={e.id} className="flex items-center justify-between gap-2 text-[10px]">
+                        <li key={e.id} className="flex items-center justify-between gap-2 text-ui-10">
                           <div className="min-w-0">
                             <span className="font-medium text-txt">{e.label || e.id}</span>
                             <span className="text-faint font-mono ml-1.5">{e.masked}</span>
-                            <span className={`ml-1.5 uppercase tracking-wider text-[8px] ${
+                            <span className={`ml-1.5 uppercase tracking-wider text-ui-8 ${
                               e.last_status === "exhausted" ? "text-risk" : "text-good"
                             }`}>
                               {e.last_status || "ok"}
@@ -1999,7 +1999,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                           <button
                             type="button"
                             onClick={() => handleRemovePoolEntry(poolProvider, e.id)}
-                            className="text-risk/80 hover:text-risk text-[10px] shrink-0"
+                            className="text-risk/80 hover:text-risk text-ui-10 shrink-0"
                           >
                             remove
                           </button>
@@ -2016,21 +2016,21 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               value={poolKeyInput}
               onChange={(e) => setPoolKeyInput(e.target.value)}
               placeholder={`${poolProvider} API key`}
-              className="w-full bg-panel border border-edge rounded px-2 py-1 text-[11px] font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-1 text-ui-11 font-mono"
             />
             <input
               type="text"
               value={poolLabelInput}
               onChange={(e) => setPoolLabelInput(e.target.value)}
               placeholder="label (optional, e.g. cursor-plan-a)"
-              className="w-full bg-panel border border-edge rounded px-2 py-1 text-[11px]"
+              className="w-full bg-panel border border-edge rounded px-2 py-1 text-ui-11"
             />
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 type="button"
                 onClick={handleAddPoolKey}
                 disabled={!!poolBusy || !poolKeyInput.trim()}
-                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30"
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
               >
                 {poolBusy === poolProvider ? "Adding..." : "Add to pool"}
               </button>
@@ -2040,7 +2040,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   || "fill_first"
                 }
                 onChange={(e) => handlePoolStrategy(poolProvider, e.target.value)}
-                className="bg-panel border border-edge rounded px-1.5 py-0.5 text-[10px] text-muted"
+                className="bg-panel border border-edge rounded px-1.5 py-0.5 text-ui-10 text-muted"
               >
                 {(authPools?.strategies || ["fill_first", "round_robin", "least_used", "random"]).map((s) => (
                   <option key={s} value={s}>{s}</option>
@@ -2052,17 +2052,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               const entries = pool?.entries || [];
               if (!entries.length) {
                 return (
-                  <p className="text-[10px] text-faint italic">No pooled credentials for {poolProvider} yet.</p>
+                  <p className="text-ui-10 text-faint italic">No pooled credentials for {poolProvider} yet.</p>
                 );
               }
               return (
                 <ul className="space-y-1 pt-1 border-t border-edge/40">
                   {entries.map((e) => (
-                    <li key={e.id} className="flex items-center justify-between gap-2 text-[10px]">
+                    <li key={e.id} className="flex items-center justify-between gap-2 text-ui-10">
                       <div className="min-w-0">
                         <span className="font-medium text-txt">{e.label || e.id}</span>
                         <span className="text-faint font-mono ml-1.5">{e.masked}</span>
-                        <span className={`ml-1.5 uppercase tracking-wider text-[8px] ${
+                        <span className={`ml-1.5 uppercase tracking-wider text-ui-8 ${
                           e.last_status === "exhausted" ? "text-risk" : "text-good"
                         }`}>
                           {e.last_status || "ok"}
@@ -2071,7 +2071,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       <button
                         type="button"
                         onClick={() => handleRemovePoolEntry(poolProvider, e.id)}
-                        className="text-risk/80 hover:text-risk text-[10px] shrink-0"
+                        className="text-risk/80 hover:text-risk text-ui-10 shrink-0"
                       >
                         remove
                       </button>
@@ -2099,7 +2099,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               : "not configured"
           }
         >
-          <p className="text-[10px] text-muted leading-normal">
+          <p className="text-ui-10 text-muted leading-normal">
             Preferred: paste an <span className="font-mono text-faint">AWS_BEARER_TOKEN_BEDROCK</span>.
             Or use access key + secret (+ optional session token). Credentials are injected into
             the worker process env for Bedrock-priced models on the agentic backend.
@@ -2111,16 +2111,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               value={bedrockBearer}
               onChange={(e) => setBedrockBearer(e.target.value)}
               disabled={bedrockBusy}
-              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
-            <div className="text-[9px] text-faint uppercase tracking-wider pt-1">or access keys</div>
+            <div className="text-ui-9 text-faint uppercase tracking-wider pt-1">or access keys</div>
             <input
               type="password"
               placeholder={bedrock?.has_access_key ? "Access key id (leave blank to keep)" : "AWS_ACCESS_KEY_ID"}
               value={bedrockAccessKey}
               onChange={(e) => setBedrockAccessKey(e.target.value)}
               disabled={bedrockBusy}
-              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
             <input
               type="password"
@@ -2128,7 +2128,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               value={bedrockSecretKey}
               onChange={(e) => setBedrockSecretKey(e.target.value)}
               disabled={bedrockBusy}
-              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
             <input
               type="password"
@@ -2136,7 +2136,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               value={bedrockSessionToken}
               onChange={(e) => setBedrockSessionToken(e.target.value)}
               disabled={bedrockBusy}
-              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
             <div className="grid grid-cols-2 gap-1.5 pt-1">
               <input
@@ -2145,7 +2145,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 value={bedrockRegion}
                 onChange={(e) => setBedrockRegion(e.target.value)}
                 disabled={bedrockBusy}
-                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
               />
               <input
                 type="text"
@@ -2153,7 +2153,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 value={bedrockRegionAlt}
                 onChange={(e) => setBedrockRegionAlt(e.target.value)}
                 disabled={bedrockBusy}
-                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+                className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
               />
             </div>
             <input
@@ -2162,13 +2162,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               value={bedrockModelId}
               onChange={(e) => setBedrockModelId(e.target.value)}
               disabled={bedrockBusy}
-              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-[11px] focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
+              className="w-full bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
             />
             <div className="flex gap-2 pt-1">
               <button
                 onClick={handleSaveBedrock}
                 disabled={bedrockBusy}
-                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors"
+                className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors"
               >
                 {bedrockBusy ? "Saving..." : "Save Bedrock"}
               </button>
@@ -2176,7 +2176,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 <button
                   onClick={handleClearBedrock}
                   disabled={bedrockBusy}
-                  className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2.5 py-0.5 font-medium text-[10px] disabled:opacity-30 transition-colors"
+                  className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors"
                 >
                   Disconnect
                 </button>
@@ -2199,14 +2199,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             return on > 0 ? `${on} on · advanced` : "advanced / optional";
           })()}
         >
-          <p className="text-[10px] text-muted leading-normal">
+          <p className="text-ui-10 text-muted leading-normal">
             By default, implement/parallel workers run on the built-in provider worker (your configured API key, in an isolated worktree) -- no external CLI needed. These adapters let you instead delegate worker runs to an external coding-agent CLI (Cursor, Claude Code, Codex) when it is installed. Optional.
           </p>
 
           {platformError ? (
-            <p className="text-[10px] text-muted italic">{platformError}</p>
+            <p className="text-ui-10 text-muted italic">{platformError}</p>
           ) : platformAdapters.length === 0 ? (
-            <p className="text-[10px] text-muted italic">Loading platform settings...</p>
+            <p className="text-ui-10 text-muted italic">Loading platform settings...</p>
           ) : (
             <div className="space-y-2">
               <div className="space-y-2 bg-panel rounded border border-edge/40 p-2">
@@ -2214,8 +2214,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <div key={adapter.name} className="flex items-center justify-between gap-2 border-b border-edge/30 last:border-b-0 pb-1.5 last:pb-0 pt-1.5 first:pt-0">
                     <div className="space-y-0.5">
                       <div className="flex items-center gap-1.5">
-                        <span className="font-mono font-medium text-[11px] text-txt">{adapter.name}</span>
-                        <span className={`px-1 py-0.5 text-[8px] uppercase font-bold tracking-wider rounded ${
+                        <span className="font-mono font-medium text-ui-11 text-txt">{adapter.name}</span>
+                        <span className={`px-1 py-0.5 text-ui-8 uppercase font-bold tracking-wider rounded ${
                           adapter.implement_capable 
                             ? "bg-accent/10 text-accent/90 border border-accent/25" 
                             : "bg-panel2 text-muted border border-edge"
@@ -2223,18 +2223,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                           {adapter.implement_capable ? "implement" : "analysis"}
                         </span>
                         {!adapter.available && (
-                          <span className="px-1 py-0.5 text-[8px] uppercase font-bold tracking-wider rounded bg-risk/10 text-risk border border-risk/20">
+                          <span className="px-1 py-0.5 text-ui-8 uppercase font-bold tracking-wider rounded bg-risk/10 text-risk border border-risk/20">
                             not available
                           </span>
                         )}
                       </div>
-                      <p className="text-[10px] text-muted">
+                      <p className="text-ui-10 text-muted">
                         {adapter.note}
                       </p>
                     </div>
                     <button
                       onClick={() => handleTogglePlatform(adapter.name, !adapter.enabled)}
-                      className={`px-2.5 py-1 rounded text-[10px] uppercase font-bold tracking-wider border transition-colors ${
+                      className={`px-2.5 py-1 rounded text-ui-10 uppercase font-bold tracking-wider border transition-colors ${
                         adapter.enabled
                           ? "bg-accent/10 border-accent/30 text-accent hover:bg-accent/20"
                           : "bg-panel2 border-edge text-muted hover:bg-panel"
@@ -2246,7 +2246,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 ))}
               </div>
 
-              <p className="text-[10px] text-muted leading-normal">
+              <p className="text-ui-10 text-muted leading-normal">
                 With no external adapter enabled, implement/parallel workers run on the built-in provider worker (default). Enable an adapter above only to delegate to that external CLI instead.
               </p>
             </div>
@@ -2257,7 +2257,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("notifications", "observability queue notifications sound desktop messages") && (<>
         {/* Observability & Queue Prefs */}
         <div className="space-y-3 border-t border-edge pt-3">
-          <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
             Observability & Queue
           </label>
           
@@ -2271,8 +2271,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   : "bg-panel2 border-edge text-muted"
               }`}
             >
-              <span className="font-medium text-[11px]">Desktop notifications</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider">
+              <span className="font-medium text-ui-11">Desktop notifications</span>
+              <span className="text-ui-10 uppercase font-bold tracking-wider">
                 {notify ? "on" : "off"}
               </span>
             </button>
@@ -2286,8 +2286,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   : "bg-panel2 border-edge text-muted"
               }`}
             >
-              <span className="font-medium text-[11px]">Completion sound</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider">
+              <span className="font-medium text-ui-11">Completion sound</span>
+              <span className="text-ui-10 uppercase font-bold tracking-wider">
                 {sound ? "on" : "off"}
               </span>
             </button>
@@ -2298,10 +2298,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("advanced", "live ui vite hmr hot reload self dev restart relaunch") && _selfDevIpc && (<>
         {/* Live UI Section (Vite HMR). The backend always runs from source. */}
         <div className="border-t border-edge pt-3 space-y-2">
-          <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+          <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Live UI (Vite HMR)
           </span>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Marionette always runs its backend from the source checkout, so
             harness/** edits are the running code after a full relaunch. The
             conversation comes back from the persisted transcript. Turn this on
@@ -2317,13 +2317,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 : "bg-panel2 border-edge text-muted"
             } disabled:opacity-50`}
           >
-            <span className="font-medium text-[11px]">Serve UI from Vite dev server (HMR)</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="font-medium text-ui-11">Serve UI from Vite dev server (HMR)</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {selfDev && selfDev.enabled ? "on" : "off"}
             </span>
           </button>
           {selfDev && !selfDev.viable && (
-            <p className="text-[10px] text-warn">
+            <p className="text-ui-10 text-warn">
               Vite dev server not available (needs webapp/node_modules + webapp/src).
               The UI is served from the prebuilt dist/ until node deps are installed.
             </p>
@@ -2331,11 +2331,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           <button
             onClick={relaunchMarionette}
             disabled={restarting || selfDevBusy}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded border border-edge bg-panel2 text-[11px] text-muted hover:text-txt hover:border-accent/30 transition disabled:opacity-50"
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded border border-edge bg-panel2 text-ui-11 text-muted hover:text-txt hover:border-accent/30 transition disabled:opacity-50"
           >
             {restarting ? "Relaunching..." : "Relaunch Marionette"}
           </button>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Quits and reopens so the backend and UI boot together.
           </p>
         </div>
@@ -2347,7 +2347,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             onClick={() => setSchedulesOpen(!schedulesOpen)}
             className="w-full flex items-center justify-between text-left focus:outline-none"
           >
-            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Schedules
             </span>
             <span className="text-muted">
@@ -2368,7 +2368,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             onClick={() => setHooksOpen(!hooksOpen)}
             className="w-full flex items-center justify-between text-left focus:outline-none"
           >
-            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-good inline-block"></span> Lifecycle Hooks
             </span>
             <span className="text-muted">
@@ -2378,18 +2378,18 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
           {hooksOpen && (
             <div className="space-y-3 bg-panel2/40 border border-edge/50 rounded p-2.5 mt-1">
-              {hookError && <div className="text-risk text-[10px] font-medium">{hookError}</div>}
-              {hookStatus && <div className="text-good text-[10px] font-medium">{hookStatus}</div>}
+              {hookError && <div className="text-risk text-ui-10 font-medium">{hookError}</div>}
+              {hookStatus && <div className="text-good text-ui-10 font-medium">{hookStatus}</div>}
 
               {/* Hooks List */}
               <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
                 {hooks.length === 0 ? (
-                  <div className="text-muted text-[10px]">No configured lifecycle hooks.</div>
+                  <div className="text-muted text-ui-10">No configured lifecycle hooks.</div>
                 ) : (
                   hooks.map((hk) => (
-                    <div key={hk.id} className="flex flex-col p-1.5 bg-panel2/65 border border-edge/30 rounded text-[11px]">
+                    <div key={hk.id} className="flex flex-col p-1.5 bg-panel2/65 border border-edge/30 rounded text-ui-11">
                       <div className="flex items-center justify-between">
-                        <span className="bg-edge text-muted text-[9px] px-1.5 py-0.5 rounded font-mono font-semibold uppercase tracking-wider">
+                        <span className="bg-edge text-muted text-ui-9 px-1.5 py-0.5 rounded font-mono font-semibold uppercase tracking-wider">
                           {hk.event}
                         </span>
                         
@@ -2431,7 +2431,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                           </button>
                         </div>
                       </div>
-                      <div className="text-txt font-mono text-[10px] bg-panel/70 p-1.5 rounded border border-edge/20 mt-1 select-all break-all" title={hk.command}>
+                      <div className="text-txt font-mono text-ui-10 bg-panel/70 p-1.5 rounded border border-edge/20 mt-1 select-all break-all" title={hk.command}>
                         {hk.command.length > 50 ? hk.command.slice(0, 50) + "..." : hk.command}
                       </div>
                     </div>
@@ -2441,14 +2441,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
               {/* Add Hook Form */}
               <div className="border-t border-edge/30 pt-2.5 mt-2 space-y-1.5">
-                <div className="text-[10px] uppercase tracking-wider text-faint font-semibold">
+                <div className="text-ui-10 uppercase tracking-wider text-faint font-semibold">
                   Add Lifecycle Hook
                 </div>
                 <div className="space-y-1.5">
                   <select
                     value={newHookEvent}
                     onChange={(e) => setNewHookEvent(e.target.value)}
-                    className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-[11px] focus:outline-none focus:border-accent"
+                    className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt text-ui-11 focus:outline-none focus:border-accent"
                   >
                     {allowedEvents.map((evt) => (
                       <option key={evt} value={evt}>
@@ -2462,7 +2462,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     placeholder="Shell command (e.g., echo 'start')"
                     value={newHookCommand}
                     onChange={(e) => setNewHookCommand(e.target.value)}
-                    className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-[11px] focus:outline-none focus:border-accent font-mono"
+                    className="w-full bg-panel2 border border-edge rounded px-2 py-1 text-txt placeholder:text-faint text-ui-11 focus:outline-none focus:border-accent font-mono"
                   />
                   
                   <button
@@ -2484,7 +2484,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                         setHookStatus("");
                       }
                     }}
-                    className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-1 font-semibold text-[11px] transition-colors flex items-center justify-center gap-1"
+                    className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-1 font-semibold text-ui-11 transition-colors flex items-center justify-center gap-1"
                   >
                     <Plus size={11} /> Add Hook
                   </button>
@@ -2497,15 +2497,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </>)}
         {gate("advanced", "chat archive ingest backup prune compact") && (<>
         <div className="border-t border-edge pt-3 space-y-2">
-          <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+          <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Chat archive
           </span>
-          <p className="text-[10px] text-muted">
+          <p className="text-ui-10 text-muted">
             Archive hides a session. Ingest saves its native messages and compaction
             history in the local vault and backups. Compact replaces verified archived
             transcripts with small stubs; Unarchive restores their full content.
           </p>
-          <p className="text-[10px] text-faint">
+          <p className="text-ui-10 text-faint">
             {archiveStatus
               ? `${archiveStatus.chats} chat${archiveStatus.chats === 1 ? "" : "s"} in the vault${archiveStatus.vault_present ? "" : " (empty)"}.`
               : "Archive status loading…"}
@@ -2536,8 +2536,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             disabled={archiveBusy}
             className="w-full flex items-center justify-between px-3 py-2 rounded border bg-panel2 border-edge text-muted transition text-left disabled:opacity-50"
           >
-            <span className="font-medium text-[11px]">Ingest archived sessions</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="font-medium text-ui-11">Ingest archived sessions</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {archiveBusy ? "working" : "ingest"}
             </span>
           </button>
@@ -2566,12 +2566,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             disabled={archiveBusy}
             className="w-full flex items-center justify-between px-3 py-2 rounded border bg-panel2 border-edge text-muted transition text-left disabled:opacity-50"
           >
-            <span className="font-medium text-[11px]">Compact ingested transcripts</span>
-            <span className="text-[10px] uppercase font-bold tracking-wider">
+            <span className="font-medium text-ui-11">Compact ingested transcripts</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
               {archiveBusy ? "working" : "compact"}
             </span>
           </button>
-          {archiveNotice ? <p role="status" className="text-[10px] text-muted">{archiveNotice}</p> : null}
+          {archiveNotice ? <p role="status" className="text-ui-10 text-muted">{archiveNotice}</p> : null}
         </div>
         </>)}
         {gate("advanced", "agent memory durable facts preferences") && (<>
@@ -2581,7 +2581,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             onClick={() => setMemoryOpen(!memoryOpen)}
             className="w-full flex items-center justify-between text-left focus:outline-none"
           >
-            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Agent Memory
             </span>
             <span className="text-muted">
@@ -2604,7 +2604,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             onClick={() => setSkillsOpen(!skillsOpen)}
             className="w-full flex items-center justify-between text-left focus:outline-none"
           >
-            <span className="uppercase tracking-wider text-[10px] text-faint font-semibold flex items-center gap-1">
+            <span className="uppercase tracking-wider text-ui-10 text-faint font-semibold flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-accent inline-block"></span> Skills & Rules
             </span>
             <span className="text-muted">
@@ -2624,7 +2624,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {/* Usage / Cost Dashboard Section */}
         <div className="border-t border-edge pt-3 space-y-2.5">
           <div className="flex items-center justify-between">
-            <label className="block uppercase tracking-wider text-[10px] text-faint font-semibold">
+            <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
               Token & Cost Usage
             </label>
             <button
@@ -2633,7 +2633,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   .then(setUsage)
                   .catch((err) => console.error("Failed to refresh usage", err));
               }}
-              className="text-[9px] uppercase font-bold tracking-wider text-accent hover:underline bg-transparent border-0 p-0"
+              className="text-ui-9 uppercase font-bold tracking-wider text-accent hover:underline bg-transparent border-0 p-0"
             >
               Refresh
             </button>
@@ -2642,11 +2642,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           {usage ? (
             <div className="space-y-2.5 bg-panel2 border border-edge/50 rounded p-2.5">
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center justify-between text-ui-11">
                   <span className="text-faint">This app run tokens:</span>
                   <span className="text-txt font-mono font-medium">{usage.session.tokens_used.toLocaleString()}</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center justify-between text-ui-11">
                   <span className="text-faint">
                     {usage.session.cost_source === "provider" && usage.session.estimated !== true
                       ? "This app run (provider-billed):"
@@ -2658,11 +2658,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   </span>
                   <span className="text-good font-mono font-medium">${usage.session.est_cost_usd.toFixed(6)}</span>
                 </div>
-                <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] border-t border-edge/30 pt-1 mt-1">
+                <div className="flex flex-wrap items-center justify-between gap-1 text-ui-11 border-t border-edge/30 pt-1 mt-1">
                   <span className="text-faint">Active Driver:</span>
                   <span className="text-txt font-mono font-medium truncate max-w-full" title={usage.session.driver}>{usage.session.driver}</span>
                 </div>
-                <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center justify-between text-ui-11">
                   <span className="text-faint">Price in/out (per Mtok):</span>
                   <span className="text-muted font-mono font-medium">${usage.session.price_in}/${usage.session.price_out}</span>
                 </div>
@@ -2670,14 +2670,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
               {usage.jobs && usage.jobs.length > 0 && (
                 <div className="space-y-1 border-t border-edge/40 pt-1.5 mt-1.5">
-                  <div className="text-[9px] uppercase tracking-wider text-faint font-semibold mb-1">
+                  <div className="text-ui-9 uppercase tracking-wider text-faint font-semibold mb-1">
                     PM Job Costs (estimated)
                   </div>
                   <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
                     {usage.jobs.map((job: any) => (
-                      <div key={job.job_id} className="flex items-center justify-between gap-x-1.5 text-[10px] font-mono">
+                      <div key={job.job_id} className="flex items-center justify-between gap-x-1.5 text-ui-10 font-mono">
                         <span className="text-muted truncate flex-1 min-w-0" title={job.job_id}>{job.job_id}</span>
-                        <span className="text-faint text-[9px] flex-shrink-0">{job.tokens.toLocaleString()} tok</span>
+                        <span className="text-faint text-ui-9 flex-shrink-0">{job.tokens.toLocaleString()} tok</span>
                         <span className="text-txt font-medium flex-shrink-0">${job.est_cost_usd.toFixed(6)}</span>
                       </div>
                     ))}
@@ -2686,9 +2686,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               )}
             </div>
           ) : (
-            <p className="text-[10px] text-muted">Loading usage statistics...</p>
+            <p className="text-ui-10 text-muted">Loading usage statistics...</p>
           )}
-          <p className="text-[9px] text-muted font-mono">
+          <p className="text-ui-9 text-muted font-mono">
             This app run resets on full quit — not Swarm pane repo-session spend or conversation lifetime.
             Spend basis may be provider-billed, mixed, estimated from catalog rates, or a plan-credit estimate.
           </p>
@@ -2698,7 +2698,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("general", "system info version read-only") && settings && (<>
         {/* Read-Only Info */}
         <div className="border-t border-edge pt-3 space-y-2.5">
-          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <div className="uppercase tracking-wider text-ui-10 text-faint font-semibold">
             System Info
           </div>
 
@@ -2720,14 +2720,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
           <div className="space-y-0.5">
             <div className="text-faint">State Directory:</div>
-            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-[11px]">
+            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-ui-11">
               {settings.state_dir || "Temporary (per-session)"}
             </div>
           </div>
 
           <div className="space-y-0.5">
             <div className="text-faint">Repository:</div>
-            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-[11px]">
+            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-ui-11">
               {settings.repo || "None"}
             </div>
           </div>
@@ -2745,36 +2745,36 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           summary={gitStatus?.connected ? "connected" : "not connected"}
         >
           {gitError && (
-            <div className="text-risk text-[10px] font-semibold bg-risk/10 border border-risk/30 rounded p-2">
+            <div className="text-risk text-ui-10 font-semibold bg-risk/10 border border-risk/30 rounded p-2">
               {gitError}
             </div>
           )}
 
           {gitStatus?.connected ? (
             <div className="space-y-2 bg-panel rounded border border-edge/40 p-2.5">
-              <div className="text-[11px] leading-relaxed text-muted">
+              <div className="text-ui-11 leading-relaxed text-muted">
                 Connected to GitHub. Wiki repository is provisioned and active.
               </div>
               <div className="flex items-center justify-between gap-2 border-t border-edge/30 pt-2 mt-1">
                 <div className="space-y-0.5">
-                  <div className="text-[10px] text-faint uppercase font-bold tracking-wider">Wiki Repository</div>
+                  <div className="text-ui-10 text-faint uppercase font-bold tracking-wider">Wiki Repository</div>
                   {gitStatus.html_url ? (
                     <a
                       href={gitStatus.html_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="font-mono text-[11px] text-accent hover:underline break-all"
+                      className="font-mono text-ui-11 text-accent hover:underline break-all"
                     >
                       {gitStatus.wiki_repo}
                     </a>
                   ) : (
-                    <span className="font-mono text-[11px] text-txt">{gitStatus.wiki_repo}</span>
+                    <span className="font-mono text-ui-11 text-txt">{gitStatus.wiki_repo}</span>
                   )}
                 </div>
                 <button
                   disabled={gitConnecting}
                   onClick={handleDisconnectGit}
-                  className="bg-risk/10 border border-risk/20 hover:bg-risk/20 text-risk text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 rounded transition disabled:opacity-50"
+                  className="bg-risk/10 border border-risk/20 hover:bg-risk/20 text-risk text-ui-10 uppercase font-bold tracking-wider px-2.5 py-1 rounded transition disabled:opacity-50"
                 >
                   Disconnect
                 </button>
@@ -2782,12 +2782,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             </div>
           ) : (
             <div className="space-y-2.5">
-              <div className="text-[10px] text-muted leading-relaxed">
+              <div className="text-ui-10 text-muted leading-relaxed">
                 Connect your GitHub account to automatically provision a private "my-portable-llm-wiki" repository as your durable cross-LLM memory.
               </div>
 
               {gitConnecting && (
-                <div className="text-[10px] text-muted italic flex items-center gap-1.5">
+                <div className="text-ui-10 text-muted italic flex items-center gap-1.5">
                   <span className="animate-pulse">Provisioning repository...</span>
                 </div>
               )}
@@ -2797,19 +2797,19 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   {gitStatus?.gh_available ? (
                     <button
                       onClick={handleConnectGH}
-                      className="w-full bg-accent hover:bg-accent/90 text-accent-txt text-[11px] font-bold px-3 py-1.5 rounded transition shadow-sm text-center"
+                      className="w-full bg-accent hover:bg-accent/90 text-accent-txt text-ui-11 font-bold px-3 py-1.5 rounded transition shadow-sm text-center"
                     >
                       Connect with GitHub CLI ({gitStatus.gh_user})
                     </button>
                   ) : (
-                    <div className="text-[10px] text-muted italic bg-panel rounded border border-edge/30 p-2 leading-normal">
+                    <div className="text-ui-10 text-muted italic bg-panel rounded border border-edge/30 p-2 leading-normal">
                       GitHub CLI (gh) not detected or not authenticated. Install or authenticate to enable one-click connection.
                     </div>
                   )}
 
                   <button
                     onClick={handleStartDeviceFlow}
-                    className="w-full bg-panel hover:bg-panel2 border border-edge text-txt text-[11px] font-semibold px-3 py-1.5 rounded transition text-center"
+                    className="w-full bg-panel hover:bg-panel2 border border-edge text-txt text-ui-11 font-semibold px-3 py-1.5 rounded transition text-center"
                   >
                     Connect via Device Code instead
                   </button>
@@ -2818,13 +2818,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
               {deviceFlow && (
                 <div className="bg-panel rounded border border-edge/40 p-2.5 space-y-2">
-                  <div className="text-[11px] font-medium text-txt">
+                  <div className="text-ui-11 font-medium text-txt">
                     Verification Code:
                   </div>
                   <div className="font-mono text-center text-lg tracking-widest font-bold bg-bg border border-edge/60 rounded py-1.5 text-accent select-all">
                     {deviceFlow.user_code}
                   </div>
-                  <div className="text-[10px] text-muted leading-normal">
+                  <div className="text-ui-10 text-muted leading-normal">
                     Go to{" "}
                     <a
                       href={deviceFlow.verification_uri}
@@ -2837,7 +2837,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     and enter the code above to authorize.
                   </div>
                   {gitPolling && (
-                    <div className="text-[10px] text-accent/90 italic flex items-center gap-1.5">
+                    <div className="text-ui-10 text-accent/90 italic flex items-center gap-1.5">
                       <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-ping" />
                       Waiting for authorization...
                     </div>
@@ -2847,7 +2847,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       setDeviceFlow(null);
                       setGitPolling(false);
                     }}
-                    className="w-full text-muted hover:text-txt text-[10px] font-semibold uppercase tracking-wider text-center pt-1"
+                    className="w-full text-muted hover:text-txt text-ui-10 font-semibold uppercase tracking-wider text-center pt-1"
                   >
                     Cancel
                   </button>
@@ -2861,10 +2861,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         {gate("advanced", "wiki graph portable-llm-wiki api base token") && (<>
         {/* WIKI GRAPH (portable-llm-wiki gated owner surface) */}
         <div className="border-t border-edge pt-3 space-y-2">
-          <div className="uppercase tracking-wider text-[10px] text-faint font-semibold">
+          <div className="uppercase tracking-wider text-ui-10 text-faint font-semibold">
             Wiki Graph
           </div>
-          <div className="text-[10px] text-muted leading-relaxed">
+          <div className="text-ui-10 text-muted leading-relaxed">
             Prefer <span className="text-accent">State → Wiki → Connect portablellm.wiki</span>
             {" "}(pop-out signup auto-links). Manual paste still works: personal LLM URL
             or https://api.portablellm.wiki/t/your-tenant.
@@ -2875,14 +2875,14 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             value={wikiBase}
             onChange={(e) => setWikiBase(e.target.value)}
             placeholder="Personal LLM URL (or leave blank and use Connect button)"
-            className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
+            className="w-full bg-bg border border-edge rounded px-2 py-1 text-ui-11 font-mono text-txt focus:outline-none focus:border-accent"
           />
           <input
             type="password"
             value={wikiToken}
             onChange={(e) => setWikiToken(e.target.value)}
             placeholder={wikiCfg?.has_token ? "Owner token (leave blank to keep)" : "Owner token (optional if URL includes ?t=)"}
-            className="w-full bg-bg border border-edge rounded px-2 py-1 text-[11px] font-mono text-txt focus:outline-none focus:border-accent"
+            className="w-full bg-bg border border-edge rounded px-2 py-1 text-ui-11 font-mono text-txt focus:outline-none focus:border-accent"
           />
           <button
             disabled={wikiSaving}
@@ -2895,7 +2895,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               } catch { /* ignore */ }
               finally { setWikiSaving(false); }
             }}
-            className="bg-accent/15 hover:bg-accent/25 text-accent text-[11px] font-semibold px-2 py-1 rounded transition disabled:opacity-50"
+            className="bg-accent/15 hover:bg-accent/25 text-accent text-ui-11 font-semibold px-2 py-1 rounded transition disabled:opacity-50"
           >
             {wikiSaving ? "Saving..." : "Save Wiki Config"}
           </button>
@@ -2913,7 +2913,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                 } catch { /* ignore */ }
                 finally { setWikiSaving(false); }
               }}
-              className="ml-2 bg-edge hover:bg-risk/20 text-muted hover:text-risk text-[11px] font-semibold px-2 py-1 rounded transition disabled:opacity-50 border border-edge2"
+              className="ml-2 bg-edge hover:bg-risk/20 text-muted hover:text-risk text-ui-11 font-semibold px-2 py-1 rounded transition disabled:opacity-50 border border-edge2"
             >
               Disconnect Wiki
             </button>
@@ -2926,7 +2926,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             href="https://portablellm.wiki"
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-[10px] text-faint hover:text-accent transition-colors"
+            className="inline-flex items-center gap-1 text-ui-10 text-faint hover:text-accent transition-colors"
           >
             New here? Learn what portable-llm-wiki is at portablellm.wiki
             <ExternalLink size={10} />
@@ -2934,7 +2934,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
         </>)}
         {q && !anyShown && (
-          <p className="text-[11px] text-muted">No settings match "{filter.trim()}".</p>
+          <p className="text-ui-11 text-muted">No settings match "{filter.trim()}".</p>
         )}
       </div>
     </div>
