@@ -17,7 +17,7 @@ Breakdowns group the same rows, so their totals always equal the headline.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable, Optional
+from typing import Iterable
 
 from .accounts import LOCAL, METERED, PLAN
 from .store import UsageEvent
@@ -82,6 +82,7 @@ def summarize(events: Iterable[UsageEvent]) -> dict:
             spend_reported += e.cost_basis == "reported"
 
     spent = round(sum(e.cash_usd for e in rows if e.cash_usd is not None and e.billing != LOCAL), 6)
+    totals = _finish(total)
     return {
         "calls": len(rows),
         "spent_usd": spent,
@@ -92,8 +93,8 @@ def summarize(events: Iterable[UsageEvent]) -> dict:
             else "computed" if spend_reported == 0 else "mixed"
         ),
         "unpriced_calls": total["unpriced_calls"],
-        "tokens": _finish(dict(total))["tokens"],
-        "cache_hit": _finish(dict(total))["cache_hit"],
+        "tokens": totals["tokens"],
+        "cache_hit": totals["cache_hit"],
         "plan": _finish(plan),
         "local": _finish(local),
         "by_route": [
@@ -112,11 +113,12 @@ def session_summary(state_dir: str, session_id: str) -> dict:
     return summarize(ledger_for(state_dir).events(session_id=session_id))
 
 
-def period_spend(state_dir: str, account: str, since: float) -> Optional[float]:
+def period_spend(state_dir: str, account: str, since: float) -> float:
+    """Known cash spent on ``account`` since ``since`` (unpriced calls excluded)."""
     from .store import ledger_for
 
     rows = ledger_for(state_dir).events(account=account, since=since)
-    return round(sum(e.cash_usd or 0.0 for e in rows), 6) if rows else 0.0
+    return round(sum(e.cash_usd or 0.0 for e in rows), 6)
 
 
 def ledger_view(state_dir: str, session_id: str, job_reports: Iterable[tuple] = ()) -> dict:
