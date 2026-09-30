@@ -29,6 +29,7 @@ from .reasoning_envelope import capture_reasoning, replay_reasoning
 from .cache_refresh import CacheRefreshDriver, cache_foreground
 from .retry import with_retry
 from pmharness.stream_snapshot import absorb_stream_snapshot
+from .metering import metered
 
 
 DEFAULT_CODEX_BASE = "https://chatgpt.com/backend-api/codex"
@@ -1169,6 +1170,7 @@ def _consume_codex_sse(
     return out
 
 
+@metered
 class CodexResponsesDriver(CacheRefreshDriver):
     # ChatGPT Codex backend requires stream=true; expose real SSE to the pilot.
     supports_streaming = True

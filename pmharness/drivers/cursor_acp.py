@@ -32,6 +32,7 @@ from .cursor_cli import (
     resolve_cursor_execution_mode,
 )
 from .cursor_identity import IDENTITY_AUTO, is_unpinned_cursor_model
+from .metering import metered
 
 
 def cursor_acp_enabled(model: Optional[str] = None) -> bool:
@@ -1028,6 +1029,7 @@ def _cursor_acp_terminal_fields(
     return meta, err
 
 
+@metered
 class CursorAcpDriver:
     """Warm ACP pilot with automatic --print fallback."""
 

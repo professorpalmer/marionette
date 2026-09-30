@@ -48,6 +48,10 @@ class UsageServices:
     active_session_fingerprint: Callable[[], Any] = lambda: ()
     usage_store_fingerprint: Callable[[str, set], Any] = lambda repo, roots: ()
     usage_request_lock: Callable[[], Any] = nullcontext
+    # Usage ledger: the session's accounting view, and a fingerprint that
+    # changes on every recorded call (part of the response cache key).
+    ledger_view: Optional[Callable[[str, list], dict]] = None
+    ledger_fingerprint: Callable[[str], Any] = lambda session_id: ()
 
 
 JsonPayload = Union[dict, list]
@@ -250,6 +254,7 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         "boot_meters": sorted((str(k), v) for k, v in boot_meters.items()),
         "active_session_id": active_session_id,
         "active_session": active_session_fingerprint,
+        "ledger": svc.ledger_fingerprint(active_session_id) if active_session_id else (),
         "driver": svc.cfg.driver,
         "pilot_driver": pilot_driver,
         "price": [price_in, price_out, price_source],
@@ -287,6 +292,8 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
     usage_incomplete = False
     session_incomplete = False
     job_coverage = {"expected": None, "read": 0}
+    # Cost reports loaded for the session's jobs (reused by the ledger view).
+    job_reports: dict = {}
     try:
         # Same merged, Marionette-owned job set the tracker uses
         # (/api/swarm/live): harness store + owned CLI rows only.
@@ -500,11 +507,14 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         def _job_report(key):
             from ..financial_receipt import load_pm_cost_report
 
+            if key in job_reports:
+                return job_reports[key]
             try:
                 store = stores_by_key.get(key)
                 if store is None:
                     raise OSError("Job financial store unavailable")
-                return load_pm_cost_report(store, key[2], registry=registry)
+                job_reports[key] = load_pm_cost_report(store, key[2], registry=registry)
+                return job_reports[key]
             except Exception:
                 failed_reports.add(key)
                 raise
@@ -727,6 +737,12 @@ def _get_usage_body(repo_override: str, svc: UsageServices) -> tuple[int, JsonPa
         "session_total": session_total,
         "jobs": jobs_list,
     }
+    if active_session_id and svc.ledger_view is not None:
+        try:
+            reports = [(key[2], report) for key, report in job_reports.items()]
+            response_data["ledger"] = svc.ledger_view(active_session_id, reports)
+        except Exception as e:
+            svc.diag("server.usage_ledger", e)
     try:
         svc.persist_boot_usage(fold_live=False)
     except Exception:

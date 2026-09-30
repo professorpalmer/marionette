@@ -102,6 +102,41 @@ def models_dev_provider_id(provider_name: str) -> str:
     return PROVIDER_TO_MODELS_DEV.get(key, key)
 
 
+def _raw_model(provider_name: str, model_id: str, *, allow_network: bool) -> Optional[dict[str, Any]]:
+    """The models.dev entry for one provider's model (exact, lower-case, or bare id)."""
+    registry = _registry(allow_network=allow_network)
+    provider = registry.get(models_dev_provider_id(provider_name)) if registry else None
+    models = provider.get("models") if isinstance(provider, dict) else None
+    if not isinstance(models, dict):
+        return None
+    raw = models.get(model_id) or models.get(model_id.lower())
+    if raw is None:
+        bare = model_id.rsplit("/", 1)[-1]
+        raw = models.get(bare) or models.get(bare.lower())
+    return raw if isinstance(raw, dict) else None
+
+
+def lookup_cost(
+    provider_name: str,
+    model_id: str,
+    *,
+    allow_network: bool = False,
+) -> Optional[tuple[dict[str, Any], float]]:
+    """The provider's published per-MTok cost block for one model, with the
+    time the registry was fetched (the rate version). None when unpublished.
+    Never raises."""
+    try:
+        mid = (model_id or "").strip()
+        raw = _raw_model(provider_name, mid, allow_network=allow_network) if mid else None
+        cost = raw.get("cost") if raw else None
+        if not isinstance(cost, dict) or "input" not in cost or "output" not in cost:
+            return None
+        return cost, float(_MEM_AT or 0.0)
+    except Exception as e:
+        _diag("models_dev.lookup_cost", e)
+        return None
+
+
 def lookup_model(
     provider_name: str,
     model_id: str,
@@ -113,20 +148,8 @@ def lookup_model(
         mid = (model_id or "").strip()
         if not mid:
             return None
-        registry = _registry(allow_network=allow_network)
-        if not registry:
-            return None
-        provider = registry.get(models_dev_provider_id(provider_name))
-        if not isinstance(provider, dict):
-            return None
-        models = provider.get("models")
-        if not isinstance(models, dict):
-            return None
-        raw = models.get(mid) or models.get(mid.lower())
+        raw = _raw_model(provider_name, mid, allow_network=allow_network)
         if raw is None:
-            bare = mid.rsplit("/", 1)[-1]
-            raw = models.get(bare) or models.get(bare.lower())
-        if not isinstance(raw, dict):
             return None
         out: dict[str, Any] = {"id": mid, "source": "models.dev"}
         name = raw.get("name")

@@ -25,6 +25,7 @@ from .cursor_identity import (
     cursor_identity_mismatch_message,
     cursor_identity_status,
 )
+from .metering import metered
 
 # CreateProcess cmdline budget is ~32k. We spawn node+index.js directly
 # (no agent.cmd→PowerShell), so short prompts stay on argv. Only spill to a
@@ -920,6 +921,7 @@ def _cursor_cli_success_terminal_meta(parsed: dict) -> dict:
     return out
 
 
+@metered
 class CursorCliDriver:
     """Pilot driver backed by the Cursor Agent CLI subprocess."""
 

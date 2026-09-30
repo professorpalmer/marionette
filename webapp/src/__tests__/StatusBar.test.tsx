@@ -8,7 +8,7 @@ import StatusBar, {
 } from "../components/StatusBar";
 import EconomicsPane from "../components/EconomicsPane";
 import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanner";
-import { api } from "../lib/api";
+import { api, type LedgerBucket, type LedgerView } from "../lib/api";
 import { _resetProcessUsageForTests, refreshProcessUsage } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
 
@@ -34,6 +34,17 @@ vi.mock("../lib/transport", async (importOriginal) => ({
 }));
 
 const mockGetUsage = vi.mocked(api.getUsage);
+const emptyBucket: LedgerBucket = {
+  calls: 0, tokens: 0, input_uncached: 0, cache_read: 0, cache_write: 0, output: 0, cache_hit: null,
+  cash_usd: 0, list_usd: 0, list_unpriced_calls: 0, unpriced_calls: 0, reported_calls: 0,
+};
+function ledgerView(over: Partial<LedgerView>): LedgerView {
+  return {
+    session_id: "sess-1", calls: 1, spent_usd: 0, spent_exact: false, spent_confidence: "none",
+    unpriced_calls: 0, tokens: 0, cache_hit: null, plan: emptyBucket, local: emptyBucket,
+    by_route: [], by_purpose: {}, by_job: {}, since: 1, ...over,
+  };
+}
 const mockGetEconomics = vi.mocked(api.getEconomics);
 
 const processUsage = {
@@ -52,6 +63,7 @@ const processUsage = {
   },
   jobs: [],
   session_total: { session_id: "sess-1", est_cost_usd: 33.6, input_tokens: 1, output_tokens: 1 },
+  ledger: ledgerView({ spent_usd: 33.6, spent_confidence: "computed", tokens: 2, calls: 3 }),
 };
 const mockWorkspaces = vi.mocked(api.workspaces);
 const mockGetSessionState = vi.mocked(api.getSessionState);
@@ -251,14 +263,15 @@ describe("StatusBar usage pills", () => {
     );
 
     expect(await screen.findByRole("button", { name: "~$33.60" })).toBeTruthy();
-    expect(await screen.findByText("Spend")).toBeTruthy();
+    expect(await screen.findByText("Spent")).toBeTruthy();
     expect(screen.getAllByText("~$33.60").length).toBeGreaterThan(1);
-    expect(screen.getByText("this session")).toBeTruthy();
+    expect(screen.getByText("spent this session")).toBeTruthy();
     expect(screen.queryByText("~$6.67 list-price")).toBeNull();
 
     mockGetUsage.mockResolvedValue({
       ...processUsage,
       session_total: { ...processUsage.session_total, est_cost_usd: 0.99 },
+      ledger: ledgerView({ spent_usd: 0.99, spent_confidence: "computed", tokens: 2, calls: 4 }),
     });
     await act(async () => {
       window.dispatchEvent(new Event("harness-usage-refresh"));
@@ -727,13 +740,9 @@ it('uses identical session accounting in the footer and session-all-time panel',
   mockWorkspaces.mockResolvedValue([]);
   mockGetSessionState.mockResolvedValue({ state: 'idle', pending_swarms: false });
   mockSessions.mockResolvedValue([]);
-  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
-    session_id: 'sess-1', est_cost_usd: 1.75, input_tokens: 800, output_tokens: 200,
-    tokens_used: 1000, tokens_cached: 400, prompt_input_tokens: 800,
-    prompt_cache_read_tokens: 400, prompt_cache_hit_ratio: 0.5,
-    cache_saved_usd_swarm: 0.5, swarm_cache_savings_basis: 'actual_usage',
-    accounting_scope: 'conversation', list_price_complete: false,
-  } });
+  mockGetUsage.mockResolvedValue({ ...processUsage, ledger: ledgerView({
+    calls: 6, tokens: 1000, cache_hit: 0.5, spent_usd: 1.75, spent_confidence: 'computed',
+  }) });
   mockGetEconomics.mockResolvedValue({ available: true, scope: 'conversation',
     counterfactual: { actual_cost_usd: 99, naive_cost_usd: 100, avoided_usd: 1 } });
   Reflect.set(window, '__pmPendingEconomicsSelection', { scope: 'conversation', period: 'all' });
@@ -741,31 +750,36 @@ it('uses identical session accounting in the footer and session-all-time panel',
     <div data-testid="economics"><EconomicsPane /></div></>);
   const footer = within(screen.getByTestId('footer'));
   const panel = within(screen.getByTestId('economics'));
+  // Both surfaces read the same ledger view, so they cannot disagree.
   expect(await footer.findByRole('button', { name: '~$1.75' })).toBeVisible();
   expect(await panel.findByText('~$1.75')).toBeVisible();
   expect(footer.getByText('1k tok')).toBeVisible();
-  expect(panel.getByText('1k tok')).toBeVisible();
-  expect(footer.getByText(/50%/)).toBeVisible();
-  expect(panel.getByText(/50%/)).toBeVisible();
+  expect(panel.getByText('1k')).toBeVisible();
+  expect(footer.getByText('50% cache')).toBeVisible();
+  expect(panel.getByText('50%')).toBeVisible();
   expect(panel.queryByText('$99.00')).not.toBeInTheDocument();
-  expect(panel.queryByText(/since you opened Marionette/)).not.toBeInTheDocument();
 });
 
-it('shows plan inclusion and historical value in both session surfaces', async () => {
-  mockGetUsage.mockResolvedValue({ ...processUsage, session_total: {
-    session_id: 'sess-1', accounting_scope: 'conversation', tokens_used: 100,
-    est_cost_usd: 0, nominal_cost_usd: 2, cost_source: 'plan_estimated',
-    cache_savings_gross_usd: 3, cache_savings_basis: 'catalog', list_price_complete: true,
-  } });
+it('shows subscription usage as $0 spend with its list-price value, never as spend', async () => {
+  mockGetUsage.mockResolvedValue({ ...processUsage, ledger: ledgerView({
+    calls: 5, tokens: 100, spent_usd: 0, spent_confidence: 'none',
+    plan: { ...emptyBucket, calls: 5, tokens: 100, list_usd: 5 },
+  }) });
   Reflect.set(window, '__pmPendingEconomicsSelection', { scope: 'conversation', period: 'all' });
   render(<><div data-testid="plan-footer"><StatusBar {...statusBarProps} /></div>
     <div data-testid="plan-economics"><EconomicsPane /></div></>);
   const footer = within(screen.getByTestId('plan-footer'));
   const panel = within(screen.getByTestId('plan-economics'));
-  expect(await footer.findByRole('button', { name: 'Included in plan · $0 marginal spend' })).toBeVisible();
-  expect(await footer.findByRole('button', { name: '~$5.00 list-price' })).toBeVisible();
-  expect(await panel.findByText('Included in plan')).toBeVisible();
-  expect(await panel.findAllByText('~$5.00')).toHaveLength(2);
+  expect(await footer.findByRole('button', { name: '$0.00' })).toBeVisible();
+  expect(await footer.findByRole('button', { name: '100 tok on plan · $5.00 at list' })).toBeVisible();
+  expect(await panel.findByText('On plans (list price)')).toBeVisible();
+  expect(panel.getByText('$5.00')).toBeVisible();
+});
+
+it('labels a session from before the ledger as an estimate', async () => {
+  mockGetUsage.mockResolvedValue({ ...processUsage, ledger: undefined });
+  render(<StatusBar {...statusBarProps} />);
+  expect(await screen.findByText('~$33.60 estimate, before ledger')).toBeVisible();
 });
 
 it("does not show a session Retry banner for an unrelated boot-store failure", async () => {

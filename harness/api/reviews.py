@@ -107,7 +107,10 @@ def post_inline_edit(body: dict, svc: ReviewServices) -> tuple[int, JsonPayload]
         if not hasattr(pilot, "pilot") or not pilot.pilot:
             return 200, {"ok": False, "error": "No pilot driver configured"}
 
-        resp = pilot.pilot.complete(task_prompt, system=system_msg)
+        from pmharness.drivers.metering import attribution
+
+        with attribution(purpose="inline_edit"):
+            resp = pilot.pilot.complete(task_prompt, system=system_msg)
         if getattr(resp, "error", None):
             return 200, {"ok": False, "error": resp.error}
 

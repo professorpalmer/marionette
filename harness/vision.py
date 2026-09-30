@@ -27,6 +27,7 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional
 from pmharness.drivers import http_pool
+from pmharness.drivers.metering import report_usage
 
 
 _VLM_PROMPT = (
@@ -119,6 +120,8 @@ class OpenAICompatVisionSidecar:
             return VisionResult("", error=f"bad VLM response: {str(raw)[:200]}",
                                 latency_ms=(time.time()-t0)*1000, model=self.name)
         usage = raw.get("usage", {}) or {}
+        report_usage(name=self.name, model=self.model, base_url=self.base_url,
+                     usage=usage, started_at=t0, purpose="vision")
         return VisionResult(text=text, tokens_out=int(usage.get("completion_tokens", 0) or 0),
                             latency_ms=(time.time()-t0)*1000, model=self.name)
 
@@ -217,6 +220,8 @@ class AnthropicVisionSidecar:
             return VisionResult("", error=f"bad VLM response: {str(raw)[:200]}",
                                 latency_ms=(time.time()-t0)*1000, model=self.name)
         usage = raw.get("usage", {}) or {}
+        report_usage(name=self.name, model=self.model, base_url=self.base_url,
+                     usage=usage, started_at=t0, purpose="vision")
         return VisionResult(text=text, tokens_out=int(usage.get("output_tokens", 0) or 0),
                             latency_ms=(time.time()-t0)*1000, model=self.name)
 

@@ -89,7 +89,10 @@ def advise(actions: list, repo: str, driver: Any) -> List[str]:
         return []
     try:
         prompt = build_advisor_prompt(actions, repo)
-        response = driver.complete(prompt, system=_SYSTEM)
+        from pmharness.drivers.metering import attribution
+
+        with attribution(purpose="advisor"):
+            response = driver.complete(prompt, system=_SYSTEM)
         text = getattr(response, "text", "") or ""
         return _parse_warnings(text)
     except Exception:

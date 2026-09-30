@@ -7,6 +7,7 @@ import {
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
   TITLEBAR_TRAFFIC_PAD_SM_PX,
+  titlebarLeftPad,
 } from "../lib/titlebarSafe";
 
 function paddingLeftPx(el: Element): number {
@@ -74,5 +75,27 @@ describe("ProviderKeyBanner actions", () => {
     render(<ProviderKeyBanner onAddKey={onAddKey} />);
     fireEvent.click(screen.getByRole("button", { name: /Add key/i }));
     expect(onAddKey).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the traffic lights only where a strip actually meets them", () => {
+    // Top-left of the window (left rail collapsed): full clearance.
+    expect(titlebarLeftPad({ left: 0, top: 0 })).toBe(TITLEBAR_TRAFFIC_PAD_PX);
+    // Partly overlapping: content still starts past the lights.
+    expect(60 + titlebarLeftPad({ left: 60, top: 0 })).toBe(TITLEBAR_TRAFFIC_PAD_PX);
+    // Beside an open left rail, or below the title bar: ordinary chrome pad.
+    expect(titlebarLeftPad({ left: 190, top: 0 })).toBe(TITLEBAR_CHROME_PAD_X_PX);
+    expect(titlebarLeftPad({ left: 0, top: 48 })).toBe(TITLEBAR_CHROME_PAD_X_PX);
+  });
+
+  it("ConversationHeader beside an open left rail has no traffic-light gap", () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      { left: 190, top: 0, right: 900, bottom: 30, width: 710, height: 30, x: 190, y: 0, toJSON: () => ({}) } as DOMRect,
+    );
+    try {
+      render(<ConversationHeader pillStatus="idle" />);
+      expect(paddingLeftPx(screen.getByTestId("conversation-header"))).toBe(TITLEBAR_CHROME_PAD_X_PX);
+    } finally {
+      rect.mockRestore();
+    }
   });
 });

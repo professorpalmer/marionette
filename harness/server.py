@@ -1547,6 +1547,26 @@ def _sessions_state_dir() -> str:
     return _cfg.state_dir or _tf.gettempdir()
 
 
+def _ledger_view(session_id: str, job_reports: list) -> dict:
+    """The session's usage ledger view, with the provider-side check."""
+    from .usage_ledger.reconcile import openrouter_reconciliation
+    from .usage_ledger.summary import ledger_view
+
+    view = ledger_view(_sessions_state_dir(), session_id, job_reports)
+    if any(row["provider"] == "openrouter" for row in view["by_route"]):
+        view["reconcile"] = {"openrouter": openrouter_reconciliation(_sessions_state_dir())}
+    return view
+
+
+def _ledger_fingerprint(session_id: str) -> tuple:
+    from .usage_ledger.store import ledger_for
+
+    try:
+        return ledger_for(_sessions_state_dir()).fingerprint(session_id)
+    except Exception:
+        return ()
+
+
 _CODEGRAPH_REASON_UNSET = object()
 
 
@@ -2000,6 +2020,8 @@ def _usage_services():
         usage_cache_get=_usage_cache_get,
         usage_cache_put=_usage_cache_put,
         usage_request_lock=_usage_request_lock,
+        ledger_view=_ledger_view,
+        ledger_fingerprint=_ledger_fingerprint,
         active_session_fingerprint=_active_session_fingerprint,
         usage_store_fingerprint=_usage_store_fingerprint,
         boot_session_cost=_boot_session_cost,
@@ -3795,6 +3817,12 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             ensure_keyed_provider_registry_health,
             start_registry_auto_refresh,
         )
+        # Every model call this process makes lands in the usage ledger.
+        try:
+            from .usage_ledger.recorder import install_for_state_dir
+            install_for_state_dir(_sessions_state_dir())
+        except Exception as exc:
+            _diag("usage_ledger.install", exc)
         ensure_keyed_provider_registry_health()
         start_registry_auto_refresh()
 

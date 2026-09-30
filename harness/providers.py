@@ -86,6 +86,10 @@ class Provider:
     # image input works without a dedicated GEMINI/OPENROUTER key. Empty string
     # means this provider has no first-class vision model wired in this rig.
     vision_model: str = ""
+    # How this account is billed: "metered" (pay per token), "plan" (a
+    # subscription: usage is included, marginal cash $0) or "local". The one
+    # source of truth for spend classification (harness.usage_ledger).
+    billing: str = "metered"
 
     def _is_disconnected(self) -> bool:
         """True if the user explicitly disconnected this provider. Authoritative
@@ -255,6 +259,7 @@ PROVIDERS = (
             "o4-mini",
         ),
         vision_model="gpt-5.4",
+        billing="plan",
     ),
     # Claude Code CLI plan pilot. Distinct from the Anthropic Messages API
     # key provider. Availability = `claude` binary + oauthAccount login.
@@ -271,6 +276,7 @@ PROVIDERS = (
             "claude-opus-5",
         ),
         vision_model="claude-sonnet-4-5",
+        billing="plan",
     ),
     # Cursor Agent CLI plan pilot. Distinct from platform which('cursor') and
     # from CURSOR_API_KEY credential pools. Availability = agent binary + login.
@@ -306,6 +312,7 @@ PROVIDERS = (
             "gpt-5",
             "composer-1",
         ),
+        billing="plan",
     ),
     Provider(
         name="nous", aliases=("nousresearch",),
@@ -313,6 +320,7 @@ PROVIDERS = (
         base_url="https://inference-api.nousresearch.com/v1",
         api_mode="chat_completions", display_name="Nous Portal (OAuth)",
         pilot_models=("Hermes-3-Llama-3.1-70B", "Hermes-4-70B"),
+        billing="plan",
     ),
     Provider(
         name="gemini", aliases=("google", "google-gemini"),
@@ -371,6 +379,7 @@ PROVIDERS = (
         base_url=_opencode_go.BASE_URL,
         api_mode="opencode_go", display_name="OpenCode Go",
         pilot_models=_opencode_go.CURATED_MODELS,
+        billing="plan",
     ),
     # OpenCode Zen: same account key can list both catalogs, but Settings
     # identity and the live /models host stay separate from Go.
@@ -390,6 +399,7 @@ PROVIDERS = (
         base_url="",
         api_mode="chat_completions", display_name="Local",
         pilot_models=(),
+        billing="local",
     ),
     Provider(
         name="bedrock", aliases=("aws-bedrock", "aws"),

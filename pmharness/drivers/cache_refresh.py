@@ -16,6 +16,7 @@ from typing import Optional
 from functools import wraps
 
 from .request_boundary import http_request
+from .metering import report_usage
 
 
 # Deliberately finite. New models/endpoints need an explicit capability review.
@@ -251,6 +252,11 @@ class CacheRefreshDriver:
                 raise ValueError("Refresh did not return a successful provider response")
             usage = raw.get("usage")
             usage = usage if isinstance(usage, dict) else None
+            if usage:
+                # A keep-warm ping is a real, billed request (cache reads).
+                report_usage(name=str(getattr(self, "name", "") or snapshot.provider), model=self.model,
+                             base_url=snapshot.endpoint, usage=usage, started_at=time.time(),
+                             owner=self, purpose="cache_keep_warm")
             return RefreshResult(status, started, usage, _cached_tokens(snapshot.provider, usage or {}))
         finally:
             timer.cancel()

@@ -1,10 +1,31 @@
-import type { CSSProperties } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import StatusPill from "./StatusPill";
 import TraceCopy from "./TraceCopy";
 import {
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
+  titlebarLeftPad,
 } from "../../lib/titlebarSafe";
+
+/** Left pad that clears the traffic lights only where this strip meets them;
+ *  re-measured whenever the strip or the window changes size. */
+function useTitlebarLeftPad(ref: { current: HTMLElement | null }): number {
+  const [pad, setPad] = useState(TITLEBAR_TRAFFIC_PAD_PX);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setPad(titlebarLeftPad(el.getBoundingClientRect()));
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [ref]);
+  return pad;
+}
 
 /** Brand strip + status pill for the conversation pane. */
 export default function ConversationHeader({
@@ -20,19 +41,22 @@ export default function ConversationHeader({
   onBusyDetailClick?: () => void;
   recoveryAction?: { label: string; onClick: () => void };
 }) {
+  const headerRef = useRef<HTMLElement>(null);
+  const leftPad = useTitlebarLeftPad(headerRef);
   const dragRegion = { WebkitAppRegion: "drag" } as CSSProperties;
   const noDrag = { WebkitAppRegion: "no-drag" } as CSSProperties;
   return (
     // With no update / provider-key banner above it and the left rail collapsed,
-    // this header is the topmost row at x=0, so it must clear the macOS
-    // hiddenInset traffic lights itself -- the chrome pad alone lands under them.
+    // this header is the topmost row at x=0 and must clear the macOS hiddenInset
+    // traffic lights itself; beside an open rail it only needs the chrome pad.
     <header
+      ref={headerRef}
       data-testid="conversation-header"
       className="flex items-center gap-2 border-b border-edge/60 shrink-0 min-w-0 overflow-hidden"
       style={{
         paddingTop: 8,
         paddingBottom: 7,
-        paddingLeft: TITLEBAR_TRAFFIC_PAD_PX,
+        paddingLeft: leftPad,
         paddingRight: TITLEBAR_CHROME_PAD_X_PX,
         ...dragRegion,
       }}

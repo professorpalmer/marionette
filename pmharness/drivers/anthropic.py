@@ -27,6 +27,7 @@ from .prompt_cache import (
 )
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
+from .metering import metered
 
 
 def _openai_user_content_to_anthropic(content) -> list:
@@ -139,6 +140,7 @@ def _anthropic_cache_meta(usage_fields: dict) -> dict:
     }
 
 
+@metered
 class AnthropicDriver(CacheRefreshDriver):
     supports_streaming = True
     requires_explicit_terminal = True

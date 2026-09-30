@@ -1573,16 +1573,19 @@ class CompactionContextMixin:
                     raise
 
                 def _run_summarizer():
+                    from pmharness.drivers.metering import attribution
+
                     try:
-                        if hasattr(summary_pilot, "chat"):
-                            box["resp"] = summary_pilot.chat(
-                                [{"role": "user", "content": content_to_summarize}],
-                                system=sys_msg,
-                            )
-                        else:
-                            box["resp"] = summary_pilot.complete(
-                                content_to_summarize, system=sys_msg,
-                            )
+                        with attribution(session_id=self.harness_session_id or None, purpose="compaction"):
+                            if hasattr(summary_pilot, "chat"):
+                                box["resp"] = summary_pilot.chat(
+                                    [{"role": "user", "content": content_to_summarize}],
+                                    system=sys_msg,
+                                )
+                            else:
+                                box["resp"] = summary_pilot.complete(
+                                    content_to_summarize, system=sys_msg,
+                                )
                     except Exception as ex:
                         box["err"] = ex
                     finally:

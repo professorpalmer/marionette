@@ -14,8 +14,10 @@ import urllib.error
 from . import http_pool
 from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
+from .metering import metered
 
 
+@metered
 class GeminiDriver:
     supports_streaming = True
     requires_explicit_terminal = True

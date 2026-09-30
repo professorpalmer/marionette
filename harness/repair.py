@@ -41,7 +41,10 @@ def drive_with_repair(
     ctx = prompt
 
     for attempt in range(max_repairs + 1):
-        resp = driver.complete(ctx, system=system)
+        from pmharness.drivers.metering import attribution
+
+        with attribution(purpose="repair"):
+            resp = driver.complete(ctx, system=system)
         last = resp
         total_in += resp.tokens_in
         total_out += resp.tokens_out
