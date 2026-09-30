@@ -177,9 +177,16 @@ def _report_lingering_work() -> None:
     """A suite that passes but never exits (a Windows shard hung for 30+ min
     after '2132 passed') leaks a non-daemon thread or a child process. Name
     them and fail loudly instead of hanging the job until its timeout."""
+    import faulthandler as _faulthandler
     import sys as _sys
     import threading as _threading
     import traceback as _traceback
+
+    if not os.environ.get("PYTEST_XDIST_WORKER"):
+        # If anything from here to process exit blocks (helper teardown,
+        # atexit hooks, thread joins), dump every thread's stack and exit
+        # rather than hang the job.
+        _faulthandler.dump_traceback_later(90, exit=True)
 
     frames = _sys._current_frames()
 
