@@ -234,6 +234,8 @@ def test_a_hung_codegraph_cannot_hold_a_hosted_turn(tmp_path, monkeypatch):
     s.pilot = Pilot()
     monkeypatch.setattr(s, "_resolve_append_only", lambda: False)
     monkeypatch.setattr(s, "_maybe_compact_history", lambda **k: iter(()))
+    # The per-turn `codegraph search` subprocess (auto_codegraph) hangs too.
+    monkeypatch.setattr(s, "_get_codegraph_context", lambda query: release.wait(10) and "late")
     monkeypatch.setattr(s, "_wiki", SimpleNamespace(configured=True))
     monkeypatch.setattr(s, "_build_turn_wiki_section", lambda msg: "### Wiki on time")
     started = _time.monotonic()

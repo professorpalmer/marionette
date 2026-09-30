@@ -1251,7 +1251,17 @@ class SendLoopMixin:
         ):
             with timed_phase(timing, "auto_codegraph"):
                 from .codegraph_inject import working_query
-                cg_context = self._get_codegraph_context(working_query(self, user_message))
+                from .conversation import (
+                    TURN_CONTEXT_BUDGET_S,
+                    _submit_turn_context,
+                    _turn_context_result,
+                )
+                # A `codegraph search` subprocess: bounded like the other
+                # pre-request lookups, left out when it is late.
+                cg_context = _turn_context_result(
+                    _submit_turn_context(self._get_codegraph_context, working_query(self, user_message)),
+                    time.monotonic() + TURN_CONTEXT_BUDGET_S,
+                )
                 if cg_context:
                     self._history.append({"role": "user", "content": cg_context})
         return user_message
