@@ -399,7 +399,7 @@ export default function CheckpointsPane() {
                                       {file.path}
                                     </span>
                                     <span
-                                      className={`px-1 py-0.2 text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}
+                                      className={`px-1 py-px text-[8px] uppercase font-bold tracking-wider rounded border ${badgeColor}`}
                                       aria-label={`${label}: ${file.path}`}
                                     >
                                       {label}

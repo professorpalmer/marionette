@@ -20,6 +20,10 @@ export default {
         // Status hues: legible on the neutral base without the teal lean.
         good: "#4ec08a", warn: "#e0a94e", risk: "#e0796b",
       },
+      // One motion vocabulary: bare `transition-*` utilities pick up DEFAULT,
+      // index.css reads the same tokens through theme().
+      transitionDuration: { DEFAULT: "120ms", fast: "120ms", base: "200ms" },
+      transitionTimingFunction: { DEFAULT: "cubic-bezier(0.2, 0, 0, 1)", base: "cubic-bezier(0.2, 0, 0, 1)" },
       fontFamily: {
         sans: ["-apple-system","BlinkMacSystemFont","Segoe UI","Roboto","sans-serif"],
         mono: ["ui-monospace","SFMono-Regular","Menlo","monospace"],

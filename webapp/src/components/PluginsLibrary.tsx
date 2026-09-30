@@ -69,7 +69,7 @@ export default function PluginsLibrary({ embedded = false }: { embedded?: boolea
       </div>
 
       {(msg || errorNotice) && (
-        <div className={`text-[11px] ${errorNotice ? "text-red-400" : "text-muted"}`}>
+        <div className={`text-[11px] ${errorNotice ? "text-risk" : "text-muted"}`}>
           {errorNotice || msg}
         </div>
       )}

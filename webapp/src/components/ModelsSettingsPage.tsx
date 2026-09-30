@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Search, RefreshCw, ChevronRight, ChevronDown } from "lucide-react";
 import { api, type ModelCatalogEntry } from "../lib/api";
+import { SwitchTrack } from "./ui/Switch";
 
 const COLLAPSE_THRESHOLD = 12;
 const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
@@ -280,14 +281,8 @@ export default function ModelsSettingsPage() {
                             <span className="text-[10px] text-faint font-mono truncate block">{entry.model}</span>
                           ) : null}
                         </span>
-                        <span
-                          className={`shrink-0 ml-3 flex items-center justify-center w-9 h-5 rounded-full transition relative
-                            ${entry.enabled ? "bg-accent/80" : "bg-edge"}`}
-                        >
-                          <span
-                            className={`absolute w-4 h-4 rounded-full bg-white transition-transform
-                              ${entry.enabled ? "translate-x-2" : "-translate-x-2"}`}
-                          />
+                        <span className="ml-3 flex">
+                          <SwitchTrack on={entry.enabled} />
                         </span>
                       </button>
                     ))}

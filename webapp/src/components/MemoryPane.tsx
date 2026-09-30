@@ -119,7 +119,7 @@ export default function MemoryPane({ embedded = false }: { embedded?: boolean })
 
         <div className="w-full bg-panel/30 h-1 rounded-full overflow-hidden mb-3 border border-edge/10">
           <div
-            className={`h-full transition-all duration-300 ${isOverLimit ? "bg-warn" : "bg-accent"}`}
+            className={`h-full transition-[width,background-color] duration-base ease-base ${isOverLimit ? "bg-warn" : "bg-accent"}`}
             style={{ width: `${percent}%` }}
           />
         </div>

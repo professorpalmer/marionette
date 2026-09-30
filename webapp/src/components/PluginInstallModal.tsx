@@ -164,7 +164,7 @@ export default function PluginInstallModal({
           )}
 
           {errorNotice ? (
-            <div data-testid="plugin-install-error" className="text-[11px] text-red-400">
+            <div data-testid="plugin-install-error" className="text-[11px] text-risk">
               {errorNotice}
             </div>
           ) : null}

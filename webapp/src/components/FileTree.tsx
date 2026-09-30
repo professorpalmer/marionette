@@ -674,7 +674,7 @@ export default function FileTree() {
                   <div className="flex gap-2">
                     <button
                       onClick={() => void handleDeleteConfirmed()}
-                      className="text-red-400 font-bold hover:underline"
+                      className="text-risk font-bold hover:underline"
                     >
                       Yes
                     </button>
@@ -689,7 +689,7 @@ export default function FileTree() {
               ) : (
                 <button
                   onClick={() => setConfirmDeletePath(node!.path)}
-                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-red-400 font-medium transition-colors"
+                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-risk font-medium transition-colors"
                 >
                   Delete…
                 </button>

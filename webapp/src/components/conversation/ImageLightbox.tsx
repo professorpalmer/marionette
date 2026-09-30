@@ -35,7 +35,7 @@ export default function ImageLightbox({
           <button
             ref={closeRef}
             onClick={onClose}
-            className="absolute -top-10 right-0 p-1.5 text-faint hover:text-txt bg-panel border border-edge rounded-full transition-all focus:outline-none"
+            className="absolute -top-10 right-0 p-1.5 text-faint hover:text-txt bg-panel border border-edge rounded-full transition-colors focus:outline-none"
             title="Close"
           >
             <X size={16} />

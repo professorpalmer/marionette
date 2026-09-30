@@ -23,6 +23,7 @@ import {
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
 import WindowGlassSettings from "./WindowGlassSettings";
+import { SwitchTrack } from "./ui/Switch";
 import ProviderConfigModal from "./ProviderConfigModal";
 import SettingsOptIns from "./SettingsOptIns";
 import type { ProviderConfigValues } from "../lib/providerConfig";
@@ -1073,7 +1074,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       {(status || error) && (
         <div className="fixed bottom-4 right-4 z-50 pointer-events-none flex items-center gap-2
                         px-3 py-1.5 rounded-lg border shadow-lg bg-panel2/95 backdrop-blur
-                        animate-in fade-in slide-in-from-bottom-2 duration-150
                         border-edge">
           {status && <span className="text-good text-[11px] font-medium">{status}</span>}
           {errorNotice && <span className="text-risk text-[11px] font-medium">{errorNotice}</span>}
@@ -1512,15 +1512,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                         title={enabled ? "Enabled -- click to turn off (key is kept for easy re-enable)" : "Disabled -- click to turn on"}
                         onClick={() => handleToggleProvider(p.name, !enabled)}
                         disabled={busy}
-                        className={`relative shrink-0 w-9 h-5 rounded-full border transition-colors disabled:opacity-40 ${
-                          enabled ? "bg-good/30 border-good/50" : "bg-panel border-edge"
-                        }`}
+                        className="flex shrink-0 rounded-full disabled:opacity-40"
                       >
-                        <span
-                          className={`absolute top-[1px] w-[15px] h-[15px] rounded-full transition-all ${
-                            enabled ? "left-[18px] bg-good" : "left-[2px] bg-faint"
-                          }`}
-                        />
+                        <SwitchTrack on={enabled} />
                       </button>
                     ) : null}
                     {connected ? (
