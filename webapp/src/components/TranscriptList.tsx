@@ -2542,14 +2542,14 @@ function ActivityGroup({
       if (it.msg.workerStream) {
         return (
           <Bubble
-            key={objKey(it.msg)}
+            key={it.msg.id || objKey(it.msg)}
             msg={it.msg}
             isIntermediate
           />
         );
       }
       return (
-        <div key={objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
+        <div key={it.msg.id || objKey(it.msg)} className="text-[12px] text-muted/90 py-0.5 leading-relaxed">
           <pre className="whitespace-pre-wrap font-sans font-normal text-[12px] leading-relaxed text-muted/90 m-0">
             {normalizePlainTextNarration(it.msg.text)}
           </pre>

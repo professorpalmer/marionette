@@ -65,9 +65,16 @@ export function countRoleMessages(
 ): number {
   let count = 0;
   for (const item of items) {
-    if (item.kind === "msg" && item.msg.role === role) count += 1;
+    if (item.kind === "msg" && item.msg.role === role && !item.msg.workerStream) count += 1;
   }
   return count;
+}
+
+// Worker previews are ephemeral and dropped when their action settles, so they
+// take no ordinal (which would shift every later message's id) and get an id
+// of their own per worker.
+function workerPreviewId(msg: Msg, sessionId?: string | null): string {
+  return `${sessionId || "session"}:worker:${msg.worker_id || "anon"}:${msg.stream_id || ""}`;
 }
 
 export function stampMessageIdentity(
@@ -76,6 +83,7 @@ export function stampMessageIdentity(
   sessionId?: string | null,
 ): Msg {
   if (msg.id) return msg;
+  if (msg.workerStream) return { ...msg, id: workerPreviewId(msg, sessionId) };
   return {
     ...msg,
     id: durableMessageId({
@@ -96,7 +104,8 @@ export function stampTranscriptMessageIds(
   let changed = false;
   const next = items.map((item) => {
     if (item.kind !== "msg") return item;
-    const ordinal = item.msg.role === "user" ? userOrdinal++ : assistantOrdinal++;
+    const ordinal = item.msg.workerStream ? -1
+      : item.msg.role === "user" ? userOrdinal++ : assistantOrdinal++;
     if (item.msg.id) return item;
     changed = true;
     return {
