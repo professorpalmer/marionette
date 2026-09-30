@@ -285,7 +285,7 @@ describe("swarm terminal rows stay inside the activity strip", () => {
     ]);
   });
 
-  it("a sealed swarm after spoken prose folds below that prose, in order", () => {
+  it("one Worked-for fold after spoken prose plus a later sealed swarm", () => {
     const items: Item[] = [
       { kind: "thinking", id: "th-1", text: "Inspecting the repo." },
       {
@@ -309,10 +309,13 @@ describe("swarm terminal rows stay inside the activity strip", () => {
       },
     ];
     const grouped = groupAgentActivity(items, new Set());
-    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg", "activity_group"]);
-    if (grouped[0].kind !== "activity_group" || grouped[2].kind !== "activity_group") return;
-    expect(grouped[0].items.map((item) => item.kind)).toEqual(["thinking", "card"]);
-    expect(grouped[2].items.map((item) => item.kind)).toEqual(["swarm_result"]);
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg"]);
+    if (grouped[0].kind !== "activity_group") return;
+    expect(grouped[0].items.map((item) => item.kind)).toEqual([
+      "thinking",
+      "card",
+      "swarm_result",
+    ]);
   });
 });
 

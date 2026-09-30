@@ -103,32 +103,32 @@ function hydrateAndGroup(display = bonsaiShapeDisplay()): {
   return { items, grouped: groupAgentActivity(items, intermediate) };
 }
 
-describe("native untyped progress stays in reading order", () => {
+describe("native untyped progress: one fold per turn, prose beneath", () => {
   // A local model that narrates every step (Bonsai shape: 20 status lines,
   // each followed by one tool). Status prose paints as a Bubble while it
-  // streams and is never re-filed into a fold afterwards, so the transcript
-  // reads status, tools, status, tools, and nothing jumps when a tool lands.
-  it("hydrates each status line top-level with its tools folded after it", () => {
+  // streams and is never re-filed into a fold afterwards; every tool call of
+  // the turn joins the turn's one fold, with the statuses beneath it.
+  it("hydrates each turn's tools into one fold with its status lines below", () => {
     const { grouped } = hydrateAndGroup();
     const groups = grouped.filter(
       (row): row is Extract<GroupedItem, { kind: "activity_group" }> =>
         row.kind === "activity_group",
     );
-    expect(groups).toHaveLength(23);
-    expect(groups.every((g) => g.items.every((row) => row.kind === "card"))).toBe(true);
+    expect(groups).toHaveLength(2);
+    expect(groups[0].items.filter((row) => row.kind === "card")).toHaveLength(21);
+    expect(groups[0].items.some((row) => row.kind === "msg")).toBe(false);
+    expect(groups[1].items.map((row) => row.kind)).toEqual(["card", "card"]);
 
-    const visibleMessages = grouped
-      .filter((row): row is Extract<GroupedItem, { kind: "msg" }> => row.kind === "msg")
-      .map((row) => row.msg.text);
-    for (const status of NATIVE_STATUSES) expect(visibleMessages).toContain(status);
-    expect(visibleMessages).toContain("The CLI is complete and verified.");
-    expect(visibleMessages).toContain("This explicit answer must stay visible.");
-    expect(grouped.map((row) => (row.kind === "msg" ? row.msg.text : row.kind)).slice(3, 7)).toEqual([
+    const flat = grouped.map((row) => (row.kind === "msg" ? row.msg.text : row.kind));
+    const build = flat.indexOf("Build and verify the CLI");
+    expect(flat.slice(build + 1, build + 4)).toEqual([
       "activity_group",
       NATIVE_STATUSES[0],
-      "activity_group",
       NATIVE_STATUSES[1],
     ]);
+    for (const status of NATIVE_STATUSES) expect(flat).toContain(status);
+    expect(flat).toContain("The CLI is complete and verified.");
+    expect(flat).toContain("This explicit answer must stay visible.");
   });
 
   it("shows every status without expanding and keeps tool evidence behind its fold", () => {

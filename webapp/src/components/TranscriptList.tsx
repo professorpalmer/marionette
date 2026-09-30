@@ -679,6 +679,23 @@ export function collectIntermediateAssistantItems(
   return intermediateItems;
 }
 
+/**
+ * One fold per turn. Spoken prose stays a top-level Bubble where it painted
+ * (it is never re-filed into the fold); activity after it joins the turn's
+ * fold above it, so every tool call of a turn lives in one collapse with the
+ * prose beneath it, and that fold's "Worked for" is the turn's duration.
+ * User / steer / questions end the walk: a new turn opens its own fold.
+ */
+function turnFoldAcrossSpokenProse(grouped: GroupedItem[]): ActivityItem[] | null {
+  for (let k = grouped.length - 1; k >= 0; k--) {
+    const g = grouped[k];
+    if (g.kind === "msg" && g.msg.role === "assistant") continue;
+    if (g.kind === "activity_group") return g.items;
+    return null;
+  }
+  return null;
+}
+
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // The feed is a conversation, not an event log. Top-level painted rows are
   // msg / question (command_approval, secret_request) / file (pending_review) /
@@ -697,14 +714,15 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   const flush = () => {
     const activityItems = [...currentGroup, ...terminalSwarmItems];
     if (activityItems.length > 0) {
-      grouped.push({ kind: "activity_group", items: activityItems });
+      const turnFold = turnFoldAcrossSpokenProse(grouped);
+      if (turnFold) turnFold.push(...activityItems);
+      else grouped.push({ kind: "activity_group", items: activityItems });
       currentGroup = [];
       terminalSwarmItems = [];
     }
   };
 
-  // Spoken prose flushes the strip; activity after it opens the next fold
-  // below it, so rows keep the order they painted in.
+  // Spoken prose flushes the strip; the next flush joins the turn's fold.
   const pushActivity = (item: ActivityItem) => {
     currentGroup.push(item);
   };

@@ -238,13 +238,14 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
         })}
       />,
     );
-    // The live swarm stays live below the spoken prose it followed (prose is
-    // never moved once painted), and the footer keeps Still working… so
-    // tool-batch gaps are not a dead log dump.
-    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
+    // The live swarm joins the turn's one fold (Investigating) above the
+    // spoken prose, which stays where it painted; the footer keeps Still
+    // working… so tool-batch gaps are not a dead log dump.
+    expect(screen.getByText(/Investigating/i)).toBeTruthy();
     expect(screen.getByText(/Still working/i)).toBeTruthy();
+    const fold = screen.getAllByTestId("activity-fold")[0];
     const prose = screen.getByText(/Workers flying — validating when they land/i);
-    expect(prose.compareDocumentPosition(screen.getByText(/Swarm · running/i)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fold.compareDocumentPosition(prose) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps Worked for on the same busy clock as Still working while a swarm holds", () => {
