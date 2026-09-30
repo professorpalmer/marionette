@@ -1167,7 +1167,7 @@ describe("live command token clicks", () => {
     expect(screen.queryByRole("button", { name: /Investigating|Worked for/i })).toBeNull();
   });
 
-  it("compacts structurally proven native progress into the Investigating fold", () => {
+  it("keeps mid-turn narration visible between folds instead of absorbing it", () => {
     const spoken: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "I will patch auth next." },
@@ -1200,17 +1200,14 @@ describe("live command token clicks", () => {
         },
       },
     ];
-    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(true);
+    expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(false);
     render(<TranscriptList {...listProps(items)} />);
-    // The latest progress line remains visible in the compact fold chrome.
-    expect(screen.getByText(/I will patch auth next/i)).toBeTruthy();
-    const folds = screen.getAllByRole("button", { name: /Worked for|Investigating/i });
-    expect(folds.length).toBeGreaterThan(0);
-    for (const fold of folds) {
-      expect(fold).toHaveAttribute("aria-expanded", "false");
-    }
-    fireEvent.click(folds[0]);
+    // Visible without expanding anything, between the two tool folds.
     expect(screen.getByText(/I will patch auth next/i)).toBeVisible();
+    const folds = screen.getAllByTestId("activity-fold");
+    expect(folds).toHaveLength(2);
+    expect(folds[0].compareDocumentPosition(screen.getByText(/I will patch auth next/i)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText(/I will patch auth next/i).compareDocumentPosition(folds[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("groups consecutive read/search cards into one exploration shelf", () => {

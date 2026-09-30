@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
@@ -103,129 +103,78 @@ function hydrateAndGroup(display = bonsaiShapeDisplay()): {
   return { items, grouped: groupAgentActivity(items, intermediate) };
 }
 
-describe("native untyped progress compaction", () => {
-  it("hydrates a Bonsai-shaped transcript into one compact activity group per user turn", () => {
+describe("native untyped progress stays in reading order", () => {
+  // A local model that narrates every step (Bonsai shape: 20 status lines,
+  // each followed by one tool). Status prose paints as a Bubble while it
+  // streams and is never re-filed into a fold afterwards, so the transcript
+  // reads status, tools, status, tools, and nothing jumps when a tool lands.
+  it("hydrates each status line top-level with its tools folded after it", () => {
     const { grouped } = hydrateAndGroup();
-
-    expect(grouped.map((row) => row.kind)).toEqual([
-      "msg",
-      "msg",
-      "msg",
-      "activity_group",
-      "msg",
-      "msg",
-      "msg",
-      "activity_group",
-      "msg",
-    ]);
     const groups = grouped.filter(
       (row): row is Extract<GroupedItem, { kind: "activity_group" }> =>
         row.kind === "activity_group",
     );
-    expect(groups).toHaveLength(2);
-    expect(groups[0].items.filter((row) => row.kind === "msg")).toHaveLength(20);
-    expect(groups[0].items.filter((row) => row.kind === "card")).toHaveLength(21);
-    expect(groups[1].items.map((row) => row.kind)).toEqual(["card", "msg", "card"]);
+    expect(groups).toHaveLength(23);
+    expect(groups.every((g) => g.items.every((row) => row.kind === "card"))).toBe(true);
 
     const visibleMessages = grouped
       .filter((row): row is Extract<GroupedItem, { kind: "msg" }> => row.kind === "msg")
       .map((row) => row.msg.text);
-    expect(visibleMessages).toContain("Hello from Bonsai");
+    for (const status of NATIVE_STATUSES) expect(visibleMessages).toContain(status);
     expect(visibleMessages).toContain("The CLI is complete and verified.");
     expect(visibleMessages).toContain("This explicit answer must stay visible.");
-    expect(visibleMessages).toContain("Second turn complete.");
+    expect(grouped.map((row) => (row.kind === "msg" ? row.msg.text : row.kind)).slice(3, 7)).toEqual([
+      "activity_group",
+      NATIVE_STATUSES[0],
+      "activity_group",
+      NATIVE_STATUSES[1],
+    ]);
   });
 
-  it("shows only the latest status while closed and preserves status plus tool evidence on expand", () => {
+  it("shows every status without expanding and keeps tool evidence behind its fold", () => {
     const { items } = hydrateAndGroup();
     render(<TranscriptList {...listProps(items)} />);
-
-    const folds = screen.getAllByTestId("activity-fold");
-    expect(folds).toHaveLength(2);
-    expect(screen.getByText(NATIVE_STATUSES[19])).toBeVisible();
-    expect(screen.queryByText(NATIVE_STATUSES[0])).toBeNull();
-    expect(screen.queryByText("command tool-1")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(NATIVE_STATUSES[19]) }));
-    expect(screen.getByText(NATIVE_STATUSES[0])).toBeVisible();
-    const commandFold = screen.getAllByTestId("ran-commands-fold")[0];
-    expect(commandFold).toBeDefined();
-    if (!commandFold) return;
-    fireEvent.click(within(commandFold).getByRole("button"));
-    expect(screen.getByText("Ran command tool-0")).toBeVisible();
+    for (const status of [NATIVE_STATUSES[0], NATIVE_STATUSES[19]]) {
+      expect(screen.getByText(status)).toBeVisible();
+    }
+    expect(screen.queryByText("Ran command tool-1")).toBeNull();
   });
 
-  it("keeps the activity row identity and manual-open state while native progress grows", () => {
+  it("keeps earlier rows and their keys while native progress grows", () => {
     const completeDisplay = bonsaiShapeDisplay();
     const nextTurnIndex = completeDisplay.findIndex((row) => (
       row.type === "message" && "text" in row && row.text === "Check one more thing"
     ));
-    expect(nextTurnIndex).toBeGreaterThan(0);
     const initialDisplay = completeDisplay.slice(0, nextTurnIndex);
     const initial = hydrateAndGroup(initialDisplay);
-    const firstGroup = initial.grouped.find((row) => row.kind === "activity_group");
-    expect(firstGroup).toBeDefined();
-    if (!firstGroup) return;
-    const initialKey = transcriptViewportKeys([firstGroup])[0];
-
-    const { rerender } = render(<TranscriptList {...listProps(initial.items)} />);
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(NATIVE_STATUSES[19]) }));
-    expect(screen.getByText(NATIVE_STATUSES[0])).toBeVisible();
-
     const grown = hydrateAndGroup([
       ...initialDisplay.slice(0, -1),
       { type: "message", role: "assistant", text: "Growing native status" },
       nativeCard("tool-21"),
       ...initialDisplay.slice(-1),
     ]);
-    const grownFirstGroup = grown.grouped.find((row) => row.kind === "activity_group");
-    expect(grownFirstGroup).toBeDefined();
-    if (!grownFirstGroup) return;
-    expect(transcriptViewportKeys([grownFirstGroup])[0]).toBe(initialKey);
-    if (firstGroup.kind !== "activity_group" || grownFirstGroup.kind !== "activity_group") return;
-    expect(grownFirstGroup.items).toHaveLength(firstGroup.items.length + 2);
+    // Everything painted before the growth keeps its row and key; the new
+    // status and its tool are appended after them.
+    const before = transcriptViewportKeys(initial.grouped.slice(0, -1));
+    expect(transcriptViewportKeys(grown.grouped.slice(0, before.length))).toEqual(before);
 
+    const { rerender } = render(<TranscriptList {...listProps(initial.items)} />);
+    expect(screen.getByText(NATIVE_STATUSES[0])).toBeVisible();
     rerender(<TranscriptList {...listProps(grown.items)} />);
     expect(screen.getByText(NATIVE_STATUSES[0])).toBeVisible();
-    expect(screen.getByText("Growing native status")).toBeVisible();
   });
 
-  it("does not infer progress across answer, user, steer, or question boundaries", () => {
+  it("never treats untyped prose as progress, whatever follows it", () => {
     const untyped: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "Ordinary untyped answer" },
-    };
-    const explicitAnswer: Item = {
-      kind: "msg",
-      msg: { role: "assistant", text: "Explicit answer", channel: "answer" },
     };
     const card: Item = {
       kind: "card",
       card: { id: "late-tool", goal: "late tool", running: false, open: false },
     };
-    const boundaries: Item[] = [
-      { kind: "msg", msg: { role: "user", text: "next" } },
-      { kind: "steer", text: "change course" },
-      {
-        kind: "command_approval",
-        id: "approval",
-        command: "echo ok",
-        commandHash: "a".repeat(64),
-        sessionId: "session",
-        workspaceRoot: "/repo",
-        category: "shell",
-        reason: "confirm",
-        matched: "echo",
-        status: "pending",
-      },
-    ];
-
-    expect(collectIntermediateAssistantItems([untyped, card], false).has(untyped)).toBe(true);
-    expect(collectIntermediateAssistantItems([explicitAnswer, card], false).has(explicitAnswer)).toBe(false);
-    for (const boundary of boundaries) {
-      expect(
-        collectIntermediateAssistantItems([untyped, boundary, card], false).has(untyped),
-      ).toBe(false);
+    for (const open of [true, false]) {
+      expect(collectIntermediateAssistantItems([untyped, card], open).has(untyped)).toBe(false);
     }
   });
 });

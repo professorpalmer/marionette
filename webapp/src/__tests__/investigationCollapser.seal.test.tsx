@@ -238,12 +238,13 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
         })}
       />,
     );
-    expect(screen.getByText(/Investigating/i)).toBeTruthy();
-    // Finished cards + open loop: fold stays Investigating and the footer
-    // keeps Still working… so tool-batch gaps are not a dead log dump.
+    // The live swarm stays live below the spoken prose it followed (prose is
+    // never moved once painted), and the footer keeps Still working… so
+    // tool-batch gaps are not a dead log dump.
+    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
     expect(screen.getByText(/Still working/i)).toBeTruthy();
-    // Spoken assistant prose stays a top-level Bubble after the fold.
-    expect(screen.getByText(/Workers flying — validating when they land/i)).toBeTruthy();
+    const prose = screen.getByText(/Workers flying — validating when they land/i);
+    expect(prose.compareDocumentPosition(screen.getByText(/Swarm · running/i)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps Worked for on the same busy clock as Still working while a swarm holds", () => {

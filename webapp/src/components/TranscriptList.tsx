@@ -561,34 +561,6 @@ function isOperatorProgressBoundary(item: Item): boolean {
   );
 }
 
-function isAssistantProgressBoundary(item: Item): boolean {
-  return (
-    isOperatorProgressBoundary(item)
-    || (item.kind === "msg" && item.msg.role === "assistant")
-  );
-}
-
-/** Infer legacy native progress from a following tool before the next boundary. */
-function isStructurallyProvenNativeProgress(items: Item[], index: number): boolean {
-  const item = items[index];
-  if (item.kind !== "msg" || item.msg.role !== "assistant") return false;
-  const msg = item.msg;
-  if (
-    msg.workerStream
-    || msg.isPlan
-    || msg.streaming === true
-    || String(msg.channel || "").trim()
-  ) {
-    return false;
-  }
-  for (let i = index + 1; i < items.length; i++) {
-    const later = items[i];
-    if (isAssistantProgressBoundary(later)) return false;
-    if (later.kind === "card") return true;
-  }
-  return false;
-}
-
 /** Live/final answer stays a top-level Bubble — never absorbed into ActivityGroup. */
 export function isLiveAnswerAssistant(msg: Msg): boolean {
   if (isFoldableAssistantNarration(msg)) return false;
@@ -660,15 +632,11 @@ export function collectIntermediateAssistantItems(
     if (item.kind === "card") seenCardInTurn = true;
     if (item.kind !== "msg" || item.msg.role !== "assistant") continue;
 
-    const structurallyProvenProgress = isStructurallyProvenNativeProgress(items, i);
-    if (!isFoldableAssistantNarration(item.msg) && !structurallyProvenProgress) {
-      continue;
-    }
-
-    if (structurallyProvenProgress) {
-      intermediateItems.add(item);
-      continue;
-    }
+    // Only narration tagged as plan/progress (or a worker stream) folds; it
+    // is foldable from its first paint. Plain prose is never re-filed into a
+    // fold after it painted as a Bubble, even when a tool card follows it:
+    // that read as an answer flashing and then vanishing into the collapse.
+    if (!isFoldableAssistantNarration(item.msg)) continue;
 
     // workerStream always belongs in the activity strip (open or sealed).
     // ActivityGroup renders them via Bubble's capped ticker (not muted
@@ -710,31 +678,6 @@ export function collectIntermediateAssistantItems(
   return intermediateItems;
 }
 
-/**
- * Spoken assistant prose stays a top-level Bubble and flushes the activity
- * strip so it is never reparented into Investigating. Walk back across those
- * bubbles to the same-turn fold they split — user / steer / questions are
- * hard boundaries and must not resume a prior investigation.
- */
-function activityGroupAcrossSpokenProse(grouped: GroupedItem[]): ActivityItem[] | null {
-  for (let k = grouped.length - 1; k >= 0; k--) {
-    const g = grouped[k];
-    if (g.kind === "msg" && g.msg.role === "assistant") continue;
-    if (g.kind === "activity_group") return g.items;
-    return null;
-  }
-  return null;
-}
-
-function isLiveInvestigationContinuity(item: Item): boolean {
-  if (item.kind === "card") return cardEffectivelyRunning(item.card);
-  if (item.kind === "swarm_pending") {
-    const status = item.status || (item.resolved ? "done" : "running");
-    return status === "running";
-  }
-  return false;
-}
-
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // The feed is a conversation, not an event log. Top-level painted rows are
   // msg / question (command_approval, secret_request) / file (pending_review) /
@@ -744,10 +687,6 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   const grouped: GroupedItem[] = [];
   let currentGroup: ActivityItem[] = [];
   let terminalSwarmItems: ActivityItem[] = [];
-  // After spoken prose flushes the strip, a later live swarm/card appends
-  // back onto the fold it split so Investigating cannot seal as Explored
-  // while that work is still running.
-  let bridgeTarget: ActivityItem[] | null = null;
   const resultJobIds = new Set(
     items
       .filter((item): item is Extract<Item, { kind: "swarm_result" }> => item.kind === "swarm_result")
@@ -757,51 +696,39 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   const flush = () => {
     const activityItems = [...currentGroup, ...terminalSwarmItems];
     if (activityItems.length > 0) {
-      const prior = bridgeTarget || activityGroupAcrossSpokenProse(grouped);
-      if (prior) {
-        prior.push(...activityItems);
-        currentGroup = [];
-        terminalSwarmItems = [];
-        bridgeTarget = prior;
-        return;
-      }
       grouped.push({ kind: "activity_group", items: activityItems });
       currentGroup = [];
       terminalSwarmItems = [];
     }
-    bridgeTarget = null;
   };
 
-  const pushActivity = (item: ActivityItem, _live = false) => {
-    if (currentGroup.length > 0 || terminalSwarmItems.length > 0) {
-      currentGroup.push(item);
-      return;
-    }
-    if (bridgeTarget) {
-      bridgeTarget.push(item);
-      return;
-    }
-    // One Worked-for / Investigating fold per turn. After spoken prose
-    // flushes the strip, later tools / swarm / thoughts rejoin that fold
-    // even when they are already sealed.
-    const prior = activityGroupAcrossSpokenProse(grouped);
-    if (prior) {
-      prior.push(item);
-      bridgeTarget = prior;
-      return;
-    }
+  // Spoken prose flushes the strip; activity after it opens the next fold
+  // below it, so rows keep the order they painted in.
+  const pushActivity = (item: ActivityItem) => {
     currentGroup.push(item);
   };
 
   let seenUser = false;
+  // Replayed reasoning (a second thinking row with the same text) must not
+  // paint again: with folds split by prose it would land in its own Thought
+  // fold under the answer.
+  let turnThoughts = new Set<string>();
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     if (item.kind === "thinking" && (!item.text || !item.text.trim())) continue;
+    if (item.kind === "thinking") {
+      const thought = item.text.trim();
+      if (turnThoughts.has(thought)) continue;
+      turnThoughts.add(thought);
+    }
     // tool_prep is busy-footer only -- never a transcript row.
     if (item.kind === "tool_prep") continue;
 
     if (item.kind === "msg") {
-      if (item.msg.role === "user") seenUser = true;
+      if (item.msg.role === "user") {
+        seenUser = true;
+        turnThoughts = new Set<string>();
+      }
       // Spoken-prose "Working..." fallback is not a message. Empty session
       // used to paint three of these as stacked Bubbles.
       if (item.msg.role === "assistant" && isWorkingEllipsisFallback(item.msg.text)) {
@@ -843,9 +770,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       if (!seenUser && status !== "running") continue;
       if (status === "running") {
         // Keep the live swarm pill inside the current Investigating fold with
-        // surrounding tool cards / reasoning — including across a top-level
-        // spoken Bubble that flushed the strip.
-        pushActivity(item, true);
+        // surrounding tool cards / reasoning.
+        pushActivity(item);
         continue;
       }
       const uncoveredJobIds = (item.job_ids || []).filter((jobId) => !resultJobIds.has(jobId));
@@ -869,8 +795,7 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       grouped.push(item);
     } else if (item.kind === "card" || item.kind === "thinking" || item.kind === "codegraph_context" || item.kind === "vault_cite") {
       // Cards, reasoning, codegraph/vault chips: all collect into the one box.
-      // A later running card across spoken prose resumes the same fold.
-      pushActivity(item, isLiveInvestigationContinuity(item));
+      pushActivity(item);
     }
   }
 
