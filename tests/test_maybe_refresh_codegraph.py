@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import types
 
 import harness.api.codegraph_index as cgi
 
@@ -46,6 +47,19 @@ class _ImmediateThread:
             self._target(*self._args, **self._kwargs)
 
 
+def _inline_threads(monkeypatch):
+    """Run codegraph_index's threads inline, and only codegraph_index's.
+
+    Patching threading.Thread for the whole process also caught a harness
+    server left running by an earlier test: its app scheduler 'thread' ran
+    its endless loop inline while holding the scheduler lock, so the exit
+    hook's stop() blocked forever (Windows shard 4 hung after the summary).
+    """
+    local = types.SimpleNamespace(**vars(threading))
+    local.Thread = _ImmediateThread
+    monkeypatch.setattr(cgi, "threading", local)
+
+
 def _reset_refresh_state():
     cgi.codegraph_stale_check_at.clear()
     cgi.codegraph_fail_until.clear()
@@ -56,7 +70,7 @@ def _reset_refresh_state():
 def test_debounce_skips_second_check_within_window(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
@@ -69,7 +83,7 @@ def test_debounce_skips_second_check_within_window(tmp_path, monkeypatch):
 def test_first_refresh_runs_at_zero_monotonic_epoch(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     monkeypatch.setattr(time, "monotonic", lambda: 0.0)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
@@ -84,7 +98,7 @@ def test_first_refresh_runs_at_zero_monotonic_epoch(tmp_path, monkeypatch):
 def test_force_bypasses_debounce(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
@@ -97,7 +111,7 @@ def test_force_bypasses_debounce(tmp_path, monkeypatch):
 def test_stale_repo_triggers_reindex(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
@@ -120,7 +134,7 @@ def test_fresh_repo_does_not_reindex(tmp_path, monkeypatch):
     repo = str(repo_path)
 
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
@@ -131,7 +145,7 @@ def test_fresh_repo_does_not_reindex(tmp_path, monkeypatch):
 def test_fail_until_suppresses_auto_refresh(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
     cgi.codegraph_fail_until[repo] = time.monotonic() + 120.0
@@ -145,7 +159,7 @@ def test_fail_until_suppresses_auto_refresh(tmp_path, monkeypatch):
 def test_force_bypasses_fail_until(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
     cgi.codegraph_fail_until[repo] = time.monotonic() + 120.0
@@ -157,7 +171,7 @@ def test_force_bypasses_fail_until(tmp_path, monkeypatch):
 
 def test_empty_repo_path_is_noop(monkeypatch):
     _reset_refresh_state()
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
@@ -171,7 +185,7 @@ def test_indexing_status_skips_reindex(tmp_path, monkeypatch):
     repo = _mk_stale_repo(tmp_path)
     _reset_refresh_state()
     cgi.codegraph_status = "indexing"
-    monkeypatch.setattr(threading, "Thread", _ImmediateThread)
+    _inline_threads(monkeypatch)
     reindex_calls = []
     monkeypatch.setattr(cgi, "reindex_codegraph_bg", lambda path: reindex_calls.append(path))
 
