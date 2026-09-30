@@ -67,6 +67,7 @@ import {
   resolveSealedWorkMs,
   turnSpanMs,
   maxKnown,
+  headlineFocusCard,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -2444,11 +2445,16 @@ function ActivityGroup({
   const runningNested = runningCard
     ? undefined
     : [...nestedRows].reverse().find((a) => a.status === "running");
+  const focusCard = headlineFocusCard(
+    cards.map((c) => c.card),
+    runningCard,
+    (card) => resolveCardCliInput(card) || "",
+  );
   const runningKind = toolFocusPhrase(
-    runningCard?.kind || runningNested?.kind || "",
+    focusCard?.kind || runningNested?.kind || "",
   );
   const runningGoal = shortenGoal(
-    resolveCardCliInput(runningCard || {}) || runningNested?.goal || "",
+    resolveCardCliInput(focusCard || {}) || runningNested?.goal || "",
   );
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()

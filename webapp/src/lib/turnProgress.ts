@@ -1173,11 +1173,14 @@ export function deriveBusyProgress(
 
   // Footer keeps a quiet step line; header pill uses Investigating / Still
   // working… — never raw phase enums (running/thinking/streaming).
+  const latest = itemsInCurrentTurn(items).at(-1) as { kind: string; msg?: { role?: string; streaming?: boolean; workerStream?: boolean } } | undefined;
+  const writing = latest?.kind === "msg" && latest.msg?.role === "assistant" && Boolean(latest.msg.streaming) && !latest.msg.workerStream;
   const parts: string[] = [];
   if (runningKind) parts.push(runningKind);
   else if (runningGoal) parts.push(runningGoal);
   else if (toolPrep) parts.push(toolPrep);
   else if (running || status === "executing") parts.push("Investigating…");
+  else if (writing) parts.push("Writing…");
   else parts.push("Still working…");
   if (step > 0) parts.push(`step ${step}`);
   if (elapsed) parts.push(elapsed);
@@ -1202,6 +1205,20 @@ export function deriveBusyProgress(
     runningGoal,
     runningKind,
   };
+}
+
+/**
+ * The card an Investigating headline names. A running command's card exists a
+ * beat before its arguments arrive; naming it then flashes the bare tool name
+ * between every call, so name the latest card that has a goal until it does.
+ */
+export function headlineFocusCard<C extends { goal?: string }>(
+  cards: readonly C[],
+  running: C | undefined,
+  goalOf: (card: C) => string,
+): C | undefined {
+  if (!running || goalOf(running)) return running;
+  return [...cards].reverse().find((c) => goalOf(c)) ?? running;
 }
 
 /**
