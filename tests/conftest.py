@@ -192,6 +192,16 @@ def _report_lingering_work() -> None:
         return bool(frame and frame.f_code.co_name == "_worker"
                     and frame.f_code.co_filename.replace("\\", "/").endswith("concurrent/futures/thread.py"))
 
+    # Puppetmaster's read-only and CodeGraph helpers are reaped by its atexit
+    # hooks, which run after this; run them first so only real leaks remain.
+    for module, hook in (("puppetmaster.readonly", "_shutdown_cleanup"),
+                         ("puppetmaster.codegraph_warm", "shutdown")):
+        mod = _sys.modules.get(module)
+        if mod is not None and callable(getattr(mod, hook, None)):
+            try:
+                getattr(mod, hook)()
+            except Exception:
+                pass
     threads = [t for t in _threading.enumerate()
                if t is not _threading.main_thread() and t.is_alive() and not t.daemon
                and not idle_pool_worker(t)]
@@ -254,6 +264,9 @@ os.environ.setdefault("HARNESS_IMPLEMENT_GIT_GUARD", "0")
 # Puppetmaster worker those DBs are often locked. Keep unit tests on the
 # fixture workspace only (tracker cross-project coverage has dedicated tests).
 os.environ.setdefault("HARNESS_CLI_CROSS_PROJECT", "0")
+# Unit tests never need a live graph; the warm CodeGraph helper is a real node
+# process that outlives the call it served.
+os.environ.setdefault("PUPPETMASTER_CODEGRAPH_WARM", "0")
 
 _real_socket = socket.socket
 
