@@ -24,6 +24,7 @@ jobs:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v6
@@ -53,6 +54,7 @@ jobs:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -80,6 +82,9 @@ jobs:
     # GitHub org (professorpalmer is a user account); do not set the
     # variable until a runner app is actually installed on this repo.
     runs-on: ${{ vars.CI_WINDOWS_RUNNER || 'windows-latest' }}
+    # A test process that passes but never exits (a leaked child or thread)
+    # must fail the job, not hold the release for the 6-hour default.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -108,6 +113,7 @@ jobs:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 
@@ -129,6 +135,7 @@ jobs:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
@@ -157,6 +164,7 @@ jobs:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
