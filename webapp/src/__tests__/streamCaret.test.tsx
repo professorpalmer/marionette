@@ -33,3 +33,16 @@ describe("streaming caret", () => {
     expect(container.querySelector(".transcript-stream-caret")).toBeNull();
   });
 });
+
+describe("sealing a streamed answer", () => {
+  it("keeps the rendered blocks mounted; only the caret goes away", () => {
+    const text = "First paragraph.\n\n```ts\nconst a = 1;\n```\n\nLast line.";
+    const { container, rerender } = render(<Markdown streaming text={text} />);
+    const firstP = container.querySelector("p");
+    const code = container.querySelector("code");
+    rerender(<Markdown text={text} />);
+    expect(container.querySelector("p")).toBe(firstP);
+    expect(container.querySelector("code")).toBe(code);
+    expect(container.querySelector(".transcript-stream-caret")).toBeNull();
+  });
+});

@@ -3475,15 +3475,19 @@ const PrettyMarkdown = memo(function PrettyMarkdown({ text, caret = false }: { t
   );
 });
 
-function StreamingMarkdown({ text }: { text: string }) {
-  const buf = splitStreamingMarkdown(text || "");
-  const caret = <span className={STREAM_CARET_CLASS} aria-hidden="true" />;
-  // Finished top-level blocks are memo hits frame to frame; only the block
-  // still growing re-parses. One tree over all of `flushed` re-highlighted
-  // every earlier code block on every token (O(n^2) over an answer).
+// Streaming and sealed text render the same per-block tree, so sealing only
+// drops the caret: no remount, no re-highlight, no reflow at assistant_done.
+// Finished top-level blocks are memo hits frame to frame; only the block still
+// growing re-parses (one tree over the whole text re-highlighted every earlier
+// code block on every token, O(n^2) over an answer).
+function BlockMarkdown({ text, streaming }: { text: string; streaming: boolean }) {
+  const buf = streaming
+    ? splitStreamingMarkdown(text || "")
+    : { flushed: text || "", hold: "", open: null };
+  const caret = streaming ? <span className={STREAM_CARET_CLASS} aria-hidden="true" /> : null;
   const blocks = splitMarkdownBlocks(buf.flushed);
   // The caret always rides inside the last text, never beside a block.
-  const caretInBlocks = !buf.open && !buf.hold && blocks.length > 0;
+  const caretInBlocks = streaming && !buf.open && !buf.hold && blocks.length > 0;
   const pretty = blocks.map((block, i) => (
     <PrettyMarkdown key={i} text={block} caret={caretInBlocks && i === blocks.length - 1} />
   ));
@@ -3526,9 +3530,7 @@ export const Markdown = memo(function Markdown({
   text: string;
   streaming?: boolean;
 }) {
-  const streaming = streamingProp ?? false;
-  if (streaming) return <StreamingMarkdown text={text} />;
-  return <PrettyMarkdown text={text} />;
+  return <BlockMarkdown text={text} streaming={streamingProp ?? false} />;
 });
 
 function useProseClamp(text: string, clampPx: number) {
