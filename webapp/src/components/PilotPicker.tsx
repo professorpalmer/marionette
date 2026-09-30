@@ -1,11 +1,37 @@
 import { useEffect, useId, useMemo, useState, useRef } from "react";
-import { ChevronDown, Check, Search } from "lucide-react";
+import { ChevronDown, Check, Loader2, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { useOverlayFocus } from "../lib/overlayFocus";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
+
+type PickerSeed = {
+  models: string[];
+  current: string;
+  reasoning: ReasoningEffort;
+  rerouteNotice: string | null;
+};
+
+function seedFromConfig(
+  config: Config,
+  sessionId: string,
+  pendingModel: string | undefined,
+  pendingReasoning: ReasoningEffort | undefined,
+): PickerSeed {
+  const models = config.models?.length ? config.models : [config.driver].filter(Boolean);
+  const unavailable = Boolean(config.driver) && !models.includes(config.driver);
+  const configuredLabel = unavailable ? modelLabelOf(config.driver, config.model_labels) || config.driver : "";
+  return {
+    models,
+    current: !sessionId && pendingModel ? pendingModel : config.driver,
+    reasoning: !sessionId && pendingReasoning ? pendingReasoning : config.reasoning_effort || "low",
+    rerouteNotice: unavailable
+      ? `Configured pilot ${configuredLabel} is unavailable. Select a model to change it.`
+      : null,
+  };
+}
 
 export default function PilotPicker({
   config,
@@ -28,16 +54,19 @@ export default function PilotPicker({
   onPendingReasoningChange?: (level: ReasoningEffort, model: string) => void;
   onSessionModelChange?: (sessionId: string, model: string) => Promise<unknown>;
 }) {
-  const [models, setModels] = useState<string[]>([]);
-  const [current, setCurrent] = useState("");
-  const [reasoning, setReasoning] = useState<ReasoningEffort>("low");
+  // Remounts on session switch (keyed by sessionId): seed the first paint from
+  // config so the trigger never paints empty and then widens.
+  const [seed] = useState(() => (config ? seedFromConfig(config, sessionId, pendingModel, pendingReasoning) : null));
+  const [models, setModels] = useState<string[]>(seed?.models ?? []);
+  const [current, setCurrent] = useState(seed?.current ?? "");
+  const [reasoning, setReasoning] = useState<ReasoningEffort>(seed?.reasoning ?? "low");
   const [modelOpen, setModelOpen] = useState(false);
   const [reasonOpen, setReasonOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const optionIdBase = useId();
-  const [rerouteNotice, setRerouteNotice] = useState<string | null>(null);
+  const [rerouteNotice, setRerouteNotice] = useState<string | null>(seed?.rerouteNotice ?? null);
   const containerRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const reasonMenuRef = useRef<HTMLDivElement>(null);
@@ -63,17 +92,11 @@ export default function PilotPicker({
 
   useEffect(() => {
     if (!config) return;
-    const nextModels = config.models?.length ? config.models : [config.driver].filter(Boolean);
-    setModels(nextModels);
-    setReasoning(!sessionId && pendingReasoning ? pendingReasoning : config.reasoning_effort || "low");
-    setCurrent(!sessionId && pendingModel ? pendingModel : config.driver);
-    if (config.driver && !nextModels.includes(config.driver)) {
-      const configuredLabel = modelLabelOf(config.driver, config.model_labels) || config.driver;
-      const notice = `Configured pilot ${configuredLabel} is unavailable. Select a model to change it.`;
-      setRerouteNotice(notice);
-    } else {
-      setRerouteNotice(null);
-    }
+    const next = seedFromConfig(config, sessionId, pendingModel, pendingReasoning);
+    setModels(next.models);
+    setReasoning(next.reasoning);
+    setCurrent(next.current);
+    setRerouteNotice(next.rerouteNotice);
   }, [config, pendingModel, pendingReasoning, sessionId]);
 
   useEffect(() => {
@@ -237,6 +260,9 @@ export default function PilotPicker({
   const currentLabel = pending ? "Select model" : labelOf(current);
   const showReasoning = !pending && showReasoningEffort(config?.reasoning_support, current);
   const hasRows = !!organized.current || organized.groups.some((g) => g.items.length > 0);
+  // Selection is disabled only while App binds the chosen pilot to the session.
+  const binding = modelSelectionDisabled && Boolean(setupNotice);
+  const floatingNotice = binding ? rerouteNotice : setupNotice || rerouteNotice;
 
   const renderRow = (m: string) => {
     const isSelected = m === current;
@@ -262,14 +288,17 @@ export default function PilotPicker({
   };
 
   return (
-    <div className="relative inline-flex flex-col items-stretch gap-0.5 min-w-0" ref={containerRef}>
-      {setupNotice || rerouteNotice ? (
+    <div className="relative inline-flex min-w-0" ref={containerRef}>
+      {/* Notices float above the picker so the toolbar height never changes.
+          Binding progress lives in the trigger; this region announces it. */}
+      <span role="status" className="sr-only">{binding ? setupNotice : ""}</span>
+      {floatingNotice ? (
         <div
           role="status"
-          className="text-[9.5px] text-warn/90 leading-snug px-0.5"
+          className="absolute left-0 bottom-full mb-1 z-40 w-max max-w-[min(20rem,calc(100vw-2rem))] rounded-md bg-panel border border-warn/30 px-2 py-1 text-[9.5px] text-warn/90 leading-snug shadow-lg"
           data-testid="pilot-reroute-notice"
         >
-          {setupNotice || rerouteNotice}
+          {floatingNotice}
         </div>
       ) : null}
       <div className="pilot-picker-controls relative inline-flex items-center gap-1 min-w-0">
@@ -287,7 +316,9 @@ export default function PilotPicker({
           className="flex items-center gap-1 min-w-0 text-[11px] text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
         >
           <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
-          <ChevronDown size={11} className="shrink-0 opacity-60" />
+          {binding
+            ? <Loader2 size={11} className="shrink-0 opacity-60 animate-spin" aria-hidden="true" />
+            : <ChevronDown size={11} className="shrink-0 opacity-60" />}
         </button>
 
         {modelOpen && (

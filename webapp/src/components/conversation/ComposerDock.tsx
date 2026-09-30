@@ -67,6 +67,7 @@ export default function ComposerDock({
   auto,
   plan,
   composerBusy,
+  sessionSwitching = false,
   transcriptStale,
   wikiPrepared,
   memoryProposals,
@@ -171,6 +172,8 @@ export default function ComposerDock({
   auto: boolean;
   plan: boolean;
   composerBusy: boolean;
+  /** A->B switch in flight: disabled Send, never Stop/Steer/Interrupt from either session. */
+  sessionSwitching?: boolean;
   transcriptStale: boolean;
   wikiPrepared: { pages: any[]; autoIngested: boolean } | null;
   memoryProposals: MemoryProposal[];
@@ -278,6 +281,7 @@ export default function ComposerDock({
   onRetry?: () => void;
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
+  const busyChrome = composerBusy && !sessionSwitching;
   const matchingSlash =
     slashSearch !== null
       ? filterSlashCommands(allSlashCommands, slashSearch)
@@ -718,7 +722,7 @@ export default function ComposerDock({
           )}
 
           {showContextPanel && !contextUsage && (
-            <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
+            <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl">
               <div className="flex items-center gap-2 text-faint">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span className="font-semibold text-txt">Context Usage</span>
@@ -730,7 +734,7 @@ export default function ComposerDock({
             </div>
           )}
           {showContextPanel && contextUsage && (
-            <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl animate-in slide-in-from-bottom duration-150">
+            <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-[11.5px] select-none rounded-t-2xl">
               <div className="flex items-center justify-between font-medium mb-2.5">
                 <div className="flex items-center gap-1.5">
                   <span className="font-semibold text-txt">Context Usage</span>
@@ -787,7 +791,7 @@ export default function ComposerDock({
 
               {showCompactionAdvice && (
                 <div
-                  className="mt-2.5 rounded border border-amber-500/25 bg-amber-500/10 px-2.5 py-2 text-amber-100/90"
+                  className="mt-2.5 rounded border border-warn/25 bg-warn/10 px-2.5 py-2 text-warn/90"
                   role="status"
                   title={compactionAdvice?.warning_reason || compactionAdvice?.reasons?.[0] || "Context pressure needs attention"}
                 >
@@ -798,12 +802,12 @@ export default function ComposerDock({
                     <button
                       type="button"
                       onClick={() => window.dispatchEvent(new Event("harness-compact-session"))}
-                      className="shrink-0 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-100 hover:bg-amber-500/25"
+                      className="shrink-0 rounded border border-warn/40 bg-warn/15 px-1.5 py-0.5 text-[10px] font-medium text-warn hover:bg-warn/25"
                     >
                       Compact now
                     </button>
                   </div>
-                  <p className="mt-1 mb-0 leading-snug text-amber-100/75">
+                  <p className="mt-1 mb-0 leading-snug text-warn/75">
                     {compactionBudget
                       ? `Past the ${compactionBudget} working-context budget. Compact older history.`
                       : "This session is past its working-context budget. Compact older history."}
@@ -879,7 +883,7 @@ export default function ComposerDock({
                   >
                     <Library size={11.5} className="shrink-0 opacity-60" />
                     <span className="truncate flex-1 font-mono">Codebase</span>
-                    <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
+                    <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                       codebase
                     </span>
                   </div>
@@ -937,7 +941,7 @@ export default function ComposerDock({
                       >
                         <Folder size={11.5} className="shrink-0 opacity-60" />
                         <span className="truncate flex-1 font-mono">{folder}</span>
-                        <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
+                        <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                           folder
                         </span>
                       </div>
@@ -976,7 +980,7 @@ export default function ComposerDock({
                         <div className="flex items-center gap-1.5">
                           <Code size={11.5} className="shrink-0 opacity-60" />
                           <span className="font-mono font-medium truncate flex-1 text-left">{sym.name}</span>
-                          <span className="text-[9px] font-mono px-1 py-0.2 bg-edge/30 rounded text-muted shrink-0 lowercase">
+                          <span className="text-[9px] font-mono px-1 py-px bg-edge/30 rounded text-muted shrink-0 lowercase">
                             {sym.kind}
                           </span>
                         </div>
@@ -1053,8 +1057,8 @@ export default function ComposerDock({
             <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
               {attachedImages.map((img, idx) => (
                 <div
-                  key={idx}
-                  className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none animate-in fade-in zoom-in duration-150"
+                  key={img.path}
+                  className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none"
                 >
                   <button
                     type="button"
@@ -1180,7 +1184,7 @@ export default function ComposerDock({
                 <ListChecks size={9} /><span className="composer-toolbar-send-label">Queue</span>
               </button>
             )}
-            {composerBusy && (input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
+            {busyChrome && (input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
               <button
                 type="button"
                 onClick={() => send("interrupt")}
@@ -1216,7 +1220,7 @@ export default function ComposerDock({
                 </button>
               </>
             )}
-            {composerBusy
+            {busyChrome
               ? <>
                   {input.trim() ? (
                     <button
@@ -1239,9 +1243,9 @@ export default function ComposerDock({
                     <Square size={9} /><span className="composer-toolbar-send-label">Stop</span>
                   </button>
                 </>
-              : <button type="button" onClick={() => send()} disabled={editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)}
+              : <button type="button" onClick={() => send()} disabled={sessionSwitching || editBusy || transcriptStale || (!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)}
                   aria-label={auto ? "Run" : plan ? "Plan" : "Send"}
-                  title={transcriptStale ? "Loading this session…" : editBusy ? "Saving your edit…" : undefined}
+                  title={sessionSwitching || transcriptStale ? "Loading this session…" : editBusy ? "Saving your edit…" : undefined}
                   className="px-2.5 h-[20px] rounded-md bg-accent text-black/90 text-[10.5px] font-semibold flex items-center gap-1 hover:brightness-110 disabled:opacity-40 disabled:cursor-default transition">
                   <Send size={9} /><span className="composer-toolbar-send-label">{auto ? "Run" : plan ? "Plan" : "Send"}</span></button>}
             </div>
