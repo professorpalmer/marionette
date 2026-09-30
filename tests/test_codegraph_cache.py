@@ -146,3 +146,28 @@ def test_repeated_ask_does_not_restack_wiki_vault_or_skill_sections(monkeypatch)
         assert text not in second
     for kind in ("Wiki", "Vault", "Skill"):
         assert f"[{kind} context unchanged from the previous turn -- see above]" in second
+
+
+def test_codegraph_and_wiki_lookups_run_side_by_side(monkeypatch):
+    """The turn waits for the slower of the two lookups, not their sum."""
+    import time as _time
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+    monkeypatch.setattr("harness.task_profile.profile_skips_wiki", lambda *a, **k: False)
+
+    def slow(label):
+        def build(msg):
+            _time.sleep(0.4)
+            return f"### {label} for {msg}"
+        return build
+
+    monkeypatch.setattr(s, "_build_turn_cg_section", slow("CodeGraph"))
+    monkeypatch.setattr(s, "_build_turn_wiki_section", slow("Wiki"))
+    monkeypatch.setattr(s, "_build_turn_vault_section", lambda msg: "")
+    started = _time.monotonic()
+    out = s._append_turn_context_trailer("fix it", "fix it")
+    elapsed = _time.monotonic() - started
+    assert out.index("### CodeGraph for fix it") < out.index("### Wiki for fix it")
+    assert elapsed < 0.7, elapsed

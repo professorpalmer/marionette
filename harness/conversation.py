@@ -660,6 +660,31 @@ def _unchanged_section(kind: str) -> str:
     return f"[{kind} context unchanged from the previous turn -- see above]"
 
 
+_TURN_CONTEXT_POOL = None
+_TURN_CONTEXT_POOL_LOCK = threading.Lock()
+
+
+def _submit_turn_context(fn, *args):
+    """Run one turn-context builder on a worker, in a copy of this context."""
+    global _TURN_CONTEXT_POOL
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    with _TURN_CONTEXT_POOL_LOCK:
+        if _TURN_CONTEXT_POOL is None:
+            _TURN_CONTEXT_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="turn-context")
+    return _TURN_CONTEXT_POOL.submit(contextvars.copy_context().run, fn, *args)
+
+
+def _turn_context_result(future) -> str:
+    if future is None:
+        return ""
+    try:
+        return future.result() or ""
+    except Exception:
+        return ""
+
+
 class ConversationalSession(
     PromptQueueMixin,
     SteerMixin,
@@ -3020,21 +3045,32 @@ class ConversationalSession(
             except Exception:
                 skip_cg = False
                 skip_wiki = False
-            if not skip_cg:
-                cg_section = self._build_turn_cg_section(user_message)
-                if cg_section:
-                    parts.append(cg_section)
+            # CodeGraph (a subprocess) and the wiki search (HTTP) are independent
+            # and sit before the pilot request: run them side by side so the
+            # turn waits for the slower one, not both. Order in the prompt is
+            # unchanged.
+            cg_future = (None if skip_cg
+                         else _submit_turn_context(self._build_turn_cg_section, user_message))
+            wiki_future = None
+            wiki_unchanged = False
             if not skip_wiki:
                 cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
                 if (getattr(self, "_wiki_cache_key", None) == user_message
                         and cached_wiki and self._in_user_history(cached_wiki)):
                     # Same ask again (Retry / Continue): no second search,
                     # no second copy in append-only history.
-                    parts.append(_unchanged_section("Wiki"))
+                    wiki_unchanged = True
                 else:
-                    wiki_section = self._build_turn_wiki_section(user_message)
-                    if wiki_section:
-                        parts.append(wiki_section)
+                    wiki_future = _submit_turn_context(self._build_turn_wiki_section, user_message)
+            cg_section = _turn_context_result(cg_future)
+            if cg_section:
+                parts.append(cg_section)
+            if wiki_unchanged:
+                parts.append(_unchanged_section("Wiki"))
+            else:
+                wiki_section = _turn_context_result(wiki_future)
+                if wiki_section:
+                    parts.append(wiki_section)
             try:
                 vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:

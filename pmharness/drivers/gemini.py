@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 import urllib.request
 import urllib.error
 
+from . import http_pool
 from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
 
@@ -297,7 +298,7 @@ class GeminiDriver:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             t0 = time.time()
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
@@ -357,7 +358,7 @@ class GeminiDriver:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             t0 = time.time()
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
@@ -460,7 +461,7 @@ class GeminiDriver:
 
         try:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with http_pool.urlopen(req, timeout=self.timeout) as resp:
                 for raw_line in resp:
                     line = raw_line.decode("utf-8", "replace").strip()
                     if not line or not line.startswith("data:"):

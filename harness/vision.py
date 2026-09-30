@@ -26,6 +26,7 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass
 from typing import Optional
+from pmharness.drivers import http_pool
 
 
 _VLM_PROMPT = (
@@ -105,7 +106,7 @@ class OpenAICompatVisionSidecar:
             method="POST")
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with http_pool.urlopen(req, timeout=self.timeout) as r:
                 raw = json.load(r)
         except urllib.error.HTTPError as e:
             return VisionResult("", error=f"HTTP {e.code}: {e.read().decode('utf-8','replace')[:300]}",
@@ -202,7 +203,7 @@ class AnthropicVisionSidecar:
             method="POST")
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with http_pool.urlopen(req, timeout=self.timeout) as r:
                 raw = json.load(r)
         except urllib.error.HTTPError as e:
             return VisionResult("", error=f"HTTP {e.code}: {e.read().decode('utf-8','replace')[:300]}",

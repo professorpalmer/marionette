@@ -236,6 +236,8 @@ class CacheRefreshDriver:
                 raise RefreshCancelled()
             request = http_request(self, snapshot.endpoint + path, data=json.dumps(body).encode(),
                                    headers=dict(snapshot.headers), method="POST")
+            # Not pooled: cancel() shuts the socket from another thread and may
+            # land after the response closes, so the connection is never shared.
             with urllib.request.urlopen(request, timeout=REFRESH_TIMEOUT) as response:
                 attempt.attach(response)
                 status = response.status

@@ -796,12 +796,17 @@ def publish_session_injected(session, input_ids):
     snapshot. ``_preserves_history`` correctly rejects that. Sync disk first
     so the check compares the same residual the runner holds.
     """
-    from .sessions import persist_live_transcript
+    from .sessions import persist_live_transcript, save_transcript
 
     state_dir = getattr(session, "state_dir", None)
     session_id = getattr(session, "harness_session_id", None)
     if state_dir and session_id:
-        persist_live_transcript(session, state_dir, session_id)
+        # This runs before the pilot request: write only. The end-of-turn
+        # save rebuilds the search index once, as mid-turn checkpoints do.
+        persist_live_transcript(
+            session, state_dir, session_id,
+            writer=lambda sd, sid, data: save_transcript(sd, sid, data, index=False),
+        )
     session_input_store(session).publish_injected(
         list(input_ids), session.export_transcript_data(),
     )

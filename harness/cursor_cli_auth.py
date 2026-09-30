@@ -32,13 +32,41 @@ _STATUS_CACHE_TTL = 30.0
 _status_lock = threading.Lock()
 _status_cache: Optional[Dict[str, Any]] = None
 _status_cache_at = 0.0
+# Bumped by invalidation so a background refresh started earlier cannot
+# republish a status from before a login or logout.
+_status_generation = 0
+_status_refreshing = False
 
 
 def invalidate_status_cache() -> None:
-    global _status_cache, _status_cache_at
+    global _status_cache, _status_cache_at, _status_generation
     with _status_lock:
         _status_cache = None
         _status_cache_at = 0.0
+        _status_generation += 1
+
+
+def _refresh_status_in_background() -> None:
+    """Re-probe off the caller's thread (lock held by caller)."""
+    global _status_refreshing
+    if _status_refreshing:
+        return
+    _status_refreshing = True
+    generation = _status_generation
+
+    def run() -> None:
+        global _status_cache, _status_cache_at, _status_refreshing
+        try:
+            result = _get_status_uncached()
+        except Exception:
+            result = None
+        with _status_lock:
+            _status_refreshing = False
+            if result is not None and generation == _status_generation:
+                _status_cache = result
+                _status_cache_at = time.monotonic()
+
+    threading.Thread(target=run, name="cursor-cli-status", daemon=True).start()
 
 
 def _run_agent(args: list[str], *, timeout: int = _STATUS_TIMEOUT) -> subprocess.CompletedProcess:
@@ -204,15 +232,18 @@ def _get_status_uncached() -> Dict[str, Any]:
 
 
 def get_status(*, refresh: bool = False) -> Dict[str, Any]:
-    """Cached status. Concurrent callers share one ``agent`` spawn."""
+    """Cached status. Concurrent callers share one ``agent`` spawn.
+
+    Every chat turn reaches this through provider availability, and the probe
+    starts a Node process. An expired status is served as-is while a
+    background refresh runs; only a cold cache (or ``refresh``) blocks.
+    """
     global _status_cache, _status_cache_at
     with _status_lock:
         now = time.monotonic()
-        if (
-            not refresh
-            and _status_cache is not None
-            and (now - _status_cache_at) < _STATUS_CACHE_TTL
-        ):
+        if not refresh and _status_cache is not None:
+            if (now - _status_cache_at) >= _STATUS_CACHE_TTL:
+                _refresh_status_in_background()
             return dict(_status_cache)
         result = _get_status_uncached()
         _status_cache = result

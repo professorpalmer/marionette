@@ -334,6 +334,7 @@ def index_codegraph_bg(repo_path: str):
             proc.wait(timeout=index_timeout)
             if proc.returncode == 0 and codegraph_indexed(repo_path):
                 codegraph_status = "ready"
+                prewarm_codegraph_context(repo_path)
                 codegraph_status_reason = None
             elif proc.returncode == 0:
                 codegraph_status = "unsupported"
@@ -494,6 +495,21 @@ def codegraph_is_stale(repo_path: str) -> bool:
     return False
 
 
+def prewarm_codegraph_context(repo_path: str) -> None:
+    """Start Puppetmaster's warm explore helper so the first turn skips its start-up.
+
+    Puppetmaster before 1.27.32 has no helper; that is a quiet no-op.
+    """
+    try:
+        from puppetmaster import codegraph as _pm_codegraph
+
+        prewarm = getattr(_pm_codegraph, "prewarm_codegraph_context", None)
+        if callable(prewarm):
+            prewarm(repo_path)
+    except Exception:
+        pass
+
+
 def maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
     """Debounced, background staleness-driven reindex. Safe to call on every turn
     and on session switch -- the debounce + the indexing-guard ensure it never
@@ -521,6 +537,8 @@ def maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
         if codegraph_is_stale(repo_path):
             codegraph_status_reason = "files changed -- refreshing index"
             reindex_codegraph_bg(repo_path)
+        else:
+            prewarm_codegraph_context(repo_path)
     try:
         threading.Thread(target=worker, daemon=True).start()
     except Exception as e:

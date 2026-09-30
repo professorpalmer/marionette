@@ -25,6 +25,7 @@ import urllib.request
 import zlib
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from . import http_pool
 from .base import DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
@@ -619,7 +620,7 @@ class BedrockDriver:
         stream_started = False
 
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with http_pool.urlopen(req, timeout=self.timeout) as resp:
             for hdrs, event_payload in iter_eventstream_messages(resp):
                 msg_type = (hdrs.get(":message-type") or "event").lower()
                 if msg_type == "exception":
