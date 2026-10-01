@@ -170,6 +170,8 @@ export function rowNeedsDomMeasure(item: GroupedItem): boolean {
       if (hasMarkdownTable(text)) return true;
       return false;
     }
+    case "steer":
+      return Boolean(item.images?.length || item.documents?.length);
     case "activity_group":
       return true;
     case "command_approval":
@@ -201,7 +203,7 @@ export function rowPretextSpec(
         };
       }
       if (msg.role === "user") {
-        const imageExtra = (msg.images?.length ?? 0) * 88;
+        const imageExtra = (msg.images?.length ? 52 : 0) + (msg.documents?.length ? 34 : 0);
         return {
           text: msg.text,
           font: TRANSCRIPT_USER_FONT,

@@ -1223,10 +1223,8 @@ class SendLoopMixin:
                     ids = self._history[-1].setdefault('input_ids', [])
                     if input_id not in ids:
                         ids.append(input_id)
-                display_row = {"type": "message", "role": "user", "text": user_message}
-                if input_id:
-                    display_row['input_id'] = input_id
-                self._display_transcript.append(display_row)
+                from .input_receipts import user_display_row
+                self._display_transcript.append(user_display_row(self, user_message, input_id))
                 if input_id:
                     from .input_receipts import publish_session_injected
                     publish_session_injected(self, [input_id])

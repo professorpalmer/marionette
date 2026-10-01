@@ -1665,8 +1665,19 @@ class ConversationalSession(
         display = getattr(self, "_display_transcript", None)
         rows = display if isinstance(display, list) else []
         for row in rows:
-            if isinstance(row, dict) and row.pop("images", None):
+            if not isinstance(row, dict):
+                continue
+            if row.pop("images", None):
                 removed += 1
+            attachments = row.get("attachments")
+            if isinstance(attachments, list):
+                kept = [a for a in attachments if not (isinstance(a, dict) and a.get("kind") == "image")]
+                if len(kept) != len(attachments):
+                    removed += 1
+                    if kept:
+                        row["attachments"] = kept
+                    else:
+                        row.pop("attachments")
         return removed
 
     def decide_command_approval(

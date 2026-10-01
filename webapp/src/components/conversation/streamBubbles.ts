@@ -155,7 +155,14 @@ export function findStreamingBubbleIdx(
     if (it.kind === "card" || it.kind === "tool_prep") {
       return -1;
     }
-    if (it.kind === "thinking" || it.kind === "codegraph_context" || it.kind === "vault_cite") {
+    // A steer row is the user's note, applied at the next safe boundary; the
+    // pilot's sentence still streams into the open bubble above it.
+    if (
+      it.kind === "thinking"
+      || it.kind === "codegraph_context"
+      || it.kind === "vault_cite"
+      || it.kind === "steer"
+    ) {
       continue;
     }
     if (it.kind === "msg") {

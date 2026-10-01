@@ -132,12 +132,14 @@ export function withLiveMessageId(
 export function optimisticUserEchoMsg(opts: {
   text: string;
   images?: Msg["images"];
+  documents?: Msg["documents"];
   id: string;
 }): Msg {
   return {
     role: "user",
     text: opts.text,
     images: opts.images,
+    ...(opts.documents?.length ? { documents: opts.documents } : {}),
     id: opts.id,
   };
 }

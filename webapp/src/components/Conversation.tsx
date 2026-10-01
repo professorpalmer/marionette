@@ -113,6 +113,7 @@ import {
   shouldSteerWhileBusy,
   steerResultChrome,
   steerTranscriptItem,
+  documentChips,
   userOrdinalBeforeIndex,
   pilotSetupBlocksDispatch,
   type PilotSetupGate,
@@ -3230,7 +3231,12 @@ export default function Conversation({
       const echoId = String(requestSubmission.input_id || "").trim();
       setItems((p) => [...p, {
         kind: "msg",
-        msg: optimisticUserEchoMsg({ text: msg, images: imgsToSend, id: echoId }),
+        msg: optimisticUserEchoMsg({
+          text: msg,
+          images: imgsToSend,
+          documents: documentChips(submission.documents ?? attachedDocuments),
+          id: echoId,
+        }),
       }]);
       pinnedToBottomRef.current = true;
       scrollReleasedByGestureRef.current = false;
@@ -3934,7 +3940,12 @@ export default function Conversation({
             refreshQueue();
             return;
           }
-          const row = steerTranscriptItem({ text: msg, chrome });
+          const row = steerTranscriptItem({
+            text: msg,
+            chrome,
+            images: steerAttachments,
+            documents: documentChips(steerDocuments),
+          });
           if (!row) return;
           setItems((prev) => [...prev, row]);
         })
