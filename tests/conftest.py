@@ -131,6 +131,11 @@ force_throwaway_harness_state_dir()
 os.environ["PUPPETMASTER_MODELS_PATH"] = os.path.join(
     os.environ["HARNESS_STATE_DIR"], "marionette-models.json",
 )
+# Puppetmaster's project state dirs and file claims live under its app state
+# root, which defaults to the real user location.
+os.environ["PUPPETMASTER_APP_STATE_ROOT"] = os.path.join(
+    os.environ["HARNESS_STATE_DIR"], "puppetmaster-app-state",
+)
 from harness import model_visibility as _model_visibility
 
 _model_visibility._store_path = lambda: os.path.join(
