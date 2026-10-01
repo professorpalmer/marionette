@@ -5,7 +5,8 @@
 import { inputFailureMessage } from "../../lib/inputFailure";
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
 import { isPilotMouthBusy } from "./runnersBusy";
-import type { ReasoningEffort } from "../../lib/api";
+import type { InputDocument, ReasoningEffort } from "../../lib/api";
+import type { SteerItem } from "../TranscriptList";
 
 export type PilotSetupGate =
   | { kind: "awaiting_session"; model: string; reasoning?: ReasoningEffort; requestId: number }
@@ -169,16 +170,30 @@ export function steerResultChrome(opts: {
   return "steer";
 }
 
-/** Transcript `steer:` / `interrupt:` row — never for a queued follow-up. */
+/** Transcript `steer:` / `interrupt:` row — never for a queued follow-up.
+ *  Carries what was attached so the row matches what was sent. */
 export function steerTranscriptItem(opts: {
   text: string;
   chrome: "steer" | "queue" | "interrupt";
-}): { kind: "steer"; text: string; mode?: "steer" | "interrupt" } | null {
+  images?: SteerItem["images"];
+  documents?: SteerItem["documents"];
+}): SteerItem | null {
   if (opts.chrome === "queue") return null;
-  if (opts.chrome === "interrupt") {
-    return { kind: "steer", text: opts.text, mode: "interrupt" };
-  }
-  return { kind: "steer", text: opts.text };
+  return {
+    kind: "steer",
+    text: opts.text,
+    ...(opts.chrome === "interrupt" ? { mode: "interrupt" as const } : {}),
+    ...(opts.images?.length ? { images: opts.images } : {}),
+    ...(opts.documents?.length ? { documents: opts.documents } : {}),
+  };
+}
+
+/** Chip names for attached documents (name, else the path/ref basename). */
+export function documentChips(documents: readonly InputDocument[]): { name: string }[] {
+  return documents.map((doc) => {
+    const locator = "path" in doc ? doc.path : doc.ref;
+    return { name: doc.name || locator.split(/[\\/]/).pop() || locator };
+  });
 }
 
 export type StopHonestyNotice = {

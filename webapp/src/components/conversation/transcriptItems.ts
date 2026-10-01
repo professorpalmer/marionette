@@ -347,6 +347,29 @@ export function dedupeDisplayItems(items: Item[]): Item[] {
   return out;
 }
 
+/** Persisted attachment metadata -> image thumbnails (input: refs) and file chips. */
+export function displayAttachments(raw: unknown): {
+  images?: { path: string; name: string; previewUrl: string }[];
+  documents?: { name: string }[];
+} {
+  if (!Array.isArray(raw)) return {};
+  const images: { path: string; name: string; previewUrl: string }[] = [];
+  const documents: { name: string }[] = [];
+  for (const a of raw) {
+    if (!a || typeof a !== "object") continue;
+    const name = typeof a.name === "string" ? a.name : "";
+    if (a.kind === "image" && typeof a.ref === "string" && a.ref) {
+      images.push({ path: a.ref, name: name || "image", previewUrl: "" });
+    } else if (a.kind === "document" && name) {
+      documents.push({ name });
+    }
+  }
+  return {
+    ...(images.length ? { images } : {}),
+    ...(documents.length ? { documents } : {}),
+  };
+}
+
 /** Map /api/sessions/transcript payload into transcript Item rows. */
 export function transcriptResponseToItems(res: {
   history?: any[];
@@ -565,6 +588,15 @@ export function transcriptResponseToItems(res: {
       } else {
         const rawText = m.text || "";
         const role = m.role as "user" | "assistant";
+        const { images, documents } = displayAttachments(m.attachments);
+        if (role === "user" && m.steer === true) {
+          return [{
+            kind: "steer" as const,
+            text: stripUserVisibleText(rawText),
+            ...(images ? { images } : {}),
+            ...(documents ? { documents } : {}),
+          }];
+        }
         const persistedId = String(m.id || m.input_id || "").trim();
         const channel = typeof m.channel === "string" && m.channel.trim()
           ? m.channel.trim()
@@ -577,6 +609,8 @@ export function transcriptResponseToItems(res: {
             ...(persistedId ? { id: persistedId } : {}),
             ...(channel ? { channel } : {}),
             ...(m.is_plan === true || m.isPlan === true ? { isPlan: true } : {}),
+            ...(role === "user" && images ? { images } : {}),
+            ...(role === "user" && documents ? { documents } : {}),
           }
         }];
       }

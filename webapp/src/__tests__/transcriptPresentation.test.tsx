@@ -1330,7 +1330,7 @@ describe("steer clamp", () => {
       expect(more).toHaveLength(2);
       fireEvent.click(more[0]!);
       expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
-      expect(screen.getByText("steer:")).toBeTruthy();
+      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "steer:");
       const bodies = screen.getAllByTestId("transcript-clamp-body");
       expect(bodies).toHaveLength(2);
       expect(bodies.every((el) => (el.textContent || "").includes("probe probe"))).toBe(true);
@@ -1346,7 +1346,7 @@ describe("steer clamp", () => {
       );
       expect(screen.getByTestId("transcript-clamp")).toHaveAttribute("data-collapsed", "0");
       expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
-      expect(screen.getByText("steer:")).toBeTruthy();
+      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "steer:");
     });
   });
 
@@ -1357,8 +1357,33 @@ describe("steer clamp", () => {
           {...listProps([{ kind: "steer", text: "probe ".repeat(40), mode: "interrupt" }])}
         />,
       );
-      expect(screen.getByText("interrupt:")).toBeTruthy();
+      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "interrupt:");
       expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
     });
+  });
+
+  it("shows the images and files a steer was sent with", () => {
+    render(
+      <TranscriptList
+        {...listProps([{
+          kind: "steer",
+          text: "look at this",
+          images: [{ path: "input:abc", name: "shot.png", previewUrl: "" }],
+          documents: [{ name: "notes.txt" }],
+        }])}
+      />,
+    );
+    const note = screen.getByTestId("steer-note");
+    expect(note.querySelectorAll("img")).toHaveLength(1);
+    expect(note.querySelector("img")).toHaveAttribute("alt", "shot.png");
+    expect(screen.getByTestId("message-document")).toHaveTextContent("notes.txt");
+  });
+
+  it("is selectable as a whole, with the label kept out of the copied text", () => {
+    render(<TranscriptList {...listProps([{ kind: "steer", text: "copy me" }])} />);
+    const note = screen.getByTestId("steer-note");
+    // .transcript-msg-body is the feed's user-select:text surface (index.css).
+    expect(note.classList.contains("transcript-msg-body")).toBe(true);
+    expect(note.textContent).toBe("copy me");
   });
 });

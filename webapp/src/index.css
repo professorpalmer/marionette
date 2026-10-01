@@ -900,6 +900,14 @@ body.is-row-resizing iframe {
 .transcript-fold-chrome {
   font-weight: 400;
 }
+/* Cmd/Ctrl+F in chat (CSS Custom Highlight API; see lib/transcriptFind.ts). */
+::highlight(transcript-find) {
+  background-color: theme('colors.accent / 28%');
+}
+::highlight(transcript-find-current) {
+  background-color: theme('colors.accent');
+  color: theme('colors.bg');
+}
 [data-testid="transcript-virtual-row"],
 .transcript-virtual-row,
 .transcript-fold-chrome,

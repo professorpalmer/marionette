@@ -8,7 +8,7 @@ import type { TranscriptViewportHandle } from "./sessionViewport";
  * that currently owns them — never paint session A rows under B's id.
  */
 
-import { useCallback, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useCallback, useRef, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import {
@@ -29,6 +29,7 @@ import {
 import { peekTranscriptCache } from "./transcriptCache";
 import { retainSessionPanes } from "./sessionPanes";
 import { useDockClearance } from "../../lib/dockClearance";
+import { useTranscriptFind } from "./useTranscriptFind";
 
 const DORMANT_SCROLL_REF: RefObject<HTMLDivElement | null> = { current: null };
 
@@ -125,15 +126,19 @@ export default function ConversationChatColumn({
   // dim was the swap blink — nothing to honesty-dim.
   const feedDimmed = transcriptStale && paintCount > 0;
   const [dockPad, setDockEl] = useDockClearance();
+  const columnRef = useRef<HTMLDivElement>(null);
+  const { findApiRef, findBar } = useTranscriptFind(feedRef, columnRef, items, sessionId, dockPad ?? 0);
   const contentRef = useCallback((el: HTMLDivElement | null) => {
     if (feedContentRef) feedContentRef.current = el;
     setDockEl(el);
   }, [feedContentRef, setDockEl]);
   return (
     <div
+      ref={columnRef}
       className="chat-column flex flex-col flex-1 min-h-0 min-w-0"
     >
       <div className="relative flex-1 min-h-0 flex flex-col">
+        {findBar}
         {paneList.map((id) => {
           const visible = !id || id === sessionId;
           const live = id === itemSessionId;
@@ -183,6 +188,7 @@ export default function ConversationChatColumn({
                   feedSettled={live ? feedSettled : true}
                   scrollContainerRef={visible ? feedRef : DORMANT_SCROLL_REF}
                   scrollToEndRef={visible ? scrollToEndRef : undefined}
+                  findApiRef={visible ? findApiRef : undefined}
                   viewportRef={visible ? viewportRef : undefined}
                   onEditMessage={onEditMessage}
                   onExecuteSend={onExecuteSend}

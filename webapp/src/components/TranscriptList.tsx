@@ -2,7 +2,7 @@ import { SwarmLinkSessionContext, useOpenSwarmJob } from '../lib/useOpenSwarmJob
 import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
-import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield } from "lucide-react";
+import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -90,6 +90,7 @@ import { executeDiagnosticRecovery } from "../lib/operationalRecovery";
 import TraceCopy from "./conversation/TraceCopy";
 import { focusSettingsPage } from "./SettingsShell";
 import { TranscriptImage } from "./conversation/TranscriptImage";
+import { searchableRowText } from "../lib/transcriptFind";
 import {
   FEED_UNPIN_BUBBLE_EVENT,
   nextFeedPinState,
@@ -125,6 +126,15 @@ import {
   vaultCiteChipLabel,
 } from "./conversation/streamApply";
 
+/** Mid-turn steer/interrupt row; carries the attachments it was sent with. */
+export type SteerItem = {
+  kind: "steer";
+  text: string;
+  mode?: "steer" | "interrupt";
+  images?: Msg["images"];
+  documents?: Msg["documents"];
+};
+
 export type Msg = {
   role: "user" | "assistant";
   text: string;
@@ -132,6 +142,8 @@ export type Msg = {
   id?: string;
   isPlan?: boolean;
   images?: { path: string; name: string; previewUrl: string }[];
+  /** Attached files shown as chips (names only; content went to the model). */
+  documents?: { name: string }[];
   streaming?: boolean;
   // Ephemeral live preview of a swarm worker's token stream. Rendered in a
   // height-capped, auto-scrolling window and DROPPED when the action finalizes
@@ -302,7 +314,7 @@ export type Item =
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
-  | { kind: "steer"; text: string; mode?: "steer" | "interrupt" }
+  | SteerItem
   | {
       kind: "quality_gate";
       outcome: string;
@@ -350,7 +362,7 @@ export type GroupedItem =
   | { kind: "auto_status"; cycle: number; snapshot: AutoBudgetSnapshot }
   | { kind: "auto_halt"; reason: string; snapshot: AutoBudgetSnapshot }
   | { kind: "auth_failure"; message: string; id?: string }
-  | { kind: "steer"; text: string; mode?: "steer" | "interrupt" }
+  | SteerItem
   | {
       kind: "quality_gate";
       outcome: string;
@@ -1288,6 +1300,7 @@ const VirtualTranscriptRow = memo(
       ref={setRowRef}
       data-viewport-key={viewportKey}
       data-index={virtualRow.index}
+      data-row-index={virtualRow.index}
       data-testid="transcript-virtual-row"
       data-dom-measure={attachDom ? "1" : "0"}
       className="transcript-virtual-row absolute top-0 left-0 w-full pb-1 select-none"
@@ -1307,6 +1320,7 @@ const VirtualTranscriptRow = memo(
  * has its real height instead of an estimate corrected frames later.
  */
 function LiveTailRow({
+  rowIndex,
   item,
   rowId,
   viewportKey,
@@ -1314,6 +1328,7 @@ function LiveTailRow({
   feedInnerWidth,
   children,
 }: {
+  rowIndex: number;
   item: GroupedItem;
   rowId: string;
   viewportKey: string;
@@ -1332,7 +1347,7 @@ function LiveTailRow({
     return () => ro?.disconnect();
   }, [heights, item, rowId, feedInnerWidth]);
   return (
-    <div ref={ref} data-viewport-key={viewportKey} className="pb-1">
+    <div ref={ref} data-viewport-key={viewportKey} data-row-index={rowIndex} className="pb-1">
       {children}
     </div>
   );
@@ -1466,6 +1481,13 @@ function AuthFailureBanner({
 // status, compactingStatus, editingIndex, auto, plan) plus stable callbacks are
 // passed in; all callbacks are useCallback-stabilized in the parent so the memo
 // comparison holds.
+export type TranscriptFindApi = {
+  /** Searchable text per grouped row (row-index aligned; "" if not searchable). */
+  rowTexts: () => string[];
+  /** Bring a grouped row into view, centered. */
+  revealRow: (index: number) => void;
+};
+
 export type TranscriptListProps = {
   items: Item[];
   status: "idle" | "thinking" | "executing" | "done" | "error" | "streaming" | "awaiting_swarm";
@@ -1494,6 +1516,8 @@ export type TranscriptListProps = {
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   /** Conversation jump-to-latest / stick-to-bottom: virtualizer-aware end scroll. */
   scrollToEndRef?: React.MutableRefObject<(() => void) | null>;
+  /** Cmd/Ctrl+F: searchable row text and reveal-by-row for the find bar. */
+  findApiRef?: React.MutableRefObject<TranscriptFindApi | null>;
   viewportRef?: React.MutableRefObject<TranscriptViewportHandle | null>;
   onEditMessage: (idx: number, originalText: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
@@ -1524,6 +1548,7 @@ export const TranscriptList = memo(function TranscriptList({
   feedSettled: feedSettledProp,
   scrollContainerRef,
   scrollToEndRef,
+  findApiRef,
   viewportRef,
   onEditMessage,
   onExecuteSend,
@@ -1661,6 +1686,26 @@ export const TranscriptList = memo(function TranscriptList({
       }
     };
   }, [scrollToEnd, scrollToEndRef]);
+
+  useEffect(() => {
+    if (!findApiRef) return;
+    const api: TranscriptFindApi = {
+      rowTexts: () => grouped.map(searchableRowText),
+      revealRow: (index) => {
+        if (index < tailStartIndex) {
+          rowVirtualizer.scrollToIndex(index, { align: "center" });
+          return;
+        }
+        scrollContainerRef.current
+          ?.querySelector(`[data-row-index="${index}"]`)
+          ?.scrollIntoView({ block: "center" });
+      },
+    };
+    findApiRef.current = api;
+    return () => {
+      if (findApiRef.current === api) findApiRef.current = null;
+    };
+  }, [findApiRef, grouped, rowVirtualizer, scrollContainerRef, tailStartIndex]);
   useLayoutEffect(() => {
     if (!viewportRef) return;
     const rows = () => {
@@ -2038,7 +2083,7 @@ export const TranscriptList = memo(function TranscriptList({
     } else if (it.kind === "compaction") {
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
-      return <SteerNote key={key} text={it.text} mode={it.mode} />;
+      return <SteerNote key={key} item={it} onImageClick={onImageClick} />;
     } else if (it.kind === "quality_gate") {
       const gate = qualityGatePresentation(it);
       const toneClass =
@@ -2200,7 +2245,7 @@ export const TranscriptList = memo(function TranscriptList({
       {grouped.map((_, i) => {
         const key = rowKeys[i]!;
         return (
-          <div key={key} data-viewport-key={viewportKeys[i]} className="transcript-virtual-row pb-1 select-none">
+          <div key={key} data-viewport-key={viewportKeys[i]} data-row-index={i} className="transcript-virtual-row pb-1 select-none">
             {renderGroupedItem(i)}
           </div>
         );
@@ -2218,6 +2263,7 @@ export const TranscriptList = memo(function TranscriptList({
         return (
           <LiveTailRow
             key={key}
+            rowIndex={idx}
             item={grouped[idx]!}
             rowId={key}
             viewportKey={viewportKeys[idx] ?? ""}
@@ -3662,23 +3708,61 @@ function ClampedProse({
 }
 
 function SteerNote({
-  text,
-  mode,
+  item,
+  onImageClick,
 }: {
-  text: string;
-  mode?: "steer" | "interrupt";
+  item: SteerItem;
+  onImageClick?: (url: string) => void;
 }) {
+  // The whole pill is selectable, like a user bubble, so a drag that starts on
+  // the label or padding still selects. The label is generated content: it
+  // stays out of copied text.
   return (
     <div
       data-testid="steer-note"
-      className="flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-ui-10.5 text-faint my-1 font-mono"
+      data-label={item.mode === "interrupt" ? "interrupt:" : "steer:"}
+      className="transcript-msg-body flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-ui-10.5 text-faint my-1 font-mono before:shrink-0 before:text-muted before:content-[attr(data-label)]"
     >
-      <span className="shrink-0 select-none text-muted">
-        {mode === "interrupt" ? "interrupt:" : "steer:"}
-      </span>
-      <div className="min-w-0 select-text">
-        <ClampedProse text={text} fadeClassName="from-bg" />
+      <div className="min-w-0">
+        <ClampedProse text={item.text} fadeClassName="from-bg" />
+        <MessageAttachments images={item.images} documents={item.documents} onImageClick={onImageClick} />
       </div>
+    </div>
+  );
+}
+
+function MessageAttachments({
+  images,
+  documents,
+  onImageClick,
+}: {
+  images?: Msg["images"];
+  documents?: Msg["documents"];
+  onImageClick?: (url: string) => void;
+}) {
+  if (!images?.length && !documents?.length) return null;
+  return (
+    <div data-testid="message-attachments" className="flex flex-wrap items-center gap-2 mt-2 select-none">
+      {images?.map((img, idx) => (
+        <TranscriptImage
+          key={`${img.path || img.name}-${idx}`}
+          path={img.path}
+          name={img.name}
+          previewUrl={img.previewUrl}
+          onImageClick={onImageClick}
+        />
+      ))}
+      {documents?.map((doc, idx) => (
+        <span
+          key={`${doc.name}-${idx}`}
+          data-testid="message-document"
+          title={doc.name}
+          className="inline-flex items-center gap-1 max-w-[16rem] rounded-md border border-edge bg-panel px-2 py-1 text-ui-11 font-sans text-muted"
+        >
+          <FileText size={12} className="shrink-0" />
+          <span className="truncate">{doc.name}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -3771,19 +3855,7 @@ function Bubble({
               text={displayedText}
               fadeClassName={isEditing ? "from-accent/10" : "from-accent2"}
             />
-            {msg.images && msg.images.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-2">
-                {msg.images.map((img, idx) => (
-                  <TranscriptImage
-                    key={`${img.path || img.name}-${idx}`}
-                    path={img.path}
-                    name={img.name}
-                    previewUrl={img.previewUrl}
-                    onImageClick={onImageClick}
-                  />
-                ))}
-              </div>
-            )}
+            <MessageAttachments images={msg.images} documents={msg.documents} onImageClick={onImageClick} />
           </div>
         </div>
       </div>

@@ -812,6 +812,38 @@ def publish_session_injected(session, input_ids):
     )
 
 
+def user_display_row(session, text, input_id=None, *, steer=False):
+    """Display-transcript row for user input, with its attachments.
+
+    Attachment names and retained image refs come from the input receipt
+    (``/api/image?path=input:...`` serves the refs), so a reloaded session
+    keeps thumbnails and file chips. A steer shows what was typed, never the
+    sidecar transcription folded into the delivered text. Best effort: a
+    missing receipt leaves a plain row.
+    """
+    row = {'type': 'message', 'role': 'user', 'text': text}
+    if input_id:
+        row['input_id'] = input_id
+        try:
+            receipt = session_input_store(session).get(input_id)
+        except Exception:
+            receipt = None
+        if receipt is not None:
+            original = str(receipt.get('original_text') or '').strip()
+            if steer and original:
+                row['text'] = original
+            attachments = [
+                {'kind': a['kind'], 'name': a.get('name') or '', 'ref': a['ref']}
+                for a in receipt.get('attachments') or ()
+                if a.get('kind') in ('image', 'document')
+            ]
+            if attachments:
+                row['attachments'] = attachments
+    if steer:
+        row['steer'] = True
+    return row
+
+
 def session_input_store(session):
     store = getattr(session, '_input_receipts', None)
     if store is not None:

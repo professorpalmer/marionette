@@ -362,7 +362,10 @@ class SteerMixin:
                 self._history.append({'role': 'user', 'content': content, 'input_id': action.id})
                 transcript = getattr(self, '_display_transcript', None)
                 if display and transcript is not None:
-                    transcript.append({'type': 'message', 'role': 'user', 'text': action.text, 'input_id': action.id})
+                    from .input_receipts import user_display_row
+                    from .session_actions import ActionKind
+                    transcript.append(user_display_row(
+                        self, action.text, action.id, steer=action.kind == ActionKind.STEER))
             if receipts is not None:
                 from .input_receipts import publish_session_injected
                 publish_session_injected(self, [a.id for a in actions])
