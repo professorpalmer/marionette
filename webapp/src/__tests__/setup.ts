@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
 import "../index.css";
 
@@ -22,6 +22,11 @@ if (typeof HTMLDialogElement !== "undefined") {
     });
   }
 }
+
+// findBy*/waitFor default to 1000ms. CI runs this suite 7-9x slower than a
+// dev machine, which put ordinary cold renders past that. Queries still
+// resolve the moment the element appears; only a real miss waits this long.
+configure({ asyncUtilTimeout: 4000 });
 
 afterEach(() => {
   cleanup();
