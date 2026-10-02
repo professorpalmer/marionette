@@ -193,3 +193,36 @@ it('a late native connection error cannot invalidate a replacement pin', async (
   await expect(pending).rejects.toThrow(/connection changed/);
   expect(() => replacement.assertCurrent()).not.toThrow();
 });
+
+it('one native image socket failure keeps the pin when the backend still answers with the same boot', async () => {
+  let slow: ((value: unknown) => void) | undefined;
+  nativeBridge((path, _identity, _port, done) => {
+    if (path.includes('slow')) slow = done;
+    else done({kind:'image-error', code:'connection'});
+    return () => {};
+  });
+  const {fetchImage} = await import('../lib/transport');
+  const pending = fetchImage('/api/image?path=slow', new AbortController().signal);
+  await vi.waitFor(() => expect(slow).toBeDefined());
+  await expect(fetchImage('/api/image?path=broken', new AbortController().signal)).rejects.toThrow(/Native image request failed/);
+  slow?.(nativeResponse());
+  const result = await pending;
+  expect(() => result.assertCurrent()).not.toThrow();
+});
+
+it('one fetched image socket failure keeps the pin when the backend still answers with the same boot', async () => {
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+    if (path === '/api/endpoint') return Response.json(endpointDescriptor);
+    if (path.includes('slow')) { await gate; return imageResponse(); }
+    throw new TypeError('Failed to fetch');
+  }));
+  const {fetchImage} = await import('../lib/transport');
+  const pending = fetchImage('/api/image?path=slow', new AbortController().signal);
+  await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  await expect(fetchImage('/api/image?path=broken', new AbortController().signal)).rejects.toThrow(/Failed to fetch/);
+  release?.();
+  const result = await pending;
+  expect(() => result.assertCurrent()).not.toThrow();
+});

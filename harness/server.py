@@ -2831,6 +2831,7 @@ class Handler(BaseHTTPRequestHandler):
         # escapes to socketserver's default handle_error and dumps a traceback to
         # stderr. Swallow only those transport errors so a disconnect never prints
         # noise; genuine handler bugs still surface unchanged.
+        self._response_started = False
         try:
             super().handle_one_request()
         except (ConnectionError, TimeoutError) as _transport_exc:
@@ -2841,6 +2842,23 @@ class Handler(BaseHTTPRequestHandler):
                 msg=f"{type(_transport_exc).__name__}: {_transport_exc}",
             )
             self.close_connection = True
+        except Exception as _handler_exc:
+            # A handler bug must answer, not reset the socket: the desktop app
+            # reads a reset as a possible backend change and asks to Reconnect.
+            import traceback
+            traceback.print_exc()
+            _diag("server.handler_failed", _handler_exc)
+            self.close_connection = True
+            if not self._response_started:
+                try:
+                    self._send(500, json.dumps({"error": "Internal error handling this request.",
+                                                "code": "handler_failed"}))
+                except Exception:
+                    pass
+
+    def send_response(self, code, message=None):
+        self._response_started = True
+        super().send_response(code, message)
 
     def log_message(self, fmt, *args):  # quiet but correlated
         try:
