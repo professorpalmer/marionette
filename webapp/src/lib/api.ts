@@ -1456,6 +1456,22 @@ export type ContextUsageResponse = {
 const CHAT_STASH_THRESHOLD = 4000;
 
 export type QueueRecovery = { kind: "legacy" | "unreadable"; path: string; content: string | null };
+/**
+ * A read-only GET that joins an identical request already in flight. Several
+ * components ask for the same state at the same instant (a session switch
+ * issued six identical /api/session/state requests).
+ */
+const inFlightGets = new Map<string, Promise<unknown>>();
+export function sharedGet<T>(path: string): Promise<T> {
+  const existing = inFlightGets.get(path);
+  if (existing) return existing as Promise<T>;
+  const request = getJSON<T>(path).finally(() => {
+    if (inFlightGets.get(path) === request) inFlightGets.delete(path);
+  });
+  inFlightGets.set(path, request);
+  return request;
+}
+
 export type InputDocument = { ref: string; name?: string } | { path: string; name?: string; sha256?: string; byte_length?: number };
 export type InputSubmission = { original_text?: string; session_id?: string; documents?: InputDocument[]; retry_key?: string; input_id?: string; handoff_token?: string };
 
@@ -1664,7 +1680,7 @@ export const api = {
   validatePilot: (driver: string) => postJSON<PilotValidateResult>("/api/pilot/validate", { driver }),
   recommend: () => getJSON<RecommendResult>("/api/registry/recommend"),
 
-  config: (sessionId?: string | null) => getJSON<Config>(sessionId
+  config: (sessionId?: string | null) => sharedGet<Config>(sessionId
     ? `/api/config?session_id=${encodeURIComponent(sessionId)}` : "/api/config"),
   diagnostics: () => getJSON<{
     ok?: boolean;
@@ -1809,7 +1825,9 @@ export const api = {
     if (opts?.sessionId) params.set("session_id", opts.sessionId);
     const qs = params.toString();
     const path = qs ? `/api/session/state?${qs}` : "/api/session/state";
-    return getJSON<SessionState>(withToken(path));
+    // consume/rearm change server state; only plain peeks may share a request.
+    const peek = !opts?.consumeResume && !opts?.rearmResume;
+    return peek ? sharedGet<SessionState>(withToken(path)) : getJSON<SessionState>(withToken(path));
   },
   getSessionGoal: (sessionId: string) =>
     getJSON<{ ok: boolean; goal: SessionGoal }>(withToken(`/api/session/goal?session_id=${encodeURIComponent(sessionId)}`)),
@@ -2267,7 +2285,7 @@ export const api = {
 
   openWorkspace: (path: string) => postJSON<{ ok: boolean; repo: string; branch: string; is_git: boolean; codegraph: "indexing" | "ready" | "unsupported" | "needs_scope" | "none" | "pending"; active_session?: string; created_session?: boolean }>("/api/workspace/open", { path }),
   forgetWorkspace: (path: string) => postJSON<{ ok: boolean; recents: string[]; cleared_active?: boolean; repo?: string }>("/api/workspace/forget", { path }),
-  getWorkspace: () => getJSON<WorkspaceInfo>("/api/workspace"),
+  getWorkspace: () => sharedGet<WorkspaceInfo>("/api/workspace"),
   getWorkspaceFiles: () =>
     getJSON<{
       files: string[];

@@ -7,6 +7,7 @@ import SkillsPane from "../components/SkillsPane";
 import PluginsLibrary from "../components/PluginsLibrary";
 import McpPane from "../components/McpPane";
 import { usePolling } from "../lib/usePolling";
+import { _resetActivityForTests, setActivity } from "../lib/appActivity";
 import { clearSWRCache } from "../lib/useStaleWhileRevalidate";
 vi.mock("../lib/api", () => ({ api: {
   memory: vi.fn().mockResolvedValue({ memory: [] }),
@@ -21,8 +22,10 @@ vi.mock("../lib/api", () => ({ api: {
   getCodegraph: vi.fn().mockResolvedValue({ status: "none" }),
   environmentReadiness: vi.fn().mockResolvedValue({}),
 } }));
-beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); localStorage.clear(); clearSWRCache(); });
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+// These assert the fast cadence, which applies while something is running
+// (idle cadence: idlePolling.test.ts).
+beforeEach(() => { vi.useFakeTimers(); vi.clearAllMocks(); localStorage.clear(); clearSWRCache(); setActivity("test", true); });
+afterEach(() => { cleanup(); vi.useRealTimers(); _resetActivityForTests(); });
 const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 it("disabled State retains event listeners without network reads", async () => {
   render(<StatePane artifacts={[]} networkEnabled={false} />);

@@ -1,4 +1,5 @@
 import { usePolling } from "../lib/usePolling";
+import { IDLE_POLL_MS } from "../lib/appActivity";
 import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type PendingReview } from "../lib/api";
@@ -73,6 +74,7 @@ export function useInFileReview(editorPath: string): {
   }, [refresh, scope]);
   usePolling(() => pending.current ?? refresh(), 4000, {
     scopeKey: JSON.stringify([editorPath, scopeEpoch]),
+    idleIntervalMs: IDLE_POLL_MS,
   });
 
   const hunks = collectInFilePendingHunks(reviews, editorPath);

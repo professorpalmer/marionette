@@ -1,4 +1,5 @@
 import { usePolling } from "../lib/usePolling";
+import { IDLE_POLL_MS } from "../lib/appActivity";
 import { useEffect, useRef, useState } from "react";
 import { Plug, Play, Square, Trash2, Plus, Check, X, ChevronDown, ChevronRight, RefreshCw, Loader2 } from "lucide-react";
 import { api } from "../lib/api";
@@ -131,7 +132,7 @@ export default function McpPane({ embedded = false, networkEnabled = true, onSta
     if (statusSource) return statusSource.refresh();
     return api.mcp().then((d) => { setServers(d.servers); setTools(d.tools); onStatus?.(d); }).catch(() => {});
   };
-  usePolling(refresh, 4000, { enabled: networkEnabled && !statusSource });
+  usePolling(refresh, 4000, { enabled: networkEnabled && !statusSource, idleIntervalMs: IDLE_POLL_MS });
   useEffect(() => {
     if (!networkEnabled) return;
     api.mcpCatalog().then((d) => setCatalog(d.catalog)).catch(() => {});

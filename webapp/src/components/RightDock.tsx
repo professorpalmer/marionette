@@ -1,4 +1,5 @@
 import { usePolling } from "../lib/usePolling";
+import { IDLE_POLL_MS } from "../lib/appActivity";
 import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -202,7 +203,7 @@ export default function RightDock({
     };
   }, [swarmRepo, activitySessionId, scopeEpoch, panelsOpen]);
   // While the board is open it already polls reviews and publishes the count.
-  usePolling(() => reviewPoll.current(), 5000, { scopeKey: scopeEpoch, enabled: !panelsOpen });
+  usePolling(() => reviewPoll.current(), 5000, { scopeKey: scopeEpoch, enabled: !panelsOpen, idleIntervalMs: IDLE_POLL_MS });
   useEffect(() => {
     const onCount = (e: Event) => {
       const n = (e as CustomEvent<unknown>).detail;

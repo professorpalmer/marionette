@@ -1,6 +1,12 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Profiler, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetActivityForTests, setActivity } from "../lib/appActivity";
+
+// Polling cadences here are the fast ones, which apply while something is
+// running (idle cadence: idlePolling.test.ts).
+beforeEach(() => { setActivity("test", true); });
+afterEach(() => { _resetActivityForTests(); });
 import RightPane from "../components/RightPane";
 import RightDock from "../components/RightDock";
 import css from "../index.css?raw";
