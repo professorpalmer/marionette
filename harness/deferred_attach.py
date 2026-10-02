@@ -52,6 +52,7 @@ class DeferredPilotPlaceholder:
         session_id: str,
         state_dir: str,
         transcript: Any = None,
+        input_state_root: Optional[str] = None,
     ) -> None:
         self.harness_session_id = session_id
         self.state_dir = state_dir
@@ -79,6 +80,11 @@ class DeferredPilotPlaceholder:
         # Duck-type ConversationalSession review queue for /api/reviews polls.
         self._pending_reviews_lock = threading.Lock()
         self._pending_reviews: dict = {}
+        # Same retained-input store the real pilot binds to, so /api/image can
+        # serve this session's images before the swap.
+        if input_state_root is not None:
+            from .input_receipts import InputReceiptStore
+            self._input_receipts = InputReceiptStore(input_state_root, session_id)
 
     @property
     def defer_building(self) -> bool:

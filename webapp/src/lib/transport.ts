@@ -311,10 +311,16 @@ function nativeImage(path: string, identity: Record<string, string>, port: numbe
   });
 }
 
+/** A dropped image socket is not proof the backend changed; revalidate first. */
+function isNativeConnectionFailure(value: unknown): boolean {
+  return !!value && typeof value === "object" && "kind" in value && value.kind === "image-error"
+    && "code" in value && value.code === "connection";
+}
+
 function nativeImageBlob(value: unknown, port: number, invalidate: () => void): Blob {
   if (!value || typeof value !== "object" || !("kind" in value)) throw new Error("Invalid native image response");
   if (value.kind === "image-error") {
-    if ("code" in value && (value.code === "stale" || value.code === "connection")) invalidate();
+    if ("code" in value && value.code === "stale") invalidate();
     throw new Error("Native image request failed");
   }
   if (value.kind !== "image-response" || !("status" in value) || typeof value.status !== "number"
@@ -361,10 +367,11 @@ export async function fetchImage(src: string, signal: AbortSignal): Promise<{blo
       value = await nativeImage(request.path, endpointClient.headers(pin), Number(new URL(origin).port), bridge, signal);
     } catch (error) {
       current();
-      endpointClient.invalidate(pin);
+      await endpointClient.revalidate(pin, discoverEndpoint);
       throw error;
     }
     current();
+    if (isNativeConnectionFailure(value)) await endpointClient.revalidate(pin, discoverEndpoint);
     const blob = nativeImageBlob(value, Number(new URL(origin).port), () => endpointClient.invalidate(pin));
     current();
     return {blob, assertCurrent: current};
@@ -376,7 +383,7 @@ export async function fetchImage(src: string, signal: AbortSignal): Promise<{blo
       signal, cache: "no-store", credentials: "omit", redirect: "error",
     });
   } catch (error) {
-    if (!signal.aborted) endpointClient.invalidate(pin);
+    if (!signal.aborted) await endpointClient.revalidate(pin, discoverEndpoint);
     throw error;
   }
   try {
