@@ -3,6 +3,7 @@
  * Conversation.tsx supplies chrome setters / refs; item transforms live in streamApply.
  */
 
+import { requestUsageRefresh } from "../../lib/usageRefresh";
 import type { Dispatch, SetStateAction } from "react";
 import { localSwarmJobId } from "../../lib/localJobMetadata";
 import { publishTaskProfile } from "../../lib/taskProfileChrome";
@@ -549,7 +550,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       onJobChange();
       // Host-tool turns meter per step — refresh StatusBar without waiting
       // for the 10s idle poll (Cursor CLI still lands meters at stream end).
-      window.dispatchEvent(new Event("harness-usage-refresh"));
+      requestUsageRefresh();
       // Path-bearing file mutations (write_file / edit_file / hash_edit): fan out
       // even when the pre-write checkpoint was skipped or failed, so Files / SCM
       // / open editors stay fresh without waiting for a later checkpoint SSE.
@@ -709,7 +710,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       fetchContextUsage();
       // StatusBar tok/$ polls /api/usage on a slow cadence — nudge it at turn
       // end so Cursor CLI (single long stream, meters land at done) updates now.
-      window.dispatchEvent(new Event("harness-usage-refresh"));
+      requestUsageRefresh();
       // Backend may also set_title_if_default; refresh meters/title if the
       // optimistic first-send rename missed or the server derived a different slug.
       window.dispatchEvent(new Event("harness-config-changed"));
