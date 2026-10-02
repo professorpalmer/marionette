@@ -1,3 +1,4 @@
+import { IDLE_POLL_MS, appBusy, subscribeActivity } from "../lib/appActivity";
 import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { Activity, useCallback, useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -742,16 +743,22 @@ export default function RightPane({ visible, sessionId = "", artifacts, onOpenWi
         }
       }
     };
+    // Reviews only appear while something is running: slow down when idle,
+    // and check at once when activity starts.
     const poll = async () => {
       if (!current()) return;
       if (!document.hidden) await loadReviews();
-      if (current()) timer = setTimeout(poll, 4000);
+      if (current()) timer = setTimeout(poll, appBusy() ? 4000 : IDLE_POLL_MS);
     };
     refreshReviews.current = loadReviews;
     timer = setTimeout(poll, 0);
+    const offActivity = subscribeActivity((busy) => {
+      if (busy) { clearTimeout(timer); timer = setTimeout(poll, 0); }
+    });
     window.addEventListener("harness-reviews-refresh", loadReviews);
     return () => {
       active = false;
+      offActivity();
       clearTimeout(timer);
       refreshReviews.current = async () => {};
       window.removeEventListener("harness-reviews-refresh", loadReviews);

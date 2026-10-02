@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { api, type SessionState } from "./api";
+import { setActivity } from "./appActivity";
 
 /**
  * One /api/session/state poll shared by every always-mounted reader (footer
@@ -45,7 +46,10 @@ export function refreshSessionStateFeed(fresh = false): Promise<void> {
     .then(() => api.getSessionState(requestedFor ? { sessionId: requestedFor } : undefined))
     .then((state) => {
       if (!state) return;
-      if (state.runners) runners = state.runners;
+      if (state.runners) {
+        runners = state.runners;
+        setActivity("runners", Object.values(runners).some((r) => r === "running" || r === "attaching"));
+      }
       for (const listener of [...listeners]) listener(state, requestedFor, seq);
     })
     .catch(() => {})

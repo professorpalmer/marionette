@@ -228,6 +228,7 @@ import {
 } from "./conversation/chatEvents";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
 import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
+import { IDLE_POLL_MS, setActivity } from "../lib/appActivity";
 import {
   appendMemoryProposal,
   classifySwarmPollEvent,
@@ -779,6 +780,10 @@ export default function Conversation({
   // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
   const composerBusy = isPilotMouthBusy(turnOpen, status, sessionSwitchPending);
   const pilotStepBusy = composerBusy && !sessionSwitchPending;
+  useEffect(() => {
+    setActivity("turn", pilotStepBusy);
+    return () => setActivity("turn", false);
+  }, [pilotStepBusy]);
   const pilotStep = pilotStepBusy ? currentTurnStep(items) : null;
   const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
@@ -1100,6 +1105,8 @@ export default function Conversation({
 
   usePolling(() => queuePollRequest.current ?? refreshQueue(activeSessionIdRef.current), 3000, {
     scopeKey: activeSessionId ?? "",
+    idleIntervalMs: IDLE_POLL_MS,
+    wakeOnActivity: false,
   });
 
   // PROMPT QUEUE drag-to-reorder. Mirrors the tab reorder pattern in

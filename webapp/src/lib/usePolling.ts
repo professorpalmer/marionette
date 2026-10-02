@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+import { appBusy, subscribeActivity } from "./appActivity";
 
 type PollFn = () => Promise<unknown> | void;
 
@@ -9,6 +10,17 @@ interface PollOptions {
   scopeKey?: string | number;
   /** Add latency-proportional backoff when the backend responds slowly. Default true. */
   backoff?: boolean;
+  /**
+   * Interval while nothing is running (see appActivity). For state that only
+   * changes during a turn or a job. The poll wakes at once when activity starts.
+   */
+  idleIntervalMs?: number;
+  /**
+   * False keeps the idle interval but skips the wake. For state the app
+   * refreshes itself on every change (the prompt queue): an extra read in the
+   * instant a turn opens races the send path.
+   */
+  wakeOnActivity?: boolean;
 }
 
 /**
@@ -33,6 +45,8 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
   fnRef.current = fn;
   const enabled = opts.enabled ?? true;
   const backoff = opts.backoff ?? true;
+  const idleIntervalMs = opts.idleIntervalMs;
+  const wakeOnActivity = opts.wakeOnActivity ?? true;
 
   useEffect(() => {
     if (!enabled) return;
@@ -60,7 +74,7 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
           if (!active) return;
           const elapsed = performance.now() - startedAt;
           const extra = backoff && elapsed > 1500 ? Math.min(elapsed, 8000) : 0;
-          schedule(intervalMs + extra);
+          schedule((idleIntervalMs !== undefined && !appBusy() ? idleIntervalMs : intervalMs) + extra);
         });
     };
 
@@ -72,10 +86,14 @@ export function usePolling(fn: PollFn, intervalMs: number, opts: PollOptions = {
       if (!document.hidden && !flight.busy) { window.clearTimeout(timer); tick(); }
     };
     document.addEventListener("visibilitychange", onVisible);
+    const offActivity = idleIntervalMs === undefined || !wakeOnActivity ? undefined : subscribeActivity((busy) => {
+      if (busy && !flight.busy) { window.clearTimeout(timer); tick(); }
+    });
     return () => {
       active = false;
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      offActivity?.();
     };
-  }, [intervalMs, enabled, backoff, flight]);
+  }, [intervalMs, idleIntervalMs, wakeOnActivity, enabled, backoff, flight]);
 }

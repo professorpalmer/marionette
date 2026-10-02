@@ -1,4 +1,5 @@
 import { usePolling } from "../lib/usePolling";
+import { IDLE_POLL_MS } from "../lib/appActivity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, ExternalLink } from "lucide-react";
 import { api, type CodegraphStatus, type EnvironmentReadiness, type WikiGraphData, type WikiStatusData } from "../lib/api";
@@ -291,7 +292,7 @@ export default function StatePane({ artifacts, networkEnabled = true }: {
     mcpFlight.current = request;
     return request;
   }, [networkEnabled]);
-  usePolling(refreshMcp, 4000, { enabled: networkEnabled });
+  usePolling(refreshMcp, 4000, { enabled: networkEnabled, idleIntervalMs: IDLE_POLL_MS });
 
   // While indexing: single-flight, paused in hidden windows (a raw 2s
   // setInterval kept firing and could stack behind a slow index).
