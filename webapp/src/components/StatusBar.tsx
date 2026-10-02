@@ -25,6 +25,7 @@ import {
 import { toastDurationMs } from "../lib/harnessToast";
 import { isDesktop } from "../lib/transport";
 import {
+  knownRunnerState,
   refreshSessionStateFeed,
   sessionStateFeedSequence,
   setSessionStateFeedSession,
@@ -37,6 +38,12 @@ import { shortPilotModelLabel } from "../lib/turnProgress";
 import type { UpdateAvailability } from "./UpdateBanner";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
+
+// The label keeps the widest label's width (a zero-height generated copy), so
+// Idle <-> Thinking… does not move the branch, depth chip and usage beside it.
+const WIDEST_STATUS_LABEL = "Thinking…";
+const STATUS_LABEL_CLASS =
+  "status-bar-optional-sm inline-flex flex-col after:invisible after:h-0 after:overflow-hidden after:content-[attr(data-widest)]";
 
 /** Mirror Conversation/LeftRail: pilot state + active-view runner liveness. */
 export function deriveFooterRuntimeStatus(
@@ -52,6 +59,27 @@ export function deriveFooterRuntimeStatus(
   // the active view to thinking.
   if (activeId && runners[activeId] === "running") return "thinking";
   return "ready";
+}
+
+/**
+ * Footer state for a session being switched to, before its own reply lands:
+ * its last-known reply with liveness taken from the feed's current runner.
+ * A swarm pause point is kept (an idle runner is expected there).
+ */
+export function seedSessionState(
+  id: string,
+  lastKnown: SessionState | undefined,
+  runner: NonNullable<SessionState["runners"]>[string] | undefined,
+): SessionState | null {
+  if (!runner || runner === "missing") return lastKnown ?? null;
+  const base: SessionState = lastKnown ?? { state: "idle", pending_swarms: false };
+  const paused = base.state === "awaiting_swarm" || base.pending_swarms;
+  return {
+    ...base,
+    state: runner === "running" ? "thinking" : paused ? base.state : "idle",
+    active_view_id: id,
+    runners: { ...base.runners, [id]: runner },
+  };
 }
 
 /** Visible footer label — never paint raw FooterRuntimeStatus enums. */
@@ -277,10 +305,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       sessionOwnerRef.current = { id, generation: sessionOwnerRef.current.generation + 1 };
       mutationBusyRef.current = false;
       setGoalBusy(false);
-      // Seed from this session's own last-known reply; never keep the prior session's.
+      // Seed from this session's own last-known reply; never keep the prior
+      // session's. That reply dates from when the session was last viewed, so
+      // its liveness is replaced by the runner the shared feed reported since.
       const known = id ? lastKnownRef.current.get(id) : undefined;
-      setSessionState(known?.state ?? null);
-      setStatePending(!known?.state);
+      const seeded = seedSessionState(id, known?.state, knownRunnerState(id));
+      setSessionState(seeded);
+      setStatePending(!seeded);
       setTaskProfile(known?.profile ?? null);
       // Session/view swaps carry a different sticky GOAL — refresh immediately
       // rather than waiting for the next 4s poll tick.
@@ -327,7 +358,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       {statePending ? (
         <span className="flex items-center gap-1 shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
           <Circle size={7} className="text-faint" />
-          <span className="status-bar-optional-sm">…</span>
+          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>…</span>
         </span>
       ) : (
         <span
@@ -339,7 +370,7 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
             size={7}
             className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
           />
-          <span className="status-bar-optional-sm">{footerRuntimeStatusLabel(runtimeStatus)}</span>
+          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>{footerRuntimeStatusLabel(runtimeStatus)}</span>
         </span>
       )}
       {branch && <span className="status-bar-optional-sm flex items-center gap-1"><GitBranch size={10} />{branch}</span>}

@@ -14,7 +14,10 @@ type Listener = (state: SessionState, requestedFor: string, seq: number) => void
 
 export const SESSION_STATE_POLL_MS = 4000;
 
+type RunnerState = NonNullable<SessionState["runners"]>[string];
+
 const listeners = new Set<Listener>();
+let runners: Record<string, RunnerState> = {};
 let sessionId = "";
 let timer: number | undefined;
 let inFlight: { promise: Promise<void>; requestedFor: string } | null = null;
@@ -42,12 +45,22 @@ export function refreshSessionStateFeed(fresh = false): Promise<void> {
     .then(() => api.getSessionState(requestedFor ? { sessionId: requestedFor } : undefined))
     .then((state) => {
       if (!state) return;
+      if (state.runners) runners = state.runners;
       for (const listener of [...listeners]) listener(state, requestedFor, seq);
     })
     .catch(() => {})
     .finally(() => { if (inFlight?.promise === promise) inFlight = null; });
   inFlight = { promise, requestedFor };
   return promise;
+}
+
+/**
+ * A session's runner as of the last reply (at most one poll old), or undefined
+ * if never seen. A session switch seeds its busy chrome from this, so a
+ * running target does not paint Send while its own state request is in flight.
+ */
+export function knownRunnerState(id: string): RunnerState | undefined {
+  return runners[id];
 }
 
 /** Sequence of the newest request issued; replies at or below a fence are stale. */

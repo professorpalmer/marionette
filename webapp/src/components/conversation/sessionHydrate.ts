@@ -100,6 +100,20 @@ export function shouldResetBusyChromeOnSwitch(switchedSession: boolean): boolean
 }
 
 /**
+ * Busy chrome to paint at the moment of a switch, from the runner the shared
+ * state feed last reported for the target. A running target shows Stop at
+ * once; anything else holds Send disabled (pending) until its state arrives.
+ */
+export function busySeedOnSwitch(runner: string | undefined): {
+  pending: boolean;
+  turnOpen: boolean;
+  status: "thinking" | "idle";
+} {
+  const running = runner === "running";
+  return { pending: !running, turnOpen: running, status: running ? "thinking" : "idle" };
+}
+
+/**
  * After getSessionState failures on switch: stay idle (runners poll may re-arm)
  * and surface a short notice. Never leave prior-session chrome stuck silently.
  */

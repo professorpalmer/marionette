@@ -54,3 +54,20 @@ describe("session state feed", () => {
     expect(seen).toContain("new");
   });
 });
+
+import { knownRunnerState } from "../lib/sessionStateFeed";
+
+describe("known runner state", () => {
+  it("remembers every session's runner from the latest reply", async () => {
+    getSessionState.mockResolvedValue({ ...reply, runners: { a: "idle", b: "running" } });
+    const off = subscribeSessionState(() => {});
+    setSessionStateFeedSession("a");
+    await refreshSessionStateFeed(true);
+    // A session switch reads this before its own state request returns, so a
+    // running target shows Stop at once instead of Stop -> Send -> Stop.
+    expect(knownRunnerState("b")).toBe("running");
+    expect(knownRunnerState("a")).toBe("idle");
+    expect(knownRunnerState("never-seen")).toBeUndefined();
+    off();
+  });
+});

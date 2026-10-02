@@ -20,6 +20,13 @@ const listeners = new Set<Listener>();
 const STARTUP_RETRIES = 3;
 
 let snapshot: ProcessUsageSnapshot = emptySnapshot();
+/**
+ * Last accepted usage per session, so a switch back never blanks the footer.
+ * Keyed by the session the switch event named: the payload itself carries no
+ * session id while its persisted total is unavailable.
+ */
+const lastBySession = new Map<string, ProcessUsageSnapshot>();
+let scopeSessionId = "";
 let inFlight: Promise<void> | null = null;
 let acceptZero = false;
 let scopeGeneration = 0;
@@ -49,13 +56,19 @@ function emit(next: ProcessUsageSnapshot): void {
   listeners.forEach((listener) => listener(snapshot));
 }
 
+/** Publish usage the backend returned for the current session, and remember it. */
+function emitAccepted(next: ProcessUsageSnapshot): void {
+  if (scopeSessionId) lastBySession.set(scopeSessionId, next);
+  emit(next);
+}
+
 function acceptSession(
   session: ProcessUsageSession,
   sessionTotal: UsageData["session_total"],
   ledger?: LedgerView,
 ): void {
   if (session.read_status === "unavailable" || sessionTotal?.read_status === "unavailable") {
-    emit({
+    emitAccepted({
       session,
       ledger,
       status: sessionUsageUnavailable(session, sessionTotal)
@@ -71,10 +84,10 @@ function acceptSession(
   if (acceptZero) {
     acceptZero = false;
   } else if (sessionIsZero(session) && sessionHasSpend(snapshot.session) && snapshot.readStatus !== "unavailable" && session.cost_source !== "provider") {
-    emit({ ...snapshot, sessionTotal, ledger: ledger ?? snapshot.ledger });
+    emitAccepted({ ...snapshot, sessionTotal, ledger: ledger ?? snapshot.ledger });
     return;
   }
-  emit({
+  emitAccepted({
     session,
     status: "ready",
     sessionTotal,
@@ -158,18 +171,21 @@ export function refreshProcessUsage(opts: { manual?: boolean } = {}): Promise<vo
   return run;
 }
 
-function resetForSessionChange(): void {
+function resetForSessionChange(event?: Event): void {
   scopeGeneration += 1;
   inFlight = null;
   acceptZero = true;
   stopRetry();
   retryAttempts = 0;
-  emit({
-    session: null,
-    status: "loading",
-    fetchedAt: Date.now(),
-    generation: snapshot.generation + 1,
-  });
+  // Show the target session's own last numbers while its refresh is in
+  // flight. Blanking here unmounted the footer cluster on every switch.
+  const detail: unknown = event instanceof CustomEvent ? event.detail : null;
+  scopeSessionId = detail && typeof detail === "object" && "sessionId" in detail
+    && typeof detail.sessionId === "string" ? detail.sessionId : "";
+  const known = scopeSessionId ? lastBySession.get(scopeSessionId) : undefined;
+  emit(known
+    ? { ...known, generation: snapshot.generation + 1 }
+    : { session: null, status: "loading", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
   void refreshProcessUsage();
 }
 
@@ -258,5 +274,7 @@ export function _resetProcessUsageForTests(): void {
   acceptZero = false;
   retryAttempts = 0;
   scopeGeneration += 1;
+  lastBySession.clear();
+  scopeSessionId = "";
   snapshot = emptySnapshot();
 }

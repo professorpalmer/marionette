@@ -324,6 +324,38 @@ describe("StatusBar runtime status", () => {
     });
   });
 
+  it("a switch shows the target's live runner at once, not its stale last reply", async () => {
+    const reply = (id: string, runners: Record<string, "running" | "idle">) =>
+      ({ state: "idle" as const, pending_swarms: false, active_view_id: id, runners });
+    // B was last viewed while idle; A is viewed now and the feed reports B running.
+    mockGetSessionState.mockResolvedValue(reply("B", { A: "idle", B: "idle" }));
+    render(<StatusBar {...statusBarProps} />);
+    const switchTo = (id: string) => act(() => {
+      window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: id } }));
+    });
+    switchTo("B");
+    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
+    mockGetSessionState.mockResolvedValue(reply("A", { A: "idle", B: "running" }));
+    switchTo("A");
+    await waitFor(() => expect(mockGetSessionState).toHaveBeenLastCalledWith({ sessionId: "A" }));
+    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
+
+    mockGetSessionState.mockImplementation(() => new Promise(() => {}));
+    switchTo("B");
+    // B's own request is still in flight: no Idle from its old reply, no "…".
+    expect(document.querySelector("[data-runtime-status]"))
+      .toHaveAttribute("data-runtime-status", "thinking");
+  });
+
+  it("reserves the widest status label so neighbors do not shift", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle", pending_swarms: false, active_view_id: "s", runners: { s: "idle" },
+    });
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
+    expect(screen.getByText("Idle")).toHaveAttribute("data-widest", "Thinking…");
+  });
+
   it("shows Idle when only a background session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
