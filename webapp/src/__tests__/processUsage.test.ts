@@ -256,3 +256,54 @@ describe("session usage startup retries", () => {
     off();
   });
 });
+
+describe("processUsage across session switches", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    _resetProcessUsageForTests();
+  });
+
+  // session_total carries no session id while it is unavailable, so the
+  // cache must key on the session the switch event named.
+  const usageFor = (id: string, cost: number) => ({
+    ...session(cost),
+    session_total: { read_status: "unavailable" as const, job_coverage: { expected: null, read: 0 } } as never,
+    ledger: { calls: 1, spent_usd: cost, marker: id } as never,
+  });
+  const ledgerOf = () => getProcessUsage().ledger as unknown as { marker: string; spent_usd: number } | undefined;
+  const switchTo = (id: string) =>
+    window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId: id } }));
+
+  it("shows a seen session's last usage at once instead of blanking the footer", async () => {
+    let release: (v: unknown) => void = () => {};
+    const off = subscribeProcessUsage(() => {});
+    mockGetUsage.mockResolvedValueOnce(usageFor("A", 1));
+    switchTo("A");
+    await refreshProcessUsage();
+    mockGetUsage.mockResolvedValueOnce(usageFor("B", 2));
+    switchTo("B");
+    await refreshProcessUsage();
+    expect(ledgerOf()?.marker).toBe("B");
+
+    mockGetUsage.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    switchTo("A");
+    // The refresh is still in flight: the footer keeps A's own last numbers.
+    expect(ledgerOf()?.marker).toBe("A");
+    release(usageFor("A", 3));
+    await refreshProcessUsage();
+    expect(ledgerOf()?.spent_usd).toBe(3);
+    off();
+  });
+
+  it("stays empty and loading for a session never seen before", async () => {
+    const off = subscribeProcessUsage(() => {});
+    mockGetUsage.mockResolvedValueOnce(usageFor("A", 1));
+    switchTo("A");
+    await refreshProcessUsage();
+    mockGetUsage.mockImplementationOnce(() => new Promise(() => {}));
+    switchTo("C");
+    expect(getProcessUsage().session).toBeNull();
+    expect(getProcessUsage().status).toBe("loading");
+    off();
+  });
+});

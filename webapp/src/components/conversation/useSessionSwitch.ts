@@ -7,6 +7,7 @@ import { setActiveMemoryProposalSession } from "../../lib/memoryProposalResoluti
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { api, type InputDocument } from "../../lib/api";
 import { clearSessionTodos } from "../../lib/sessionTodos";
+import { knownRunnerState } from "../../lib/sessionStateFeed";
 import { type Item } from "../TranscriptList";
 import {
   captureTranscriptRead,
@@ -25,6 +26,7 @@ import {
   runnerBusySwitchDecision,
   sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
+  busySeedOnSwitch,
   shouldResetBusyChromeOnSwitch,
   shouldRetryEmptyTranscript,
   transcriptRefreshApplyDecision,
@@ -322,12 +324,14 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       { typeBufRef, typeRafRef, typeDoneRef },
       cancelStreamPaint,
     );
-    // Default idle until getSessionState / runners poll resolve the target.
-    // Keep the mouth busy via sessionSwitchPending so running B never flashes Send.
+    // Seed from the runner the shared state feed last reported for the target
+    // (at most one poll old); getSessionState below is still authoritative.
+    // Defaulting a running target to idle painted Stop -> Send -> Stop.
     if (shouldResetBusyChromeOnSwitch(switchedSession)) {
-      setSessionSwitchPending(true);
-      setTurnOpen(false);
-      setStatus("idle");
+      const seed = busySeedOnSwitch(knownRunnerState(activeSessionId ?? ""));
+      setSessionSwitchPending(seed.pending);
+      setTurnOpen(seed.turnOpen);
+      setStatus(seed.status);
       setCompactingStatus(null);
     }
 
