@@ -229,13 +229,13 @@ def test_a_hung_codegraph_cannot_hold_a_hosted_turn(tmp_path, monkeypatch):
                         lambda session, user_message="": (False, False))
     monkeypatch.setattr(conv, "TURN_CONTEXT_BUDGET_S", 0.3, raising=False)
     release = threading.Event()
-    monkeypatch.setattr(cg, "codegraph_context", lambda *a, **k: release.wait(10) and "late")
+    monkeypatch.setattr(cg, "codegraph_context", lambda *a, **k: release.wait(60) and "late")
     s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path)))
     s.pilot = Pilot()
     monkeypatch.setattr(s, "_resolve_append_only", lambda: False)
     monkeypatch.setattr(s, "_maybe_compact_history", lambda **k: iter(()))
     # The per-turn `codegraph search` subprocess (auto_codegraph) hangs too.
-    monkeypatch.setattr(s, "_get_codegraph_context", lambda query: release.wait(10) and "late")
+    monkeypatch.setattr(s, "_get_codegraph_context", lambda query: release.wait(60) and "late")
     monkeypatch.setattr(s, "_wiki", SimpleNamespace(configured=True))
     monkeypatch.setattr(s, "_build_turn_wiki_section", lambda msg: "### Wiki on time")
     started = _time.monotonic()
@@ -244,5 +244,7 @@ def test_a_hung_codegraph_cannot_hold_a_hosted_turn(tmp_path, monkeypatch):
     finally:
         release.set()
     assert any(e.kind == "assistant_done" for e in events)
-    assert _time.monotonic() - started < 2.0
+    # Far below the 60 s hang; whole-turn overhead on a loaded Windows
+    # runner has measured 2.8 s, so wall time is not a tighter bound.
+    assert _time.monotonic() - started < 10.0
     assert "### Wiki on time" in seen["system"]
