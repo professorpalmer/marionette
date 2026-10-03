@@ -65,6 +65,41 @@ def test_job_findings_bulk_and_empty(tmp_path, monkeypatch):
     assert "empty findings" in empty
 
 
+def test_job_findings_reads_pm_artifact_payload_and_status(tmp_path, monkeypatch):
+    # Puppetmaster findings keep their text in payload (claim, mitigation) and
+    # their refs in evidence; there is no headline/body attribute. Reading the
+    # attributes returned 13 bare "## FINDING <id>" headers, so the pilot could
+    # not verify a single claim and reported the bodies empty.
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from puppetmaster.models import Artifact, ArtifactType, JobStatus, Task
+    from puppetmaster.store_factory import create_store
+    from tests.test_peek_tools import _session
+
+    session, _state = _session(tmp_path, monkeypatch)
+    store = create_store("sqlite", tmp_path / "pm", mode="ensure")
+    store.init()
+    job = store.create_job("audit", origin="marionette", session_id="s")
+    store.save_job(replace(job, status=JobStatus.COMPLETE))
+    task = Task(job.id, "explore", "audit")
+    store.save_task(task)
+    store.save_artifact(Artifact(
+        job_id=job.id, task_id=task.id, type=ArtifactType.FINDING, created_by="worker",
+        payload={"claim": "[High] rm -r -f / evades the rule", "mitigation": "Merge option tokens."},
+        evidence=["harness/command_policy.py:316"], confidence=0.9,
+    ))
+    monkeypatch.setattr(session, "_internal_uri_context", lambda: SimpleNamespace(store=lambda: store))
+    ok, status, text = session._do_job_findings(
+        PilotAction(kind="job_findings", arguments={"job_id": job.id})
+    )
+    assert ok and status == "success"
+    assert "status=complete" in text
+    assert "rm -r -f / evades the rule" in text
+    assert "Merge option tokens." in text
+    assert "harness/command_policy.py:316" in text
+
+
 def test_cancel_job_local_event(tmp_path, monkeypatch):
     from tests.test_peek_tools import _session
 

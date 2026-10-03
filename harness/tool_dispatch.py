@@ -1460,17 +1460,29 @@ class ToolDispatchMixin:
             listed = store.list_artifacts(job_id)
         except Exception:
             return
+        from pmharness.bridge import _compact_artifact
+
         for art in listed or []:
             if isinstance(art, dict):
                 yield art
-            else:
-                row = {
-                    "id": getattr(art, "id", "") or "",
-                    "type": getattr(art, "type", "") or "",
-                    "headline": getattr(art, "headline", "") or "",
-                    "body": getattr(art, "body", "") or getattr(art, "content", "") or "",
-                }
-                yield row
+                continue
+            # A Puppetmaster artifact keeps its text in payload (claim, why,
+            # mitigation...) and its file:line refs in evidence; it has no
+            # headline/body attribute. Reduce it the way swarm results do.
+            compact = _compact_artifact(art)
+            payload = getattr(art, "payload", None) or {}
+            extra = [str(payload[key]).strip() for key in ("why", "mitigation", "decision", "risk")
+                     if isinstance(payload.get(key), str) and payload[key].strip()
+                     and payload[key].strip() not in compact["body"]]
+            refs = [str(ref) for ref in (getattr(art, "evidence", None) or []) if str(ref).strip()]
+            if refs:
+                extra.append("Evidence: " + ", ".join(refs))
+            yield {
+                "id": getattr(art, "id", "") or "",
+                "type": str(getattr(getattr(art, "type", ""), "value", getattr(art, "type", "")) or ""),
+                "headline": "",
+                "body": "\n".join([compact["body"], *extra]).strip(),
+            }
 
     def _do_job_findings(self, act: PilotAction) -> tuple[bool, str, str]:
         from .context_budget import truncate_bytes
@@ -1501,6 +1513,12 @@ class ToolDispatchMixin:
         status = ""
         if isinstance(job, dict):
             status = str(job.get("status") or "")
+        else:
+            try:
+                pm_job = self._internal_uri_context().store().get_job(job_id)
+                status = str(getattr(pm_job.status, "value", pm_job.status) or "")
+            except Exception:
+                status = ""  # Unknown stays unknown; findings still render.
         if not blocks:
             reason = (
                 f"empty findings: job_id={job_id} status={status or 'unknown'} "
