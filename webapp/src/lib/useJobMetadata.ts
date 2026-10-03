@@ -119,6 +119,8 @@ export class JobMetadataStore {
   // Host generations survive effect replay. A new authoritative host generation
   // retires the old one; retain only the last admitted capture, never a history.
   private sourceCapture: { key: string; error: MetadataErrorCode | null } | null = null;
+  /** Stores written after discovery (first job of a fresh profile), refreshed once each. */
+  private lateSourcesRefreshed: string | null = null;
   private reconciliationTurn = 0;
   private captureKey(view: MetadataView): string {
     return JSON.stringify([view.context.repo, view.context.session_id, view.context.view_generation, view.local?.incarnation]);
@@ -574,6 +576,15 @@ export class JobMetadataStore {
     }
     if (view.view.missing.includes('sources_not_refreshed') && this.sourceCapture?.key !== this.captureKey(view.view))
       return this.refreshView();
+    const late = this.state.streams.filter(st => st.state === 'unavailable' && st.missing.includes('sources_not_refreshed'))
+      .map(st => st.stream.store.state_id);
+    if (late.length) {
+      const key = JSON.stringify([view.context.repo, view.context.session_id, [...new Set(late)].sort()]);
+      if (this.lateSourcesRefreshed !== key) {
+        this.lateSourcesRefreshed = key;
+        return this.refreshView();
+      }
+    }
     return this.advance(initial, opts);
   }
   private advanceLocal(lane: LocalLane = 'history'): Promise<MetadataActionResult> {

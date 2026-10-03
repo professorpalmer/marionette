@@ -2,441 +2,425 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Marionette — a desktop coding agent built on durable orchestration</title>
-  <meta name="description" content="Marionette is a desktop coding agent built on the Puppetmaster orchestrator. Workers run as real subprocesses with leases and durable SQLite artifacts, tasks route to the cheapest capable model, and every run is replayable. macOS, Windows, and Linux.">
-  <style>
-    :root {
-      --bg: #0c0d0f;
-      --bg-raise: #121316;
-      --bg-card: #16181c;
-      --fg: #e8e6e1;
-      --fg-dim: #9a988f;
-      --fg-faint: #66655e;
-      --line: #24262b;
-      --line-soft: #1b1d21;
-      --accent: #d8b465;
-      --accent-dim: #8a7443;
-      --ok: #7fb069;
-      --mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, Helvetica, Arial, sans-serif;
-    }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--fg);
-      font-family: var(--sans);
-      font-size: 16px;
-      line-height: 1.6;
-      -webkit-font-smoothing: antialiased;
-    }
-    a { color: inherit; }
-    ::selection { background: var(--accent-dim); color: var(--bg); }
-
-    .wrap { max-width: 68rem; margin: 0 auto; padding: 0 1.5rem; }
-
-    /* ---------- nav ---------- */
-    nav {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 1.4rem 0;
-      border-bottom: 1px solid var(--line-soft);
-    }
-    .brand { font-weight: 650; letter-spacing: .01em; text-decoration: none; font-size: 1.02rem; }
-    .brand .dot { color: var(--accent); }
-    .nav-links { display: flex; gap: 1.6rem; font-size: .88rem; color: var(--fg-dim); }
-    .nav-links a { text-decoration: none; }
-    .nav-links a:hover { color: var(--fg); }
-
-    /* ---------- hero ---------- */
-    .hero { padding: 5.5rem 0 3.5rem; }
-    .kicker {
-      font-family: var(--mono); font-size: .74rem; letter-spacing: .14em;
-      text-transform: uppercase; color: var(--accent); margin: 0 0 1.1rem;
-    }
-    h1 {
-      font-size: clamp(2rem, 5vw, 3.1rem);
-      font-weight: 640;
-      line-height: 1.12;
-      letter-spacing: -0.022em;
-      margin: 0 0 1.2rem;
-      max-width: 46rem;
-    }
-    .lede {
-      color: var(--fg-dim); font-size: 1.08rem; max-width: 40rem; margin: 0 0 2.2rem;
-    }
-    .lede strong { color: var(--fg); font-weight: 560; }
-
-    .cta-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    .btn {
-      display: inline-flex; align-items: center; gap: .5rem;
-      text-decoration: none; font-weight: 580; font-size: .93rem;
-      padding: .74rem 1.35rem; border-radius: 7px;
-      border: 1px solid transparent;
-    }
-    .btn-primary { background: var(--fg); color: var(--bg); }
-    .btn-primary:hover { background: #fff; }
-    .btn-ghost { border-color: var(--line); color: var(--fg-dim); }
-    .btn-ghost:hover { color: var(--fg); border-color: var(--fg-faint); }
-    .cta-note { color: var(--fg-faint); font-size: .84rem; width: 100%; margin-top: .35rem; }
-    .cta-note a { color: var(--fg-dim); }
-
-    /* ---------- job feed panel ---------- */
-    .feed {
-      margin: 3.6rem 0 0;
-      background: var(--bg-raise);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      overflow: hidden;
-      box-shadow: 0 24px 60px -32px rgba(0,0,0,.8);
-    }
-    .feed-bar {
-      display: flex; align-items: center; gap: .6rem;
-      padding: .65rem 1rem;
-      border-bottom: 1px solid var(--line-soft);
-      font-family: var(--mono); font-size: .72rem; color: var(--fg-faint);
-    }
-    .feed-bar .dots { display: flex; gap: .38rem; margin-right: .4rem; }
-    .feed-bar .dots span { width: 9px; height: 9px; border-radius: 50%; background: var(--line); display: block; }
-    .feed pre {
-      margin: 0; padding: 1.1rem 1.25rem 1.3rem;
-      font-family: var(--mono); font-size: .8rem; line-height: 1.75;
-      overflow-x: auto; color: var(--fg-dim);
-    }
-    .feed .t { color: var(--fg-faint); }
-    .feed .k { color: var(--accent); }
-    .feed .ok { color: var(--ok); }
-    .feed .f { color: var(--fg); }
-
-    /* ---------- pillars ---------- */
-    section { padding: 4.2rem 0 0; }
-    .sec-label {
-      font-family: var(--mono); font-size: .72rem; letter-spacing: .14em;
-      text-transform: uppercase; color: var(--fg-faint); margin: 0 0 .7rem;
-    }
-    h2 { font-size: 1.55rem; font-weight: 620; letter-spacing: -0.015em; margin: 0 0 .8rem; }
-    .sec-lede { color: var(--fg-dim); max-width: 42rem; margin: 0 0 2.2rem; }
-
-    .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-    .pillar { background: var(--bg-card); padding: 1.7rem 1.6rem 1.9rem; }
-    .pillar h3 { margin: 0 0 .55rem; font-size: 1.02rem; font-weight: 600; }
-    .pillar p { margin: 0; color: var(--fg-dim); font-size: .92rem; }
-    .pillar .glyph {
-      font-family: var(--mono); font-size: .78rem; color: var(--accent);
-      display: block; margin-bottom: 1rem;
-    }
-
-    /* ---------- lifecycle ---------- */
-    .life {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.4rem;
-      counter-reset: step;
-    }
-    .life div { position: relative; padding-top: 1rem; border-top: 1px solid var(--line); }
-    .life div::before {
-      counter-increment: step; content: "0" counter(step);
-      font-family: var(--mono); font-size: .72rem; color: var(--accent);
-      position: absolute; top: -0.62rem; background: var(--bg); padding-right: .6rem;
-    }
-    .life h3 { font-size: .95rem; font-weight: 600; margin: .3rem 0 .4rem; }
-    .life p { margin: 0; color: var(--fg-dim); font-size: .88rem; }
-
-    /* ---------- features ---------- */
-    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2.2rem 3rem; }
-    .feat h3 { font-size: .98rem; font-weight: 600; margin: 0 0 .4rem; }
-    .feat p { margin: 0; color: var(--fg-dim); font-size: .92rem; }
-    .feat code { font-family: var(--mono); font-size: .82em; background: var(--bg-card); border: 1px solid var(--line-soft); padding: .1em .35em; border-radius: 4px; }
-
-    /* ---------- install ---------- */
-    .install-box {
-      background: var(--bg-raise); border: 1px solid var(--line); border-radius: 10px;
-      padding: 2rem 2rem 2.2rem; display: grid; grid-template-columns: 1fr 1.2fr; gap: 2.5rem;
-    }
-    .install-box h2 { margin-bottom: .5rem; }
-    .install-box .sec-lede { margin-bottom: 1.4rem; }
-    .dl-sub { color: var(--fg-faint); font-size: .85rem; margin-top: .9rem; }
-    .dl-sub a { color: var(--fg-dim); }
-
-    .install-tabs { display: flex; gap: 1.2rem; margin-bottom: .7rem; font-size: .84rem; }
-    .install-tabs button {
-      appearance: none; background: none; border: none; padding: 0 0 .3rem;
-      font: inherit; font-size: .84rem; color: var(--fg-faint); cursor: pointer;
-      border-bottom: 2px solid transparent;
-    }
-    .install-tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
-    .cmd {
-      display: flex; align-items: center; gap: .8rem;
-      background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
-      padding: .8rem 1rem;
-    }
-    .cmd code { flex: 1; font-family: var(--mono); font-size: .8rem; color: var(--fg-dim); white-space: pre-wrap; word-break: break-all; }
-    .cmd button {
-      appearance: none; background: var(--bg-card); border: 1px solid var(--line);
-      border-radius: 5px; padding: .32rem .7rem; cursor: pointer;
-      font-family: var(--sans); font-size: .76rem; color: var(--fg-dim); white-space: nowrap;
-    }
-    .cmd button:hover { color: var(--fg); }
-    .update-note { color: var(--fg-faint); font-size: .84rem; margin-top: 1rem; }
-    .update-note code { font-family: var(--mono); font-size: .84em; }
-
-    /* ---------- footer ---------- */
-    footer {
-      margin-top: 5rem; padding: 2rem 0 2.6rem;
-      border-top: 1px solid var(--line-soft);
-      color: var(--fg-faint); font-size: .86rem;
-      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 1rem;
-    }
-    footer a { color: var(--fg-dim); text-decoration: none; }
-    footer a:hover { color: var(--fg); }
-    footer .links { display: flex; gap: 1.4rem; }
-
-    @media (max-width: 860px) {
-      .pillars { grid-template-columns: 1fr; }
-      .life { grid-template-columns: 1fr 1fr; row-gap: 2rem; }
-      .grid { grid-template-columns: 1fr; }
-      .install-box { grid-template-columns: 1fr; }
-      .hero { padding-top: 3.5rem; }
-    }
-    @media (max-width: 520px) {
-      .life { grid-template-columns: 1fr; }
-      .nav-links { gap: 1rem; }
-    }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Marionette: a coding harness with an orchestration kernel inside</title>
+  <meta name="description" content="Marionette is a desktop coding harness with the Puppetmaster orchestration kernel built in. Any model pilots; leased worker swarms, cost-aware routing, durable SQLite artifacts and a receipt for every run. macOS, Windows, Linux.">
+  <meta name="theme-color" content="#08090a">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Marionette: any model drives, the kernel does the work">
+  <meta property="og:description" content="A desktop coding harness with Puppetmaster built in. Durable swarms, cost-aware routing, and a receipt for every run.">
+  <meta property="og:url" content="https://professorpalmer.github.io/marionette/">
+  <meta property="og:image" content="https://professorpalmer.github.io/marionette/assets/media/og.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="assets/media/icon-64.png">
+  <link rel="apple-touch-icon" href="assets/media/icon-180.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="preload" as="image" href="assets/media/hero-poster.webp">
+  <link rel="stylesheet" href="assets/site.css?v=0.9.577">
 </head>
 <body>
-  <div class="wrap">
-    <nav>
-      <a class="brand" href="#">marionette<span class="dot">.</span></a>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="glyph" viewBox="0 0 32 32">
+      <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+        <path d="M16 9 L6.5 19.5 M16 9 L10.6 24 M16 9 L16 26.6 M16 9 L21.4 24 M16 9 L25.5 19.5" opacity=".75"/>
+        <circle cx="6.5" cy="20.5" r="2.2"/><circle cx="10.6" cy="25" r="2.2"/><circle cx="16" cy="27.4" r="2.2"/><circle cx="21.4" cy="25" r="2.2"/><circle cx="25.5" cy="20.5" r="2.2"/>
+      </g>
+      <circle cx="16" cy="8" r="3.6" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v12m0 0-5-5m5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-gh" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.71.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.77 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></symbol>
+  </svg>
+
+  <nav class="nav" id="nav">
+    <div class="wrap nav-in">
+      <a class="brand" href="#top" aria-label="Marionette home"><svg style="color:var(--accent)"><use href="#glyph"/></svg>Marionette</a>
       <div class="nav-links">
-        <a href="#architecture">Architecture</a>
-        <a href="#features">Features</a>
-        <a href="#install">Install</a>
-        <a href="https://github.com/professorpalmer/marionette">GitHub</a>
+        <a class="hide-sm" href="#run">The run</a>
+        <a class="hide-sm" href="#kernel">Kernel</a>
+        <a class="hide-sm" href="#router">Router</a>
+        <a class="hide-sm" href="#evidence">Evidence</a>
+        <a class="hide-xs" href="https://github.com/professorpalmer/marionette">GitHub</a>
+        <a class="btn btn-primary nav-cta" href="#install">Get it</a>
       </div>
-    </nav>
+    </div>
+  </nav>
 
-    <header class="hero">
-      <p class="kicker">Desktop coding agent &middot; macOS / Windows / Linux</p>
-      <h1>Orchestration you can audit.<br>Not a chat loop you have to trust.</h1>
-      <p class="lede">
-        Marionette runs on <a href="https://github.com/professorpalmer/Puppetmaster" style="color:var(--fg)">Puppetmaster</a>:
-        every worker is a <strong>real OS subprocess</strong> holding a <strong>lease</strong> on its task, writing
-        <strong>structured artifacts to durable SQLite state</strong> as it goes. Runs are parallel, replayable, and
-        inspectable after the fact &mdash; and each task routes to the cheapest model that can actually handle it.
-      </p>
-      <div class="cta-row">
-        <a class="btn btn-primary" id="dlPrimary" href="https://github.com/professorpalmer/marionette/releases/latest"><span id="dlLabel">Download</span></a>
-        <a class="btn btn-ghost" href="#install">Install from the terminal</a>
-        <p class="cta-note" id="dlOther">Builds are available for macOS, Windows, and Linux.</p>
+  <header class="hero" id="top">
+    <canvas class="strings" id="strings" aria-hidden="true"></canvas>
+    <div class="wrap hero-copy">
+      <a class="chip" id="relChip" href="https://github.com/professorpalmer/marionette/releases/latest">
+        <span class="pulse"></span><b id="relTag">v0.9.577</b> shipped<span class="sep"></span>macOS, Windows, Linux
+      </a>
+      <h1 class="display" aria-label="Any model drives. The kernel does the work.">
+        <span class="ln" aria-hidden="true"><span class="w" style="--i:0">Any</span> <span class="w" style="--i:1">model</span> <span class="w" style="--i:2">drives.</span></span>
+        <span class="ln" aria-hidden="true"><span class="w" style="--i:3">The</span> <em class="w" style="--i:4">kernel</em> <span class="w" style="--i:5">does</span> <span class="w" style="--i:6">the</span> <span class="w" style="--i:7">work.</span></span>
+      </h1>
+      <p class="lede">A desktop coding harness with Puppetmaster built in. Durable swarms, cost-aware routing, and a receipt for every run.</p>
+      <div class="cta">
+        <a class="btn btn-primary" id="dl1" href="https://github.com/professorpalmer/marionette/releases/latest"><svg><use href="#i-down"/></svg><span class="dl-label">Download</span></a>
+        <a class="btn btn-ghost" href="https://github.com/professorpalmer/marionette"><svg><use href="#i-gh"/></svg>Star on GitHub<span class="count" id="stars">23</span></a>
       </div>
+      <p class="cta-sub">Free, with the full source on GitHub. Bring any provider key. <a href="#install">Or install from the terminal</a>.</p>
+    </div>
 
-      <div class="feed" aria-hidden="true">
-        <div class="feed-bar">
-          <span class="dots"><span></span><span></span><span></span></span>
-          puppetmaster &middot; job feed &middot; state.sqlite
+    <div class="stage" id="stage">
+      <div class="window" id="heroWindow">
+        <div class="window-bar">
+          <span class="lights"><i></i><i></i><i></i></span>
+          <span class="window-title">Marionette &middot; marionette &middot; dev</span>
+          <span class="rec">real capture</span>
         </div>
-        <pre><span class="t">02:41:07</span>  <span class="k">job_337b</span>  dispatch   4 workers, swarm_mode=implement
-<span class="t">02:41:08</span>  <span class="k">task_01</span>   lease      pid 20144 acquired, ttl 120s, heartbeat on
-<span class="t">02:41:09</span>  <span class="k">task_01</span>   ROUTING    picked composer-2.5 (cap 78 &ge; 71) &middot; 3 cheaper rejected
-<span class="t">02:42:31</span>  <span class="k">task_01</span>   ARTIFACT   finding: TOCTOU window in url_safety.resolve
-<span class="t">02:44:02</span>  <span class="k">task_01</span>   PATCH      +508 &minus;31 across 7 files &middot; stored, replayable
-<span class="t">02:44:03</span>  <span class="k">task_01</span>   <span class="ok">verified</span>   gates passed &middot; lease released &middot; state durable
-<span class="t">02:44:03</span>  <span class="k">job_337b</span>  <span class="f">stitched summary ready &middot; recall later at zero token cost</span></pre>
-      </div>
-    </header>
-
-    <section id="architecture">
-      <p class="sec-label">Why it's different</p>
-      <h2>Durable state is the foundation. Routing is the multiplier.</h2>
-      <p class="sec-lede">
-        Most agents are one long conversation: opaque while running, gone when it ends.
-        Marionette's unit of work is a job backed by real process isolation and a permanent record.
-      </p>
-      <div class="pillars">
-        <div class="pillar">
-          <span class="glyph">proc &middot; lease &middot; heartbeat</span>
-          <h3>Real subprocess workers</h3>
-          <p>Each worker is an independent OS process holding a lease on its task, with heartbeats and timeouts. A crashed worker loses its lease and the task recovers &mdash; nothing hangs, nothing is silently dropped.</p>
-        </div>
-        <div class="pillar">
-          <span class="glyph">sqlite &middot; artifacts &middot; replay</span>
-          <h3>Durable, auditable runs</h3>
-          <p>Findings, patches, routing decisions, and verification results persist as structured artifacts in SQLite. Replay any run, diff any patch, and recall results in a later session at zero token cost.</p>
-        </div>
-        <div class="pillar">
-          <span class="glyph">route &middot; capability &middot; cost</span>
-          <h3>Cost-aware model routing</h3>
-          <p>A tiered router scores each task and picks the cheapest model that clears the bar. Trivial work runs on cheap or local models; hard problems get a frontier model. Every decision is recorded with the alternatives it rejected.</p>
+        <div class="window-body">
+          <video id="heroVideo" autoplay muted loop playsinline preload="auto" poster="assets/media/hero-poster.webp" aria-label="Screen recording of Marionette running a three-worker swarm audit and streaming the findings">
+            <source src="assets/media/hero-av1.mp4" type='video/mp4; codecs="av01.0.12M.08"'>
+            <source src="assets/media/hero.mp4" type="video/mp4">
+          </video>
         </div>
       </div>
-    </section>
 
-    <section>
-      <p class="sec-label">Lifecycle</p>
-      <h2>What happens when you hand Marionette a job</h2>
-      <p class="sec-lede">Every stage leaves a record. Nothing depends on a transcript surviving.</p>
-      <div class="life">
-        <div>
-          <h3>Dispatch</h3>
-          <p>Work fans out to parallel workers &mdash; a read-only analysis swarm or an implement worker in a clean worktree.</p>
-        </div>
-        <div>
-          <h3>Lease</h3>
-          <p>Each worker acquires a lease on its task. Heartbeats keep it; a dead worker forfeits it and the task is recoverable.</p>
-        </div>
-        <div>
-          <h3>Artifacts</h3>
-          <p>Findings, patches, and routing decisions stream into SQLite as structured artifacts while the run is still going.</p>
-        </div>
-        <div>
-          <h3>Recall</h3>
-          <p>A stitched summary lands at the end. Any session &mdash; today or next month &mdash; can pull the results back without re-running anything.</p>
-        </div>
+      <div class="float f1">
+        <div class="k"><span class="dot"></span>ROUTING &middot; conflict-auditor</div>
+        <div class="v">deepseek-v4-pro, capability 85 &ge; 85</div>
+        <div class="s">68 candidates scored. Every rejection has a reason.</div>
       </div>
-    </section>
-
-    <section id="features">
-      <p class="sec-label">Also in the box</p>
-      <h2>Built for long-horizon work</h2>
-      <div class="grid" style="margin-top:2rem">
-        <div class="feat">
-          <h3>CodeGraph retrieval</h3>
-          <p>Workers query an indexed graph of your repository &mdash; definitions, callers, impact &mdash; instead of burning tokens on repeated directory crawls. Shared context, not re-exploration.</p>
-        </div>
-        <div class="feat">
-          <h3>Spend receipts, not vibes</h3>
-          <p>Provider-reported, cache-aware cost accounting per job. See what each run cost, which model ran it, and why the cheaper options were rejected.</p>
-        </div>
-        <div class="feat">
-          <h3>A personal knowledge wiki</h3>
-          <p>Sessions distill into a portable, cross-session wiki you own as plain markdown &mdash; decisions, context, and handoffs that outlive any one chat.</p>
-        </div>
-        <div class="feat">
-          <h3>Runs from source, updates itself</h3>
-          <p>The same code on macOS, Windows, and Linux. stdlib-only Python backend with Puppetmaster as the one real dependency &mdash; and the agent can edit and update its own source.</p>
-        </div>
+      <div class="float f2 good">
+        <div class="k"><svg class="lease-ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="7"/><circle class="fill" cx="9" cy="9" r="7"/></svg>LEASE RENEWED</div>
+        <div class="v">task_c5901dbf1005</div>
+        <div class="s">test-coverage-reviewer &middot; ttl 5s &middot; heartbeat</div>
       </div>
-    </section>
-
-    <section id="install">
-      <div class="install-box" style="margin-top:1rem">
-        <div>
-          <h2>Get Marionette</h2>
-          <p class="sec-lede">Free and open source. Bring your own provider keys &mdash; you are not locked to any one model vendor.</p>
-          <a class="btn btn-primary" id="dlPrimary2" href="https://github.com/professorpalmer/marionette/releases/latest"><span id="dlLabel2">Download</span></a>
-          <p class="dl-sub" id="dlOther2">Builds are available for macOS, Windows, and Linux.</p>
-        </div>
-        <div>
-          <div class="install-tabs" role="tablist">
-            <button id="tabUnix" role="tab" aria-selected="true">macOS / Linux</button>
-            <button id="tabWin" role="tab" aria-selected="false">Windows</button>
-          </div>
-          <div class="cmd">
-            <code id="cmd">curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash</code>
-            <button id="copyBtn">Copy</button>
-          </div>
-          <p class="update-note">
-            Updates are continuous: the in-app update pill pulls <code>main</code>, rebuilds, and relaunches,
-            so a merge reaches every install on its next click.
-          </p>
-        </div>
+      <div class="float f3">
+        <div class="k"><span class="dot"></span>AUTO-FALLBACK &middot; decision-explainer</div>
+        <div class="v">Rate-limited, so the router re-routed it to z-ai/glm-5.3.</div>
+        <div class="s">capability 86 &ge; 85 &middot; recorded as a routing artifact</div>
       </div>
-    </section>
+      <div class="float f4 good">
+        <div class="k"><span class="dot"></span>RECEIPT &middot; job_efaab53f9b8e</div>
+        <div class="v">585,562 worker tokens. $0.00 marginal.</div>
+        <div class="s">$3.32 avoided vs. claude-opus-5</div>
+      </div>
+    </div>
+    <p class="stage-note"><b>Real capture, not a mockup.</b> Claude Sonnet 5.5 piloting three DeepSeek V4 Pro workers on Marionette's own source. Recorded at 2240&times;1400. The four-minute swarm is time-lapsed; the answer streams at real speed.</p>
+  </header>
 
-    <footer>
-      <span>Open source. Built on <a href="https://github.com/professorpalmer/Puppetmaster">Puppetmaster</a>.</span>
-      <span class="links">
-        <a href="https://github.com/professorpalmer/marionette">GitHub</a>
-        <a href="https://github.com/professorpalmer/marionette/releases/latest">Releases</a>
-      </span>
-    </footer>
+  <div class="providers" aria-label="Supported providers">
+    <div class="marquee">
+      <ul>
+        <li class="lead">One key runs pilot and workers</li><li>OpenRouter</li><li>Anthropic</li><li>OpenAI</li><li>Google Gemini</li><li>AWS Bedrock</li><li>Codex OAuth</li><li>OpenCode Go</li><li>xAI</li><li>llama.cpp</li><li>Any OpenAI-compatible endpoint</li>
+      </ul>
+      <ul aria-hidden="true">
+        <li class="lead">One key runs pilot and workers</li><li>OpenRouter</li><li>Anthropic</li><li>OpenAI</li><li>Google Gemini</li><li>AWS Bedrock</li><li>Codex OAuth</li><li>OpenCode Go</li><li>xAI</li><li>llama.cpp</li><li>Any OpenAI-compatible endpoint</li>
+      </ul>
+    </div>
   </div>
 
-  <script>
-    (function () {
-      var REPO = "professorpalmer/marionette";
-      var RELEASES = "https://github.com/" + REPO + "/releases/latest";
+  <main>
+    <!-- ======================= THE RUN ======================= -->
+    <section class="sec" id="run">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">One real turn</div>
+          <h2 class="h2">Watch the run<br>from the <em>inside.</em></h2>
+          <p class="lede">The same session as the video, slowed down. One sentence in, a three-worker audit out, and a record of everything that happened in between.</p>
+        </div>
 
-      var UNIX_CMD = "curl -fsSL https://professorpalmer.github.io/marionette/install.sh | bash";
-      var WIN_CMD  = "irm https://professorpalmer.github.io/marionette/install.ps1 | iex";
+        <div class="story">
+          <div class="story-steps">
+            <article class="step" data-step="0">
+              <div class="n"><i>1</i>You ask</div>
+              <h3>Plain language in. The pilot decides how deep to go.</h3>
+              <p>Every turn is sized as <code>MICRO</code>, <code>STANDARD</code> or <code>DEEP</code> before the model acts. This one asked for a swarm, so the pilot hands it to the kernel instead of grinding through one long context window.</p>
+            </article>
+            <article class="step" data-step="1">
+              <div class="n"><i>2</i>The kernel takes the job</div>
+              <h3>Three roles. Three leases. One durable job.</h3>
+              <p>Puppetmaster splits the audit into a conflict auditor, a decision explainer and a test coverage reviewer. Each role gets a capability bar, a routed model, and a five-second lease that a heartbeat keeps alive.</p>
+            </article>
+            <article class="step" data-step="2">
+              <div class="n"><i>3</i>Workers write to state</div>
+              <h3>Findings land in SQLite while the run is still going.</h3>
+              <p>This job wrote 26 artifacts, each with a sha256: 12 findings, 2 risks, 1 decision, 6 verifications and 5 routing records. When one worker hit a provider rate limit, the router fell back twice. The job finished with two of three workers, and the tracker marks it untrustworthy instead of painting it green.</p>
+            </article>
+            <article class="step" data-step="3">
+              <div class="n"><i>4</i>The answer streams</div>
+              <h3>One answer, and it says what it checked.</h3>
+              <p>The pilot ranked 15 findings, ran the top bypasses through <code>classify_command</code> itself, and said which findings it had not re-checked. File and line on each claim, then what to fix first.</p>
+            </article>
+            <article class="step" data-step="4">
+              <div class="n"><i>5</i>You get a receipt</div>
+              <h3>Depth, tokens, cache and dollars, in the status bar.</h3>
+              <p>The meter runs live: turn depth, tokens, cache hit rate, tokens covered by your plan, list-price value and actual spend. The job receipt prices each worker against the model registry in force when it finished.</p>
+            </article>
+          </div>
 
-      // Fallback direct links, pinned to a known-good release. Replaced with the
-      // newest release's assets once the GitHub API responds.
-      var FALLBACK = {
-        mac:   RELEASES + "/download/Marionette-0.7.6-universal.dmg",
-        win:   RELEASES + "/download/Marionette-0.7.6-Setup.exe",
-        linux: RELEASES + "/download/Marionette-0.7.6.AppImage"
-      };
-      var LABELS = { mac: "Download for macOS", win: "Download for Windows", linux: "Download for Linux" };
-      var OTHER = {
-        mac:   'Also available for <a href="' + RELEASES + '">Windows and Linux</a>.',
-        win:   'Also available for <a href="' + RELEASES + '">macOS and Linux</a>.',
-        linux: 'Also available for <a href="' + RELEASES + '">macOS and Windows</a>.'
-      };
+          <div class="story-stage">
+            <div class="cam-frame" id="camFrame">
+              <div class="cam" id="cam">
+                <img src="assets/media/run-1.webp" alt="Marionette with the swarm request sent and the expanded Swarm Tracker listing three routed workers" class="on" data-img="0">
+                <img src="assets/media/run-2.webp" alt="The expanded Swarm Tracker mid-run: one of three workers finished, 88,514 tokens, routed models for each role" data-img="1" loading="lazy">
+                <img src="assets/media/run-3.webp" alt="The pilot's ranked findings beside the finished job: two workers complete, one failed after fallback" data-img="2" loading="lazy">
+              </div>
+              <div class="focus-ring" id="focusRing"></div>
+              <div class="cam-log" id="camLog" aria-hidden="true"></div>
+            </div>
+            <div class="story-foot"><div class="cam-hud"><b id="hudStep">01</b><span id="hudText">composer &rarr; pilot</span></div><div class="story-progress" id="storyProgress"><span></span><span></span><span></span><span></span><span></span></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-      function detectOS() {
-        var ua = (navigator.userAgent || "") + " " + (navigator.platform || "");
-        if (/Win/i.test(ua)) return "win";
-        if (/Mac/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua)) return "mac";
-        if (/Linux|X11/i.test(ua) && !/Android/i.test(ua)) return "linux";
-        return "mac";
-      }
+    <!-- ======================= KERNEL ======================= -->
+    <section class="sec" id="kernel">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">The orchestration kernel</div>
+          <h2 class="h2">Puppetmaster is<br>the <em>kernel.</em></h2>
+          <p class="lede">The pilot never babysits workers. The kernel owns them: leased tasks, heartbeats, a typed artifact store and a job graph. Below is the actual event log from the run above, replayed.</p>
+        </div>
 
-      var os = detectOS();
-      var buttons = [
-        { a: document.getElementById("dlPrimary"),  label: document.getElementById("dlLabel"),  other: document.getElementById("dlOther") },
-        { a: document.getElementById("dlPrimary2"), label: document.getElementById("dlLabel2"), other: document.getElementById("dlOther2") }
-      ];
+        <div class="kernel-card reveal" id="kernelCard">
+          <div class="kernel-top">
+            <span><b>job_efaab53f9b8e</b> &middot; mode=analysis (read-only) &middot; state.sqlite3</span>
+            <span style="display:flex;gap:10px;align-items:center"><span class="status-pill" id="jobStatus" data-s="queued">queued</span><button class="replay" id="kReplay" type="button">Replay</button></span>
+          </div>
+          <div id="kernelSvgHost"></div>
+          <div class="kernel-legend" id="kLegend">
+            <span><i style="background:var(--accent)"></i>finding <b data-c="finding">0</b></span>
+            <span><i style="background:var(--risk)"></i>risk <b data-c="risk">0</b></span>
+            <span><i style="background:var(--good)"></i>verification <b data-c="verification">0</b></span>
+            <span><i style="background:#cfd3d9"></i>decision <b data-c="decision">0</b></span>
+            <span><i style="background:#6b7178"></i>routing <b data-c="routing">0</b></span>
+            <span style="margin-left:auto;color:var(--faint)">replayed from the job's event table, time-compressed</span>
+          </div>
+          <div class="kernel-log" id="kLog" aria-live="off"></div>
+        </div>
 
-      function paint(hrefs) {
-        buttons.forEach(function (b) {
-          if (!b.a) return;
-          b.a.href = hrefs[os] || RELEASES;
-          b.label.textContent = LABELS[os];
-          b.other.innerHTML = OTHER[os];
-        });
-      }
-      paint(FALLBACK);
+        <div class="kernel-notes reveal">
+          <div><h4>Leases, not hope</h4><p>A worker holds a lease and renews it on every heartbeat. A dead worker forfeits it and the task is recoverable.</p></div>
+          <div><h4>Typed artifacts</h4><p>Findings, risks, decisions and verifications carry confidence, citations and a content hash.</p></div>
+          <div><h4>A job graph</h4><p>Every task links to what it produced. 26 edges in this job, queryable after the fact.</p></div>
+          <div><h4>Zero-token recall</h4><p>Pull a finished job's results into any later session without re-running a single model call.</p></div>
+        </div>
+      </div>
+    </section>
 
-      // Upgrade the buttons to the newest release's real assets.
-      fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
-        .then(function (r) { return r.ok ? r.json() : null; })
-        .then(function (rel) {
-          if (!rel || !rel.assets) return;
-          var hrefs = {};
-          rel.assets.forEach(function (a) {
-            var n = a.name.toLowerCase();
-            if (n.endsWith(".dmg")) hrefs.mac = a.browser_download_url;
-            else if (n.endsWith(".exe")) hrefs.win = a.browser_download_url;
-            else if (n.endsWith(".appimage")) hrefs.linux = a.browser_download_url;
-          });
-          if (Object.keys(hrefs).length) paint(hrefs);
-        })
-        .catch(function () { /* keep fallback links */ });
+    <!-- ======================= ROUTER ======================= -->
+    <section class="sec" id="router">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">Cost-aware routing</div>
+          <h2 class="h2">The cheapest model<br>that <em>clears the bar.</em></h2>
+          <p class="lede">Every task carries a capability requirement. The router scores every model you allowed, picks the cheapest one that clears it, and writes down why it turned down the rest. These are the real routing records from the run.</p>
+        </div>
 
-      // Terminal tabs: default to the detected OS.
-      var tabUnix = document.getElementById("tabUnix");
-      var tabWin = document.getElementById("tabWin");
-      var cmd = document.getElementById("cmd");
-      function selectTab(which) {
-        var isWin = which === "win";
-        tabWin.setAttribute("aria-selected", String(isWin));
-        tabUnix.setAttribute("aria-selected", String(!isWin));
-        cmd.textContent = isWin ? WIN_CMD : UNIX_CMD;
-      }
-      tabUnix.addEventListener("click", function () { selectTab("unix"); });
-      tabWin.addEventListener("click", function () { selectTab("win"); });
-      selectTab(os === "win" ? "win" : "unix");
+        <div class="router reveal" id="routerCard">
+          <div class="router-tabs" role="tablist" id="routerTabs"></div>
+          <div class="router-body">
+            <div class="chart" id="chart"></div>
+            <div class="router-reason" id="routerReason"><span class="k">routing artifact &middot; reason</span><span class="v" id="reasonText"></span><span class="caret"></span></div>
+          </div>
+          <div class="router-foot">
+            <div><b>68</b><span>candidates scored on a first route, with a written reason for each one turned down.</span></div>
+            <div><b>Auto-fallback</b><span>A rate-limited worker is re-routed to the next model that clears the bar, and the switch is recorded. Explicit pins never get silently swapped.</span></div>
+            <div><b>Cache affinity</b><span>Sibling tasks keep the same model when it still clears the bar, so the shared job brief stays cached.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-      // Copy button.
-      var copyBtn = document.getElementById("copyBtn");
-      copyBtn.addEventListener("click", function () {
-        navigator.clipboard.writeText(cmd.textContent).then(function () {
-          var prev = copyBtn.textContent;
-          copyBtn.textContent = "Copied";
-          setTimeout(function () { copyBtn.textContent = prev; }, 1400);
-        });
-      });
-    })();
-  </script>
+    <!-- ======================= FEATURES ======================= -->
+    <section class="sec" id="features">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">The harness</div>
+          <h2 class="h2">Everything a long session<br>needs, in <em>one window.</em></h2>
+        </div>
+
+        <div class="bento">
+          <article class="tile t-a reveal">
+            <div class="tile-copy">
+              <h3>Any model can pilot.</h3>
+              <p>Every model your keys can reach, in one searchable picker. The profile in these captures lists 621 across OpenRouter, OpenAI, OpenCode Go and OpenCode Zen. Swap the pilot mid-session and keep the thread.</p>
+            </div>
+            <div class="tile-shot"><img src="assets/media/shot-picker.webp" alt="The Marionette model picker filtered to every Claude Opus variant on OpenRouter, above the composer" loading="lazy"></div>
+          </article>
+          <article class="tile t-b reveal" style="--rd:80ms">
+            <div class="tile-copy">
+              <h3>CodeGraph first.</h3>
+              <p>Symbols, callers and impact are injected before the model acts. 37,285 nodes for this repo, refreshed as files change.</p>
+            </div>
+            <div class="tile-shot"><img src="assets/media/shot-codegraph.webp" alt="The State pane showing CodeGraph ready with 37,285 nodes, Wiki and MCP" loading="lazy"></div>
+          </article>
+          <article class="tile t-c reveal" style="--rd:160ms">
+            <div class="tile-copy">
+              <h3>Your keys, your allowlist.</h3>
+              <p>Toggle what the picker and the router may use. One Full stack key runs both pilot and workers.</p>
+            </div>
+            <div class="tile-shot"><img src="assets/media/shot-models.webp" alt="Settings, Models: OpenRouter 451, OpenAI 89, OpenCode Go 36, OpenCode Zen 45" loading="lazy"></div>
+          </article>
+          <article class="tile t-d reveal">
+            <div class="tile-copy">
+              <h3>Answers cite the code.</h3>
+              <p>DeepSeek V4 Flash traced the routing path with file and line on every step, at 91% cache and $0.01 at list.</p>
+            </div>
+            <div class="tile-shot"><img src="assets/media/shot-cited.webp" alt="A pilot answer citing harness/swarm_worker_allowlist.py:229-262 and other file and line references" loading="lazy"></div>
+          </article>
+          <article class="tile t-e reveal" style="--rd:80ms">
+            <div class="tile-copy">
+              <h3>It tells you what it did not do.</h3>
+              <p>This edit landed with four tests. The pilot also said pytest was missing in that checkout, and exactly how it checked instead.</p>
+            </div>
+            <div class="tile-shot"><img src="assets/media/shot-honest.webp" alt="The pilot's edit report, noting it did not run the pytest suite and listing the new tests" loading="lazy"></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= ECONOMICS ======================= -->
+    <section class="sec" id="economics">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">Honest token economics</div>
+          <h2 class="h2">Receipts,<br><em>not vibes.</em></h2>
+          <p class="lede">A model vendor's harness sells you tokens. Marionette earns nothing on your token count, so every incentive points at spending less and proving it.</p>
+        </div>
+        <div class="econ">
+          <div class="reveal">
+            <div class="stats">
+              <div class="stat"><div class="num" data-count="585562" data-fmt="int">0</div><div class="lab">worker tokens, measured</div><div class="src">cost_receipt.token_usage</div></div>
+              <div class="stat"><div class="num good" data-count="0" data-fmt="usd2" data-from="4.2">$0.00</div><div class="lab">marginal cost, plan-billed</div><div class="src">billing: plan &middot; opencode-go</div></div>
+              <div class="stat"><div class="num acc" data-count="3.32" data-fmt="usd2">$0.00</div><div class="lab">avoided vs. the same tasks on claude-opus-5</div><div class="src">counterfactual.avoided_usd</div></div>
+              <div class="stat"><div class="num" data-count="68" data-fmt="int">0</div><div class="lab">models considered per task</div><div class="src">routing.rejected[]</div></div>
+            </div>
+            <img class="receipt-strip" src="assets/media/strip-receipt.webp" alt="Status bar: idle, depth DEEP, 740.1k tokens, 17% cache, 585.6k tokens on plan, $0.09 at list, $0.18 spent this session" loading="lazy">
+            <div class="receipt-cap">The status bar at the end of this run, cropped straight from the capture.</div>
+          </div>
+          <ol class="levers reveal" style="--rd:120ms">
+            <li><h4>Send less</h4><p>CodeGraph-first retrieval injects the symbols that matter instead of whole files, so prompts start small.</p></li>
+            <li><h4>Re-send cheap</h4><p>Prompt caching with a stable and a moving breakpoint across Anthropic, OpenAI and Gemini serves the heavy prefix from cache every turn.</p></li>
+            <li><h4>Bill honestly</h4><p>Cached tokens are priced at the real cache-read discount, and unknown prices stay unknown instead of turning into a quiet $0.</p></li>
+            <li><h4>Route down</h4><p>The router will pick a competitor's open-weights model when it clears the bar. A first-party tool will never route you off its own tokens.</p></li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= EVIDENCE ======================= -->
+    <section class="sec" id="evidence">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">Evidence</div>
+          <h2 class="h2">Measured,<br>then <em>published.</em></h2>
+        </div>
+        <div class="evidence">
+          <article class="ev reveal" data-bars>
+            <div class="bench">SWE-bench Lite &middot; cost at equal quality</div>
+            <div class="big"><span data-count="47" data-fmt="int">0</span>%<small>cheaper</small></div>
+            <p class="claim">CodeGraph context plus the router, against the frontier baseline, at equal quality.</p>
+            <div class="bars">
+              <div class="bar-row"><span>Frontier baseline</span><span class="b"><i data-w="100"></i></span><span class="v">1.00x</span></div>
+              <div class="bar-row us"><span>Marionette stack</span><span class="b"><i data-w="53"></i></span><span class="v">~0.53x</span></div>
+            </div>
+            <p class="method">A controlled three-arm study holds the model ceiling constant and varies only the orchestration. Frozen predictions re-grade deterministically with Docker alone, no API keys.</p>
+            <div class="links"><a href="https://github.com/professorpalmer/swebench-pm">swebench-pm</a></div>
+          </article>
+          <article class="ev reveal" data-bars style="--rd:100ms">
+            <div class="bench">NL2Repo-Bench &middot; build a library from a spec</div>
+            <div class="big"><span data-count="91.1" data-fmt="dec1">0</span>%<small>mean test pass</small></div>
+            <p class="claim">About 2.28x the roughly 40% published state of the art, with 53% of libraries reaching a fully green upstream suite.</p>
+            <div class="bars">
+              <div class="bar-row"><span>Published SOTA</span><span class="b"><i data-w="40"></i></span><span class="v">~40%</span></div>
+              <div class="bar-row us"><span>Durable state</span><span class="b"><i data-w="91.1"></i></span><span class="v">91.1%</span></div>
+            </div>
+            <p class="method">Durable-state orchestration on whole-repository generation from a spec. Full method and caveats are in the paper.</p>
+            <div class="links"><a href="https://professorpalmer.github.io/durable-state-vs-context/">Paper</a><a href="https://doi.org/10.5281/zenodo.20709565">DOI 10.5281/zenodo.20709565</a></div>
+          </article>
+        </div>
+        <p class="ev-foot reveal">Also published: <a href="https://professorpalmer.github.io/catalog-residual/">Extractive Residuals After Compaction</a>, the compaction method Marionette ships by default.</p>
+      </div>
+    </section>
+
+    <!-- ======================= MORE ======================= -->
+    <section class="sec" id="more">
+      <div class="wrap">
+        <div class="sec-head reveal">
+          <div class="tag">Also in the box</div>
+          <h2 class="h2">Built for work that<br><em>outlives a chat.</em></h2>
+        </div>
+        <div class="more reveal">
+          <div>
+            <div class="more-item"><span class="k">memory</span><div><h4>Portable LLM Wiki</h4><p>Sessions distill into markdown pages you own: decisions, entities and handoffs that any model can read next month.</p></div></div>
+            <div class="more-item"><span class="k">autonomy</span><div><h4>Full-auto with a governor</h4><p>Unattended runs bounded by token, time, swarm and idle ceilings, plus a killswitch file.</p></div></div>
+            <div class="more-item"><span class="k">safety</span><div><h4>Command guard</h4><p>In full-auto, recursive deletes, force-pushes, curl-to-shell, sudo and key exfiltration are screened before they run.</p></div></div>
+            <div class="more-item"><span class="k">schedules</span><div><h4>Scheduled runs</h4><p>Cron-backed local runs with transactional claims, restart recovery and a truthful run history.</p></div></div>
+            <div class="more-item"><span class="k">vision</span><div><h4>Vision on any driver</h4><p>Text-only pilots get a VLM sidecar from a key you already have. Vision-capable pilots get the real pixels.</p></div></div>
+          </div>
+          <div>
+            <div class="more-item"><span class="k">context</span><div><h4>Compaction that keeps handles</h4><p>Long sessions compact to an extractive catalog with handles back to what was dropped. <a href="https://professorpalmer.github.io/catalog-residual/">Read the paper</a>.</p></div></div>
+            <div class="more-item"><span class="k">git</span><div><h4>Worktrees in the rail</h4><p>Projects, branches, worktrees and sessions side by side. Implement workers build in clean worktrees.</p></div></div>
+            <div class="more-item"><span class="k">tools</span><div><h4>Browser, terminal, computer use</h4><p>An in-app browser, a real terminal, and scoped native control with password fields masked.</p></div></div>
+            <div class="more-item"><span class="k">extend</span><div><h4>MCP and plugins</h4><p>Add any MCP server by URL or Docker from the State pane. Tools are discovered, not hard-coded.</p></div></div>
+            <div class="more-item"><span class="k">updates</span><div><h4>Runs from source, updates itself</h4><p>Stdlib-only Python backend with one real dependency. The update pill pulls, rebuilds and relaunches, and keeps your local edits.</p></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================= INSTALL ======================= -->
+    <section class="sec" id="install">
+      <div class="wrap">
+        <div class="install reveal">
+          <div class="install-in">
+            <div>
+              <h2>Run it<br><em>tonight.</em></h2>
+              <p class="lede">Free, with the source on GitHub. Paste one provider key in Settings and both the pilot and the workers run on it. No other CLI required.</p>
+              <div class="dl-row">
+                <a class="btn btn-primary" id="dl2" href="https://github.com/professorpalmer/marionette/releases/latest"><svg><use href="#i-down"/></svg><span class="dl-label">Download</span></a>
+                <a class="btn btn-ghost" href="https://github.com/professorpalmer/marionette/releases/latest">All releases</a>
+              </div>
+              <p class="dl-other" id="dlOther">Installers for macOS (universal), Windows and Linux.</p>
+            </div>
+            <div>
+              <div class="term">
+                <div class="term-bar">
+                  <span class="lights"><i></i><i></i><i></i></span>
+                  <div class="term-tabs" role="tablist">
+                    <button type="button" role="tab" id="tabUnix" aria-selected="true">macOS / Linux</button>
+                    <button type="button" role="tab" id="tabWin" aria-selected="false">Windows</button>
+                  </div>
+                  <button type="button" class="term-copy" id="copyBtn">Copy</button>
+                </div>
+                <div class="term-body" id="termBody"></div>
+              </div>
+              <p class="update-note">Updates are continuous. The in-app update pill runs <code>git pull</code>, rebuilds and relaunches, so a merge reaches every install on its next click.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap">
+      <div class="foot-in">
+        <div>
+          <a class="brand" href="#top"><svg style="color:var(--accent)"><use href="#glyph"/></svg>Marionette</a>
+          <p style="margin:12px 0 0;max-width:28em">A coding harness where the model is a component inside the kernel, not the platform. Built on <a href="https://github.com/professorpalmer/Puppetmaster" style="color:var(--muted);border-bottom:1px solid var(--line-2)">Puppetmaster</a>.</p>
+        </div>
+        <div class="foot-cols">
+          <div><h5>Product</h5><a href="https://github.com/professorpalmer/marionette/releases/latest">Releases</a><a href="https://github.com/professorpalmer/marionette">Source</a><a href="https://github.com/professorpalmer/marionette/blob/main/ARCHITECTURE.md">Architecture</a></div>
+          <div><h5>Kernel</h5><a href="https://github.com/professorpalmer/Puppetmaster">Puppetmaster</a><a href="https://pypi.org/project/puppetmaster-ai/">puppetmaster-ai on PyPI</a></div>
+          <div><h5>Research</h5><a href="https://professorpalmer.github.io/durable-state-vs-context/">Durable state vs. context</a><a href="https://professorpalmer.github.io/catalog-residual/">Catalog residual</a><a href="https://github.com/professorpalmer/swebench-pm">swebench-pm</a></div>
+        </div>
+      </div>
+      <div class="foot-word" aria-hidden="true">marionette</div>
+    </div>
+  </footer>
+
+  <script src="assets/site.js?v=0.9.577" defer></script>
 </body>
 </html>

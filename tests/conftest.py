@@ -204,16 +204,24 @@ def _report_lingering_work() -> None:
         return bool(frame and frame.f_code.co_name == "_worker"
                     and frame.f_code.co_filename.replace("\\", "/").endswith("concurrent/futures/thread.py"))
 
-    # Puppetmaster's read-only and CodeGraph helpers are reaped by its atexit
-    # hooks, which run after this; run them first so only real leaks remain.
+    # Puppetmaster's read-only and CodeGraph helpers, and the background
+    # CodeGraph indexer that workspace-open tests start, are reaped by atexit
+    # hooks that run after this; run them first so only real leaks remain.
     for module, hook in (("puppetmaster.readonly", "_shutdown_cleanup"),
-                         ("puppetmaster.codegraph_warm", "shutdown")):
+                         ("puppetmaster.codegraph_warm", "shutdown"),
+                         ("harness.api.codegraph_index", "_kill_running_indexer")):
         mod = _sys.modules.get(module)
         if mod is not None and callable(getattr(mod, hook, None)):
             try:
                 getattr(mod, hook)()
             except Exception:
                 pass
+    indexer = getattr(_sys.modules.get("harness.api.codegraph_index"), "codegraph_index_proc", None)
+    if indexer is not None:
+        try:
+            indexer[1].wait(timeout=10)
+        except Exception:
+            pass
     threads = [t for t in _threading.enumerate()
                if t is not _threading.main_thread() and t.is_alive() and not t.daemon
                and not idle_pool_worker(t)]

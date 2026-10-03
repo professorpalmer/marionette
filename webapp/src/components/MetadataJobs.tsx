@@ -20,7 +20,7 @@ import { filterJobsByScope, JOB_SCOPE_CHANGED_EVENT, jobScopeForSession, loadJob
 import { useSharedJobMetadata, metadataActivity, metadataJobs, metadataViewSessionId, currentExpert, currentHeader } from '../lib/jobMetadataContext';
 import { dashboardJobId, isSwarmTrackerJob } from '../lib/jobClassification';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
-import { dashboardLocateError, dashboardUnavailableMessage, jobsListEmptyTruth } from '../lib/jobsDashboard';
+import { dashboardLocateError, dashboardUnavailableMessage, jobsListEmptyTruth, trackerReadState } from '../lib/jobsDashboard';
 import { lastSelectedProjectRoot } from '../lib/panelTransition';
 import { openAgentUrlExternal } from '../lib/agentLinks';
 import { canonicalExpertSelection, expertLookupKey, metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
@@ -599,9 +599,16 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   const failedCount = finishedRows.filter(j => failedOutcomeStatuses.has(j.status)).length;
   const warningCount = finishedRows.filter(j => quality(j) === 'degraded').length;
   const cancelledCount = finishedRows.filter(j => j.status === 'cancelled').length;
-  const failedRead = state.error || state.view.kind === 'view' && (state.view.view.availability === 'unavailable'
-    || state.streams.some(s => s.state === 'unavailable' || s.state === 'cursor_expired')
-    || state.local.state === 'unavailable' || state.local.state === 'expired');
+  const { failedRead, loading } = trackerReadState({
+    storeError: !!state.error,
+    view: state.view.kind === 'view' ? { ...state.view.view, refresh: state.view.refresh } : null,
+    streamFailed: state.streams.some(s => (s.state === 'unavailable' || s.state === 'cursor_expired') && !s.missing.includes('sources_not_refreshed')),
+    sourcesPending: state.streams.some(s => s.state === 'unavailable' && s.missing.includes('sources_not_refreshed')),
+    localFailed: state.local.state === 'unavailable' || state.local.state === 'expired',
+    working: state.working,
+    settled: Object.keys(state.observedAt).length > 0 || state.local.observedAt !== null,
+    hasJobs: jobs.length > 0,
+  });
   const anyRunning = shown.some(isLiveObservation);
   const runningCount = shown.filter(isLiveObservation).length;
   // The green check counts successes only; failed / cancelled / timed-out
@@ -760,7 +767,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       <Network size={20} className="text-faint/50" />
       <span className="text-ui-12 text-muted font-medium">{failedRead
         ? jobsListEmptyTruth({ failedRead: true, viewReady: true, working: false, hiddenCount: 0, filter: 'all', hasJobs: false }).title
-        : state.view.kind !== 'view' || !jobs.length && state.working
+        : loading
           ? <><span>Loading jobs...</span> Waiting for job metadata; no lifecycle result is known yet.</>
           : hidden.length && filter === 'all' ? 'Observed finished jobs are hidden. Show hidden jobs to restore them.'
             : !jobs.length ? 'No jobs yet'
@@ -770,7 +777,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
         : filter !== 'all' && (jobs.length > 0 || hidden.length > 0) ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => setFilter('all')}>Clear filter</button>
         : hidden.length > 0 ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => setPreferences(p => ({ ...p, dismissed: [] }))}>Show {hidden.length} hidden</button>
         : otherSessionsOnly ? <button type="button" className="text-ui-10.5 text-accent hover:underline focus:outline-none" onClick={() => saveJobScope('all', activeSessionId)}>Show {jobs.length} {jobs.length === 1 ? 'job' : 'jobs'} from other sessions</button>
-        : !failedRead && state.view.kind === 'view' && !jobs.length && !state.working && (
+        : !loading && !jobs.length && (
         <span className="text-ui-10.5 text-faint leading-relaxed">
           Every dispatched worker lands here -- run_implement, run_parallel,
           and run_swarm alike -- with its phase, router choice, live workers,
