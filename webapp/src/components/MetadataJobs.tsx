@@ -24,7 +24,7 @@ import { dashboardLocateError, dashboardUnavailableMessage, jobsListEmptyTruth, 
 import { lastSelectedProjectRoot } from '../lib/panelTransition';
 import { openAgentUrlExternal } from '../lib/agentLinks';
 import { canonicalExpertSelection, expertLookupKey, metadataSelectionKey, metadataStreamKey, pmActiveStatuses } from '../lib/jobMetadata';
-import { localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
+import { followCanonicalExpansion, localKey, nativeActiveStatuses, nativeAttentionStatuses } from '../lib/localJobMetadata';
 import type { LocalDetail, LocalRoute, LocalSummary } from '../lib/localJobMetadata';
 import type { MetadataActionResult } from '../lib/useJobMetadata';
 import JobCancellationControl from './JobCancellationControl';
@@ -490,6 +490,12 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
   useEffect(() => {
     const live = new Set(jobs.filter(isLiveObservation).map(j => j.metadata_key));
     setPreferences(p => p.dismissed.some(key => live.has(key)) ? { ...p, dismissed: p.dismissed.filter(key => !live.has(key)) } : p);
+  }, [jobs]);
+  useEffect(() => {
+    setPreferences(p => {
+      const expanded = followCanonicalExpansion(p.expanded, jobs);
+      return expanded === p.expanded ? p : { ...p, expanded };
+    });
   }, [jobs]);
   useEffect(() => {
     if (!enabled || !visible || state.view.kind !== 'view' || state.working) return;

@@ -54,7 +54,7 @@ async function observe(store: JobMetadataStore, turns = 24) {
   for (let turn = 0; turn < turns; turn++) await store.advance(turn === 0);
 }
 
-it('replaces only the exact canonical placeholder and restores it when PM becomes unavailable', async () => {
+it('replaces only the exact canonical placeholder and keeps one row when PM becomes unavailable', async () => {
   let pmMode: 'empty' | 'present' | 'unavailable' = 'empty';
   let target = context('session-view');
   const requestJSON = vi.fn(async (_method: string, path: string) => {
@@ -94,8 +94,10 @@ it('replaces only the exact canonical placeholder and restores it when PM become
   pmMode = 'unavailable';
   act(() => store.restartTraversal());
   await act(async () => { await observe(store); });
-  expect(metadataJobs(store.getSnapshot()).map(job => job.id)).toEqual(['job_handoff', 'local-swarm-dispatch-handoff']);
-  expect(metadataJobs(store.getSnapshot())[0].read_status).toBe('unavailable');
+  // The swarm stays one canonical row; its live alias carries the lifecycle while PM is stale.
+  expect(metadataJobs(store.getSnapshot()).map(job => job.id)).toEqual(['job_handoff']);
+  expect(metadataJobs(store.getSnapshot())[0]).toMatchObject({ status: 'running', canonical_aliases: ['local-swarm-dispatch-handoff'] });
+  expect(metadataJobs(store.getSnapshot())[0].read_status).toBeUndefined();
   expect(metadataActivity(store.getSnapshot()).count).toBe(1);
 });
 

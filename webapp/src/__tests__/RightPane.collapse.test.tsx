@@ -821,11 +821,12 @@ describe("RightPane shared activity observation stays warm", () => {
         <RightPane {...baseProps} visible={visible} />
       </JobMetadataContext.Provider>;
       const rendered = render(mount(true));
-      expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+      // The fixture's native job_0 is a run_command: listed, but never a live hire.
+      expect(screen.getAllByTitle("At least 1 active jobs; coverage incomplete")).toHaveLength(2);
       rendered.rerender(mount(false));
       expect(store.getSnapshot()).toBe(observed);
       rendered.rerender(mount(true));
-      expect(screen.getAllByTitle("At least 2 active jobs; coverage incomplete")).toHaveLength(2);
+      expect(screen.getAllByTitle("At least 1 active jobs; coverage incomplete")).toHaveLength(2);
       expect(store.getSnapshot()).toBe(observed);
       expect(fixture.calls).toHaveLength(before);
       expect(readSWRCache(`swarm:${REPO}`)).toBeUndefined();

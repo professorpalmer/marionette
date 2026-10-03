@@ -195,6 +195,26 @@ describe('original positive inspector requirements through parser/store/render',
     expect(f.store.getSnapshot().observations[0].freshness).toBe('observed');
     expect(currentExpert(f.store.getSnapshot(), metadataSelectionKey(selection()))?.tasks[0].model).toBe('gpt-6-astra');
   });
+  it('keeps the last header when a later pin row arrives without one', async () => {
+    const f = await setup(); const original = f.request.getMockImplementation()!;
+    const row = expertSummary(selection(), 'Audit auth flow');
+    let withHeader = true;
+    f.request.mockImplementation(async (method, path, body) => {
+      if (!path.endsWith('/pins')) return original(method, path, body);
+      return { version: 1, context: f.context(), results: [{ selection: row.selection, result: { kind: 'present',
+        row: withHeader ? { ...row, header: facts().header } : row } }] };
+    });
+    await act(async () => { await f.store.refreshHeaders(); });
+    const key = metadataSelectionKey(selection());
+    const header = currentHeader(f.store.getSnapshot(), key);
+    expect(header).toBeDefined();
+    // The server skipped this header (deadline or a locked store read); the counts stay.
+    withHeader = false;
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60000);
+    await act(async () => { await f.store.refreshHeaders(); });
+    expect(f.store.getSnapshot().headerError).toBeNull();
+    expect(currentHeader(f.store.getSnapshot(), key)).toEqual(header);
+  });
   it('updates job cost and savings while worker and artifact counts remain fixed', async () => {
     const f = await setup();
     const expert = parseExpertMetadata(backend);

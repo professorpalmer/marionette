@@ -355,12 +355,12 @@ export function canonicalPMReplacesLocal(local: LocalObservation, pm: MetadataOb
   if (!canonical || canonical.session_id !== local.row.session_id) return false;
   return pm.some(observation => {
     const row = observation.row, selection = row.selection, ref = selection.job_ref, expected = canonical.job_ref;
-    // A terminal lifecycle is monotonic: a PM row that went stale after
-    // reporting complete still outranks the alias. Otherwise every stale flip
-    // resurfaces the alias with its last active lifecycle and the job snaps
-    // between Active and Finished with each read cycle.
-    const settled = row.lifecycle !== null && !pmActiveStatuses.some(status => status === row.lifecycle);
-    return (observation.freshness === 'observed' || settled)
+    // A stale row was observed before and its identity is exact, so it keeps
+    // outranking the alias while a read is stale. Otherwise every stale flip (a
+    // live store lock marks active rows stale) resurfaces the alias: the swarm
+    // is listed twice, or snaps between Active and Finished once it completed.
+    // An unknown lifecycle still defers to the alias.
+    return (observation.freshness === 'observed' || row.lifecycle !== null)
       && selection.source === canonical.source
       && ref.job_id === expected.job_id && ref.state_id === expected.state_id
       && ref.version === expected.version && ref.incarnation === expected.incarnation

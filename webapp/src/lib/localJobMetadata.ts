@@ -38,6 +38,24 @@ export type LocalDetail = { selected_context?: SelectedContext; summary?: LocalS
   | { lane: 'output'; rows: { offset: number; text: string }[]; output: { coverage: 'in_memory_only'; source_chars: number | null; spilled: boolean } | null }
 );
 export function localKey(ref: LocalRef): string { return JSON.stringify(['local', ref.incarnation, ref.job_id]); }
+function localKeyJobId(key: string): string | null {
+  try {
+    const parts: unknown = JSON.parse(key);
+    return Array.isArray(parts) && parts[0] === 'local' && typeof parts[2] === 'string' ? parts[2] : null;
+  } catch {
+    return null; // Persisted preferences may hold keys from older layouts.
+  }
+}
+/** An expanded local alias stays expanded as the canonical PM row that replaced it. */
+export function followCanonicalExpansion(expanded: string[], jobs: { metadata_key?: string; canonical_aliases?: string[] }[]): string[] {
+  let next = expanded;
+  for (const { metadata_key: key, canonical_aliases: aliases } of jobs) {
+    if (!key || !aliases?.length) continue;
+    const moved = next.filter(k => { const id = localKeyJobId(k); return id !== null && aliases.includes(id); });
+    if (moved.length) next = [...next.filter(k => k !== key && !moved.includes(k)), key];
+  }
+  return next === expanded ? expanded : next.slice(-8);
+}
 export function wireLocalId(value: string): string {
   let out = '';
   for (const c of value) {

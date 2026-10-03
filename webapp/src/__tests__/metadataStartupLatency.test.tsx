@@ -78,7 +78,11 @@ it('measures the real owner first queued observation and finite startup request 
   const startup = f.calls.filter(c => c.path.endsWith('/metadata') || c.path.endsWith('/local'));
   expect(shared.getSnapshot().streams.filter(s => s.initialized)).toHaveLength(14);
   expect(screen.getByRole('status')).toHaveTextContent('job_existing-queued');
-  expect(startup).toHaveLength(15);
+  // Native jobs only reach history once they finish; startup reads its first page so a
+  // rebuilt tracker does not drop finished parallel/command work.
+  expect(startup).toHaveLength(16);
+  expect(startup.filter(c => c.lane === 'history')).toHaveLength(1);
+  expect(screen.getByRole('status')).toHaveTextContent('local-0000');
   expect(startup.some(c => c.status === null && c.path.endsWith('/metadata'))).toBe(true);
   expect(startup.some(c => c.state?.startsWith('sibling'))).toBe(false);
   expect(f.calls.filter(c => c.method === 'POST')).toHaveLength(1);
@@ -121,8 +125,8 @@ it.each(['failure', 'expired'] as const)('%s cannot start a retry burst', async 
 it('serial HTTP latency fits a finite startup budget without draining partial streams', async () => {
   const f = fixture(10); f.pages(); f.mount(); await advance(1999);
   expect(screen.getByRole('status')).toHaveTextContent('job_existing-queued');
-  expect(f.calls).toHaveLength(18);
-  expect(f.calls.at(-1)?.time).toBeLessThanOrEqual(180);
+  expect(f.calls).toHaveLength(19);
+  expect(f.calls.at(-1)?.time).toBeLessThanOrEqual(190);
   expect(f.calls.filter(c => c.path === '/api/jobs/metadata')).toHaveLength(14);
   expect(shared.getSnapshot().streams.filter(s => s.initialized).every(s => s.state === 'partial')).toBe(true);
   expect(f.maxConcurrent).toBe(1);

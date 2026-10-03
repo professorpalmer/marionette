@@ -87,7 +87,12 @@ class MetadataView:
                 # so a refresh issued right after the switch does not 409.
                 if local_handle is not self._local_handle:
                     self._local_handle = local_handle
-                    if self.supported:
+                    if self.supported and self._reader is not None:
+                        # Same generation, so the renderer keeps its list cursors:
+                        # keep the reader (cursor secret, membership, header cache)
+                        # and move only local reads to the new handle.
+                        self._reader.local_handle = local_handle
+                    elif self.supported:
                         self._reader = create_metadata_reader(self.capture, self._sources, local_handle)
                 return
             self.select(target.session_id, target.repo, state_dir, force=True, local_handle=local_handle)
