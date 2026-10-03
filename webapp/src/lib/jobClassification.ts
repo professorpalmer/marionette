@@ -61,17 +61,20 @@ export function isCommandJob(job: CommandJobSignals): boolean {
   return false;
 }
 
+/** The local placeholder for a run_swarm / run_implement dispatch, listed until
+ * its canonical Puppetmaster job replaces it. */
+export function isDispatchAlias(id: string | null | undefined): boolean {
+  const idLower = String(id || "").trim().toLowerCase();
+  return idLower.startsWith("local-swarm-") || idLower.startsWith("local-impl-");
+}
+
 /** True for run_swarm / run_implement / remote job_* / local-swarm|impl. */
 export function isTrackerHire(job: CommandJobSignals): boolean {
   const kind = norm(job.job_kind);
   if (HIRE_JOB_KINDS.has(kind)) return true;
   const id = String(job.id || "").trim();
-  const idLower = id.toLowerCase();
   if (id.startsWith("job_")) return true;
-  if (idLower.startsWith("local-swarm-") || idLower.startsWith("local-impl-")) {
-    return true;
-  }
-  return false;
+  return isDispatchAlias(id);
 }
 
 /**
