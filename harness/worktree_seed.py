@@ -249,12 +249,19 @@ def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
     if not wt_path or not paths:
         return 0
     try:
-        for rel in paths:
-            subprocess.run(
-                ["git", "-C", wt_path, "add", "--", rel],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=30, check=True,
-            )
+        # Gitignored scratch stays readable in the worktree but is not
+        # baselined: git refuses to stage it, and finalize's ``add -A`` skips
+        # it, so it can never show up as a worker edit either.
+        ignored = set(_ignored_paths(wt_path, paths))
+        paths = [rel for rel in paths if rel not in ignored]
+        if not paths:
+            return 0
+        subprocess.run(
+            ["git", "--literal-pathspecs", "-C", wt_path, "add",
+             "--pathspec-from-file=-", "--pathspec-file-nul"],
+            input="\0".join(paths), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=120, check=True,
+        )
         staged = subprocess.run(
             ["git", "-C", wt_path, "diff", "--cached", "--name-only"],
             capture_output=True, text=True, encoding="utf-8",
@@ -289,6 +296,20 @@ def commit_seed_baseline(wt_path: str, seeded: Iterable[str]) -> int:
         return len(staged_paths)
     except (subprocess.SubprocessError, OSError) as exc:
         raise RuntimeError(f"seed baseline failed: {exc}") from exc
+
+
+def _ignored_paths(wt_path: str, paths: list[str]) -> list[str]:
+    """Paths git would refuse to stage because a .gitignore excludes them."""
+    probe = subprocess.run(
+        ["git", "-C", wt_path, "check-ignore", "-z", "--stdin"],
+        input="\0".join(paths) + "\0", capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    # 0: some ignored, 1: none ignored, anything else is a real failure.
+    if probe.returncode not in (0, 1):
+        raise RuntimeError(
+            f"seed baseline ignore check failed (exit {probe.returncode}): {probe.stderr}")
+    return [p for p in (probe.stdout or "").split("\0") if p]
 
 
 def seed_untracked_matching(
