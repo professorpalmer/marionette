@@ -138,12 +138,25 @@ def discover_sources(harness_root, workspace, *, harness_backend='sqlite'):
     return KnownSources.from_roots(roots)
 
 
+def _database(known):
+    return known.root / ('state.sqlite3' if known.backend == 'sqlite' else 'metadata.sqlite3')
+
+
+def _never_written(known):
+    # No handle at view creation and no PM data on disk. A file store's legacy
+    # layout cannot be told apart from data, so it needs its root to be absent.
+    if known.handle is not None or _database(known).exists():
+        return False
+    if not known.root.exists():
+        return True
+    return known.backend == 'sqlite' and not (known.root / 'jobs').exists()
+
+
 def _attach(known):
     # Public attach() sets journal_mode=WAL even on rejected old stores.
     # Deferred construction plus public metadata reads never invokes init/ensure.
     # Reuse the startup handle: constructors can create roots and chmod them.
-    database = known.root / ('state.sqlite3' if known.backend == 'sqlite' else 'metadata.sqlite3')
-    if not known.root.is_dir() or not database.is_file():
+    if not known.root.is_dir() or not _database(known).is_file():
         return None
     return known.handle
 
@@ -216,7 +229,10 @@ class MetadataReader:
         return base64.urlsafe_b64encode(hmac.digest(self._secret, data, 'sha256') + data).decode()
 
     def _wire_page(self, page, binding, after):
-        result = _page(page.outcome, page.revision, self._wrap(page.next_cursor, binding),
+        # PM echoes the caller's cursor on no-progress pages (a locked store mid-run).
+        # The wire contract carries a cursor only on partial pages; the client keeps its own.
+        token = self._wrap(page.next_cursor, binding) if page.outcome == 'partial' else None
+        result = _page(page.outcome, page.revision, token,
                        page.scanned, page.revision if page.outcome == 'complete' else after)
         if page.reason is not None:
             result['reason'] = page.reason
@@ -380,7 +396,17 @@ class MetadataReader:
             raise InvalidReadRequest()
         store = _attach(known)
         if store is None:
-            result['missing'].append('store_unavailable')
+            if _never_written(known) and after_revision == 0 and pm_cursor is None:
+                # A fresh profile names its store before the first job writes it.
+                # Zero jobs is a complete answer, not a read failure.
+                result['page'] = _page('complete')
+                result['missing'].append('store_not_created')
+            else:
+                result['missing'].append('store_unavailable')
+                if known.handle is None and _database(known).is_file():
+                    # Written after this view was discovered (first job of a fresh
+                    # profile). The client rediscovers; polls never construct stores.
+                    result['missing'].append('sources_not_refreshed')
             self.check(ctx)
             return result
         filters = dict(session_id=ctx.session_id if ctx.scope == 'session' else None,
@@ -407,6 +433,16 @@ class MetadataReader:
         if page.outcome not in ('complete', 'partial'):
             self.check(ctx)
             return result
+        items = page.items
+        if mode == 'changes':
+            # PM's change feed is a journal: a job edited twice since the checkpoint
+            # appears twice. The wire page is a membership delta, so each job is sent
+            # once at its newest revision; the renderer rejects duplicate selections.
+            newest = {}
+            for row in items:
+                if row.job_ref not in newest or row.revision >= newest[row.job_ref].revision:
+                    newest[row.job_ref] = row
+            items = tuple(row for row in items if newest[row.job_ref] is row)
         key = (active, ctx.scope, selection, status)
         with self._lock:
             seen = self._seen.get(key, {})
@@ -414,8 +450,8 @@ class MetadataReader:
             uncertain = False
             # Every scanned row must fit: its cursor already advances past it.
             # Exact rows supplement spare capacity without consuming scan coverage.
-            scanned_refs = {row.job_ref for row in page.items}
-            for row in page.items:
+            scanned_refs = {row.job_ref for row in items}
+            for row in items:
                 owned = not row.deleted and self._owned(row, known, ctx)
                 previous_owned = self._previous_owned(row, known, ctx, status)
                 if owned:

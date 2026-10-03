@@ -4,6 +4,7 @@ import {
   dashboardLocateError,
   dashboardUnavailableMessage,
   jobsListEmptyTruth,
+  trackerReadState,
   jobsRailIsPuppetmasterViewport,
   jobsRailViewportUrl,
   JOBS_RAIL_VIEWPORT,
@@ -80,5 +81,34 @@ describe("Jobs rail honesty", () => {
       filter: "all",
       hasJobs: false,
     }).title).toBe("No jobs yet");
+  });
+});
+
+describe("trackerReadState", () => {
+  const known = { availability: "known" as const, missing: [], refreshing: false, refresh: "idle" };
+  const base = { storeError: false, view: known, streamFailed: false, sourcesPending: false, localFailed: false, working: false, settled: true, hasJobs: false };
+
+  it("treats initial source discovery as loading, not a failed read", () => {
+    const initial = { availability: "unavailable" as const, missing: ["sources_not_refreshed"], refreshing: false, refresh: "idle" };
+    expect(trackerReadState({ ...base, view: initial, settled: false })).toEqual({ failedRead: false, loading: true });
+    expect(trackerReadState({ ...base, view: { ...initial, refresh: "pending" }, settled: false })).toEqual({ failedRead: false, loading: true });
+    expect(trackerReadState({ ...base, view: { ...known, availability: "unavailable", missing: ["source_discovery_unavailable"], refreshing: true } }))
+      .toEqual({ failedRead: false, loading: true });
+  });
+
+  it("treats a store written after discovery as loading while it is rediscovered", () => {
+    expect(trackerReadState({ ...base, sourcesPending: true, settled: false })).toEqual({ failedRead: false, loading: true });
+  });
+
+  it("keeps a settled empty list settled while a background poll runs", () => {
+    expect(trackerReadState({ ...base, working: true })).toEqual({ failedRead: false, loading: false });
+    expect(trackerReadState({ ...base, working: true, settled: false })).toEqual({ failedRead: false, loading: true });
+  });
+
+  it("still reports real failures", () => {
+    expect(trackerReadState({ ...base, storeError: true }).failedRead).toBe(true);
+    expect(trackerReadState({ ...base, streamFailed: true }).failedRead).toBe(true);
+    expect(trackerReadState({ ...base, view: { ...known, availability: "unavailable", missing: ["response_budget"] } }).failedRead).toBe(true);
+    expect(trackerReadState({ ...base, view: { ...known, availability: "unavailable", missing: ["no_known_sources"] } }).failedRead).toBe(true);
   });
 });

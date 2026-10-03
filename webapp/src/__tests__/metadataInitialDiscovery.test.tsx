@@ -47,3 +47,37 @@ it('first open discovers existing PM jobs once without an operator refresh', asy
   expect(calls.some(call => call.path === '/api/jobs/metadata/pins')).toBe(true);
   expect(screen.getByRole('status').textContent).toContain('job_1');
 });
+
+it('rediscovers once when a store is written after the view was discovered', async () => {
+  vi.useFakeTimers();
+  Reflect.deleteProperty(window, 'harnessIPC');
+  let discovered = false;
+  const calls: { method: string; path: string }[] = [];
+  const late = { ...view(), sources: view().sources.map(s => ({ ...s, available: false })) };
+  vi.stubGlobal('fetch', vi.fn(async (path: string, init?: RequestInit) => {
+    const url = new URL(path, 'http://fixture');
+    const route = url.pathname;
+    const method = init?.method ?? 'GET';
+    calls.push({ method, path: route });
+    if (route === '/api/endpoint') return response(handshake);
+    if (route === '/api/jobs/metadata/view/refresh') { discovered = true; return response(view('generation-discovered')); }
+    if (route === '/api/jobs/metadata/view') return response(discovered ? view('generation-discovered') : late);
+    if (route === '/api/jobs/metadata/pins') {
+      const body = JSON.parse(String(init?.body));
+      return response({ version: 1, context: { ...context, scope: 'all', view_generation: discovered ? 'generation-discovered' : context.view_generation }, results: body.selections.map((selection: unknown) => ({ selection, result: { kind: 'unavailable', reason: 'fixture' } })) });
+    }
+    if (route === '/api/jobs/metadata') {
+      const result = list();
+      if (!discovered) return response({ ...result, mode: url.searchParams.get('mode'), rows: [],
+        page: { outcome: 'unavailable', revision: 0, next_cursor: null, scanned: 0, checkpoint: 0 },
+        missing: [...result.missing, 'store_unavailable', 'sources_not_refreshed'],
+        context: { ...result.context, scope: 'all' } });
+      return response({ ...result, mode: url.searchParams.get('mode'), rows: result.rows.map(row => ({ ...row, lifecycle: url.searchParams.get('status') ?? 'running' })), context: { ...result.context, scope: 'all', view_generation: 'generation-discovered' } });
+    }
+    throw new Error(`Unexpected ${method} ${route}`);
+  }));
+  render(<JobMetadataOwner repo={context.repo} sessionId={context.session_id}><Observed /></JobMetadataOwner>);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+  expect(calls.filter(call => call.path === '/api/jobs/metadata/view/refresh')).toHaveLength(1);
+  expect(screen.getByRole('status').textContent).toContain('job_1');
+});

@@ -309,8 +309,9 @@ def test_missing_old_store_no_creation(tmp_path):
         reader = MetadataReader(lambda: ActiveContext(ctx.session_id, ctx.repo, 'g'), sources)
         before = hashes(tmp_path)
         code, result = get_job_metadata(query(ctx, sources.stores[0].selection, mode='snapshot'), reader)
-        assert code == 200
-        assert result['page']['outcome'] == 'unavailable' and result['rows'] == []
+        assert code == 200 and result['rows'] == []
+        # A never-written root holds no jobs; an incompatible old store is unreadable.
+        assert result['page']['outcome'] == ('unavailable' if name == 'old' else 'complete')
         assert hashes(tmp_path) == before
         assert root.exists() == (name == 'old')
 
@@ -883,3 +884,89 @@ def test_terminal_projection_requires_current_complete_worker_evidence(env, monk
         assert lifecycle is None
     else:
         assert lifecycle in ('running', 'stitching', None)
+
+
+def test_changes_page_has_one_row_per_job_newest_wins(env):
+    # PM's changes feed is a journal: a job changed twice since the checkpoint
+    # appears twice. The wire page is a membership delta, so each job must
+    # appear once, at its newest revision (the renderer rejects duplicates).
+    store, reader, ctx, selection, _ = env
+    j = job(store)
+    _, first = page(env)
+    store.save_job(replace(j, status=JobStatus.RUNNING))
+    store.save_job(replace(j, status=JobStatus.STITCHING))
+    code, changed = get_job_metadata(query(ctx, selection, mode='changes', after_revision=first['page']['checkpoint']), reader)
+    assert code == 200 and changed['page']['outcome'] == 'complete'
+    refs = [json.dumps(r['selection']['job_ref'], sort_keys=True) for r in changed['rows']]
+    assert len(refs) == len(set(refs)) == 1
+    row = changed['rows'][0]
+    assert row['lifecycle'] == 'stitching'
+    assert row['revision'] == max(r.revision for r in store.read_job_summary_changes(
+        after_revision=first['page']['checkpoint']).items)
+
+
+def test_status_changes_page_ends_with_removal_when_job_leaves_lane(env):
+    store, reader, ctx, selection, _ = env
+    j = job(store)
+    store.save_job(replace(j, status=JobStatus.RUNNING))
+    _, first = get_job_metadata(query(ctx, selection, mode='snapshot', status='running'), reader)
+    assert len(first['rows']) == 1
+    store.save_job(replace(j, status=JobStatus.RUNNING, goal='goal-renamed'))
+    store.save_job(replace(j, status=JobStatus.COMPLETE))
+    code, changed = get_job_metadata(query(ctx, selection, mode='changes', status='running',
+                                           after_revision=first['page']['checkpoint']), reader)
+    assert code == 200 and len(changed['rows']) == 1
+    assert changed['rows'][0]['deleted'] is True
+
+
+@pytest.mark.parametrize('mode', ['snapshot', 'changes'])
+def test_never_created_store_reads_as_empty_not_unavailable(tmp_path, mode):
+    # A fresh profile names its harness store before the first job writes it.
+    # Zero jobs is a complete answer, not a read failure.
+    root = tmp_path / 'fresh-state'
+    sources = KnownSources.from_roots([('harness', root, 'sqlite', False)])
+    ctx = ReadContext('session-A', str(tmp_path), 'generation-1', 'session')
+    reader = MetadataReader(lambda: ActiveContext(ctx.session_id, ctx.repo, ctx.view_generation), sources)
+    selection = sources.stores[0].selection
+    code, result = get_job_metadata(query(ctx, selection, mode=mode, after_revision=0) if mode == 'changes'
+                                    else query(ctx, selection, mode=mode), reader)
+    assert code == 200 and result['rows'] == []
+    assert result['page'] == dict(outcome='complete', revision=0, next_cursor=None, scanned=0, checkpoint=0)
+    assert 'store_not_created' in result['missing'] and 'store_unavailable' not in result['missing']
+    assert not root.exists()
+
+
+def test_store_created_after_view_still_needs_refresh(tmp_path):
+    root = tmp_path / 'late-state'
+    sources = KnownSources.from_roots([('harness', root, 'sqlite', False)])
+    ctx = ReadContext('session-A', str(tmp_path), 'generation-1', 'session')
+    reader = MetadataReader(lambda: ActiveContext(ctx.session_id, ctx.repo, ctx.view_generation), sources)
+    store = create_store('sqlite', root, mode='ensure')
+    store.init()
+    store.create_job('late', origin='marionette', session_id='session-A')
+    _, result = get_job_metadata(query(ctx, sources.stores[0].selection, mode='snapshot'), reader)
+    assert result['page']['outcome'] == 'unavailable' and 'store_unavailable' in result['missing']
+    assert 'sources_not_refreshed' in result['missing']
+    assert result['missing'].count('sources_not_refreshed') == 1
+
+
+@pytest.mark.parametrize('outcome', ['unavailable', 'cursor_expired'])
+def test_no_progress_page_never_carries_a_cursor(env, monkeypatch, outcome):
+    # A locked store mid-traversal answers 'unavailable' and echoes the caller's PM
+    # cursor. The wire contract is next_cursor=None for no-progress pages: the client
+    # keeps its own cursor and retries. Echoing it made the renderer reject the page.
+    from puppetmaster.contracts import MetadataPage
+    store, reader, ctx, selection, _ = env
+    for i in range(70):
+        job(store, i)
+    _, first = page(env)
+    assert first['page']['outcome'] == 'partial' and first['page']['next_cursor']
+    handle = reader.sources.stores[0].handle
+    def locked(*, cursor=None, after_revision=0, **_):
+        return MetadataPage((), outcome, 0, next_cursor=cursor, scanned=0,
+                            reason='read_snapshot_unavailable', retry_after_ms=100)
+    monkeypatch.setattr(handle, 'list_job_summaries', locked)
+    code, result = page(env, cursor=first['page']['next_cursor'])
+    assert code == 200 and result['rows'] == []
+    assert result['page']['outcome'] == outcome
+    assert result['page']['next_cursor'] is None and result['page']['checkpoint'] == 0

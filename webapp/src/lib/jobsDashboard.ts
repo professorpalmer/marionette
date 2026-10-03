@@ -87,6 +87,31 @@ export type JobsListEmptyInput = {
   hasJobs: boolean;
 };
 
+export type TrackerReadInput = {
+  storeError: boolean;
+  view: { availability: "known" | "unavailable"; missing: string[]; refreshing: boolean; refresh: string } | null;
+  streamFailed: boolean;
+  /** A list read named a store written after discovery; rediscovery is underway. */
+  sourcesPending: boolean;
+  localFailed: boolean;
+  working: boolean;
+  /** At least one list read has completed for the current view. */
+  settled: boolean;
+  hasJobs: boolean;
+};
+
+/** Source discovery is loading, not a failed read; a settled empty list stays settled
+ *  while background polls run. Without both, the tracker flickers on every refresh. */
+export function trackerReadState(input: TrackerReadInput): { failedRead: boolean; loading: boolean } {
+  const view = input.view;
+  const discovering = input.sourcesPending || !!view && (view.refreshing || view.refresh === "pending"
+    || (view.availability === "unavailable" && view.missing.length > 0 && view.missing.every(m => m === "sources_not_refreshed")));
+  const failedRead = input.storeError || (!!view
+    && ((view.availability === "unavailable" && !discovering) || input.streamFailed || input.localFailed));
+  const loading = !failedRead && !input.hasJobs && (!view || discovering || (input.working && !input.settled));
+  return { failedRead, loading };
+}
+
 /** Honest empty-list copy — never "Job data unavailable" as a blank lie. */
 export function jobsListEmptyTruth(input: JobsListEmptyInput): { title: string; detail?: string } {
   if (input.failedRead) {
