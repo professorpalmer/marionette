@@ -62,8 +62,15 @@ function snapshot(overrides: Partial<LocalModelsSnapshot> = {}): LocalModelsSnap
   };
 }
 
+/** Saved-server cards render collapsed; expand one to reach its controls. */
+async function openCard(endpointId: string) {
+  const toggle = await screen.findByTestId(`local-external-toggle-${endpointId}`);
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+}
+
 describe("LocalModelsSettingsPage", () => {
   beforeEach(() => {
+    localStorage.clear();
     vi.clearAllMocks();
     watchLocalModelEvents.mockImplementation(() => () => {});
     getLocalModelEvents.mockResolvedValue({
@@ -218,6 +225,7 @@ describe("LocalModelsSettingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("local-external-ollama-127-0-0-1-11434")).toBeTruthy();
     });
+    await openCard("ollama-127-0-0-1-11434");
     fireEvent.click(screen.getByRole("button", { name: /^Activate$/i }));
     await waitFor(() => {
       expect(localModelCommand).toHaveBeenCalledWith({
@@ -342,6 +350,7 @@ describe("LocalModelsSettingsPage", () => {
     }));
     render(<LocalModelsSettingsPage />);
     await waitFor(() => screen.getByTestId("local-external-openai-compatible-bonsai"));
+    await openCard("openai-compatible-bonsai");
     expect(screen.getByTestId("local-external-context-openai-compatible-bonsai").textContent)
       .toMatch(/98,?304/);
     fireEvent.change(screen.getByLabelText(/Context tokens for bonsai/i), {
@@ -375,6 +384,7 @@ describe("LocalModelsSettingsPage", () => {
     getLocalModels.mockResolvedValue(snapshot({ externals: [endpoint] }));
     localModelCommand.mockResolvedValue(snapshot({ externals: [endpoint] }));
     render(<LocalModelsSettingsPage />);
+    await openCard("openai-compatible-host");
     await waitFor(() => screen.getByTestId("local-external-sampling-openai-compatible-host"));
 
     const temp = screen.getByLabelText("Temperature for adv kimi") as HTMLInputElement;
@@ -746,6 +756,7 @@ describe("LocalModelsSettingsPage", () => {
     }));
     render(<LocalModelsSettingsPage />);
     await waitFor(() => screen.getByTestId("local-external-ollama-127-0-0-1-11434"));
+    await openCard("ollama-127-0-0-1-11434");
     expect(screen.getByTestId("local-models-tool-calling-copy").textContent).toMatch(
       /records whether the endpoint returned the requested tool call/i,
     );
@@ -786,6 +797,7 @@ describe("LocalModelsSettingsPage", () => {
       }],
     }));
     render(<LocalModelsSettingsPage />);
+    await openCard("ollama-127-0-0-1-11434");
     await waitFor(() => screen.getByTestId("local-external-tool-calling-ollama-127-0-0-1-11434"));
     expect(screen.getByTestId("local-external-tool-calling-ollama-127-0-0-1-11434").textContent)
       .toMatch(/Unsupported/);
@@ -811,6 +823,7 @@ describe("LocalModelsSettingsPage", () => {
       }],
     }));
     render(<LocalModelsSettingsPage />);
+    await openCard("runpod-box");
     await waitFor(() => screen.getByTestId("local-external-tool-calling-runpod-box"));
     expect(screen.getByTestId("local-external-tool-calling-runpod-box").textContent).toMatch(/Error/);
     expect(screen.getByTestId("local-external-tool-calling-runpod-box").textContent).toMatch(/API key/);
@@ -910,4 +923,43 @@ describe("managed idle policy", () => {
       expect(screen.queryByTestId("local-models-idle-policy")).toBeNull();
     },
   );
+});
+
+function externalFixture(id: string, name: string, healthy: boolean) {
+  return {
+    id, name, healthy, vendor: "openai-compatible", base_url: `https://${id}.example/v1`,
+    models: ["m"], selected_model: "m", context_length: 262144,
+  };
+}
+
+describe("saved server cards collapse", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    watchLocalModelEvents.mockImplementation(() => () => {});
+    getLocalModelEvents.mockResolvedValue({ ok: true, events: [], cursor: 0, snapshot: snapshot() });
+    getLocalModels.mockResolvedValue(snapshot({ externals: [
+      externalFixture("box-a", "Bonsai2", true),
+      externalFixture("box-b", "CyberKimi", false),
+    ] }));
+  });
+
+  it("renders collapsed headers and expands one card at a time, remembering it", async () => {
+    const { unmount } = render(<LocalModelsSettingsPage />);
+    const toggleA = await screen.findByTestId("local-external-toggle-box-a");
+    expect(toggleA.textContent).toMatch(/Bonsai2 .* reachable/);
+    expect(toggleA.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("button", { name: /Test tool calling/i })).toBeNull();
+    expect(screen.queryByTestId("local-external-context-box-a")).toBeNull();
+
+    fireEvent.click(toggleA);
+    expect(toggleA.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("local-external-context-box-a")).toBeTruthy();
+    expect(screen.queryByTestId("local-external-context-box-b")).toBeNull();
+    unmount();
+
+    render(<LocalModelsSettingsPage />);
+    expect((await screen.findByTestId("local-external-toggle-box-a")).getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("local-external-toggle-box-b").getAttribute("aria-expanded")).toBe("false");
+  });
 });
