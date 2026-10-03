@@ -343,3 +343,23 @@ def test_attach_captures_repo_before_factory_work(owned_server, tmp_path):
     capture = srv._runners.metadata_view.capture()
     assert capture.session_id == row['id'] and capture.repo == a
     assert srv._cfg.repo == b
+
+
+def test_runner_swap_on_same_root_keeps_list_cursors_valid(tmp_path):
+    # Placeholder -> real runner on the same root keeps the view generation, so
+    # the renderer keeps its in-flight list cursors. Rebuilding the reader there
+    # minted a new cursor secret and every continuation came back 400
+    # (renderer: "Job updates unavailable (invalid request)", retried forever).
+    reg, a, ctx, selection, _ = seeded(tmp_path)
+    for i in range(70):
+        a.state().store.create_job(f'owned-{i}', origin='marionette', session_id='A')
+    view = reg.metadata_view
+    qs = dict(session_id=['A'], repo=[ctx.repo], view_generation=[ctx.view_generation],
+              scope=['session'], source=[selection.source], state_id=[selection.state_id], mode=['snapshot'])
+    code, first = get_job_metadata(qs, view.reader())
+    assert code == 200 and first['page']['outcome'] == 'partial' and first['page']['next_cursor']
+    view.replace_root(view._target.state_dir, local_handle=object())
+    assert view.capture().generation == ctx.view_generation
+    code, second = get_job_metadata(dict(qs, cursor=[first['page']['next_cursor']]), view.reader())
+    assert code == 200, second
+    assert second['page']['outcome'] in ('partial', 'complete')

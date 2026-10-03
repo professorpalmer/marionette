@@ -92,6 +92,7 @@ function isObservedTrackerHire(
   return freshness === 'observed'
     && nativeActiveStatuses.includes(status)
     && isTrackerHire(signals)
+    && !isCommandJob(signals)
     && !isWaveCoordinator(signals);
 }
 
@@ -221,9 +222,16 @@ export function metadataJobs(state: MetadataJobsState): Job[] {
   for (const job of pm) {
     const row = observed.get(job.metadata_key ?? '');
     if (!row) continue;
-    job.canonical_aliases = [...nativeByJobId.values()]
-      .filter(alias => canonicalPMReplacesLocal(alias, [row]))
-      .map(alias => alias.row.local_ref.job_id);
+    const aliases = [...nativeByJobId.values()].filter(alias => canonicalPMReplacesLocal(alias, [row]));
+    job.canonical_aliases = aliases.map(alias => alias.row.local_ref.job_id);
+    // One row per swarm: while the PM read is stale its live alias carries the
+    // lifecycle, so the row stays Active instead of dropping to unknown. A
+    // terminal PM lifecycle is monotonic and never regresses to the alias.
+    const live = aliases.find(alias => alias.freshness === 'observed');
+    if (job.read_status === 'unavailable' && live && pmActiveStatuses.some(status => status === job.status)) {
+      job.status = live.row.lifecycle;
+      delete job.read_status;
+    }
   }
   return [...pm, ...local];
 }

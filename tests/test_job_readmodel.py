@@ -228,7 +228,7 @@ def test_cursor_tamper_binding_and_captured_snapshot(env):
     assert old['display']['goal_preview'] == unseen.goal and old['lifecycle'] == 'queued'
     code, delta = get_job_metadata(query(ctx, selection, mode='changes',
         after_revision=continued['page']['checkpoint']), reader)
-    assert code == 200 and delta['page']['outcome'] == 'complete'
+    assert code == 200 and delta['page']['outcome'] == 'complete', (delta['page'], delta.get('missing'))
     assert {r['selection']['job_ref']['job_id'] for r in delta['rows']} == {later.id, unseen.id, removed.id}
     assert next(r for r in delta['rows'] if r['selection']['job_ref']['job_id'] == unseen.id)['lifecycle'] == 'complete'
     assert next(r for r in delta['rows'] if r['selection']['job_ref']['job_id'] == removed.id)['deleted'] is True
@@ -352,6 +352,26 @@ def test_strict_boundary_and_pins(env):
         qs.update(extra)
         assert get_job_metadata(qs, reader)[0] == 400
     assert get_local_metadata(query(ctx), reader)[1]['page']['outcome'] == 'unavailable'
+
+
+def test_locked_header_read_drops_only_that_header(env, monkeypatch):
+    # A live writer can lock the raw reads behind a header. That pin keeps its
+    # row without a header; the batch never turns into a 503.
+    store, reader, ctx, selection, _ = env
+    jobs = [job(store, i) for i in range(2)]
+    refs = [PMSelection(ctx, selection, store.job_ref(j.id)) for j in jobs]
+    handle = reader.sources.stores[0].handle
+    real = handle.get_job
+    def get_job(job_id):
+        if job_id == jobs[0].id:
+            raise sqlite3.OperationalError('database is locked')
+        return real(job_id)
+    monkeypatch.setattr(handle, 'get_job', get_job)
+    code, result = post_job_metadata_pins(dict(asdict(ctx), selections=[r.wire() for r in refs]), reader)
+    assert code == 200
+    locked, fine = (r['result'] for r in result['results'])
+    assert locked['kind'] == 'present' and 'header' not in locked['row']
+    assert fine['kind'] == 'present' and 'header' in fine['row']
 
 
 def test_cross_store_collision_and_alias_preference(env, tmp_path, monkeypatch):
@@ -756,6 +776,29 @@ def test_complete_task_page_settles_lagging_running_parent(env, statuses, expect
     detail = reader.read_selected_metadata(selection)
     assert detail['tasks']['page']['outcome'] == 'complete'
     assert detail['lifecycle'] == expected
+
+
+@pytest.mark.parametrize('mode', ['snapshot', 'changes'])
+def test_list_read_retries_a_lock_burst(env, monkeypatch, mode):
+    # A live writer's lock burst is a retry hint, not an unavailable roster: one
+    # stale page marks every listed job stale in the tracker.
+    from puppetmaster.contracts import MetadataPage
+    store, reader, ctx, selection, _ = env
+    job(store)
+    handle = reader.sources.stores[0].handle
+    name = 'list_job_summaries' if mode == 'snapshot' else 'read_job_summary_changes'
+    original, calls = getattr(handle, name), []
+    def burst(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return MetadataPage((), 'unavailable', 0, next_cursor=None, scanned=0,
+                                reason='read_snapshot_unavailable', retry_after_ms=20)
+        return original(**kwargs)
+    monkeypatch.setattr(handle, name, burst)
+    code, result = page(env) if mode == 'snapshot' else get_job_metadata(
+        query(ctx, selection, mode='changes', after_revision=0), reader)
+    assert code == 200 and result['page']['outcome'] == 'complete', (result['page'], result['missing'])
+    assert len(result['rows']) == 1 and len(calls) == 2
 
 
 @pytest.mark.parametrize('scan_outcome', ['unavailable', 'cursor_expired'])

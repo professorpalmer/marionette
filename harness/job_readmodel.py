@@ -361,7 +361,7 @@ class MetadataReader:
 
     def _exact_owned_row(self, store, job_ref, known, ctx, status):
         try:
-            page = store.list_job_summaries(job_ref=job_ref, **EXACT_BUDGET)
+            page = _read_page(store.list_job_summaries, job_ref=job_ref, **EXACT_BUDGET)
         except Exception:
             return None
         if page.outcome != 'complete' or len(page.items) != 1 or page.items[0].deleted:
@@ -422,7 +422,7 @@ class MetadataReader:
                     prepended.append(row)
         method = store.list_job_summaries if mode == 'snapshot' else store.read_job_summary_changes
         try:
-            page = method(cursor=pm_cursor, after_revision=after_revision, **filters, **PAGE_BUDGET)
+            page = _read_page(method, cursor=pm_cursor, after_revision=after_revision, **filters, **PAGE_BUDGET)
         except StoreIdentityError:
             result['missing'].append('selection_changed')
             self.check(ctx)
@@ -520,7 +520,17 @@ class MetadataReader:
         for selection in selections:
             self.check(ctx)
             store, row, reason = self._selected(selection, pin=True)
-            header = self._header(store, row, selection) if not reason and time.monotonic() < deadline else None
+            header = None
+            if not reason and time.monotonic() < deadline:
+                try:
+                    header = self._header(store, row, selection)
+                except ViewChanged:
+                    raise
+                except Exception:
+                    # The header's raw store reads have no lock retry, and a live
+                    # writer can hold them. Drop only this pin's header: the row is
+                    # still exact, and one lock must not fail the batch with a 503.
+                    header = None
             if time.monotonic() >= deadline:
                 header = None
             # A live job's summary revision advances under every worker write;

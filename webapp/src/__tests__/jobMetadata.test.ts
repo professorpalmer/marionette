@@ -175,7 +175,7 @@ it('looks up expert facts on the canonical PM identity', () => {
   expect(expertLookupKey('local-only', undefined, context.repo)).toBe('local-only');
 });
 
-it('replaces a local placeholder only with its fresh exact canonical PM identity', () => {
+it('replaces a local placeholder with its exact canonical PM identity, fresh or retained', () => {
   const local = {
     freshness: 'observed', observedAt: 1,
     row: { local_ref: { job_id: 'local-swarm-call', incarnation: 'local-incarnation' }, revision: 1, deleted: false,
@@ -188,7 +188,9 @@ it('replaces a local placeholder only with its fresh exact canonical PM identity
   } satisfies LocalObservation;
   const canonical = { row: { ...summary(), selection: { ...selection(), job_ref: { job_id: 'job_canonical', state_id: 'store-A', version: 2, incarnation: 'pm-incarnation' } } }, freshness: 'observed' } satisfies MetadataObservation;
   expect(canonicalPMReplacesLocal(local, [canonical])).toBe(true);
-  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale' }])).toBe(false);
+  // A live store lock marks active PM rows stale between reads. The retained row is the
+  // same job, so it keeps hiding the alias; otherwise the swarm is listed twice.
+  expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale' }])).toBe(true);
   // Terminal is monotonic: a stale PM row that already reported complete still hides the
   // alias, so the job cannot snap back to Active on the next stale flip.
   expect(canonicalPMReplacesLocal(local, [{ ...canonical, freshness: 'stale', row: { ...canonical.row, lifecycle: 'complete' } }])).toBe(true);

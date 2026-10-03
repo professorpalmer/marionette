@@ -438,7 +438,7 @@ export class JobMetadataStore {
       : liveOnly
         ? (pmReconciliation && slot === 5 ? eligibleIndex('history') : null) ?? eligibleIndex('active')
         : eligibleIndex(preferred) ?? eligibleIndex('active') ?? eligibleIndex('history') ?? eligibleIndex('sibling');
-    if (index === null && initial) return Promise.resolve('skipped');
+    if (index === null && initial) return this.localHistoryUnread() ? this.advanceLocal('history') : Promise.resolve('skipped');
     if (index === null) {
       if (activeAvailable) return this.advanceLocal('active');
       if (!liveOnly && nativeEligible) return this.advanceLocal('history');
@@ -544,15 +544,22 @@ export class JobMetadataStore {
     if (view.view.refreshing || view.refresh !== 'idle') return false;
     if (view.view.missing.includes('sources_not_refreshed') && this.sourceCapture?.key !== this.captureKey(view.view)) return true;
     const primary = new Set(view.view.sources.filter(s => !s.cross_project).map(s => s.state_id));
-    return this.state.streams.some(s => primary.has(s.stream.store.state_id) && !s.initialized);
+    return this.state.streams.some(s => primary.has(s.stream.store.state_id) && !s.initialized) || this.localHistoryUnread();
+  }
+  /** Native jobs reach history once they finish and the idle cadence never pages it,
+   * so startup reads its first page or a rebuilt tracker drops finished local work. */
+  private localHistoryUnread(): boolean {
+    const view = this.state.view;
+    return view.kind === 'view' && Boolean(view.view.local?.available) && this.state.local.observedAt === null
+      && !['expired', 'unavailable'].includes(this.state.local.state);
   }
   /** Owner-only startup: one page per known primary stream, never continuation pages.
-   * Two primary sources x six statuses + two histories + native active + view/capture <= 18 turns.
+   * Two primary sources x six statuses + two histories + native active and history + view/capture <= 19 turns.
    * Admissions are serial; skipped/failed work never queues a continuation.
    */
   async ownerTick(): Promise<void> {
     const generation = this.scheduleGeneration, epoch = this.state.epoch;
-    for (let remaining = 18; remaining > 0; remaining--) {
+    for (let remaining = 19; remaining > 0; remaining--) {
       if (this.disposed || document.hidden || generation !== this.scheduleGeneration || epoch !== this.state.epoch) return;
       const startup = this.hasInitialWork();
       const result = await this.tick(startup, { liveOnly: !startup });
@@ -792,8 +799,11 @@ export class JobMetadataStore {
       const headers = { ...this.state.headers };
       for (const { selection, result } of response.results) {
         const key = metadataSelectionKey(selection);
+        // A row can come back without its header when that read was skipped (deadline,
+        // a locked store read); keep the last header rather than blanking the counts.
+        const previous = headers[key]?.observation.row.header;
         if (result.kind === 'present' && result.row.revision >= (headers[key]?.observation.row.revision ?? 0))
-          headers[key] = { observation: { row: result.row, freshness: 'observed' }, refreshedAt: Date.now() };
+          headers[key] = { observation: { row: result.row.header || !previous ? result.row : { ...result.row, header: previous }, freshness: 'observed' }, refreshedAt: Date.now() };
         else if (headers[key]) headers[key] = { ...headers[key], observation: { ...headers[key].observation, freshness: 'stale' } };
       }
       this.publish({ ...this.state, headers, headerReads: { ...this.state.headerReads, ...Object.fromEntries(response.results.map(({ selection, result }) => {
