@@ -2,6 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, configure } from "@testing-library/react";
 import { afterEach } from "vitest";
 import "../index.css";
+import { cancelUsageRefresh } from "../lib/usageRefresh";
 
 if (typeof HTMLDialogElement !== "undefined") {
   const proto = HTMLDialogElement.prototype;
@@ -30,4 +31,7 @@ configure({ asyncUtilTimeout: 4000 });
 
 afterEach(() => {
   cleanup();
+  // A refresh still pending from this test must not fire into the next one or
+  // after the environment is torn down.
+  cancelUsageRefresh();
 });

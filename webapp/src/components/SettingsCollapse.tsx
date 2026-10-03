@@ -3,7 +3,7 @@ import { ChevronRight, ChevronDown } from "lucide-react";
 
 const SETTINGS_SECTION_OPEN_KEY = "pmharness.settings.sectionOpen";
 
-function loadSettingsSectionOpen(id: string, defaultOpen: boolean): boolean {
+export function loadSettingsSectionOpen(id: string, defaultOpen: boolean): boolean {
   try {
     const raw = localStorage.getItem(SETTINGS_SECTION_OPEN_KEY);
     if (!raw) return defaultOpen;
@@ -15,7 +15,7 @@ function loadSettingsSectionOpen(id: string, defaultOpen: boolean): boolean {
   return defaultOpen;
 }
 
-function persistSettingsSectionOpen(id: string, open: boolean) {
+export function persistSettingsSectionOpen(id: string, open: boolean) {
   try {
     const raw = localStorage.getItem(SETTINGS_SECTION_OPEN_KEY);
     const map = (raw ? JSON.parse(raw) : {}) as Record<string, boolean>;

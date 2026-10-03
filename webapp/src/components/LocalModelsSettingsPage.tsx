@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Download,
   Pause,
   Play,
@@ -21,6 +23,12 @@ import {
 } from "../lib/api";
 import { isRecord, isLocalModelsSnapshot, parseIdleMinutes, residencyLabel } from "../lib/localModelParsing";
 import ExternalSamplingEditor from "./ExternalSamplingEditor";
+import { loadSettingsSectionOpen, persistSettingsSectionOpen } from "./SettingsCollapse";
+
+/** Saved-server cards start collapsed; open state persists with other settings sections. */
+function externalCardKey(endpointId: string): string {
+  return `local-external:${endpointId}`;
+}
 
 const TOOL_CALLING_LABELS: Record<LocalToolCallingStatus, string> = {
   unverified: "Unverified",
@@ -111,6 +119,13 @@ export default function LocalModelsSettingsPage() {
   const [selectedDiscovered, setSelectedDiscovered] = useState("");
   const [selectedCatalogId, setSelectedCatalogId] = useState("");
   const [idleTimeout, setIdleTimeout] = useState("0");
+  const [openCards, setOpenCards] = useState<Record<string, boolean>>({});
+  const isCardOpen = (key: string) => openCards[key] ?? loadSettingsSectionOpen(key, false);
+  const toggleCard = (key: string) => {
+    const next = !isCardOpen(key);
+    persistSettingsSectionOpen(key, next);
+    setOpenCards((prev) => ({ ...prev, [key]: next }));
+  };
   const idleEdited = useRef(false);
   const idleEditRevision = useRef(0);
   const latestSnapshot = useRef<LocalModelsSnapshot | null>(null);
@@ -702,17 +717,41 @@ export default function LocalModelsSettingsPage() {
             {(snapshot?.externals || []).map((endpoint: LocalExternalEndpoint) => {
               const endpointSpec = `local:${endpoint.id}/${endpoint.selected_model || ""}`;
               const toolCalling = parseLocalToolCalling(endpoint.tool_calling);
+              const cardKey = externalCardKey(endpoint.id);
+              const expanded = isCardOpen(cardKey);
+              const bodyId = `local-external-body-${endpoint.id}`;
               return (
                 <li
                   key={endpoint.id}
                   className="rounded-md border border-edge/40 px-3 py-2"
                   data-testid={`local-external-${endpoint.id}`}
                 >
-                  <p className="text-ui-12 text-txt">
-                    {endpoint.name || endpoint.id} · {endpoint.vendor}
-                    {endpoint.healthy ? " · reachable" : " · saved"}
-                  </p>
-                  <p className="text-ui-11 text-muted truncate">{endpoint.base_url}</p>
+                  <button
+                    type="button"
+                    aria-expanded={expanded}
+                    aria-controls={bodyId}
+                    data-testid={`local-external-toggle-${endpoint.id}`}
+                    onClick={() => toggleCard(cardKey)}
+                    className="w-full flex items-start gap-1.5 text-left rounded group focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
+                  >
+                    {expanded
+                      ? <ChevronDown size={12} className="shrink-0 mt-[3px] text-faint group-hover:text-txt" />
+                      : <ChevronRight size={12} className="shrink-0 mt-[3px] text-faint group-hover:text-txt" />}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2 text-ui-12 text-txt">
+                        <span className="truncate">
+                          {endpoint.name || endpoint.id} · {endpoint.vendor}
+                          {endpoint.healthy ? " · reachable" : " · saved"}
+                        </span>
+                        {active === endpointSpec ? (
+                          <span className="shrink-0 text-ui-10 text-accent">Active</span>
+                        ) : null}
+                      </span>
+                      <span className="block text-ui-11 text-muted truncate">{endpoint.base_url}</span>
+                    </span>
+                  </button>
+                  {expanded ? (
+                  <div id={bodyId}>
                   <p
                     className="text-ui-11 text-muted mt-1"
                     data-testid={`local-external-context-${endpoint.id}`}
@@ -793,6 +832,8 @@ export default function LocalModelsSettingsPage() {
                       Delete
                     </button>
                   </div>
+                  </div>
+                  ) : null}
                 </li>
               );
             })}
