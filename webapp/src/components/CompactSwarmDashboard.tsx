@@ -34,10 +34,12 @@ function statusIcon(status: string) {
 function newestEvidence(artifacts: ExpertArtifact[], taskId: string): ExpertArtifact | null {
   const matches = artifacts.filter(artifact => artifact.task_id === taskId && artifact.type.toUpperCase() !== 'ROUTING');
   if (!matches.length) return null;
+  // Artifacts arrive in save order and a worker saves its whole batch in one
+  // second, so a tie goes to the later one: the verdict, not the run record.
   return matches.reduce((latest, candidate) => {
     const a = Date.parse(latest.created_at ?? '');
     const b = Date.parse(candidate.created_at ?? '');
-    return Number.isFinite(b) && (!Number.isFinite(a) || b > a) ? candidate : latest;
+    return Number.isFinite(b) && (!Number.isFinite(a) || b >= a) ? candidate : latest;
   });
 }
 

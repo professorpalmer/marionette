@@ -2,6 +2,7 @@ import { SwarmLinkSessionContext, useOpenSwarmJob } from '../lib/useOpenSwarmJob
 import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportHandle } from "./conversation/sessionViewport";
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
+import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -1667,9 +1668,7 @@ export const TranscriptList = memo(function TranscriptList({
     getItemKey: (index) => rowKeys[index] ?? stableItemKey(virtualGrouped[index]!, index),
   });
   const measureVirtualRowDom = useCallback(
-    (element: HTMLElement) => {
-      rowVirtualizer.measureElement(element);
-    },
+    (element: HTMLElement) => measureAfterCommit(rowVirtualizer, element),
     [rowVirtualizer],
   );
   const scrollToEnd = useCallback(() => {
