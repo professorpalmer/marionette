@@ -125,3 +125,24 @@ it('labels partial worker and token coverage without inventing a complete total'
   expect(screen.getByText('10+')).toBeVisible();
   expect(screen.getByText(/0\/1 routes recorded/)).toBeVisible();
 });
+
+it('shows the worker verdict as latest evidence when a worker saves its artifacts in one second', () => {
+  // A worker saves its run record, findings and verdict with one created_at.
+  // The tie kept the first (the run record), not the verdict saved last.
+  const at = '2026-10-03T20:19:12Z';
+  const artifact = (id: string, type: string, headline: string, detail: string | null = null) => ({
+    id, task_id: 'task-1', type, created_by: 'worker', created_at: at, headline, detail, result: 'passed', failure: null,
+    confidence: null, model: null, adapter: null, policy: null, provider: null, role: null, est_cost_usd: null,
+    rejected: [], check_result: 'passed' as const,
+  });
+  const saved = { ...expert, tasks: [task(1)], artifacts: [
+    artifact('a-run', 'VERIFICATION', 'Worker run: 6 turns, 14 tool calls'),
+    artifact('a-finding', 'FINDING', 'Split rm flags bypass the classifier'),
+    artifact('a-verdict', 'VERIFICATION', 'Worker verdict PASS', 'Covered the assigned scope.'),
+  ] } satisfies ExpertMetadata;
+  render(<CompactSwarmDashboard title="One worker" lifecycle="complete" expert={saved}
+    workerStatuses={new Map([['task-1', 'complete']])} headerModel="m" artifactCount={3} usage={10} />);
+  fireEvent.click(within(screen.getByRole('group', { name: 'Workers' })).getByRole('button', { name: /Worker 1/ }));
+  const inspector = screen.getByRole('region', { name: 'Selected worker' });
+  expect(within(inspector).getByText('Worker verdict PASS · passed')).toBeVisible();
+});

@@ -177,6 +177,12 @@ def artifact_projection(artifact):
             check = 'passed'
     headline = next((text(p.get(key), 1024) for key in ('claim', 'decision', 'risk', 'check', 'change', 'summary', 'gate')
                      if isinstance(p.get(key), str)), '')
+    # A worker's verification carries the task instruction as its check, so it
+    # read as the instruction. The verdict, or the run itself, is the evidence.
+    if kind == 'verification' and p.get('kind') == 'worker_verdict' and isinstance(p.get('verdict'), str):
+        headline = text('Worker verdict ' + p['verdict'], 1024)
+    elif kind == 'verification' and isinstance(p.get('turns'), int) and isinstance(p.get('total_tool_calls'), int):
+        headline = f"Worker run: {p['turns']} turns, {p['total_tool_calls']} tool calls"
     rejected = p.get('rejected', [])
     return dict(id=artifact.id, task_id=artifact.task_id or None, type=kind,
         created_by=text(artifact.created_by) or '', created_at=timestamp(artifact.created_at),
@@ -191,10 +197,28 @@ def artifact_projection(artifact):
         check_result=check)
 
 
+def _evidence_rank(artifact):
+    p, kind = artifact.payload, str(artifact.type)
+    if kind == 'routing':
+        return 0
+    if kind == 'verification' and p.get('kind') == 'worker_verdict':
+        return 3
+    if kind == 'verification' and isinstance(p.get('turns'), int):
+        return 1
+    return 2
+
+
+def chronological(artifacts):
+    """Oldest first. Pages arrive in random-id order and a worker saves its run
+    record, findings and verdict within one second, so ties follow the order a
+    worker writes them: route, run record, findings, verdict last."""
+    return sorted(artifacts, key=lambda a: (timestamp(a.created_at) or '', _evidence_rank(a)))
+
+
 def project(job, tasks, artifacts, coverage, *, registry=(), compaction=None):
     from .job_expert_economics import project_economics
     usage = select_usage_records(artifacts)
-    projected = [artifact_projection(a) for a in artifacts]
+    projected = [artifact_projection(a) for a in chronological(artifacts)]
     task_ids = {task.id for task in tasks}
     failed = any((a['check_result'] == 'failed' or a['failure'])
                  and (a['task_id'] is None or a['task_id'] in task_ids) for a in projected)
