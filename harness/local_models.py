@@ -17,6 +17,7 @@ import threading
 from typing import Any, Optional
 from urllib.parse import urlparse, urlunparse
 
+from .api.redaction import redact_api_secrets
 from .url_safety import METADATA_HOSTS, METADATA_IPS, sanitize_url_for_display
 
 STATE_VERSION = 1
@@ -294,6 +295,29 @@ def bound_plain_reason(value: Any, limit: int = TOOL_CALLING_REASON_LIMIT) -> st
     return text
 
 
+def provider_error_detail(body: Any) -> str:
+    """The provider's structured error message, or "".
+
+    Only a JSON error/message/detail string surfaces. Raw text and HTML bodies
+    can carry internal traces, so they never reach the UI.
+    """
+    if isinstance(body, bytes):
+        body = body.decode("utf-8", "replace")
+    if isinstance(body, str):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return ""
+        if not isinstance(body, dict):
+            return ""
+    # {"error": {"message": ...}}, {"error": "..."}, {"message": ...}, {"detail": ...}
+    while isinstance(body, dict):
+        body = body.get("error") or body.get("message") or body.get("detail")
+    if not isinstance(body, str):
+        return ""
+    return bound_plain_reason(redact_api_secrets(body))
+
+
 def normalize_tool_calling(raw: Any) -> dict:
     base = empty_tool_calling()
     if not isinstance(raw, dict):
@@ -405,12 +429,17 @@ def tool_calling_error_reason(exc: BaseException) -> str:
         http_status = int(http_status) if http_status is not None else None
     except (TypeError, ValueError):
         http_status = None
+    detail = str(getattr(exc, "detail", "") or "")
     if code == "requires_key":
         return "This public endpoint requires an API key."
     if code == "auth" or http_status in {401, 403}:
+        if detail:
+            return bound_plain_reason("The endpoint rejected the API key: %s" % detail)
         return "The endpoint rejected the API key."
     if code in {"url", "public", "lan", "link_local", "metadata", "blocked", "scheme", "invalid"}:
         return bound_plain_reason(str(exc))
+    if detail and http_status is not None and http_status >= 400:
+        return bound_plain_reason("The endpoint returned HTTP %s: %s" % (http_status, detail))
     message = str(exc or "")
     if "malformed" in message.lower():
         return "The endpoint returned a malformed completion payload."

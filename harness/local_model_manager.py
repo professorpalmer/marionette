@@ -48,6 +48,7 @@ from .local_models import (
     load_state,
     local_secret_reach,
     parse_local_spec,
+    provider_error_detail,
     redact_mapping,
     resolve_local_endpoint,
     runtime_asset_for_platform,
@@ -88,10 +89,31 @@ def _platform_name() -> str:
 
 
 class LocalModelError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "error", http_status: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "error",
+        http_status: Optional[int] = None,
+        detail: str = "",
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.http_status = http_status
+        self.detail = detail
+
+
+def http_status_error(status: int, detail: str = "") -> LocalModelError:
+    """HTTP failure that keeps the provider's own message from the error body."""
+    if status in {401, 403}:
+        message, code = "This endpoint rejected the API key (HTTP %s)" % status, "auth"
+    else:
+        message, code = "Endpoint returned HTTP %s" % status, "probe"
+    if detail:
+        message = "%s: %s" % (message, detail)
+    elif code == "auth":
+        message += "."
+    return LocalModelError(message, code=code, http_status=status, detail=detail)
 
 
 def download_host_allowed(host: str) -> bool:
@@ -1941,18 +1963,8 @@ class LocalModelManager:
             if not isinstance(result, dict):
                 raise LocalModelError("Endpoint probe failed", code="probe")
             status = int(result.get("status") or 200)
-            if status in {401, 403}:
-                raise LocalModelError(
-                    "This endpoint rejected the API key (HTTP %s)." % status,
-                    code="auth",
-                    http_status=status,
-                )
             if status >= 400 and status not in {404, 405}:
-                raise LocalModelError(
-                    "Endpoint returned HTTP %s" % status,
-                    code="probe",
-                    http_status=status,
-                )
+                raise http_status_error(status, provider_error_detail(result.get("payload")))
             return result
         req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
         try:
@@ -1969,21 +1981,10 @@ class LocalModelManager:
                 return {"payload": payload, "headers": header_map, "status": getattr(resp, "status", 200)}
         except urllib.error.HTTPError as exc:
             try:
-                exc.read(PROBE_MAX_BYTES)
+                detail = provider_error_detail(exc.read(PROBE_MAX_BYTES))
             except Exception:
-                pass
-            status = int(exc.code)
-            if status in {401, 403}:
-                raise LocalModelError(
-                    "This endpoint rejected the API key (HTTP %s)." % status,
-                    code="auth",
-                    http_status=status,
-                ) from exc
-            raise LocalModelError(
-                "Endpoint returned HTTP %s" % status,
-                code="probe",
-                http_status=status,
-            ) from exc
+                detail = ""
+            raise http_status_error(int(exc.code), detail) from exc
         except LocalModelError:
             raise
         except Exception:
@@ -2365,18 +2366,8 @@ class LocalModelManager:
                 pinned_ip=pin,
             )
             http_status = int(result.get("status") or 200)
-            if http_status in {401, 403}:
-                raise LocalModelError(
-                    "This endpoint rejected the API key (HTTP %s)." % http_status,
-                    code="auth",
-                    http_status=http_status,
-                )
             if http_status >= 400:
-                raise LocalModelError(
-                    "Endpoint returned HTTP %s" % http_status,
-                    code="probe",
-                    http_status=http_status,
-                )
+                raise http_status_error(http_status, provider_error_detail(result.get("payload")))
             status, reason = classify_tool_calling_payload(result.get("payload"))
         except LocalModelError as exc:
             status, reason = "error", tool_calling_error_reason(exc)
