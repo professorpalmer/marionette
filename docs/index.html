@@ -83,28 +83,28 @@
         </div>
       </div>
 
-      <div class="float f1" data-at="6.8" data-to="14.6">
+      <div class="float f1" data-at="6.8" data-to="14">
         <div class="k"><span class="dot"></span>ROUTING &middot; conflict-auditor</div>
-        <div class="v">gpt-6.1-sol, capability 85 &ge; 85, $0.0187 est.</div>
-        <div class="s">50 models scored. Every rejection has a reason.</div>
+        <div class="v">gpt-6.1-sol, capability 85 &ge; 85, $0.0186 est.</div>
+        <div class="s">51 models scored. Every rejection has a reason.</div>
       </div>
-      <div class="float f2 good" data-at="8.6" data-to="14.8">
+      <div class="float f2 good" data-at="8.5" data-to="14.1">
         <div class="k"><svg class="lease-ring" viewBox="0 0 18 18"><circle class="track" cx="9" cy="9" r="7"/><circle class="fill" cx="9" cy="9" r="7"/></svg>LEASE RENEWED</div>
-        <div class="v">task_5ac5edaae3ee</div>
+        <div class="v">task_cd6f9879a3df</div>
         <div class="s">test-coverage-reviewer &middot; ttl 5s &middot; heartbeat</div>
       </div>
-      <div class="float f3" data-at="10.2" data-to="18">
-        <div class="k"><span class="dot"></span>CACHE AFFINITY &middot; pipeline-mapper</div>
+      <div class="float f3" data-at="10" data-to="17.5">
+        <div class="k"><span class="dot"></span>CACHE AFFINITY &middot; explore</div>
         <div class="v">Kept its sibling's gpt-6.1-sol so the shared job brief stays cached.</div>
-        <div class="s">needs 80 &middot; recorded as a routing artifact</div>
+        <div class="s">needs 73 &middot; recorded as a routing artifact</div>
       </div>
-      <div class="float f4 good" data-at="20.4" data-to="33">
-        <div class="k"><span class="dot"></span>RECEIPT &middot; job_e0991768f984</div>
-        <div class="v">298,067 worker tokens. $0.22 at API prices.</div>
-        <div class="s">$1.37 avoided vs. claude-opus-5</div>
+      <div class="float f4 good" data-at="19.8" data-to="33">
+        <div class="k"><span class="dot"></span>RECEIPT &middot; job_338f29ad552d</div>
+        <div class="v">276,765 worker tokens. $0.21 at API prices.</div>
+        <div class="s">$1.27 avoided vs. claude-opus-5</div>
       </div>
     </div>
-    <p class="stage-note"><b>Real capture, not a mockup.</b> Claude Sonnet 5.5 piloting three GPT-6.1 Sol workers on Marionette's own source, all through one OpenRouter key at API prices. Recorded at 2240&times;1400. The 70-second swarm is time-lapsed; the prompt and the answer play at real speed.</p>
+    <p class="stage-note"><b>Real capture, not a mockup.</b> Claude Sonnet 5.5 piloting three GPT-6.1 Sol workers on Marionette's own source, all through one OpenRouter key at API prices. Recorded at 2240&times;1400. The 67-second swarm is time-lapsed; the prompt and the answer play at real speed.</p>
   </header>
 
   <div class="providers" aria-label="Supported providers">
@@ -138,17 +138,17 @@
             <article class="step" data-step="1">
               <div class="n"><i>2</i>The kernel takes the job</div>
               <h3>Three roles. Three leases. One durable job.</h3>
-              <p>Puppetmaster splits the audit into a conflict auditor, a pipeline mapper and a test coverage reviewer. Each role gets a capability bar, a routed model, and a five-second lease that a heartbeat keeps alive.</p>
+              <p>Puppetmaster splits the audit into an explorer, a conflict auditor and a test coverage reviewer. Each role gets a capability bar, a routed model, and a five-second lease that a heartbeat keeps alive.</p>
             </article>
             <article class="step" data-step="2">
               <div class="n"><i>3</i>Workers write to state</div>
               <h3>Findings land in SQLite while the run is still going.</h3>
-              <p>This job wrote 23 artifacts, each with a sha256: 10 findings, 1 risk, 3 decisions, 6 verifications and 3 routing records. All three workers finished in 70 seconds and graded their own coverage PASS, so the tracker marks the job done. A worker that fails or comes back partial is marked that way instead of painted green.</p>
+              <p>This job wrote 25 artifacts, each with a sha256: 11 findings, 2 risks, 3 decisions, 6 verifications and 3 routing records. All three workers finished in 67 seconds and graded their own coverage PASS, so the tracker marks the job done. A worker that fails or comes back partial is marked that way instead of painted green.</p>
             </article>
             <article class="step" data-step="3">
               <div class="n"><i>4</i>The answer streams</div>
               <h3>One answer, and it says what it checked.</h3>
-              <p>The pilot ranked six findings with file and line, added the coverage gaps, and listed what the swarm did not cover. It also says plainly that nothing was reproduced by running code.</p>
+              <p>The pilot ranked six findings with file and line, re-read the regex behind the top one to confirm it, and closed with what to fix first.</p>
             </article>
             <article class="step" data-step="4">
               <div class="n"><i>5</i>You get a receipt</div>
@@ -161,7 +161,7 @@
             <div class="cam-frame" id="camFrame">
               <div class="cam" id="cam">
                 <img src="assets/media/run-1.webp" alt="Marionette with the swarm request sent and the expanded Swarm Tracker listing three routed workers" class="on" data-img="0">
-                <img src="assets/media/run-2.webp" alt="The expanded Swarm Tracker mid-run: one of three workers finished, 73,074 tokens, every role routed to gpt-6.1-sol" data-img="1" loading="lazy">
+                <img src="assets/media/run-2.webp" alt="The expanded Swarm Tracker mid-run: two of three workers finished, 180,418 tokens, every role routed to gpt-6.1-sol" data-img="1" loading="lazy">
                 <img src="assets/media/run-3.webp" alt="The pilot's ranked findings beside the finished job: three workers complete, job done" data-img="2" loading="lazy">
               </div>
               <div class="focus-ring" id="focusRing"></div>
@@ -184,7 +184,7 @@
 
         <div class="kernel-card reveal" id="kernelCard">
           <div class="kernel-top">
-            <span><b>job_e0991768f984</b> &middot; mode=analysis (read-only) &middot; state.sqlite3</span>
+            <span><b>job_338f29ad552d</b> &middot; mode=analysis (read-only) &middot; state.sqlite3</span>
             <span style="display:flex;gap:10px;align-items:center"><span class="status-pill" id="jobStatus" data-s="queued">queued</span><button class="replay" id="kReplay" type="button">Replay</button></span>
           </div>
           <div id="kernelSvgHost"></div>
@@ -224,7 +224,7 @@
             <div class="router-reason" id="routerReason"><span class="k">routing artifact &middot; reason</span><span class="v" id="reasonText"></span><span class="caret"></span></div>
           </div>
           <div class="router-foot">
-            <div><b>50</b><span>candidates scored on a first route, with a written reason for each one turned down.</span></div>
+            <div><b>51</b><span>candidates scored on a first route, with a written reason for each one turned down.</span></div>
             <div><b>Auto-fallback</b><span>A rate-limited worker is re-routed to the next model that clears the bar, and the switch is recorded. Explicit pins never get silently swapped.</span></div>
             <div><b>Cache affinity</b><span>Sibling tasks keep the same model when it still clears the bar, so the shared job brief stays cached.</span></div>
           </div>
@@ -291,12 +291,12 @@
         <div class="econ">
           <div class="reveal">
             <div class="stats">
-              <div class="stat"><div class="num" data-count="298067" data-fmt="int">0</div><div class="lab">worker tokens, measured</div><div class="src">cost_receipt.token_usage</div></div>
-              <div class="stat"><div class="num good" data-count="0.22" data-fmt="usd2">$0.00</div><div class="lab">actual cost at API prices</div><div class="src">billing: api &middot; openrouter</div></div>
-              <div class="stat"><div class="num acc" data-count="1.37" data-fmt="usd2">$0.00</div><div class="lab">avoided vs. the same tasks on claude-opus-5</div><div class="src">counterfactual.avoided_usd</div></div>
-              <div class="stat"><div class="num" data-count="50" data-fmt="int">0</div><div class="lab">models scored per task</div><div class="src">routing.rejected[]</div></div>
+              <div class="stat"><div class="num" data-count="276765" data-fmt="int">0</div><div class="lab">worker tokens, measured</div><div class="src">cost_receipt.token_usage</div></div>
+              <div class="stat"><div class="num good" data-count="0.21" data-fmt="usd2">$0.00</div><div class="lab">actual cost at API prices</div><div class="src">billing: api &middot; openrouter</div></div>
+              <div class="stat"><div class="num acc" data-count="1.27" data-fmt="usd2">$0.00</div><div class="lab">avoided vs. the same tasks on claude-opus-5</div><div class="src">counterfactual.avoided_usd</div></div>
+              <div class="stat"><div class="num" data-count="51" data-fmt="int">0</div><div class="lab">models scored per task</div><div class="src">routing.rejected[]</div></div>
             </div>
-            <img class="receipt-strip" src="assets/media/strip-receipt.webp" alt="Status bar: idle, depth DEEP, 353.6k tokens, 13% cache, about $0.28 spent this session" loading="lazy">
+            <img class="receipt-strip" src="assets/media/strip-receipt.webp" alt="Status bar: idle, depth DEEP, 430.1k tokens, 28% cache, about $0.39 spent this session" loading="lazy">
             <div class="receipt-cap">The status bar at the end of this run, cropped straight from the capture.</div>
           </div>
           <ol class="levers reveal" style="--rd:120ms">
