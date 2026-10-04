@@ -6,7 +6,7 @@ import type { Job } from './api';
 import { canonicalExpertSelection, canonicalPMReplacesLocal, metadataSelectionKey, pmActiveStatuses } from './jobMetadata';
 import type { LocalObservation } from './localJobMetadata';
 import { localKey, nativeActiveStatuses } from './localJobMetadata';
-import { isCommandJob, isTrackerHire, isWaveCoordinator } from './jobClassification';
+import { isCommandJob, isDispatchAlias, isTrackerHire, isWaveCoordinator } from './jobClassification';
 
 /** Prefer the freshest local observation when the same job_id appears under multiple keys. */
 function preferFresherLocal(a: LocalObservation, b: LocalObservation): LocalObservation {
@@ -78,9 +78,11 @@ export function useSharedJobMetadataFields<K extends keyof JobMetadataState>(key
   }, [store, keys]);
   return { store, state: useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot) };
 }
-/** Leaf provider workers and command jobs stay off the Jobs list. */
+/** Leaf provider workers and command jobs stay off the Jobs list. A swarm or
+ * implement dispatch alias is projected as kind "provider" too, but it is the
+ * hire itself, so it lists until its canonical Puppetmaster job replaces it. */
 export function isJobsListRow(job: Pick<Job, "job_kind" | "id" | "role" | "adapter">): boolean {
-  return job.job_kind !== "provider" && !isCommandJob(job);
+  return !isCommandJob(job) && (job.job_kind !== "provider" || isDispatchAlias(job.id));
 }
 /** Live-dot / Jobs pulse: real swarm/implement hires only, never run_command. */
 function isObservedTrackerHire(
