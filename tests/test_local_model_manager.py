@@ -2002,6 +2002,91 @@ def test_verify_tool_calling_transport_is_error(tmp_path):
     assert row["healthy"] is True
 
 
+def _serve_once(status, body, content_type="application/json"):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            raw = body.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize("status,body,content_type,expected", [
+    (
+        503,
+        '{"error":{"type":"model_maintenance","message":"CyberKimi is currently in '
+        'maintenance mode. Please use CyberGLM instead."}}',
+        "application/json",
+        "The endpoint returned HTTP 503: CyberKimi is currently in maintenance mode. "
+        "Please use CyberGLM instead.",
+    ),
+    (
+        400,
+        '{"error":"model \'llama9\' not found"}',
+        "application/json",
+        "The endpoint returned HTTP 400: model 'llama9' not found",
+    ),
+    (
+        404,
+        '{"detail":"Not Found"}',
+        "application/json",
+        "The endpoint returned HTTP 404: Not Found",
+    ),
+    (
+        401,
+        '{"error":{"type":"authentication_error","message":"A valid API key is required."}}',
+        "application/json",
+        "The endpoint rejected the API key: A valid API key is required.",
+    ),
+    (
+        502,
+        "internal-trace-secret",
+        "text/plain",
+        "The endpoint returned HTTP 502.",
+    ),
+    (
+        500,
+        '{"error":{"message":"bad key sk-or-v1-0123456789abcdef0123456789abcdef"}}',
+        "application/json",
+        "The endpoint returned HTTP 500: bad key REDACTED",
+    ),
+    (
+        503,
+        "<!DOCTYPE html><html><head><title>Application Error</title></head></html>",
+        "text/html",
+        "The endpoint returned HTTP 503.",
+    ),
+])
+def test_verify_tool_calling_surfaces_provider_error_body(
+    tmp_path, status, body, content_type, expected,
+):
+    catalog, _, _ = _tiny_catalog(tmp_path)
+    server = _serve_once(status, body, content_type)
+    try:
+        port = server.server_address[1]
+        mgr = LocalModelManager(root=str(tmp_path / "lm"), catalog=catalog)
+        _seed_external(mgr, base_url="http://127.0.0.1:%d/v1" % port)
+        snap = mgr.verify_tool_calling("local:ollama-127-0-0-1-11434/llama3")
+    finally:
+        server.shutdown()
+        server.server_close()
+    row = snap["externals"][0]
+    assert row["tool_calling"]["status"] == "error"
+    assert row["tool_calling"]["reason"] == expected
+
+
 def test_verify_public_without_key_fails_closed(tmp_path):
     catalog, _, _ = _tiny_catalog(tmp_path)
     called = []
