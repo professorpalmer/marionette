@@ -1476,6 +1476,7 @@ class SendLoopMixin:
                         if turn_note:
                             sys_prompt += "\n\n" + turn_note
                         try:
+                            from . import sizing_gate  # noqa: F401  registers its provider
                             from .system_reminder import system_reminder_note
 
                             sr_note = system_reminder_note(

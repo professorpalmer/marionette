@@ -1374,7 +1374,10 @@ def build_tools_schema(
                 "current task, mark done, append, block, or view. Tasks are "
                 "addressed by their full content text, not by ids. One task "
                 "is in_progress at a time. After init/start/done, keep working "
-                "the Next task from the result instead of restating the plan."
+                "the Next task from the result instead of restating the plan. "
+                "Prefix a task with [parallel] when it is an independent unit "
+                "(no shared files or ordering with its siblings); Marionette "
+                "uses those to tell you when to hand the rest to run_flow."
             ),
             "parameters": {
                 "type": "object",

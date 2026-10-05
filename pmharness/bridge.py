@@ -1969,3 +1969,23 @@ def execute_intent(
         raise
     finally:
         _clear_delta_sink()
+
+
+def sizing_decision(plan: list, *, elapsed_s: float, context_frac: float, model: str) -> Optional[dict]:
+    """Puppetmaster's sizing gate for one moment of a turn, or None.
+
+    Fails open: a Puppetmaster without the sizing module, or any error,
+    means keep going solo.
+    """
+    try:
+        from puppetmaster import sizing
+    except Exception:
+        return None
+    try:
+        decision = sizing.decide(
+            sizing.parse_plan(plan), elapsed_s=elapsed_s, context_frac=context_frac,
+            calibration=sizing.load_calibration(model),
+        )
+        return {**decision.to_dict(), "advice": sizing.advice(decision)}
+    except Exception:
+        return None
