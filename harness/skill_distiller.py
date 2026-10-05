@@ -49,30 +49,6 @@ def _tokens(text: str) -> set:
 PREFILTER_FLOOR = 0.25
 
 
-def _best_match(cand: Candidate, store: SkillStore) -> tuple:
-    """Return (slug, score) of the most token-similar existing skill, or (None, 0.0).
-    Jaccard overlap on name+description tokens."""
-    ctoks = _tokens(cand.name + " " + cand.description)
-    if not ctoks:
-        return (None, 0.0)
-    best_slug, best_score = None, 0.0
-    for sk in store.list():
-        stoks = _tokens(sk.name + " " + sk.description)
-        if not stoks:
-            continue
-        union = len(ctoks | stoks)
-        score = (len(ctoks & stoks) / union) if union else 0.0
-        if score > best_score:
-            best_slug, best_score = sk.slug, score
-    return (best_slug, best_score)
-
-
-def _is_duplicate(cand: Candidate, store: SkillStore, threshold: float = PREFILTER_FLOOR) -> Optional[str]:
-    """Jaccard overlap on name+description tokens vs existing skills."""
-    slug, score = _best_match(cand, store)
-    return slug if (slug and score >= threshold) else None
-
-
 def _build_shortlist(cand: Candidate, store: SkillStore) -> List[Skill]:
     """Return up to 5 existing skills with Jaccard overlap score >= PREFILTER_FLOOR, sorted by score descending."""
     ctoks = _tokens(cand.name + " " + cand.description)

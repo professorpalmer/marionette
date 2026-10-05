@@ -1093,28 +1093,6 @@ def run_implement(
     )
 
 
-def run_parallel(
-    config: "HarnessConfig", goals: list[str], requested_adapter: str = "",
-    session_id: str = "", cwd: str = "",
-    expects_diff: bool = True,
-    agentic_pin: Optional["AgenticModelPin"] = None,
-    strict_adapter: bool = True,
-) -> list["WorkerResult"]:
-    """Run product implement workers through the agentic adapter."""
-    results = []
-    for goal in goals or []:
-        if not (goal or "").strip():
-            continue
-        results.append(run_implement(
-            config, goal, requested_adapter=requested_adapter,
-            session_id=session_id, cwd=cwd,
-            expects_diff=expects_diff,
-            agentic_pin=agentic_pin,
-            strict_adapter=strict_adapter,
-        ))
-    return results
-
-
 def run_native_edit(
     config: "HarnessConfig", goal: str, job_id: str = "",
     session_id: str = "", cwd: str = "",

@@ -1,7 +1,7 @@
-"""Job event include modes on DurableState / JobStore.events_since."""
+"""Job event include modes on DurableState.events_since."""
 from __future__ import annotations
 
-from harness.state import DurableState, JobStore, normalize_event_include, read_job_events_since
+from harness.state import DurableState, normalize_event_include, read_job_events_since
 
 
 def _heartbeat_mix():
@@ -85,10 +85,6 @@ def test_read_job_events_since_quiet_keeps_gate_failed():
     assert "run.heartbeat" not in names
     assert "worker.gate_failed" in names
     assert "host.started" in names
-
-
-def test_jobstore_alias_is_durable_state():
-    assert JobStore is DurableState
 
 
 def test_get_job_events_http_passes_include():

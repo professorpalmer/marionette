@@ -195,12 +195,6 @@ def format_folder_mention_skip(folder_token: str, *, reason: str) -> str:
     return f"--- Folder: {display} ---\n... skipped: {reason}\n"
 
 
-def format_folder_mention_failure(folder_token: str, *, error: str) -> str:
-    """Honesty note when listing a mentioned folder fails."""
-    display = _folder_mention_display(folder_token)
-    return f"--- Folder: {display} ---\n... failed to list: {error}\n"
-
-
 def expand_folder_mention(
     repo: str,
     token: str,

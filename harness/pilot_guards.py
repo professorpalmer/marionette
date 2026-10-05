@@ -658,7 +658,7 @@ def is_tiny_workspace(repo_path: str) -> bool:
 
 @dataclass
 class IterationBudget:
-    """Hard cap on tool calls per pilot turn (consume/refund pattern)."""
+    """Hard cap on tool calls per pilot turn."""
 
     cap: int
     used: int = 0
@@ -676,10 +676,6 @@ class IterationBudget:
             return False
         self.used += 1
         return True
-
-    def refund(self) -> None:
-        if self.used > 0:
-            self.used -= 1
 
 
 @dataclass
@@ -1254,11 +1250,6 @@ def puppetmaster_cli_native_mapping(
         "run_swarm",
         'goal="...", roles=["explore","pipeline-mapper"]',
     )
-
-
-def is_puppetmaster_cli_launch_command(command: str) -> bool:
-    """True for swarm/implement/agentic launch verbs, not status/artifacts/route."""
-    return parse_puppetmaster_cli_launch(command) is not None
 
 
 def parse_puppetmaster_cli_launch(command: str) -> Optional[tuple[str, str, str]]:
@@ -1934,7 +1925,6 @@ def job_result_shows_implement_success(
         return bool(res_job.get("applied"))
     except Exception:
         return False
-    return False
 
 
 def job_result_shows_implement_unverified_land(

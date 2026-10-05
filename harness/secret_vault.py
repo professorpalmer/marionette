@@ -285,12 +285,6 @@ def apply_to_environ(agent_id: str, environ: Optional[dict] = None) -> dict[str,
     return injected
 
 
-def subprocess_env(agent_id: str, base: Optional[dict] = None) -> dict[str, str]:
-    env = dict(base if base is not None else os.environ)
-    apply_to_environ(agent_id, env)
-    return env
-
-
 def presence_payload(connector: str, field: str, provided: bool) -> dict[str, Any]:
     return {
         "provided": bool(provided),

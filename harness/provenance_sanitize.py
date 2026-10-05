@@ -29,14 +29,6 @@ _CLEAN_CLAIM_RE = re.compile(
 
 CLEAN_TREE_REPLACEMENT = "No new dirty paths or patch were introduced"
 
-_MARIONETTE_ENVELOPE_NOTICE = (
-    "Execution provenance (provider, model, tokens, cost, routing) comes from "
-    "the Marionette job envelope, not from repository source files. "
-    "Your git status describes a disposable managed worker worktree only — "
-    "describe that worktree's diff status, never the user's live checkout."
-)
-
-
 # A dirty monorepo checkout can list tens of thousands of paths. Durable
 # provenance keeps exact counts plus bounded samples; every persisted job row
 # and artifact must stay small regardless of checkout size.
@@ -144,8 +136,3 @@ def sanitize_clean_tree_claims(
         sanitized = re.sub(r"[ \t]{2,}", " ", sanitized)
         sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
     return sanitized
-
-
-def marionette_envelope_notice() -> str:
-    """Prompt fragment: provenance is Marionette envelope, not repo source."""
-    return _MARIONETTE_ENVELOPE_NOTICE

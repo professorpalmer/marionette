@@ -107,12 +107,6 @@ def summarize(events: Iterable[UsageEvent]) -> dict:
     }
 
 
-def session_summary(state_dir: str, session_id: str) -> dict:
-    from .store import ledger_for
-
-    return summarize(ledger_for(state_dir).events(session_id=session_id))
-
-
 def period_spend(state_dir: str, account: str, since: float) -> float:
     """Known cash spent on ``account`` since ``since`` (unpriced calls excluded)."""
     from .store import ledger_for

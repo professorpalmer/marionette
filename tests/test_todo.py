@@ -18,7 +18,6 @@ from harness.todo import (
     SessionTodoStore,
     should_fold_todo_landing,
     should_fold_todo_verification,
-    todo_matches_any_description,
 )
 
 
@@ -276,23 +275,6 @@ def test_todo_slash_clear_removes_persisted_checklist():
     assert cleared.mutated
     assert cleared.phases == []
     assert cleared.public_dict()["todos"]["phases"] == []
-
-
-def test_todo_matches_live_job_label():
-    assert todo_matches_any_description("Sonnet #2: bug scan", ["Sonnet #2"]) is True
-    assert todo_matches_any_description("fix", ["fixture loader"]) is False
-
-
-def test_containment_misses_wave_landing_labels():
-    wave = (
-        "Implement versioned ruleset validator for part legality "
-        "(BX vs CX, banlists, duplicate parts check)"
-    )
-    parser = (
-        "Create src/lib/rulesets/parser.ts with a pure ruleset definition and "
-        "validator for Beyblade X and deck legality constraints."
-    )
-    assert todo_matches_any_description(wave, [parser]) is False
 
 
 def test_should_fold_todo_landing_requires_applied_files():

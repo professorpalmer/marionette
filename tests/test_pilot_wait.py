@@ -6,8 +6,6 @@ from harness.pilot import PilotAction, PilotError, from_wire
 from harness.pilot_wait import (
     dispatch_wait_action,
     format_wait_status,
-    keep_alive_wait_slice,
-    note_keep_alive_wait,
     parse_wait_seconds,
     pending_jobs_keep_alive,
     apply_ready_command_results,
@@ -106,28 +104,6 @@ def test_missing_requested_command_is_not_reported_settled():
     assert "unavailable" in result.data["message"].lower()
 
 
-def test_keep_alive_wait_slice_is_instant_with_fake_clock():
-    times = [0.0]
-
-    def mono():
-        return times[0]
-
-    def sleep(dt):
-        times[0] += dt
-
-    session = SimpleNamespace(
-        has_pending_swarms=lambda: times[0] < 1.5,
-        drain_swarm_results=lambda **_k: iter(()),
-        _cancel=SimpleNamespace(is_set=lambda: False),
-    )
-    events = list(keep_alive_wait_slice(
-        session, seconds=2.0, sleep=sleep, monotonic=mono,
-    ))
-    kinds = [ev.kind for ev in events]
-    assert "notice" in kinds
-    assert any(ev.data.get("kind") == "wait" for ev in events)
-
-
 def test_dispatch_wait_action_returns_status():
     times = [0.0]
 
@@ -157,10 +133,3 @@ def test_format_wait_status_settled():
     session = SimpleNamespace(has_pending_swarms=lambda: False)
     text = format_wait_status(session, 2.0, True)
     assert "settled" in text.lower()
-
-
-def test_note_keep_alive_wait_caps():
-    session = SimpleNamespace()
-    assert note_keep_alive_wait(session) is True
-    session._keep_alive_waits = 90
-    assert note_keep_alive_wait(session) is False

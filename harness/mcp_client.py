@@ -110,8 +110,6 @@ class StdioMcpClient:
         self._pending: Dict[int, "queue.Queue[Union[dict, BaseException]]"] = {}
         self._reader_thread: Optional[threading.Thread] = None
         self._reader_error: Optional[BaseException] = None
-        self._server_info: dict = {}
-        self._capabilities: dict = {}
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
@@ -173,13 +171,11 @@ class StdioMcpClient:
         self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self._reader_thread.start()
         try:
-            resp = self._request("initialize", {
+            self._request("initialize", {
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {"tools": {}},
                 "clientInfo": CLIENT_INFO,
             }, timeout=self.startup_timeout)
-            self._server_info = resp.get("serverInfo", {})
-            self._capabilities = resp.get("capabilities", {})
             self._notify("notifications/initialized", {})
         except Exception:
             self.stop()

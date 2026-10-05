@@ -30,11 +30,6 @@ from typing import List, Optional, Union
 # tool observation, not a full log.
 MAX_OUTPUT = 4000
 
-# Module-level DEFAULT check used when scoping to changed files is not possible
-# but we still know the ecosystem. Deliberately empty by default -- callers fall
-# back to None (skip) rather than run something slow/unscoped.
-DEFAULT = ""
-
 # Command may be an argv list (preferred, shell=False) or a legacy shell string.
 VerifyCommand = Union[str, List[str]]
 

@@ -1646,7 +1646,6 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             yield ConvEvent('action_result', {'id': aid, 'error': str(e)})
             session._append_action_result(act, aid, f'(run_implement {aid} failed: {e})', is_native)
         return None
-    return None
 
 def dispatch_parallel_action(session, act, aid, is_native, *, turn_actions, action_idx, action_seq, step, swarms) -> Iterator[Any]:
     """Assemble tool-results for ``run_parallel`` (peeled from ``_send_locked_inner``).
@@ -2384,7 +2383,6 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             except Exception:
                 pass
         return None
-    return None
 
 def dispatch_flow_action(session, act, aid, is_native, *, turn_actions, action_idx, action_seq, step, swarms) -> Iterator[Any]:
     """Start a run_flow graph in the background and close the turn.
@@ -2516,7 +2514,6 @@ Yields the same ConvEvent stream. Generator return value is ``None``
         yield ConvEvent('action_result', {'id': aid, 'error': str(e)})
         session._append_action_result(act, aid, f"(route_task for '{instruction}' failed: {e})", is_native)
     return None
-    return None
 
 def dispatch_memory_action(session, act, aid, is_native) -> Iterator[Any]:
     """Assemble tool-results for ``memory`` (peeled from ``_send_locked_inner``).
@@ -2573,5 +2570,4 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     except Exception as e:
         yield ConvEvent('action_result', {'id': aid, 'error': str(e)})
         session._append_action_result(act, aid, f'(memory tool execution failed: {e})', is_native)
-    return None
     return None

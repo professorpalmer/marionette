@@ -73,16 +73,6 @@ def write_intentional_restart_signal(
     return _write_json_object(directory, SIGNAL_NAME, payload)
 
 
-def clear_intentional_restart_signal(state_dir: Optional[str] = None) -> None:
-    path = os.path.join(_signal_dir(state_dir), SIGNAL_NAME)
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        return
-    except Exception:
-        pass
-
-
 def read_intentional_restart_signal(state_dir: Optional[str] = None) -> Optional[dict]:
     """Return the signal object, or None when missing or corrupt."""
     return _read_json_object(os.path.join(_signal_dir(state_dir), SIGNAL_NAME))

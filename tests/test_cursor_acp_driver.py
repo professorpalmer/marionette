@@ -19,7 +19,6 @@ from pmharness.drivers.cursor_acp import (
     WarmAcpSession,
     _cursor_acp_terminal_fields,
     _extract_tool_event,
-    _extract_tool_hint,
     _extract_update_text,
     _reap_acp_child_tree,
     cursor_acp_enabled,
@@ -236,14 +235,16 @@ def test_extract_update_text_chunk():
     assert _extract_update_text(params) == "hi"
 
 
-def test_extract_tool_hint():
+def test_extract_tool_event_maps_tool_name():
     params = {
         "update": {
             "sessionUpdate": "tool_call",
             "toolName": "ShellToolCall",
         }
     }
-    assert _extract_tool_hint(params) == "run_command"
+    ev = _extract_tool_event(params)
+    assert ev is not None
+    assert ev["name"] == "run_command"
 
 
 def test_extract_tool_event_prefers_acp_kind_and_path():
@@ -262,7 +263,6 @@ def test_extract_tool_event_prefers_acp_kind_and_path():
     assert ev["name"] == "read_file"
     assert ev["goal"].endswith("server.py")
     assert ev["id"] == "call_001"
-    assert _extract_tool_hint(params) == "read_file"
 
 
 def test_extract_tool_event_skips_think_and_bare_tool_fallback():

@@ -22,7 +22,6 @@ DEFAULT_INIT_PHASE = "Tasks"
 TODO_FILENAME = "session_todos.json"
 COLLAPSED_OPEN_CAP = 5
 COLLAPSED_CLOSED_CONTEXT = 2
-TODO_DESCRIPTION_MIN_OVERLAP = 6
 TODO_LANDING_MIN_TOKEN_OVERLAP = 3
 TODO_VERIFICATION_MIN_TOKEN_OVERLAP = 1
 _VERIFY_SIGNAL_TOKENS = frozenset({
@@ -106,10 +105,6 @@ _LANDING_GENERIC_TOKENS = frozenset({
     "each",
     "both",
 })
-
-
-class TodoError(ValueError):
-    """Raised when a todo op cannot be applied."""
 
 
 @dataclass
@@ -668,23 +663,6 @@ def normalize_for_todo_match(value: str) -> str:
         elif chars and chars[-1] != " ":
             chars.append(" ")
     return "".join(chars).strip()
-
-
-def todo_matches_any_description(content: str, descriptions: Sequence[str]) -> bool:
-    target = normalize_for_todo_match(content)
-    if not target:
-        return False
-    for desc in descriptions:
-        candidate = normalize_for_todo_match(desc)
-        if not candidate:
-            continue
-        if target == candidate:
-            return True
-        if len(target) >= TODO_DESCRIPTION_MIN_OVERLAP and target in candidate:
-            return True
-        if len(candidate) >= TODO_DESCRIPTION_MIN_OVERLAP and candidate in target:
-            return True
-    return False
 
 
 def _stem_todo_token(token: str) -> str:

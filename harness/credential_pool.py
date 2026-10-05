@@ -470,19 +470,6 @@ def peek_token(provider: str) -> Optional[str]:
         return chosen.runtime_token
 
 
-def resolve_token(provider: str) -> Optional[str]:
-    """Select a healthy credential token for ``provider`` (or None)."""
-    with _lock:
-        pool = load_pool(provider)
-        entry = pool.select()
-        if entry is None:
-            return None
-        # Persist request_count bumps periodically
-        if entry.request_count % 5 == 0:
-            _persist_all()
-        return entry.runtime_token
-
-
 def resolve_entry(provider: str) -> Optional[PooledCredential]:
     with _lock:
         return load_pool(provider).select()

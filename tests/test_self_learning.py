@@ -1,6 +1,6 @@
 """Self-learning: skill store CRUD + distiller (fake pilot, deterministic)."""
 from harness.skill_store import SkillStore, Skill
-from harness.skill_distiller import distill_session, _is_duplicate, Candidate
+from harness.skill_distiller import distill_session, Candidate
 
 
 def test_store_save_get_states(tmp_path):

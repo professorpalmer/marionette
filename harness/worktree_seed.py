@@ -312,29 +312,6 @@ def _ignored_paths(wt_path: str, paths: list[str]) -> list[str]:
     return [p for p in (probe.stdout or "").split("\0") if p]
 
 
-def seed_untracked_matching(
-    repo: str,
-    wt_path: str,
-    prefixes: Iterable[str],
-    *,
-    copy_strategy: Optional[str] = None,
-) -> SeedResult:
-    """Copy untracked live files under any of ``prefixes`` into the worktree."""
-    result = SeedResult()
-    strategy = resolve_copy_strategy(copy_strategy)
-    for prefix in prefixes or []:
-        dir_src = _resolve_repo_dir(repo, prefix) or resolve_repo_file(repo, prefix)
-        if dir_src and os.path.isdir(dir_src):
-            for rel in _iter_files_under(repo, dir_src):
-                dst = os.path.join(wt_path, rel.replace("/", os.sep))
-                if os.path.exists(dst):
-                    continue
-                if _copy_into_worktree(repo, wt_path, rel, strategy, result.copy_stats):
-                    result.paths.append(rel)
-    _log_seed_copy_stats(result.copy_stats, context="prefix")
-    return result
-
-
 def goal_match_tokens(goal: str) -> set[str]:
     """Significant tokens used to match live dirty/untracked paths to a goal."""
     tokens: set[str] = set()

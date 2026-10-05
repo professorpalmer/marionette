@@ -197,10 +197,4 @@ class TrajectoryLedgerV2:
         cols=[c[0] for c in cur.description]
         return [dict(zip(cols,row)) for row in cur.fetchall()]
 
-    def by_variant(self, run_id):
-        cur=self.conn.execute(
-            "SELECT model, variant, ROUND(AVG(score)*100,1) score FROM trajectories_v2 "
-            "WHERE run_id=? GROUP BY model, variant ORDER BY model, variant",(run_id,))
-        return cur.fetchall()
-
     def close(self): self.conn.close()

@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 from harness.mention_context import (
     expand_folder_mention,
     folder_entry_cap,
-    format_folder_mention_failure,
     format_folder_mention_skip,
     resolve_repo_dir,
 )
@@ -90,16 +89,13 @@ def test_expand_folder_mention_outside_returns_none():
         assert expand_folder_mention(repo, "folder:/etc") is None
 
 
-def test_format_folder_mention_skip_and_failure():
+def test_format_folder_mention_skip():
     skip = format_folder_mention_skip("folder:pkg", reason="not found in workspace")
     assert "--- Folder: pkg ---" in skip
     assert "... skipped: not found in workspace" in skip
     assert format_folder_mention_skip("src/lib", reason="budget") == (
         "--- Folder: src/lib ---\n... skipped: budget\n"
     )
-    fail = format_folder_mention_failure("folder:pkg", error="boom")
-    assert "--- Folder: pkg ---" in fail
-    assert "... failed to list: boom" in fail
 
 
 def test_workspace_files_folder_cap_is_flagged(tmp_path, monkeypatch):

@@ -438,12 +438,6 @@ from .routing_savings import (  # noqa: E402
 )
 
 
-def _registry_input_per_mtok(model_id: str, registry: list) -> float:
-    """Resolve a model's input $/MTok from the registry; 0 when unknown."""
-    pin, _pout = _registry_rates(model_id, registry)
-    return pin
-
-
 def _tokens_cached_swarm(raw_arts) -> int:
     """Sum ``tokens_cached`` across usage-bearing artifacts (one per task).
 

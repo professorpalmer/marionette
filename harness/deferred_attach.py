@@ -63,7 +63,6 @@ class DeferredPilotPlaceholder:
         self._real: Any = None
         self._defer_building = True
         self._transcript = normalize_transcript_payload(transcript)
-        self._pending_history: Any = transcript
         self._mcp = None
         self._session_store = None
         self._auto_distill = False
@@ -130,7 +129,6 @@ class DeferredPilotPlaceholder:
         return list(self._transcript.get("history") or [])
 
     def load_history(self, messages: Any) -> None:
-        self._pending_history = messages
         self._transcript = normalize_transcript_payload(messages)
         self._history = list(self._transcript.get("history") or [])
         # Write through once the real pilot exists so a bound load_history

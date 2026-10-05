@@ -16,7 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 PLUGIN_SOURCE = "runaway-guard"
 
-SIGNAL_EXACT_ACTION = "exact_action_repeat"
 SIGNAL_EXACT_RESULT = "exact_result_repeat"
 SIGNAL_SAME_ERROR = "same_error_family"
 SIGNAL_ABAB = "abab_action_cycle"

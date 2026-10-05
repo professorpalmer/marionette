@@ -634,14 +634,11 @@ def test_iteration_budget_blocks_after_cap():
     assert "budget exhausted" in verdict.message
 
 
-def test_iteration_budget_consume_refund():
+def test_iteration_budget_consume():
     budget = IterationBudget(cap=2)
     assert budget.consume() is True
     assert budget.used == 1
     assert budget.remaining == 1
-    budget.refund()
-    assert budget.used == 0
-    assert budget.consume() is True
     assert budget.consume() is True
     assert budget.consume() is False
 

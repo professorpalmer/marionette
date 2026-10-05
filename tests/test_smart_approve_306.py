@@ -12,7 +12,7 @@ from harness.command_allowlist import (
     load_allowlist,
 )
 from harness.command_policy import classify_command, suggested_amendment
-from harness.smart_approve import smart_approve_verdict
+from harness.smart_approve import smart_approve
 
 
 def test_allowlist_persists_under_harness_state_dir(tmp_path: Path, monkeypatch) -> None:
@@ -44,26 +44,26 @@ def test_turn_identity_is_contextvar_scoped() -> None:
 def test_smart_approve_allowlist_wins_even_for_danger(tmp_path: Path) -> None:
     danger = "rm -rf /tmp/scratch-ok"
     assert classify_command(danger).danger is True
-    assert smart_approve_verdict(danger, state_dir=str(tmp_path)) == "pending"
+    assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "pending"
     assert allowlist_add(danger, state_dir=str(tmp_path))
-    assert smart_approve_verdict(danger, state_dir=str(tmp_path)) == "approve"
+    assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "approve"
 
 
 def test_smart_approve_amendment_then_pending() -> None:
     force = "git push --force origin main"
     assert suggested_amendment(force)
-    assert smart_approve_verdict(force) == "amend"
+    assert smart_approve(force)["action"] == "amend"
     ssh = "ssh prod reboot"
     assert classify_command(ssh).danger is True
     assert suggested_amendment(ssh) is None
-    assert smart_approve_verdict(ssh) == "pending"
+    assert smart_approve(ssh)["action"] == "pending"
 
 
 def test_danger_without_allowlist_stays_pending(tmp_path: Path) -> None:
     """Do not auto-run danger unless the allowlist already has the command."""
     cmd = "sudo reboot"
     assert classify_command(cmd).danger is True
-    assert smart_approve_verdict(cmd, state_dir=str(tmp_path)) == "pending"
+    assert smart_approve(cmd, state_dir=str(tmp_path))["action"] == "pending"
     assert allowlist_contains(cmd, state_dir=str(tmp_path)) is False
 
 
@@ -80,4 +80,4 @@ def test_decide_reads_turn_identity_and_persists_allowlist(tmp_path: Path) -> No
     assert result["turn_id"] == "t-42"
     assert get_approval_turn_id() is None
     assert allowlist_contains(cmd, state_dir=str(tmp_path))
-    assert smart_approve_verdict(cmd, state_dir=str(tmp_path)) == "approve"
+    assert smart_approve(cmd, state_dir=str(tmp_path))["action"] == "approve"

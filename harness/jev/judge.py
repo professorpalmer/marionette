@@ -310,10 +310,5 @@ def judge_turn(
     return _remember(cache_key, judgment)
 
 
-def peek_cached(request: str, roster: Iterable[Any] = ()) -> Optional[Judgment]:
-    rows = as_roster(roster)
-    return _CACHE.get(((request or "").strip(), tuple(s.name for s in rows)))
-
-
 def clear_cache() -> None:
     _CACHE.clear()

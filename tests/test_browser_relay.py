@@ -126,11 +126,9 @@ def test_routes_include_browser_relay():
     assert "/api/browser/relay" in srv._get_routes()
 
 
-def test_browser_module_exposes_relay_without_second_engine():
-    assert hasattr(browser, "browser_relay_snapshot")
-    assert hasattr(browser, "browser_relay_enabled")
-    assert browser.browser_relay_enabled() is False
-    assert browser.browser_relay_snapshot() is None
+def test_browser_module_has_no_second_engine():
+    assert relay.relay_enabled() is False
+    assert relay.last_snapshot() is None
     assert browser._engine is None or getattr(browser._engine, "__name__", "") in (
         "puppetmaster.browser_cdp",
         "",

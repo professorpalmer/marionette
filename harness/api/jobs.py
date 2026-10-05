@@ -195,62 +195,6 @@ def _inspect_sibling_job(job_id: str, *, strict: bool = False) -> tuple[bool | N
     return owned, durable
 
 
-def _inspect_local_job_ownership(job_id: str, svc: JobServices) -> bool | None:
-    """True if this session may cancel the local job, False if foreign, None if absent.
-
-    Cancel is session/registered-gated even though the tracker lists all
-    Marionette-owned locals. A row from another session is unknown.
-    """
-    try:
-        pilot = svc.get_pilot()
-    except Exception:
-        return None
-    if pilot is None:
-        return None
-
-    job = None
-    getter = getattr(pilot, "get_local_job", None)
-    if callable(getter):
-        try:
-            job = getter(job_id)
-        except Exception:
-            job = None
-    if not isinstance(job, dict):
-        live = getattr(pilot, "live_local_jobs", None)
-        if callable(live):
-            try:
-                for row in live() or []:
-                    if str((row or {}).get("id") or "") == job_id:
-                        job = row
-                        break
-            except Exception:
-                job = None
-    if not isinstance(job, dict):
-        return None
-
-    registered: list = []
-    try:
-        registered = list(getattr(pilot, "_session_job_ids", []) or [])
-    except Exception:
-        registered = []
-    if job_id in {str(x).strip() for x in registered if x}:
-        return True
-
-    active_session_id = ""
-    try:
-        active_session_id = (
-            getattr(svc.sessions, "active", None)
-            or getattr(pilot, "harness_session_id", "")
-            or ""
-        )
-    except Exception:
-        active_session_id = getattr(pilot, "harness_session_id", "") or ""
-    job_sid = str(job.get("session_id") or "").strip()
-    if job_sid and job_sid == str(active_session_id or "").strip():
-        return True
-    return False
-
-
 def _unknown_job_refusal(job_id: str) -> tuple[int, dict]:
     return 404, {"ok": False, "error": "unknown job_id", "job_id": job_id}
 
@@ -1191,7 +1135,6 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
     saw_routing_estimated = False
     saw_routing_unknown = False
     saw_delegation_actual = False
-    saw_delegation_unknown = False
     saw_cache_actual = False
     saw_cache_unknown = False
     live_cache_unpriced_tokens = 0
@@ -1233,8 +1176,6 @@ def get_swarm_live(repo_override: str | None, svc: JobServices) -> tuple[int, di
                 dbasis = str(j.get("delegation_savings_basis") or "")
                 if dbasis == "actual_usage":
                     saw_delegation_actual = True
-                else:
-                    saw_delegation_unknown = True
             job_cached = int(j.get("tokens_cached") or 0)
             swarm_cached += job_cached
             swarm_input += int(j.get("tokens_in") or 0)

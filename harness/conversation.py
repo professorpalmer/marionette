@@ -1016,7 +1016,6 @@ class ConversationalSession(
 
         # High-water marks to avoid duplicate auto-distill on the same signal
         self._distilled_findings_hwm = 0
-        self._distilled_turns_hwm = 0
         self._distilled_tool_calls_hwm = 0
         self._distilled_corrections_hwm = 0
         # diff review: opt-in mode to hold agent edits for approval
@@ -1132,7 +1131,6 @@ class ConversationalSession(
         self._stagnation_last_actions = None
         self._stagnation_streak = 0
         self._failed_objective_resume_counts: dict[str, int] = {}
-        self._keep_alive_waits = 0
         # Adaptive task depth for the current originating user turn.
         self._task_profile: str = ""
         self._task_profile_source: str = ""
@@ -1158,7 +1156,6 @@ class ConversationalSession(
         # Per-message wiki grounding cache (mirrors CodeGraph cache above).
         self._wiki_cache_key = None
         self._wiki_cache_section = ""
-        self._wiki_cache_pages = 0
         # Tracks prose already streamed to the client this turn via the
         # StreamingSayExtractor, so the final `message` event can mark itself as
         # already-shown (the frontend finalizes the streaming bubble in place

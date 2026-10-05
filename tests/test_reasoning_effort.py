@@ -7,7 +7,6 @@ import pytest
 from harness.reasoning_effort import (
     DEFAULT_CODEX_REASONING_EFFORT,
     DEFAULT_SWARM_REASONING_EFFORT,
-    REASONING_EFFORT_LEVELS,
     SWARM_REASONING_EFFORT_ENV,
     anthropic_thinking_budget,
     apply_anthropic_thinking,
@@ -17,7 +16,6 @@ from harness.reasoning_effort import (
     is_reasoning_mandatory_error,
     model_supports_anthropic_thinking,
     normalize_reasoning_effort,
-    reasoning_effort_label,
 )
 
 
@@ -62,11 +60,6 @@ def test_current_swarm_reasoning_effort_defaults_medium(monkeypatch):
     assert current_swarm_reasoning_effort() == "low"
     monkeypatch.setenv(SWARM_REASONING_EFFORT_ENV, "xhigh")
     assert current_swarm_reasoning_effort() == "xhigh"
-
-
-def test_reasoning_effort_labels_cover_all_levels():
-    for level in REASONING_EFFORT_LEVELS:
-        assert reasoning_effort_label(level)
 
 
 @pytest.mark.parametrize("model,ok", [

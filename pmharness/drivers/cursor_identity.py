@@ -18,13 +18,6 @@ IDENTITY_UNREPORTED = "unreported"
 IDENTITY_VERIFIED = "verified"
 IDENTITY_MISMATCH = "mismatch"
 
-IDENTITY_STATUSES = frozenset({
-    IDENTITY_AUTO,
-    IDENTITY_UNREPORTED,
-    IDENTITY_VERIFIED,
-    IDENTITY_MISMATCH,
-})
-
 _EFFORT = {
     "high": "high",
     "medium": "medium",

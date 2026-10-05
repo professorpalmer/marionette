@@ -52,11 +52,6 @@ def pairing_balanced_before(history: Sequence[Mapping[str, Any]], index: int) ->
     return in_progress_count(history[:index]) == 0
 
 
-def pairing_balanced_after(history: Sequence[Mapping[str, Any]], index: int) -> bool:
-    """True when the cut immediately after ``history[index]`` is balanced."""
-    return pairing_balanced_before(history, index + 1)
-
-
 def nearest_balanced_split(
     history: Sequence[Mapping[str, Any]],
     start_idx: int,

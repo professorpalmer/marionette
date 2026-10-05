@@ -1,12 +1,11 @@
 """models.dev overlay: Hermes mapping, cache, and never-raise fallback."""
 from harness import models_dev as md
-from harness.opencode_zen import MODELS_DEV_PROVIDER, overlay_metadata
+from harness.opencode_zen import overlay_metadata
 
 
 def test_hermes_maps_opencode_zen_to_opencode():
     assert md.models_dev_provider_id("opencode-zen") == "opencode"
     assert md.models_dev_provider_id("opencode-go") == "opencode-go"
-    assert MODELS_DEV_PROVIDER == "opencode"
 
 
 def test_lookup_returns_none_on_empty_or_failure(monkeypatch, tmp_path):

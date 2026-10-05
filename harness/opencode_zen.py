@@ -61,9 +61,6 @@ DISPLAY_NAMES = {
     "muse-spark-1.2-contributor-free": "Muse Spark 1.2 Contributor Free",
 }
 
-# Hermes models.dev provider id for this profile.
-MODELS_DEV_PROVIDER = "opencode"
-
 # Current Zen endpoint table (https://opencode.ai/docs/zen/). Conservative
 # default is chat/completions for unknown ids. The free variants are
 # chat-completions ONLY: the relay serves them on /chat/completions, and the

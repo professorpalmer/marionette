@@ -33,7 +33,6 @@ from harness.edit_engines import (
     run_agentic_edit,
     run_edit_worker,
     run_native_edit,
-    run_parallel,
     select_edit_engine,
     _agentic_store_failure_snapshot,
     _format_agentic_engine_error,
@@ -1906,37 +1905,6 @@ def test_run_edit_worker_explicit_agentic_unavailable_fails_closed(monkeypatch):
     assert result.error == AGENTIC_UNAVAILABLE
     assert result.engine == "agentic"
     assert fallback_calls == []
-
-
-def test_run_parallel_forwards_same_agentic_pin_to_every_child(monkeypatch):
-    from harness.swarm_model_pin import AgenticModelPin
-
-    pin = AgenticModelPin(
-        requested="openrouter/stealth/ox-alpha",
-        provider="openrouter",
-        model="stealth/ox-alpha",
-        router_model_id="agentic/openrouter/stealth/ox-alpha",
-    )
-    seen = []
-
-    def fake_implement(config, goal, **kwargs):
-        seen.append((goal, kwargs))
-        return WorkerResult(ok=True, patch="patch")
-
-    monkeypatch.setattr("harness.edit_engines.run_implement", fake_implement)
-
-    results = run_parallel(
-        HarnessConfig(),
-        ["one", "two"],
-        requested_adapter="agentic",
-        agentic_pin=pin,
-        strict_adapter=True,
-    )
-
-    assert len(results) == 2
-    assert [goal for goal, _kwargs in seen] == ["one", "two"]
-    assert all(kwargs["agentic_pin"] is pin for _goal, kwargs in seen)
-    assert all(kwargs["strict_adapter"] is True for _goal, kwargs in seen)
 
 
 def test_run_edit_worker_no_fallback_on_empty_agentic_result(monkeypatch):

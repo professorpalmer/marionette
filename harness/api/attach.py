@@ -157,7 +157,6 @@ def attach_view(
             transcript=transcript_payload,
             input_state_root=svc.sessions_state_dir(),
         )
-        placeholder._pending_history = history
 
         def _factory():
             return placeholder
