@@ -1883,11 +1883,19 @@ class ConversationJobsMixin:
                         pass
 
             # Flow runs wake the pilot through this same drain (no extra thread).
+            # Every wake's state is recorded before any event is yielded, so a
+            # client that disconnects mid-drain cannot leave a recorded wake
+            # undelivered (and duplicated on the next poll).
             flow_wakes: list = []
+            flow_events: list = []
             try:
                 from . import flows
 
-                for wake in flows.due_wakes(self):
+                due = flows.due_wakes(self)
+            except Exception:
+                due = []
+            for wake in due:
+                try:
                     record = self._flow_runs.get(wake.run_id) or {}
                     flow_objective = str(record.get("objective") or wake.run_id)
                     self._history.append({
@@ -1900,12 +1908,12 @@ class ConversationJobsMixin:
                     flows.upsert_pill(
                         self, wake.run_id, flow_objective, flows.pill_status(wake.status),
                     )
-                    if wake.status == "waiting":
-                        yield ConvEvent("swarm_pending", {
+                    if wake.status in flows.PAUSED_STATUSES:
+                        flow_events.append(ConvEvent("swarm_pending", {
                             "job_ids": [wake.run_id],
                             "objective": flow_objective,
                             "status": "waiting",
-                        })
+                        }))
                     else:
                         flow_result = flows.wake_result(wake)
                         self._display_transcript.append({
@@ -1914,15 +1922,20 @@ class ConversationJobsMixin:
                             "objective": flow_objective,
                             **flow_result,
                         })
-                        yield ConvEvent("swarm_result", {
+                        flow_events.append(ConvEvent("swarm_result", {
                             "job_id": wake.run_id,
                             "objective": flow_objective,
                             "result": flow_result,
-                        })
+                        }))
+                    # A stop the pilot itself requested needs no wake turn.
+                    quiet = wake.status == "stopped" and bool(record.get("stop_requested"))
                     flows.mark_delivered(self, wake)
-                    flow_wakes.append(wake)
-            except Exception:
-                pass
+                    if not quiet:
+                        flow_wakes.append(wake)
+                except Exception:
+                    continue
+            for event in flow_events:
+                yield event
 
             # Coalesce: one merged user continuation + one pilot_resume per drain
             # pass (not per job). Keeps the keep-alive contract while avoiding

@@ -2186,6 +2186,9 @@ export function finalizeOrphanSwarmPills(
 
   return items.map((item) => {
     if (item.kind !== "swarm_pending" || isSwarmPendingTerminal(item)) return item;
+    // A flow paused at a gate or interrupted is not in flight, yet not over:
+    // it waits for the pilot, so a turn closing must not seal it as ended.
+    if (item.status === "waiting") return item;
 
     const terminalFromResults = new Set(item.terminal_job_ids || []);
     for (const jid of item.job_ids) {

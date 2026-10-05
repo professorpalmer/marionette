@@ -21,9 +21,16 @@ from typing import Any, Optional
 
 # Mirrors puppetmaster.flow; kept local so importing this module stays cheap.
 TERMINAL_STATUSES = ("done", "failed", "stuck", "stopped")
-WAKE_STATUSES = TERMINAL_STATUSES + ("waiting", "interrupted")
-CONTROLS = ("answer", "resume", "cut", "stop")
+# Paused, not over: a gate waits for an answer, an interrupted run for a resume.
+PAUSED_STATUSES = ("waiting", "interrupted")
+WAKE_STATUSES = TERMINAL_STATUSES + PAUSED_STATUSES
+CONTROLS = ("answer", "resume", "restart", "cut", "stop")
 DEFAULT_MAX_ACTIVE_FLOWS = 3
+# run_parallel's cap; a map nested in an item graph runs its items one at a time.
+MAX_MAP_CONCURRENCY = 8
+DEFAULT_RESTART_STEPS = 20
+# Consecutive unreadable status reads before an existing run is given up on.
+_MAX_READ_FAILURES = 10
 _WAKE_STEP_CAP = 12
 _TEXT_CAP = 240
 
@@ -33,7 +40,7 @@ _PILL_STATUS = {
     "failed": "failed",
     "stuck": "failed",
     "stopped": "ended",
-    "interrupted": "ended",
+    "interrupted": "waiting",
     "waiting": "waiting",
 }
 
@@ -90,6 +97,7 @@ class _Boundary:
     primary: str
     allowed_adapters: list
     full_auto_guard: bool
+    sandboxed: bool
     state_dir: str
     problems: list
 
@@ -154,6 +162,13 @@ def prepare_graph(
             "primary_adapter": "agentic",
             "allowed_model_ids": [],
         }
+    sandboxed = False
+    try:
+        from .os_sandbox import resolve_os_sandbox_mode
+
+        sandboxed = resolve_os_sandbox_mode() != "off"
+    except Exception:
+        sandboxed = True
     ctx = _Boundary(
         workspace=workspace,
         root=root,
@@ -161,6 +176,7 @@ def prepare_graph(
         primary=primary,
         allowed_adapters=list(allow.get("allowed_adapters") or []),
         full_auto_guard=bool(full_auto_guard),
+        sandboxed=sandboxed,
         state_dir=state_dir,
         problems=problems,
     )
@@ -196,7 +212,7 @@ def prepare_graph(
         defaults["adapter"] = adapter
         defaults["payload"] = stamp_task_payload(payload, session_id=session_id, cwd=graph_cwd)
 
-    _walk_nodes(graph.get("nodes"), "", ctx)
+    _walk_nodes(graph.get("nodes"), "", ctx, depth=0)
 
     from puppetmaster.flow import validate_graph
 
@@ -245,25 +261,40 @@ def _resolve_pin(pin: Any, where: str, ctx: _Boundary) -> Optional[tuple]:
     return fields, adapter
 
 
-def _walk_nodes(nodes: Any, prefix: str, ctx: _Boundary) -> None:
+def _walk_nodes(nodes: Any, prefix: str, ctx: _Boundary, *, depth: int) -> None:
     if not isinstance(nodes, list):
         return
     for node in nodes:
         if not isinstance(node, dict):
             continue
         where = f"{prefix}node {node.get('id')!r}"
+        kind = node.get("kind")
         _reject_routing(node, where, ctx)
         if "model" in node:
-            pinned = _resolve_pin(node.pop("model"), where, ctx)
-            if pinned:
-                node["payload"], node["adapter"] = pinned
-        kind = node.get("kind")
+            if kind in ("agent", "judge"):
+                pinned = _resolve_pin(node.pop("model"), where, ctx)
+                if pinned:
+                    node["payload"], node["adapter"] = pinned
+            else:
+                # Puppetmaster reads model only on agent and judge nodes; a pin
+                # anywhere else would be dropped and the work auto-routed.
+                ctx.problems.append(
+                    f"{where} sets model on a {kind} node, where it has no effect; pin the "
+                    "agent/judge nodes, the map template, or the item graph's defaults"
+                )
         if kind == "shell":
             _check_shell(node, where, ctx)
         elif kind == "map":
+            limit = MAX_MAP_CONCURRENCY if depth == 0 else 1
+            concurrency = node.get("concurrency")
+            if concurrency is None:
+                if depth:
+                    node["concurrency"] = limit
+            elif isinstance(concurrency, int) and not isinstance(concurrency, bool) and concurrency > limit:
+                node["concurrency"] = limit
             template = node.get("node")
             if isinstance(template, dict):
-                _walk_nodes([template], f"{where} template ", ctx)
+                _walk_nodes([template], f"{where} template ", ctx, depth=depth)
             child = node.get("graph")
             if isinstance(child, dict):
                 child_where = f"{where} graph "
@@ -275,7 +306,7 @@ def _walk_nodes(nodes: Any, prefix: str, ctx: _Boundary) -> None:
                         pinned = _resolve_pin(child_defaults.pop("model"), f"{child_where}defaults", ctx)
                         if pinned:
                             child_defaults["payload"], child_defaults["adapter"] = pinned
-                _walk_nodes(child.get("nodes"), child_where, ctx)
+                _walk_nodes(child.get("nodes"), child_where, ctx, depth=depth + 1)
 
 
 def _check_shell(node: dict, where: str, ctx: _Boundary) -> None:
@@ -289,15 +320,20 @@ def _check_shell(node: dict, where: str, ctx: _Boundary) -> None:
             target = os.path.normpath(cwd if os.path.isabs(cwd) else os.path.join(ctx.graph_cwd, cwd))
             if not is_safe_path(target, ctx.root):
                 ctx.problems.append(f"{where} cwd {cwd!r} is outside the workspace {ctx.root}")
+    if ctx.sandboxed:
+        # run_command spawns through the OS sandbox; Puppetmaster's shell runner
+        # cannot, so a shell node would run unconfined.
+        ctx.problems.append(
+            f"{where}: shell nodes cannot run inside the OS sandbox (HARNESS_OS_SANDBOX is on); "
+            "use an agent node for the check"
+        )
+        return
     command = node.get("command")
     if not ctx.full_auto_guard or not isinstance(command, str) or not command.strip():
         return
     from .command_allowlist import allowlist_contains
     from .command_policy import guard_destructive_command
 
-    verdict = guard_destructive_command(command)
-    if not verdict.danger:
-        return
     # One-shot approvals do not apply: a flow may rerun the command.
     if allowlist_contains(
         command,
@@ -306,10 +342,20 @@ def _check_shell(node: dict, where: str, ctx: _Boundary) -> None:
         command_hash=hashlib.sha256(command.encode("utf-8")).hexdigest(),
     ):
         return
-    ctx.problems.append(
-        f"{where} shell command blocked by the full-auto guard "
-        f"({verdict.category}): {verdict.reason}"
-    )
+    if "{{" in command:
+        # The guard can only judge the text it sees; filled-in values such as
+        # "rm" or "+main" pass Puppetmaster's shell-safe check.
+        ctx.problems.append(
+            f"{where} shell command uses templates, which the full-auto guard cannot check; "
+            "write the concrete command or allowlist it"
+        )
+        return
+    verdict = guard_destructive_command(command)
+    if verdict.danger:
+        ctx.problems.append(
+            f"{where} shell command blocked by the full-auto guard "
+            f"({verdict.category}): {verdict.reason}"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -395,8 +441,9 @@ def launch(
     return run_id, summary, objective
 
 
-def control(session: Any, run_id: str, control: str, answer: str = "", reason: str = "") -> str:
-    """Answer a gate, resume, cut or stop a run of this session; returns a status line."""
+def control(session: Any, run_id: str, control: str, answer: str = "", reason: str = "",
+            extra_steps: int = 0) -> str:
+    """Answer a gate, resume, restart, cut or stop a run of this session; returns a status line."""
     record = _runs(session).get(run_id)
     if not isinstance(record, dict):
         raise FlowCallError(f"{run_id!r} is not a flow run of this session")
@@ -408,6 +455,13 @@ def control(session: Any, run_id: str, control: str, answer: str = "", reason: s
         })
     elif control == "resume":
         body = flow_call(session.state_dir, "resume", {"run_id": run_id, "background": True})
+    elif control == "restart":
+        # A stuck or stopped run continues where it stopped, with fresh loop
+        # budgets and room for more steps; continue_from would re-walk it.
+        body = flow_call(session.state_dir, "resume", {
+            "run_id": run_id, "background": True, "restart": True, "reset_loops": True,
+            "extra_steps": int(extra_steps or 0) if int(extra_steps or 0) > 0 else DEFAULT_RESTART_STEPS,
+        })
     elif control == "stop":
         body = flow_call(session.state_dir, "stop", {"run_id": run_id})
     elif control == "cut":
@@ -415,15 +469,45 @@ def control(session: Any, run_id: str, control: str, answer: str = "", reason: s
     else:
         raise FlowCallError(f"flow_control control must be one of {', '.join(CONTROLS)}")
     status = str(body.get("status") or "")
-    if control in ("answer", "resume") and status == "running":
+    if control in ("answer", "resume", "restart") and status == "running":
         record["status"] = "running"
         # A re-interrupt with no new steps repeats the old key; it is a new event.
         record["delivered"] = ""
+        record.pop("stop_requested", None)
         upsert_pill(session, run_id, str(record.get("objective") or ""), "running")
+    elif control == "stop":
+        if status in TERMINAL_STATUSES:
+            # Stopped at once (no walker held it): the pilot asked for this, so
+            # record it as delivered rather than wake the pilot to acknowledge it.
+            mark_delivered(session, FlowWake(run_id, status, _wake_key(body, status), body))
+            upsert_pill(session, run_id, str(record.get("objective") or ""), pill_status(status))
+        else:
+            # A walker still holds the run and will finish it as stopped; the
+            # drain shows that without a continuation.
+            record["stop_requested"] = True
     line = f"flow {run_id} {control}: status {status or 'unknown'}"
     if body.get("reason"):
         line += f" ({_clip(body['reason'])})"
     return line
+
+
+def stop_all(session: Any) -> None:
+    """Stop this session's unfinished runs (the user pressed Stop). Never raises.
+
+    Called off the ``_busy`` lock, so it asks Puppetmaster to stop and leaves
+    the records alone; the drain records the stopped runs later, and a Stop
+    already suppresses the resume.
+    """
+    runs = getattr(session, "_flow_runs", None)
+    if not isinstance(runs, dict):
+        return
+    for run_id, record in list(runs.items()):
+        if not isinstance(record, dict) or record.get("status") in TERMINAL_STATUSES:
+            continue
+        try:
+            flow_call(session.state_dir, "stop", {"run_id": run_id})
+        except Exception:
+            continue
 
 
 def upsert_pill(session: Any, run_id: str, objective: str, status: str) -> None:
@@ -466,26 +550,37 @@ def due_wakes(session: Any) -> list:
             summary = flow_call(session.state_dir, "status", {
                 "run_id": run_id, "since": int(record.get("since") or 0),
             })
+            record.pop("read_failures", None)
             status = str(summary.get("status") or "")
             if status not in WAKE_STATUSES:
                 continue
-            gate = summary.get("gate") if isinstance(summary.get("gate"), dict) else {}
-            key = f"{status}:{summary.get('next_since', 0)}:{gate.get('node') or ''}"
+            key = _wake_key(summary, status)
             if key == record.get("delivered"):
                 continue
             out.append(FlowWake(run_id=run_id, status=status, key=key, summary=summary))
         except Exception:
+            if not isinstance(record, dict):
+                continue
+            # A run that can never be read again must not hold the session's
+            # pending work open forever: report it once instead.
             if _run_missing(session.state_dir, run_id):
-                # Its state is gone, so it can never wake again: report it once
-                # instead of holding the session's pending work open forever.
-                out.append(FlowWake(run_id=run_id, status="failed", key="failed:lost", summary={
-                    "run_id": run_id,
-                    "status": "failed",
-                    "reason": "the run's state is gone from disk; it cannot be resumed",
-                    "next_since": int(record.get("since") or 0) if isinstance(record, dict) else 0,
-                }))
-            continue
+                reason = "the run's state is gone from disk; it cannot be resumed"
+            else:
+                failures = int(record.get("read_failures") or 0) + 1
+                record["read_failures"] = failures
+                if failures < _MAX_READ_FAILURES:
+                    continue
+                reason = f"the run's state could not be read {failures} times in a row"
+            out.append(FlowWake(run_id=run_id, status="failed", key="failed:lost", summary={
+                "run_id": run_id, "status": "failed", "reason": reason,
+                "next_since": int(record.get("since") or 0),
+            }))
     return out
+
+
+def _wake_key(summary: dict, status: str) -> str:
+    gate = summary.get("gate") if isinstance(summary.get("gate"), dict) else {}
+    return f"{status}:{summary.get('next_since', 0)}:{gate.get('node') or ''}"
 
 
 def _run_missing(state_dir: str, run_id: str) -> bool:
@@ -559,6 +654,9 @@ def format_wake(wake: FlowWake, objective: str) -> str:
             detail = step.get("reason") or step.get("error")
             if detail:
                 bit += f": {_clip(detail)}"
+            jobs = [str(job) for job in step.get("job_ids") or [] if job]
+            if jobs:
+                bit += f" [{', '.join(jobs)}]"
             lines.append(bit)
     problem = summary.get("last_problem")
     if isinstance(problem, dict) and problem:
@@ -582,11 +680,20 @@ def continuation_text(wakes: list) -> str:
         run_id, status = wake.run_id, wake.status
         head = f"[flow {run_id} {status}]"
         if status == "done":
-            lines.append(f"{head} Report the result above and take the next step.")
-        elif status in ("failed", "stuck"):
             lines.append(
-                f"{head} Report the reason above. Fix the cause and call run_flow with "
-                f"continue_from={run_id}, or stop."
+                f"{head} Report the result above and take the next step. A node's full "
+                "report is at read_file job://<job id> for the ids listed per step."
+            )
+        elif status == "stuck":
+            lines.append(
+                f"{head} Report the reason above. To continue where it stopped with fresh loop "
+                f'budgets call flow_control {{"run_id": "{run_id}", "control": "restart"}}; '
+                f"to re-walk with new instructions call run_flow with continue_from={run_id}."
+            )
+        elif status == "failed":
+            lines.append(
+                f"{head} Report the reason above (node reports: read_file job://<job id>). "
+                f"Fix the cause and call run_flow with continue_from={run_id}, or stop."
             )
         elif status == "interrupted":
             lines.append(

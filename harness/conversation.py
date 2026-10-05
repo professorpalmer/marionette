@@ -1812,15 +1812,25 @@ class ConversationalSession(
             return True
 
     def has_pending_swarms(self) -> bool:
-        with self._swarm_futures_lock:
-            if self._swarm_futures:
-                return True
+        """Background work is in flight: swarm futures or running flows.
+
+        Drives the frontend's pending state and idle poll, which delivers flow
+        wakes. The pilot's ``wait`` uses :meth:`has_pending_swarm_futures`.
+        """
+        if self.has_pending_swarm_futures():
+            return True
         try:
             from .flows import active_flow_ids
 
             return bool(active_flow_ids(self))
         except Exception:
             return False
+
+    def has_pending_swarm_futures(self) -> bool:
+        """Swarm futures only. A running flow wakes the pilot itself, so ``wait``
+        does not hold a turn open for one (a flow can run for an hour)."""
+        with self._swarm_futures_lock:
+            return len(self._swarm_futures) > 0
 
     def _swarm_inflight(self) -> int:
         """Number of futures currently tracked in ``_swarm_futures``.

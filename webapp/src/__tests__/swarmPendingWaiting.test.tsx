@@ -6,10 +6,11 @@ import {
   type Item,
   type SwarmPendingItem,
 } from "../components/TranscriptList";
-import { appendSwarmPending } from "../components/conversation/streamApply";
+import { appendSwarmPending, finalizeOrphanSwarmPills } from "../components/conversation/streamApply";
 import {
   classifySwarmPollEvent,
   pendingJobIdsAfterSwarmPending,
+  seedPendingJobIdsFromHydrate,
 } from "../components/conversation/swarmPoll";
 import {
   mergeTranscriptItems,
@@ -30,6 +31,21 @@ function pill(items: Item[]): SwarmPendingItem {
 }
 
 describe("flow waiting pill", () => {
+  it("a turn closing does not seal a waiting pill as ended", () => {
+    const items = appendSwarmPending([], [RUN], "Flow g: ship", "waiting");
+    // No live ids: a running pill would be sealed; a waiting one must stay.
+    expect(pill(finalizeOrphanSwarmPills(items, [])).status).toBe("waiting");
+    const running = appendSwarmPending([], [RUN], "Flow g: ship", "running");
+    expect(pill(finalizeOrphanSwarmPills(running, [])).status).toBe("ended");
+  });
+
+  it("hydrate does not re-arm pending work for a waiting pill", () => {
+    const waiting = appendSwarmPending([], [RUN], "Flow g: ship", "waiting");
+    expect(seedPendingJobIdsFromHydrate({ items: waiting })).toEqual([]);
+    const running = appendSwarmPending([], [RUN], "Flow g: ship", "running");
+    expect(seedPendingJobIdsFromHydrate({ items: running })).toEqual([RUN]);
+  });
+
   it("explicit status flips a live pill between running and waiting", () => {
     let items = appendSwarmPending([], [RUN], "Flow g: ship", "running");
     expect(pill(items).status).toBe("running");
@@ -110,7 +126,7 @@ describe("flow waiting pill", () => {
     );
     const rendered = screen.getByTestId("swarm-pending-pill");
     expect(rendered.getAttribute("data-status")).toBe("waiting");
-    expect(rendered.textContent).toContain("waiting for an answer: Flow g: ship");
+    expect(rendered.textContent).toContain("swarm waiting: Flow g: ship");
     expect(rendered.querySelector(".animate-spin")).toBeNull();
   });
 });

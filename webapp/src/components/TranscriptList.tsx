@@ -206,7 +206,8 @@ export type Card = {
 };
 /**
  * Inline swarm status pill lifecycle (running spinner vs terminal chips).
- * "waiting" is a non-terminal flow run paused at a gate for an answer.
+ * "waiting" is a non-terminal flow run paused for the pilot: at a gate for an
+ * answer, or interrupted and waiting to be resumed.
  */
 export type SwarmPendingStatus = "running" | "waiting" | "done" | "failed" | "ended" | "partial";
 
@@ -4464,7 +4465,7 @@ function SwarmPendingPill({
         : status === "done"
           ? "swarm done"
           : status === "waiting"
-            ? "waiting for an answer"
+            ? "swarm waiting"
             : "swarm running";
   const shell =
     status === "failed"

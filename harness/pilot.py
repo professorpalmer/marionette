@@ -299,6 +299,8 @@ class PilotAction:
     control: str = ""
     answer: str = ""
     reason: str = ""
+    # flow_control restart: extra steps beyond the run's step limit (0 = default).
+    extra_steps: int = 0
 
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
@@ -392,8 +394,8 @@ class PilotAction:
         if self.kind == "flow_control":
             if not (self.run_id or "").strip():
                 raise PilotError("flow_control requires run_id")
-            if self.control not in ("answer", "resume", "cut", "stop"):
-                raise PilotError("flow_control control must be answer, resume, cut, or stop")
+            if self.control not in ("answer", "resume", "restart", "cut", "stop"):
+                raise PilotError("flow_control control must be answer, resume, restart, cut, or stop")
             if self.control == "answer" and not (self.answer or "").strip():
                 raise PilotError("flow_control control=answer requires 'answer'")
         if self.kind == "route_task" and not (self.instruction or "").strip():
@@ -859,6 +861,11 @@ def from_wire(
             value = raw.get(name) if raw.get(name) is not None else arguments.get(name)
             flow_fields[name] = "" if value is None else str(value).strip()
         flow_fields["control"] = flow_fields["control"].lower()
+        raw_steps = raw.get("extra_steps") if raw.get("extra_steps") is not None else arguments.get("extra_steps")
+        try:
+            flow_fields["extra_steps"] = max(0, int(raw_steps or 0))
+        except (TypeError, ValueError):
+            flow_fields["extra_steps"] = 0
         if not str(goal or "").strip():
             goal = f"{flow_fields['control']} {flow_fields['run_id']}".strip()
 
@@ -1869,8 +1876,9 @@ def build_tools_schema(
                     "The run goes to the background and ends this turn; you are woken when it is "
                     "done, failed, stuck, stopped, interrupted or waiting at a gate. Node kinds: "
                     "agent (task, role code|explore, files, model), judge (task; ends with a "
-                    "PASS/FAIL verdict), parallel (branches), map (items + node or graph), shell "
-                    "(command), gate (question, options), set (values), end (status, summary). "
+                    "PASS/FAIL verdict), parallel (branches: ids of agent/judge nodes), map (items + "
+                    "node or graph), shell (command), gate (question, options), set (values), end "
+                    "(status pass|fail, summary). "
                     "Edges: {from, to, when: always|ok|fail|PASS|FAIL|PARTIAL|answer=X, max}. "
                     "Marionette sets worker routing: never pass adapter or payload; pass model "
                     "only for an exact worker pin. Minimal example: {\"id\": \"fix-and-review\", "
@@ -1899,17 +1907,19 @@ def build_tools_schema(
                 "name": "flow_control",
                 "description": (
                     "Control a run_flow run of this session: answer a gate (control=answer with "
-                    "one of its options), resume an interrupted run, cut the node in flight (its "
-                    "fail edges take over), or stop the run. Answer and resume go back to the "
-                    "background and wake you again."
+                    "one of its options), resume an interrupted run, restart a stuck or stopped "
+                    "run where it stopped with fresh loop budgets (optional extra_steps), cut the "
+                    "node in flight (its fail edges take over), or stop the run. Answer, resume "
+                    "and restart go back to the background and wake you again."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "run_id": {"type": "string", "description": "The flow run id (flow_...)."},
-                        "control": {"type": "string", "enum": ["answer", "resume", "cut", "stop"]},
+                        "control": {"type": "string", "enum": ["answer", "resume", "restart", "cut", "stop"]},
                         "answer": {"type": "string", "description": "Required for control=answer: the gate answer."},
                         "reason": {"type": "string", "description": "For control=cut: why the node is cut."},
+                        "extra_steps": {"type": "integer", "description": "For control=restart: steps beyond the step limit (default 20)."},
                     },
                     "required": ["run_id", "control"]
                 }
@@ -3130,7 +3140,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Omit `adapter` for enabled agentic provider/model routing, or pin `model="codex/gpt-6-astra"` with `adapter="codex"` for the native Codex CLI. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports). Large files support targeted edits and appends; do not split writers merely because a file is long.
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
 - `run_flow`: start a Puppetmaster flow graph (agent, judge, parallel, map, shell, gate, set and end nodes joined by edges) for multi-step work with checks, reviews and repair loops, or one task over many items via map. Requires `graph`, optional `input`, `continue_from`. It runs in the background and wakes you when it is done, failed, stuck, stopped, interrupted or waiting at a gate.
-- `flow_control`: answer a flow gate, resume an interrupted run, cut the node in flight, or stop a run. Requires `run_id` and `control`.
+- `flow_control`: answer a flow gate, resume an interrupted run, restart a stuck run where it stopped, cut the node in flight, or stop a run. Requires `run_id` and `control`.
 - Worker `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) on `run_swarm` / `run_implement` / `run_parallel` pins that one dispatch. Omit it to use Settings worker reasoning (factory medium). This is not the chat-pilot picker.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
@@ -3182,7 +3192,7 @@ Choose the smallest useful team, including no workers:
 Use route_task to preview model/cost before a big dispatch.
 
 DISPATCH THEN WAIT (mandatory):
-When you dispatch background work (run_implement, run_parallel, run_flow, or a backgrounded run_swarm), that dispatch is not completion. Do useful independent work while it runs, then call wait until it settles. Never dispatch overlapping writers or duplicate the same objective. Read the actual findings or patch and test evidence, report the outcome, and continue the task yourself. A worker status alone is not proof. If analysis is shallow or empty, diagnose the gap and either verify directly or delegate a narrower question. Finish with the user's requested result and a clear verdict; do not leave them asking what happened.
+When you dispatch background work (run_implement, run_parallel, or a backgrounded run_swarm), that dispatch is not completion. Do useful independent work while it runs, then call wait until it settles. run_flow is different: it ends your turn and the run wakes you when it is done, failed, stuck, stopped, interrupted or at a gate, so do not wait on it. Never dispatch overlapping writers or duplicate the same objective. Read the actual findings or patch and test evidence, report the outcome, and continue the task yourself. A worker status alone is not proof. If analysis is shallow or empty, diagnose the gap and either verify directly or delegate a narrower question. Finish with the user's requested result and a clear verdict; do not leave them asking what happened.
 
 TINY / STATIC WORKSPACE AFTER IMPLEMENT (mandatory): After a successful implement on a tiny or static workspace (few source files, HTML/CSS/JS demos, small sites), perform AT MOST ONE cheap verification (read the changed file, `node --check`, or a focused grep) and then STOP. Report the outcome. Do NOT launch headless Chrome/Chromium `--dump-dom` / `file://` smoke probes, do NOT open browsers, and do NOT re-investigate or re-read the same files in a validation campaign unless the user explicitly requests browser QA or visual validation. Native `browser_*` tools remain available only for that explicit ask.
 

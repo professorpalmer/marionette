@@ -98,6 +98,8 @@ export function seedPendingJobIdsFromHydrate(opts: {
   for (const it of opts.items) {
     if (it.kind !== "swarm_pending") continue;
     if (isSwarmPendingTerminal(it)) continue;
+    // A waiting flow is not in flight; seeding it would keep Still working… on.
+    if (it.status === "waiting") continue;
     const terminals = new Set(it.terminal_job_ids || []);
     for (const jobId of it.job_ids || []) {
       if (terminals.has(jobId)) continue;

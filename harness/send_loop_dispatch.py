@@ -2454,20 +2454,29 @@ def dispatch_flow_control_action(session, act, aid, is_native) -> Iterator[Any]:
     if not (session.config.repo or '').strip():
         yield from _fail('No workspace directory (config.repo) is open.')
         return None
-    if act.control in ('answer', 'resume'):
+    if act.control in ('answer', 'resume', 'restart'):
         probe = getattr(session, '_worker_delegation_available', None)
         if callable(probe) and not probe():
             yield from _fail('no working worker route is available for this session')
             return None
     try:
-        text = flows.control(session, act.run_id, act.control, act.answer, act.reason)
+        text = flows.control(session, act.run_id, act.control, act.answer, act.reason,
+                             extra_steps=act.extra_steps)
     except flows.FlowCallError as exc:
         yield from _fail(str(exc))
         return None
     record = (getattr(session, '_flow_runs', None) or {}).get(act.run_id) or {}
-    if act.control in ('answer', 'resume') and record.get('status') == 'running':
+    objective = record.get('objective') or ''
+    if act.control in ('answer', 'resume', 'restart') and record.get('status') == 'running':
         yield ConvEvent('swarm_pending', {
-            'job_ids': [act.run_id], 'objective': record.get('objective') or '', 'status': 'running',
+            'job_ids': [act.run_id], 'objective': objective, 'status': 'running',
+        })
+    elif act.control == 'stop' and record.get('status') in flows.TERMINAL_STATUSES:
+        # Stopped at once: close the pill now; no wake turn follows.
+        stopped = flows.FlowWake(act.run_id, str(record.get('status')), str(record.get('delivered') or ''),
+                                 {'reason': 'stopped by request'})
+        yield ConvEvent('swarm_result', {
+            'job_id': act.run_id, 'objective': objective, 'result': flows.wake_result(stopped),
         })
     yield ConvEvent('action_result', {'id': aid, 'job_id': act.run_id, 'status': 'ok', 'message': text})
     session._append_action_result(act, aid, f'(flow_control {aid}: {text})', is_native)

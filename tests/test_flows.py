@@ -551,7 +551,8 @@ def test_schema_entries():
     assert set(run_flow["parameters"]["properties"]) == {"graph", "input", "continue_from", "goal", "repo"}
     control = _schema_fn("flow_control")
     assert control["parameters"]["required"] == ["run_id", "control"]
-    assert control["parameters"]["properties"]["control"]["enum"] == ["answer", "resume", "cut", "stop"]
+    assert control["parameters"]["properties"]["control"]["enum"] == ["answer", "resume", "restart", "cut", "stop"]
+    assert control["parameters"]["properties"]["extra_steps"]["type"] == "integer"
     assert _schema_fn("run_flow", no_delegation=True) is None
     assert _schema_fn("flow_control", no_delegation=True) is None
 
@@ -658,3 +659,163 @@ def test_real_flow_runs_shell_node_and_wakes_done(tmp_path, routing, monkeypatch
                 break
             time.sleep(0.2)
         assert not walker_alive(session.state_dir, run_id)
+
+
+# --------------------------------------------------------------------------
+# review fixes
+
+
+def test_model_pin_on_a_map_node_is_refused_and_belongs_on_the_template(tmp_path, routing, pins):
+    graph = {"id": "fan-out", "entry": "fan", "nodes": [
+        {"id": "fan", "kind": "map", "items": ["a"], "model": "ok-x",
+         "node": {"kind": "agent", "task": "do {{item}}", "files": ["{{item}}.py"]}}]}
+    assert "sets model on a map node" in _refused(tmp_path, graph)
+    graph["nodes"][0].pop("model")
+    graph["nodes"][0]["node"]["model"] = "ok-x"
+    prepared = _prepare(tmp_path, graph)
+    assert prepared["nodes"][0]["node"]["payload"]["pinned_model"] == "agentic/ok-x"
+
+
+def test_map_concurrency_is_clamped_and_nested_maps_run_one_at_a_time(tmp_path, routing):
+    child = {"entry": "inner", "nodes": [{"id": "inner", "kind": "map", "items": ["x", "y"],
+                                          "node": {"kind": "judge", "task": "check {{item}}"}}]}
+    graph = {"id": "wide", "entry": "fan", "nodes": [
+        {"id": "fan", "kind": "map", "items": ["a", "b"], "concurrency": 200, "graph": child}]}
+    prepared = _prepare(tmp_path, graph)
+    assert prepared["nodes"][0]["concurrency"] == flows.MAX_MAP_CONCURRENCY
+    assert prepared["nodes"][0]["graph"]["nodes"][0]["concurrency"] == 1
+
+
+def test_templated_shell_command_needs_the_allowlist_under_the_guard(tmp_path, routing, monkeypatch):
+    import harness.command_allowlist as allowlist_mod
+
+    graph = {"id": "tmpl", "entry": "run", "state": {"c": "rm", "t": "/"},
+             "nodes": [{"id": "run", "kind": "shell", "command": "{{state.c}} -rf {{state.t}}"}]}
+    _prepare(tmp_path, graph, guard=False)
+    assert "uses templates" in _refused(tmp_path, graph, guard=True)
+    monkeypatch.setattr(allowlist_mod, "allowlist_contains", lambda *a, **k: True)
+    _prepare(tmp_path, graph, guard=True)
+
+
+def test_shell_nodes_are_refused_while_the_os_sandbox_is_on(tmp_path, routing, monkeypatch):
+    graph = {"id": "boxed", "entry": "run", "nodes": [{"id": "run", "kind": "shell", "command": "echo ok"}]}
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", "auto")
+    assert "cannot run inside the OS sandbox" in _refused(tmp_path, graph)
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", "off")
+    _prepare(tmp_path, graph)
+
+
+def test_restart_continues_a_stuck_run_with_fresh_budgets(tmp_path, calls):
+    session = _Session(tmp_path)
+    session._flow_runs["flow_bbbbbbbbbbbb"] = {"objective": "o", "delivered": "stuck:9:", "since": 9, "status": "stuck"}
+    calls.responses["resume"] = {"status": "running"}
+    flows.control(session, "flow_bbbbbbbbbbbb", "restart")
+    assert calls.log[-1][1:] == ("resume", {
+        "run_id": "flow_bbbbbbbbbbbb", "background": True, "restart": True,
+        "reset_loops": True, "extra_steps": flows.DEFAULT_RESTART_STEPS,
+    })
+    assert session._flow_runs["flow_bbbbbbbbbbbb"]["status"] == "running"
+    flows.control(session, "flow_bbbbbbbbbbbb", "restart", extra_steps=5)
+    assert calls.log[-1][2]["extra_steps"] == 5
+
+
+def test_an_immediate_stop_is_recorded_without_waking_the_pilot(session, calls):
+    calls.responses["stop"] = _status("stopped", 3, reason="stopped by request")
+    flows.control(session, RUN, "stop")
+    assert session._flow_runs[RUN]["status"] == "stopped"
+    assert session._flow_runs[RUN]["delivered"] == "stopped:3:"
+    calls.responses["status"] = lambda params: _status("stopped", 3)
+    assert _drain(session) == []
+
+
+def test_a_requested_stop_that_lands_later_is_quiet(session, calls):
+    calls.responses["stop"] = _status("running", 1)
+    flows.control(session, RUN, "stop")
+    assert session._flow_runs[RUN]["stop_requested"] is True
+    calls.responses["status"] = lambda params: _status("stopped", 2)
+    before = len(session._history)
+    events = _drain(session)
+    # The badge and the record, but no continuation and no pilot_resume.
+    assert [k for k, _ in events] == ["swarm_result"]
+    assert [m["role"] for m in session._history[before:]] == ["assistant"]
+
+
+def test_an_interrupted_run_shows_a_waiting_pill_not_a_terminal_badge(session, calls):
+    calls.responses["status"] = lambda params: _status("interrupted", 1, reason="the walker exited")
+    events = _drain(session)
+    assert events[0] == ("swarm_pending", {"job_ids": [RUN], "objective": "Flow g: ship", "status": "waiting"})
+    assert events[-1][0] == "pilot_resume"
+    assert '"control": "resume"' in session._history[-1]["content"]
+    assert not [r for r in session._display_transcript if r.get("type") == "swarm_result"]
+
+
+def test_an_unreadable_run_is_given_up_after_repeated_failures(tmp_path, calls):
+    from pathlib import Path
+
+    from puppetmaster.flow import run_path
+
+    session = _Session(tmp_path)
+    session._flow_runs["flow_ffffffffffff"] = {"objective": "o", "delivered": "", "since": 0, "status": "running"}
+    path = run_path(Path(session.state_dir), "flow_ffffffffffff")
+    path.parent.mkdir(parents=True)
+    path.write_text("{", encoding="utf-8")
+
+    def reply(params):
+        raise flows.FlowCallError("cannot read flow run flow_ffffffffffff")
+
+    calls.responses["status"] = reply
+    for _ in range(flows._MAX_READ_FAILURES - 1):
+        assert flows.due_wakes(session) == []
+    wakes = flows.due_wakes(session)
+    assert [(w.status, w.key) for w in wakes] == [("failed", "failed:lost")]
+    assert "could not be read" in wakes[0].summary["reason"]
+
+
+def test_wake_lists_node_job_ids_and_points_at_their_reports():
+    summary = {"status": "done", "steps": [{"node": "fix", "visit": 1, "ok": True, "job_ids": ["job_aaaaaaaaaaaa"]}]}
+    wake = flows.FlowWake("flow_x", "done", "done:1:", summary)
+    assert "- fix#1 ok [job_aaaaaaaaaaaa]" in flows.format_wake(wake, "o")
+    assert "read_file job://" in flows.continuation_text([wake])
+    assert '"control": "restart"' in flows.continuation_text([flows.FlowWake("flow_x", "stuck", "k", {})])
+
+
+def test_stop_all_stops_unfinished_runs_without_touching_records(tmp_path, calls):
+    session = _Session(tmp_path)
+    session._flow_runs = {
+        "flow_aaaaaaaaaaaa": {"status": "running"},
+        "flow_bbbbbbbbbbbb": {"status": "waiting"},
+        "flow_cccccccccccc": {"status": "done"},
+    }
+    before = json.dumps(session._flow_runs, sort_keys=True)
+    flows.stop_all(session)
+    stopped = sorted(params["run_id"] for _state, action, params in calls.log if action == "stop")
+    assert stopped == ["flow_aaaaaaaaaaaa", "flow_bbbbbbbbbbbb"]
+    assert json.dumps(session._flow_runs, sort_keys=True) == before
+
+
+def test_user_stop_stops_the_sessions_flows(session, calls):
+    calls.responses["stop"] = _status("stopped", 1)
+    session.interrupt()
+    assert [params["run_id"] for _s, action, params in calls.log if action == "stop"] == [RUN]
+
+
+def test_wait_does_not_hold_a_turn_for_a_running_flow(session, calls):
+    from harness.pilot_wait import pending_jobs_keep_alive
+
+    calls.responses["status"] = lambda params: _status("running", 1)
+    # The frontend keeps polling so the wake is delivered ...
+    assert session.has_pending_swarms() is True
+    # ... but wait does not keep the turn open for a run that wakes the pilot itself.
+    assert pending_jobs_keep_alive(session) is False
+
+
+def test_a_client_disconnect_mid_drain_cannot_duplicate_a_wake(session, calls):
+    calls.responses["status"] = lambda params: _status("done", 2)
+    drain = session.drain_swarm_results()
+    assert next(drain).kind == "swarm_result"
+    drain.close()  # the SSE client went away at the first yield
+    records = [m for m in session._history if str(m.get("content", "")).startswith(f"[flow {RUN} done")]
+    assert len(records) == 1
+    assert _drain(session) == []
+    assert len([m for m in session._history if str(m.get("content", "")).startswith(f"[flow {RUN} done")]) == 1
+
