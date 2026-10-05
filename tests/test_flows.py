@@ -351,19 +351,34 @@ def test_due_wakes_dedupes_by_key_and_rewakes_after_answer(tmp_path, calls):
 
 
 def test_due_wakes_interrupted_and_read_failures(tmp_path, calls):
+    from pathlib import Path
+
+    from puppetmaster.flow import run_path
+
     session = _Session(tmp_path)
-    session._flow_runs["flow_eeeeeeeeeeee"] = {"objective": "o", "delivered": "", "since": 0, "status": "running"}
-    session._flow_runs["flow_ffffffffffff"] = {"objective": "p", "delivered": "", "since": 0, "status": "running"}
+    for run_id in ("flow_eeeeeeeeeeee", "flow_ffffffffffff", "flow_0123456789ab"):
+        session._flow_runs[run_id] = {"objective": "o", "delivered": "", "since": 0, "status": "running"}
+    # A run whose file exists but cannot be read right now is skipped and retried.
+    unreadable = run_path(Path(session.state_dir), "flow_ffffffffffff")
+    unreadable.parent.mkdir(parents=True)
+    unreadable.write_text("{", encoding="utf-8")
 
     def reply(params):
-        if params["run_id"] == "flow_ffffffffffff":
-            raise flows.FlowCallError("no flow run flow_ffffffffffff")
+        if params["run_id"] != "flow_eeeeeeeeeeee":
+            raise flows.FlowCallError(f"cannot read flow run {params['run_id']}")
         return _status("interrupted", 1, reason="the walker exited before the run finished")
 
     calls.responses["status"] = reply
     wakes = flows.due_wakes(session)
-    assert [(w.run_id, w.status) for w in wakes] == [("flow_eeeeeeeeeeee", "interrupted")]
-    flows.mark_delivered(session, wakes[0])
+    # flow_0123456789ab has no state on disk at all: one terminal wake, not pending forever.
+    assert [(w.run_id, w.status, w.key) for w in wakes] == [
+        ("flow_eeeeeeeeeeee", "interrupted", "interrupted:1:"),
+        ("flow_0123456789ab", "failed", "failed:lost"),
+    ]
+    for wake in wakes:
+        flows.mark_delivered(session, wake)
+    assert flows.active_flow_ids(session) == ["flow_ffffffffffff"]
+    assert [w.run_id for w in flows.due_wakes(session)] == []
     calls.responses["resume"] = {"status": "running"}
     flows.control(session, "flow_eeeeeeeeeeee", "resume")
     # Re-interrupted with no new steps: same key, but a new event after resume.

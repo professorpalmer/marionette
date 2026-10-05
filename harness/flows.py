@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Puppetmaster flow graphs for the pilot: ``run_flow`` and ``flow_control``.
 
 The pilot writes one graph; Puppetmaster walks it in a detached process and
@@ -11,6 +9,8 @@ interrupted, or waiting at a gate. This is the only module that imports
 Per-session state lives on ``session._flow_runs`` (``run_id`` -> record) and is
 touched only under the session's ``_busy`` lock (dispatch and drain).
 """
+
+from __future__ import annotations
 
 import copy
 import hashlib
@@ -475,8 +475,29 @@ def due_wakes(session: Any) -> list:
                 continue
             out.append(FlowWake(run_id=run_id, status=status, key=key, summary=summary))
         except Exception:
+            if _run_missing(session.state_dir, run_id):
+                # Its state is gone, so it can never wake again: report it once
+                # instead of holding the session's pending work open forever.
+                out.append(FlowWake(run_id=run_id, status="failed", key="failed:lost", summary={
+                    "run_id": run_id,
+                    "status": "failed",
+                    "reason": "the run's state is gone from disk; it cannot be resumed",
+                    "next_since": int(record.get("since") or 0) if isinstance(record, dict) else 0,
+                }))
             continue
     return out
+
+
+def _run_missing(state_dir: str, run_id: str) -> bool:
+    """True only when the run's file is provably absent (not when unreadable)."""
+    try:
+        from pathlib import Path
+
+        from puppetmaster.flow import run_path
+
+        return not run_path(Path(state_dir), run_id).exists()
+    except Exception:
+        return False
 
 
 def mark_delivered(session: Any, wake: FlowWake) -> None:
