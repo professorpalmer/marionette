@@ -224,7 +224,9 @@ def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
         # process and the store may refuse a snapshot read under that write
         # (Windows CI hit 409 here). The proof is that the process stops, so
         # retry the cancel briefly instead of asserting on the first attempt.
-        cancel_deadline = time.monotonic() + 3
+        # A loaded Windows runner can report job_cancel_unavailable for over
+        # 3 s while the job is still binding (2026-09-09 and 2026-10-05).
+        cancel_deadline = time.monotonic() + 10
         code, result = post_swarm_cancel(body, svc)
         while code != 200 and time.monotonic() < cancel_deadline:
             time.sleep(0.05)
