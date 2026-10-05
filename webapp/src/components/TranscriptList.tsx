@@ -204,8 +204,11 @@ export type Card = {
              /** Bounded preview when spilled or truncated. */
              output_preview?: string };
 };
-/** Inline swarm status pill lifecycle (running spinner vs terminal chips). */
-export type SwarmPendingStatus = "running" | "done" | "failed" | "ended" | "partial";
+/**
+ * Inline swarm status pill lifecycle (running spinner vs terminal chips).
+ * "waiting" is a non-terminal flow run paused at a gate for an answer.
+ */
+export type SwarmPendingStatus = "running" | "waiting" | "done" | "failed" | "ended" | "partial";
 
 export type SwarmPendingItem = {
   kind: "swarm_pending";
@@ -808,6 +811,12 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       const status = item.status || (item.resolved ? "done" : "running");
       // Phantom done rows that land before the first user message are leftovers.
       if (!seenUser && status !== "running") continue;
+      if (status === "waiting") {
+        // A gate question for the user: top level, never buried in a fold.
+        flush();
+        grouped.push(item);
+        continue;
+      }
       if (status === "running") {
         // Keep the live swarm pill inside the current Investigating fold with
         // surrounding tool cards / reasoning.
@@ -4454,7 +4463,9 @@ function SwarmPendingPill({
         ? "swarm ended"
         : status === "done"
           ? "swarm done"
-          : "swarm running";
+          : status === "waiting"
+            ? "waiting for an answer"
+            : "swarm running";
   const shell =
     status === "failed"
       ? "bg-risk/10 border-risk/30 text-risk/80"
@@ -4464,17 +4475,23 @@ function SwarmPendingPill({
           ? "bg-panel2/15 border-edge/20 text-faint"
           : status === "done"
             ? "bg-panel2/20 border-edge/30 text-faint"
-            : "bg-panel2/60 border-edge/60 text-muted";
+            : status === "waiting"
+              ? "bg-panel2/60 border-warn/30 text-warn"
+              : "bg-panel2/60 border-edge/60 text-muted";
   const dot =
     status === "failed"
       ? "bg-risk/50"
-      : status === "partial"
+      : status === "partial" || status === "waiting"
         ? "bg-warn/50"
         : status === "done"
           ? "bg-good/40"
           : "bg-faint/40";
   return (
-    <div className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}>
+    <div
+      data-testid="swarm-pending-pill"
+      data-status={status}
+      className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}
+    >
       {status === "running"
         ? <Loader2 size={11} className="animate-spin text-accent" />
         : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
