@@ -98,6 +98,10 @@ STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3")
 # failed/degraded objective before further pilot_resume events are suppressed.
 FAILED_OBJECTIVE_RESUME_CAP = int(os.environ.get("HARNESS_FAILED_OBJECTIVE_RESUME_CAP", "2"))
 
+# Pilot tools that hand work to Puppetmaster workers. Hidden under
+# no_delegation / no worker route and counted against the swarm budget.
+DELEGATION_KINDS = frozenset({"run_swarm", "run_implement", "run_parallel", "run_flow"})
+
 # Puppetmaster / structural tools — never blocked by the delegate gate.
 # search_state is exempt so durable recall (job:// / artifact:// / spill://)
 # stays available before a broad redispatch without counting as exploration.
@@ -107,17 +111,11 @@ DELEGATION_EXEMPT_KINDS = frozenset({
     "search_archive",
     "read_archived_chat",
     "query_wiki",
-    "run_swarm",
-    "run_implement",
-    "run_parallel",
     "route_task",
-})
+    "flow_control",
+}) | DELEGATION_KINDS
 
-SWARM_DISPATCH_KINDS = frozenset({
-    "run_swarm",
-    "run_implement",
-    "run_parallel",
-})
+SWARM_DISPATCH_KINDS = DELEGATION_KINDS
 
 BROAD_SWARM_ROLES = (
     "explore",
@@ -806,7 +804,7 @@ def swarm_policy_turn_note(
         return (
             "TURN POLICY: no working worker route is available for this session. "
             "Proceed directly with the native tools; do not call run_swarm, "
-            "run_parallel, or run_implement. Broad or multi-file scope is advisory, "
+            "run_parallel, run_flow, or run_implement. Broad or multi-file scope is advisory, "
             "not a reason to stop. This supersedes frozen SWARM FIRST/MUST and "
             "file-count delegation wording. Filesystem, loop, edit-first, and "
             "total-turn safety limits still apply."
@@ -814,7 +812,8 @@ def swarm_policy_turn_note(
     if policy == SWARM_POLICY_EXPLICIT:
         return (
             "TURN POLICY: the user asked for a swarm. Call run_swarm or "
-            "run_parallel now. Do not substitute git or Puppetmaster CLI theater."
+            "run_parallel now (run_flow for a multi-step pipeline). Do not "
+            "substitute git or Puppetmaster CLI theater."
         )
     if policy == SWARM_POLICY_BROAD:
         if not swarm_gate_enabled():
@@ -822,7 +821,9 @@ def swarm_policy_turn_note(
                 "TURN POLICY: this user message is broad-intent. Delegation is "
                 "available and may improve coverage, but it is advisory. Continue "
                 "directly when that is the bounded, useful path; do not invent a "
-                "worker requirement or a file-count threshold. This supersedes "
+                "worker requirement or a file-count threshold. For a multi-step "
+                "pipeline with checks or reviews, one run_flow graph beats "
+                "hand-chaining workers. This supersedes "
                 "frozen SWARM FIRST/MUST and multi-file delegation wording."
             )
         return (
@@ -1004,8 +1005,25 @@ def dedupe_dispatch_actions(actions: list) -> list:
                 if key in seen:
                     continue
                 seen.add(key)
+        elif kind == "run_flow":
+            key = (kind, flow_fingerprint(act))
+            if key in seen:
+                continue
+            seen.add(key)
         out.append(act)
     return out
+
+
+def flow_fingerprint(act: Any) -> str:
+    """Stable hash of a run_flow's canonical graph JSON plus its input."""
+    import hashlib
+
+    graph = getattr(act, "graph", None) or {}
+    text = json.dumps(
+        {"graph": graph, "input": getattr(act, "flow_input", "") or ""},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _swarm_model_key(act: Any) -> str:
@@ -1118,6 +1136,14 @@ def normalize_action_args(kind: str, act: Any) -> str:
             getattr(act, "mode", "") or args.get("mode", "") or ""
         ).strip().lower()
         payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
+    elif kind == "run_flow":
+        payload["flow"] = flow_fingerprint(act)
+        payload["continue_from"] = (getattr(act, "continue_from", "") or "").strip()
+        payload["repo"] = _norm_path(getattr(act, "repo", "") or "")
+    elif kind == "flow_control":
+        payload["run_id"] = (getattr(act, "run_id", "") or "").strip()
+        payload["control"] = (getattr(act, "control", "") or "").strip()
+        payload["answer"] = _norm_whitespace(getattr(act, "answer", "") or "")
     elif kind == "call_mcp":
         payload["tool"] = (getattr(act, "tool", "") or "").strip().lower()
         payload["arguments"] = args
@@ -1520,7 +1546,8 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
         if state.kernel_recovery:
             return False
         if not state.swarm_dispatched:
-            if kind in ("run_swarm", "run_parallel"):
+            # run_implement does not satisfy an explicit swarm ask.
+            if kind in DELEGATION_KINDS and kind != "run_implement":
                 return False
             if kind in ("search_codegraph", "search_state", "search_archive", "read_archived_chat", "route_task", "query_wiki"):
                 return False

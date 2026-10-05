@@ -69,6 +69,8 @@ ActionKind = Literal[
     "query_wiki",
     "run_implement",
     "run_parallel",
+    "run_flow",
+    "flow_control",
     "route_task",
     "view_image",
     "memory",
@@ -287,6 +289,18 @@ class PilotAction:
     background: bool = False
     # run_command_batch only: optional concurrency bound (0 = host default).
     max_concurrency: int = 0
+    # run_flow: the graph object, the run's {{input}} (wire "input"), and an
+    # optional prior run of this session to continue.
+    graph: dict = field(default_factory=dict)
+    flow_input: str = ""
+    continue_from: str = ""
+    # flow_control: the run, what to do with it, the gate answer, the cut reason.
+    run_id: str = ""
+    control: str = ""
+    answer: str = ""
+    reason: str = ""
+    # flow_control restart: extra steps beyond the run's step limit (0 = default).
+    extra_steps: int = 0
 
     def validate(self) -> "PilotAction":
         if self.kind not in VALID_ACTION_KINDS:
@@ -375,6 +389,15 @@ class PilotAction:
             raise PilotError("run_implement action requires a non-empty goal")
         if self.kind == "run_parallel" and not self.goals:
             raise PilotError("run_parallel action requires a list of 'goals'")
+        if self.kind == "run_flow" and not (isinstance(self.graph, dict) and self.graph):
+            raise PilotError("run_flow action requires a 'graph' object")
+        if self.kind == "flow_control":
+            if not (self.run_id or "").strip():
+                raise PilotError("flow_control requires run_id")
+            if self.control not in ("answer", "resume", "restart", "cut", "stop"):
+                raise PilotError("flow_control control must be answer, resume, restart, cut, or stop")
+            if self.control == "answer" and not (self.answer or "").strip():
+                raise PilotError("flow_control control=answer requires 'answer'")
         if self.kind == "route_task" and not (self.instruction or "").strip():
             raise PilotError("route_task action requires a non-empty instruction")
         if self.kind == "call_mcp" and not (self.tool or "").strip():
@@ -807,12 +830,44 @@ def from_wire(
             or arguments.get("workspace_root")
             or ""
         ).strip()
-    elif kind == "relocate_session":
+    elif kind in ("relocate_session", "run_flow"):
         repo_arg = (
             raw.get("repo")
             or arguments.get("repo")
             or ""
         ).strip()
+
+    graph: dict = {}
+    flow_input = ""
+    continue_from = ""
+    if kind == "run_flow":
+        graph_raw = raw["graph"] if "graph" in raw else arguments.get("graph")
+        if isinstance(graph_raw, str) and graph_raw.strip():
+            try:
+                graph_raw = json.loads(graph_raw)
+            except ValueError:
+                graph_raw = None
+        graph = graph_raw if isinstance(graph_raw, dict) else {}
+        input_raw = raw["input"] if "input" in raw else arguments.get("input")
+        flow_input = "" if input_raw is None else str(input_raw)
+        continue_from = str(raw.get("continue_from") or arguments.get("continue_from") or "").strip()
+        if not str(goal or "").strip():
+            from .flows import default_goal
+
+            goal = default_goal(graph, flow_input)
+    flow_fields: dict = {}
+    if kind == "flow_control":
+        for name in ("run_id", "control", "answer", "reason"):
+            value = raw.get(name) if raw.get(name) is not None else arguments.get(name)
+            flow_fields[name] = "" if value is None else str(value).strip()
+        flow_fields["control"] = flow_fields["control"].lower()
+        raw_steps = raw.get("extra_steps") if raw.get("extra_steps") is not None else arguments.get("extra_steps")
+        try:
+            flow_fields["extra_steps"] = max(0, int(raw_steps or 0))
+        except (TypeError, ValueError):
+            flow_fields["extra_steps"] = 0
+        if not str(goal or "").strip():
+            goal = f"{flow_fields['control']} {flow_fields['run_id']}".strip()
 
     acceptance_criteria: list = []
     if kind in ("run_swarm", "run_parallel", "run_implement"):
@@ -882,6 +937,10 @@ def from_wire(
         limit=_optional_int(raw.get("limit")),
         background=bool(background),
         max_concurrency=int(max_concurrency or 0),
+        graph=graph,
+        flow_input=flow_input,
+        continue_from=continue_from,
+        **flow_fields,
     ).validate()
 
 
@@ -1800,6 +1859,69 @@ def build_tools_schema(
                         },
                     },
                     "required": ["goals"]
+                }
+            }
+        })
+
+    # 12b. run_flow / flow_control
+    if not no_delegation:
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "run_flow",
+                "description": (
+                    "Start a Puppetmaster flow graph: write the whole pipeline once instead of "
+                    "hand-chaining run_implement + run_swarm. Use it for multi-step work with "
+                    "checks, reviews and repair loops, or for one task over many items via map. "
+                    "The run goes to the background and ends this turn; you are woken when it is "
+                    "done, failed, stuck, stopped, interrupted or waiting at a gate. Node kinds: "
+                    "agent (task, role code|explore, files, model), judge (task; ends with a "
+                    "PASS/FAIL verdict), parallel (branches: ids of agent/judge nodes), map (items + "
+                    "node or graph), shell (command), gate (question, options), set (values), end "
+                    "(status pass|fail, summary). "
+                    "Edges: {from, to, when: always|ok|fail|PASS|FAIL|PARTIAL|answer=X, max}. "
+                    "Marionette sets worker routing: never pass adapter or payload; pass model "
+                    "only for an exact worker pin. Minimal example: {\"id\": \"fix-and-review\", "
+                    "\"entry\": \"fix\", \"nodes\": [{\"id\": \"fix\", \"kind\": \"agent\", "
+                    "\"task\": \"{{input}}\"}, {\"id\": \"review\", \"kind\": \"judge\", "
+                    "\"task\": \"Review the fix for: {{input}}\"}], \"edges\": [{\"from\": \"fix\", "
+                    "\"to\": \"review\", \"when\": \"ok\"}, {\"from\": \"review\", \"to\": \"fix\", "
+                    "\"when\": \"FAIL\", \"max\": 2}]}"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "graph": {"type": "object", "description": "The flow graph: id (kebab-case), entry, nodes, edges; optional cwd (inside the workspace), defaults (model, timeout_seconds), limits, state."},
+                        "input": {"type": "string", "description": "The run's {{input}}: the task the graph works on."},
+                        "continue_from": {"type": "string", "description": "A finished flow run id of this session to follow up on; its nodes resume their own sessions with this input."},
+                        "goal": {"type": "string", "description": "Short tracker label. Default: Flow <graph id>: <input>."},
+                        "repo": {"type": "string", "description": "Optional absolute path to a DIFFERENT git repository to run the flow in (defaults to the open workspace). Must be a git work tree."},
+                    },
+                    "required": ["graph"]
+                }
+            }
+        })
+        schema.append({
+            "type": "function",
+            "function": {
+                "name": "flow_control",
+                "description": (
+                    "Control a run_flow run of this session: answer a gate (control=answer with "
+                    "one of its options), resume an interrupted run, restart a stuck or stopped "
+                    "run where it stopped with fresh loop budgets (optional extra_steps), cut the "
+                    "node in flight (its fail edges take over), or stop the run. Answer, resume "
+                    "and restart go back to the background and wake you again."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "run_id": {"type": "string", "description": "The flow run id (flow_...)."},
+                        "control": {"type": "string", "enum": ["answer", "resume", "restart", "cut", "stop"]},
+                        "answer": {"type": "string", "description": "Required for control=answer: the gate answer."},
+                        "reason": {"type": "string", "description": "For control=cut: why the node is cut."},
+                        "extra_steps": {"type": "integer", "description": "For control=restart: steps beyond the step limit (default 20)."},
+                    },
+                    "required": ["run_id", "control"]
                 }
             }
         })
@@ -3017,6 +3139,8 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `run_swarm`: dispatch a parallel agent swarm for complex/broad investigations. Requires `goal`. One worker runs per role -- for a broad ask (audit, "review the platform", "find ways to improve quality/robustness/scale") pass SEVERAL `roles` (explore, pipeline-mapper, decision-explainer, conflict-auditor, test-coverage-reviewer) so it fans out into real parallel coverage; pass all five for a full audit. Omit roles only for a single narrow question. Prefer omitting `model` so the harness auto-routes among currently keyed agentic worker providers (ChatGPT Codex OAuth, OpenCode Go, OpenRouter, …). Pass `model` only when the user names a worker from the live agentic catalog in the tool schema; use an exact enabled provider:model pair or canonical registry ID. An unavailable explicit pin fails; it never authorizes choosing a different model. Prompt text alone does not pin a model. To audit a DIFFERENT checkout than the open workspace, pass `repo`=<absolute git path>: the workers read that subject, while your own writes/edits/commands stay in the open session workspace.
 - `run_implement`: dispatch an edit-capable worker that edits the repo in an isolated worktree and produces a reviewable patch. Requires `goal`. Omit `adapter` for enabled agentic provider/model routing, or pin `model="codex/gpt-6-astra"` with `adapter="codex"` for the native Codex CLI. Optional `mode` (`implement` default, or `analysis`/`review` for read-only reports). Large files support targeted edits and appends; do not split writers merely because a file is long.
 - `run_parallel`: dispatch multiple Puppetmaster workers concurrently. Requires `goals` as a JSON array of 2-8 independent goal strings (example: ["Add unit tests for auth.py", "Document the API routes in README"]), optional `adapter`, optional `mode`.
+- `run_flow`: start a Puppetmaster flow graph (agent, judge, parallel, map, shell, gate, set and end nodes joined by edges) for multi-step work with checks, reviews and repair loops, or one task over many items via map. Requires `graph`, optional `input`, `continue_from`. It runs in the background and wakes you when it is done, failed, stuck, stopped, interrupted or waiting at a gate.
+- `flow_control`: answer a flow gate, resume an interrupted run, restart a stuck run where it stopped, cut the node in flight, or stop a run. Requires `run_id` and `control`.
 - Worker `reasoning_effort` (`none`/`low`/`medium`/`high`/`xhigh`/`max`) on `run_swarm` / `run_implement` / `run_parallel` pins that one dispatch. Omit it to use Settings worker reasoning (factory medium). This is not the chat-pilot picker.
 - `route_task`: preview which model the router would pick + estimated cost for a given instruction without executing it. Requires `instruction`.
 - `web_search`: search the internet and return top results. Requires `query`.
@@ -3064,10 +3188,11 @@ Choose the smallest useful team, including no workers:
 - `run_swarm` with multiple concrete roles for genuinely independent investigation questions.
 - `run_parallel` with disjoint file-scoped goals when parallel execution is worth the handoff cost.
 - `run_implement` for a bounded change with clear acceptance criteria. Do not offload trivial edits or context-heavy follow-ups merely to satisfy a quota.
+- `run_flow` for a multi-step pipeline (build, check, review, repair; or one task per item): prefer one graph over hand-chaining run_implement + run_swarm across turns.
 Use route_task to preview model/cost before a big dispatch.
 
 DISPATCH THEN WAIT (mandatory):
-When you dispatch background work (run_implement, run_parallel, or a backgrounded run_swarm), that dispatch is not completion. Do useful independent work while it runs, then call wait until it settles. Never dispatch overlapping writers or duplicate the same objective. Read the actual findings or patch and test evidence, report the outcome, and continue the task yourself. A worker status alone is not proof. If analysis is shallow or empty, diagnose the gap and either verify directly or delegate a narrower question. Finish with the user's requested result and a clear verdict; do not leave them asking what happened.
+When you dispatch background work (run_implement, run_parallel, or a backgrounded run_swarm), that dispatch is not completion. Do useful independent work while it runs, then call wait until it settles. run_flow is different: it ends your turn and the run wakes you when it is done, failed, stuck, stopped, interrupted or at a gate, so do not wait on it. Never dispatch overlapping writers or duplicate the same objective. Read the actual findings or patch and test evidence, report the outcome, and continue the task yourself. A worker status alone is not proof. If analysis is shallow or empty, diagnose the gap and either verify directly or delegate a narrower question. Finish with the user's requested result and a clear verdict; do not leave them asking what happened.
 
 TINY / STATIC WORKSPACE AFTER IMPLEMENT (mandatory): After a successful implement on a tiny or static workspace (few source files, HTML/CSS/JS demos, small sites), perform AT MOST ONE cheap verification (read the changed file, `node --check`, or a focused grep) and then STOP. Report the outcome. Do NOT launch headless Chrome/Chromium `--dump-dom` / `file://` smoke probes, do NOT open browsers, and do NOT re-investigate or re-read the same files in a validation campaign unless the user explicitly requests browser QA or visual validation. Native `browser_*` tools remain available only for that explicit ask.
 

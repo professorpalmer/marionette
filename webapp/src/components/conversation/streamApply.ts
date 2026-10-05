@@ -1510,11 +1510,15 @@ function pendingStatusFromCoveredResults(
  * Out-of-order / reattach: when a reused ``swarm_result`` arrived before this
  * pending frame, seed ``terminal_job_ids`` from existing result rows so a later
  * fresh sibling can flip the multi-job pill to terminal.
+ *
+ * An explicit ``status`` (a flow run going to or leaving a gate) sets a
+ * non-terminal pill's status; it never reopens a terminal one.
  */
 export function appendSwarmPending(
   items: Item[],
   jobIds: string[],
   objective: string,
+  status?: "running" | "waiting",
 ): Item[] {
   const normalizedIds = normalizeSwarmJobIds(jobIds);
   const obj = objective || "";
@@ -1552,6 +1556,9 @@ export function appendSwarmPending(
     } else {
       merged = { ...merged, terminal_job_ids: covered.terminal_job_ids };
     }
+    if (status && !isSwarmPendingTerminal(merged)) {
+      merged = { ...merged, status, resolved: false };
+    }
     if (
       merged.status === existing.status
       && merged.resolved === existing.resolved
@@ -1583,7 +1590,7 @@ export function appendSwarmPending(
       job_ids: normalizedIds,
       objective: obj,
       resolved: covered.resolved,
-      status: covered.status,
+      status: status && !covered.resolved ? status : covered.status,
       terminal_job_ids: covered.terminal_job_ids,
     },
   ];
@@ -2179,6 +2186,9 @@ export function finalizeOrphanSwarmPills(
 
   return items.map((item) => {
     if (item.kind !== "swarm_pending" || isSwarmPendingTerminal(item)) return item;
+    // A flow paused at a gate or interrupted is not in flight, yet not over:
+    // it waits for the pilot, so a turn closing must not seal it as ended.
+    if (item.status === "waiting") return item;
 
     const terminalFromResults = new Set(item.terminal_job_ids || []);
     for (const jid of item.job_ids) {

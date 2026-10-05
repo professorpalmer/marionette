@@ -79,6 +79,7 @@ import {
   appendStopHonestyNotice,
   appendTurnTerminal,
   applyActionResultCard,
+  appendSwarmPending,
   isDurableTerminalActionResult,
   applySwarmResultToItems,
   finalizeOrphanSwarmPills,
@@ -245,6 +246,7 @@ import {
   terminalJobIdsFromSwarmLive,
   terminalCommandJobIdsFromItems,
   pendingJobIdsAfterCommandResult,
+  pendingJobIdsAfterSwarmPending,
   terminalJobIdsNeedingResultRecovery,
   triggerResumeGate,
 } from "./conversation/swarmPoll";
@@ -2739,6 +2741,9 @@ export default function Conversation({
           if (action.kind === "swarm_result") {
             deliveredThisPoll.add(String(action.data.job_id));
             handleSwarmResult(action.data);
+          } else if (action.kind === "swarm_pending") {
+            setPendingJobIds((p) => pendingJobIdsAfterSwarmPending(p, action.jobIds, action.status));
+            setItems((p) => appendSwarmPending(p, action.jobIds, action.objective, action.status));
           } else if (action.kind === "action_result") {
             const jobId = String(action.data.job_id || "").trim();
             setItems((p) => applyActionResultCard(p, action.data));

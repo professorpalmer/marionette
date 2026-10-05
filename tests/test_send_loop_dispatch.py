@@ -31,6 +31,8 @@ DISPATCH_HELPERS = (
     "dispatch_swarm_action",
     "dispatch_implement_action",
     "dispatch_parallel_action",
+    "dispatch_flow_action",
+    "dispatch_flow_control_action",
     "dispatch_route_task_action",
     "dispatch_memory_action",
 )
@@ -141,7 +143,10 @@ def test_dispatch_helpers_are_module_level_callables():
 
 def test_dispatch_action_kinds_covers_delegate_surface():
     assert DISPATCH_ACTION_KINDS == frozenset(
-        {"run_swarm", "run_implement", "run_parallel", "route_task", "memory"}
+        {
+            "run_swarm", "run_implement", "run_parallel", "run_flow",
+            "flow_control", "route_task", "memory",
+        }
     )
     # Read-only / local stay in send_loop_phases.
     assert "read_file" not in DISPATCH_ACTION_KINDS

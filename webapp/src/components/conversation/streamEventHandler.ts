@@ -69,7 +69,12 @@ import { clearDiagnostic } from "../../lib/operationalDiagnosticBus";
 import { notifyWorkspaceMutated } from "../../lib/workspaceMutationEvents";
 import { getActiveMemoryProposalSession, isResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 import { shouldRefreshBusyChrome } from "./streamTerminal";
-import { pendingJobIdsAfterCommandResult, waitHintForAssistantDone } from "./swarmPoll";
+import {
+  pendingJobIdsAfterCommandResult,
+  pendingJobIdsAfterSwarmPending,
+  swarmPendingWireStatus,
+  waitHintForAssistantDone,
+} from "./swarmPoll";
 import { publishSessionTodos } from "../../lib/sessionTodos";
 import {
   hasPartialAssistantAnswer,
@@ -626,9 +631,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       setItems((p) => withTerminalChip(appendAutoHalt(p, d.reason || "", d.snapshot), settle));
     } else if (ev.kind === "swarm_pending") {
       const job_ids = d.job_ids || [];
-      // Set-union — replayed swarm_pending must not grow the tracker forever.
-      setPendingJobIds((p) => [...new Set([...p, ...job_ids])]);
-      setItems((p) => appendSwarmPending(p, job_ids, d.objective || ""));
+      const status = swarmPendingWireStatus(d.status);
+      setPendingJobIds((p) => pendingJobIdsAfterSwarmPending(p, job_ids, status));
+      setItems((p) => appendSwarmPending(p, job_ids, d.objective || "", status));
     } else if (ev.kind === "checkpoint") {
       setItems((p) => appendCheckpoint(p, d));
       // Checkpoint proves the workspace changed; fan out to Files + SCM too.

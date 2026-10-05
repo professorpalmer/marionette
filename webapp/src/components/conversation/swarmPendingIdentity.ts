@@ -52,6 +52,7 @@ export function swarmPendingStatusRank(status: SwarmPendingStatus): number {
     case "ended":
       return 1;
     case "running":
+    case "waiting":
       return 0;
     default: {
       const _exhaustive: never = status;

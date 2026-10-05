@@ -98,6 +98,8 @@ export function seedPendingJobIdsFromHydrate(opts: {
   for (const it of opts.items) {
     if (it.kind !== "swarm_pending") continue;
     if (isSwarmPendingTerminal(it)) continue;
+    // A waiting flow is not in flight; seeding it would keep Still working… on.
+    if (it.status === "waiting") continue;
     const terminals = new Set(it.terminal_job_ids || []);
     for (const jobId of it.job_ids || []) {
       if (terminals.has(jobId)) continue;
@@ -344,8 +346,31 @@ export function triggerResumeGate(opts: {
   return "execute";
 }
 
+/** Explicit swarm_pending status a flow run sends; anything else is absent. */
+export function swarmPendingWireStatus(raw: unknown): "running" | "waiting" | undefined {
+  return raw === "running" || raw === "waiting" ? raw : undefined;
+}
+
+/**
+ * Pending ids after a swarm_pending frame. A run waiting at a gate is not in
+ * flight, so it must not hold Still working… chrome.
+ */
+export function pendingJobIdsAfterSwarmPending(
+  pending: readonly string[],
+  jobIds: readonly string[],
+  status: "running" | "waiting" | undefined,
+): string[] {
+  if (status === "waiting") {
+    const waiting = new Set(jobIds);
+    return pending.filter((id) => !waiting.has(id));
+  }
+  // Set-union: replayed swarm_pending must not grow the tracker forever.
+  return [...new Set([...pending, ...jobIds])];
+}
+
 export type SwarmPollChrome =
   | { kind: "swarm_result"; data: any }
+  | { kind: "swarm_pending"; jobIds: string[]; objective: string; status?: "running" | "waiting" }
   | { kind: "action_result"; data: any }
   | { kind: "pending_review"; data: { id?: string; summary?: string } }
   | { kind: "pilot_resume" }
@@ -363,6 +388,16 @@ export function classifySwarmPollEvent(evt: any): SwarmPollChrome {
   }
   if (anyEvt.kind === "action_result" && anyEvt.data) {
     return { kind: "action_result", data: anyEvt.data };
+  }
+  if (anyEvt.kind === "swarm_pending" && anyEvt.data) {
+    const d = anyEvt.data;
+    const jobIds = Array.isArray(d.job_ids) ? d.job_ids.map((id: unknown) => String(id || "")) : [];
+    return {
+      kind: "swarm_pending",
+      jobIds,
+      objective: String(d.objective || ""),
+      status: swarmPendingWireStatus(d.status),
+    };
   }
   if (anyEvt.kind === "pending_review" && anyEvt.data) {
     return { kind: "pending_review", data: anyEvt.data };

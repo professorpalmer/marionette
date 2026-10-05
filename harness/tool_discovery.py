@@ -87,6 +87,8 @@ _PILOT_EXTRAS: Set[str] = {
     "run_swarm",
     "run_implement",
     "run_parallel",
+    "run_flow",
+    "flow_control",
     "run_command_batch",
     "wait",
     "todo",

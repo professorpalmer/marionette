@@ -1215,6 +1215,7 @@ class CompactionContextMixin:
                             "history": copy.deepcopy(self._history[1:]),
                             "display": self.export_display_transcript(),
                             "job_ids": list(self._session_job_ids),
+                            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
                         }
                         target = dict(source, history=copy.deepcopy(aged[1:]))
                         if (generation != getattr(self, "_busy_gen", None)
@@ -1843,6 +1844,7 @@ class CompactionContextMixin:
                             "history": copy.deepcopy(self._history[1:]),
                             "display": self.export_display_transcript(),
                             "job_ids": list(self._session_job_ids),
+                            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
                         }
                         target = dict(source, history=copy.deepcopy(proposed[1:]))
                         commit_compacted_transcript(state_dir, sid, source, target, original_middle)

@@ -1543,6 +1543,13 @@ class ToolDispatchMixin:
         job_id = str(args.get("job_id") or act.path or act.goal or "").strip()
         if not job_id:
             return False, "invalid_arguments", "cancel_job requires job_id"
+        if job_id.startswith("flow_"):
+            from . import flows
+
+            try:
+                return True, "success", flows.control(self, job_id, "stop")
+            except flows.FlowCallError as exc:
+                return False, "not_found", f"cancel_job: {exc}"
         notes: list[str] = []
         local_ok = False
         cancel_local = getattr(self, "cancel_local_job", None)

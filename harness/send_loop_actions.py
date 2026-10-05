@@ -17,6 +17,7 @@ from typing import Any, Iterator
 from .diag import note as _diag_note
 from .pilot import is_invalid_action
 from .pilot_guards import (
+    DELEGATION_KINDS,
     apply_session_pending_swarm_mandate,
     check_backend_restart,
     check_cli_redirect,
@@ -35,6 +36,8 @@ from .pilot_guards import (
 from .repo_resolve import resolve_effective_repo
 from .send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
+    dispatch_flow_action,
+    dispatch_flow_control_action,
     dispatch_implement_action,
     dispatch_memory_action,
     dispatch_parallel_action,
@@ -335,7 +338,7 @@ def execute_turn_actions(
             session._append_action_result(act, aid, f"(plan mode: skipped {act.kind})", is_native)
             continue
 
-        if getattr(session.config, "no_delegation", False) and act.kind in ("run_implement", "run_parallel", "run_swarm"):
+        if getattr(session.config, "no_delegation", False) and act.kind in DELEGATION_KINDS:
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
@@ -352,9 +355,7 @@ def execute_turn_actions(
             session._append_action_result(act, aid, err_msg, is_native)
             continue
 
-        if not delegation_available and act.kind in (
-            "run_implement", "run_parallel", "run_swarm",
-        ):
+        if not delegation_available and act.kind in DELEGATION_KINDS:
             if act.kind in ("run_implement", "run_parallel"):
                 yield ConvEvent("action_start", {
                     "id": aid, "kind": act.kind, "goal": act_goal or act.tool,
@@ -541,6 +542,21 @@ def execute_turn_actions(
                         action_seq=action_seq,
                         step=step,
                         swarms=swarms,
+                    )
+                elif act.kind == "run_flow":
+                    # A flow satisfies an explicit swarm ask like run_parallel.
+                    clear_session_pending_swarm_mandate(session)
+                    disposition = yield from dispatch_flow_action(
+                        session, act, aid, is_native,
+                        turn_actions=turn.actions,
+                        action_idx=idx,
+                        action_seq=action_seq,
+                        step=step,
+                        swarms=swarms,
+                    )
+                elif act.kind == "flow_control":
+                    disposition = yield from dispatch_flow_control_action(
+                        session, act, aid, is_native,
                     )
                 elif act.kind == "route_task":
                     disposition = yield from dispatch_route_task_action(

@@ -1,6 +1,8 @@
 import type { Item, Msg } from "../TranscriptList";
 import { stampTranscriptMessageIds } from "./transcriptRowIdentity";
 import {
+  isSwarmPendingTerminal,
+  isSwarmPendingTerminalStatus,
   mergeSwarmPendingItems,
   normalizeSwarmJobIds,
   swarmPendingIdentityKey,
@@ -556,14 +558,15 @@ export function transcriptResponseToItems(res: {
           || rawStatus === "failed"
           || rawStatus === "ended"
           || rawStatus === "running"
-        ) ? rawStatus as "done" | "failed" | "ended" | "running"
+          || rawStatus === "waiting"
+        ) ? rawStatus as "done" | "failed" | "ended" | "running" | "waiting"
           : (m.resolved ? "done" : "running");
         return [{
           kind: "swarm_pending" as const,
           job_ids: jobIds,
           objective: String(m.objective || ""),
           status,
-          resolved: status !== "running",
+          resolved: isSwarmPendingTerminalStatus(status),
           terminal_job_ids: normalizeSwarmJobIds(
             Array.isArray(m.terminal_job_ids)
               ? m.terminal_job_ids.map((id: unknown) => String(id || ""))
@@ -970,7 +973,9 @@ export function mergeTranscriptItems(local: Item[], remote: Item[]): Item[] {
     if (!key) return it;
     const rem = remotePendingByKey.get(key);
     if (!rem) return it;
-    return mergeSwarmPendingItems(it, rem);
+    const merged = mergeSwarmPendingItems(it, rem);
+    // Both live: the server's running / waiting is authoritative.
+    return isSwarmPendingTerminal(merged) ? merged : { ...merged, status: swarmPendingStatusOf(rem) };
   });
   const localPendingKeys = new Set<string>();
   for (const it of withPending) {

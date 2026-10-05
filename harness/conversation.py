@@ -847,6 +847,9 @@ class ConversationalSession(
         self._rewind_stash = None  # type: ignore[assignment]
         # tracking background swarm job IDs for the session
         self._session_job_ids: list[str] = []
+        # run_flow runs of this session: run_id -> {objective, delivered, since,
+        # status}. Written only under _busy (dispatch and drain); see flows.py.
+        self._flow_runs: dict = {}
         # optional durable-knowledge integration (portable-llm-wiki)
         self._wiki = WikiClient()
         from .config import parse_truthy
@@ -1809,6 +1812,23 @@ class ConversationalSession(
             return True
 
     def has_pending_swarms(self) -> bool:
+        """Background work is in flight: swarm futures or running flows.
+
+        Drives the frontend's pending state and idle poll, which delivers flow
+        wakes. The pilot's ``wait`` uses :meth:`has_pending_swarm_futures`.
+        """
+        if self.has_pending_swarm_futures():
+            return True
+        try:
+            from .flows import active_flow_ids
+
+            return bool(active_flow_ids(self))
+        except Exception:
+            return False
+
+    def has_pending_swarm_futures(self) -> bool:
+        """Swarm futures only. A running flow wakes the pilot itself, so ``wait``
+        does not hold a turn open for one (a flow can run for an hour)."""
         with self._swarm_futures_lock:
             return len(self._swarm_futures) > 0
 
@@ -2069,6 +2089,7 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": self.export_display_transcript(),
             "job_ids": list(self._session_job_ids),
+            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
             "cache_preferences": {"retain_reasoning": getattr(self, "retain_reasoning", False)},
         }
 
@@ -2080,6 +2101,8 @@ class ConversationalSession(
             self.retain_reasoning = isinstance(preferences, dict) and preferences.get("retain_reasoning") is True
             self._display_transcript = messages.get("display", [])
             self._session_job_ids = messages.get("job_ids", [])
+            flow_runs = messages.get("flow_runs")
+            self._flow_runs = copy.deepcopy(flow_runs) if isinstance(flow_runs, dict) else {}
             if isinstance(self._display_transcript, list):
                 self._display_transcript = [
                     row for row in self._display_transcript
@@ -2090,6 +2113,7 @@ class ConversationalSession(
             self.retain_reasoning = False
             self._display_transcript = []
             self._session_job_ids = []
+            self._flow_runs = {}
 
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
@@ -2298,6 +2322,7 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": list(display),
             "job_ids": list(self._session_job_ids or []),
+            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
             "display_index": display_index,
             "user_ordinal": resolved_ordinal,
             "prefill": prefill,
@@ -2385,6 +2410,7 @@ class ConversationalSession(
             "history": stash.get("history") or [],
             "display": stash.get("display") or [],
             "job_ids": stash.get("job_ids") or [],
+            "flow_runs": stash.get("flow_runs") or {},
         })
         workspace_restored = False
         auto_id = stash.get("workspace_auto_snapshot_id")
@@ -2535,7 +2561,7 @@ class ConversationalSession(
             profile=profile,
         )
         if schema and not delegation_available:
-            delegation_names = {"run_swarm", "run_implement", "run_parallel"}
+            from .pilot_guards import DELEGATION_KINDS as delegation_names
 
             def _schema_name(item: Any) -> str:
                 if not isinstance(item, dict):
@@ -4771,9 +4797,7 @@ class ConversationalSession(
             # every read_file/write_file as a "swarm" made analysis workers
             # with max_swarms=2 halt after two tool calls
             # ("swarm ceiling reached (2/2)") before any FINDING summary.
-            _swarm_budget_kinds = frozenset({
-                "run_swarm", "run_implement", "run_parallel",
-            })
+            from .pilot_guards import DELEGATION_KINDS as _swarm_budget_kinds
             turn_images = pending_images
             pending_images = None
             receipt_args = {"input_id": input_id, "handoff_token": handoff_token} if cycle == 1 and input_id else {}

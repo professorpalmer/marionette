@@ -75,7 +75,7 @@ def pending_jobs_keep_alive(session: Any, *, job_id: str = "") -> bool:
     target_state = _target_command_wait_state(session, job_id)
     if target_state:
         return target_state == "pending"
-    for name in ("has_pending_swarms", "has_pending_command_jobs"):
+    for name in (_swarm_wait_probe(session), "has_pending_command_jobs"):
         has_pending = getattr(session, name, None)
         if not callable(has_pending):
             continue
@@ -85,6 +85,13 @@ def pending_jobs_keep_alive(session: Any, *, job_id: str = "") -> bool:
         except Exception:
             continue
     return False
+
+
+def _swarm_wait_probe(session: Any) -> str:
+    """Swarm futures only when the session can tell them apart from flows."""
+    if callable(getattr(session, "has_pending_swarm_futures", None)):
+        return "has_pending_swarm_futures"
+    return "has_pending_swarms"
 
 
 def format_wait_status(
@@ -112,7 +119,7 @@ def format_wait_status(
             "Report the outcome and continue — do not wait for the user."
         )
     pending_n = 0
-    for name in ("has_pending_swarms", "has_pending_command_jobs"):
+    for name in (_swarm_wait_probe(session), "has_pending_command_jobs"):
         has_pending = getattr(session, name, None)
         if callable(has_pending):
             try:

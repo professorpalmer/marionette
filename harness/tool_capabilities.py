@@ -31,7 +31,7 @@ class ToolCapability:
 
 # Keep in lockstep with send_loop_phases.PLAN_SKIP_KINDS. Tests assert both.
 MUTATING_KINDS: FrozenSet[str] = frozenset({
-    "run_implement", "run_parallel",
+    "run_implement", "run_parallel", "run_flow", "flow_control",
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch", "run_ipython",
     "call_mcp", "manage_mcp", "memory", "cancel_job",
@@ -50,11 +50,11 @@ READ_ONLY_KINDS: FrozenSet[str] = frozenset({
 })
 
 _WRITE_KINDS = frozenset({
-    "write_file", "edit_file", "hash_edit", "memory", "cancel_job",
+    "write_file", "edit_file", "hash_edit", "memory", "cancel_job", "flow_control",
 })
 _EXEC_KINDS = frozenset({
     "run_command", "run_command_batch", "run_ipython",
-    "run_implement", "run_parallel", "computer_use",
+    "run_implement", "run_parallel", "run_flow", "computer_use",
 })
 _NETWORK_KINDS = frozenset({
     "call_mcp", "manage_mcp",

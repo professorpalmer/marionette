@@ -174,6 +174,14 @@ class BusyControlMixin:
             self._drain_session_jobs_dual_store(session_job_ids)
         except Exception:
             pass
+        # Flow runs are not Puppetmaster jobs, so the cancels above miss them;
+        # stop their walkers too.
+        try:
+            from .flows import stop_all
+
+            stop_all(self)
+        except Exception:
+            pass
         # S2 Stop↔steer boundary: drop any queued steers so they cannot inject
         # into the abandoned generator or contaminate a later unrelated send.
         # Cooperative only for Python threads — never force-kills threads.

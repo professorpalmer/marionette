@@ -177,7 +177,7 @@ def prepare_replacement(old, new, session_id, state_root, history, *, actions_sn
         new.harness_session_id = session_id
     if history is not None:
         new._history = copy.deepcopy(history)
-    for name in ('_display_transcript', '_session_job_ids', '_auto_distill',
+    for name in ('_display_transcript', '_session_job_ids', '_flow_runs', '_auto_distill',
                  '_stop_holds_idle', '_cold_input_hold', '_interrupted_swarms',
                  '_input_upload_root', '_pending_steer_drop_notice',
                  '_pending_owned_command_orphan_notice', '_steer_boundary_drop_on_acquire'):
