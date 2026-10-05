@@ -138,7 +138,7 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
 # peel: navigate/click/type/etc. are external side effects even when some
 # variants are observational (snapshot/screenshot still drive a live page).
 PLAN_SKIP_KINDS: frozenset[str] = frozenset({
-    "run_implement", "run_parallel",
+    "run_implement", "run_parallel", "run_flow", "flow_control",
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch", "run_ipython",
     "call_mcp", "manage_mcp", "memory", "cancel_job",

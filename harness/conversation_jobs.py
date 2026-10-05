@@ -1882,6 +1882,48 @@ class ConversationJobsMixin:
                     except Exception:
                         pass
 
+            # Flow runs wake the pilot through this same drain (no extra thread).
+            flow_wakes: list = []
+            try:
+                from . import flows
+
+                for wake in flows.due_wakes(self):
+                    record = self._flow_runs.get(wake.run_id) or {}
+                    flow_objective = str(record.get("objective") or wake.run_id)
+                    self._history.append({
+                        "role": "assistant",
+                        "content": (
+                            f"[flow {wake.run_id} {wake.status} for: {flow_objective}]\n"
+                            + flows.format_wake(wake, flow_objective)
+                        ),
+                    })
+                    flows.upsert_pill(
+                        self, wake.run_id, flow_objective, flows.pill_status(wake.status),
+                    )
+                    if wake.status == "waiting":
+                        yield ConvEvent("swarm_pending", {
+                            "job_ids": [wake.run_id],
+                            "objective": flow_objective,
+                            "status": "waiting",
+                        })
+                    else:
+                        flow_result = flows.wake_result(wake)
+                        self._display_transcript.append({
+                            "type": "swarm_result",
+                            "job_id": wake.run_id,
+                            "objective": flow_objective,
+                            **flow_result,
+                        })
+                        yield ConvEvent("swarm_result", {
+                            "job_id": wake.run_id,
+                            "objective": flow_objective,
+                            "result": flow_result,
+                        })
+                    flows.mark_delivered(self, wake)
+                    flow_wakes.append(wake)
+            except Exception:
+                pass
+
             # Coalesce: one merged user continuation + one pilot_resume per drain
             # pass (not per job). Keeps the keep-alive contract while avoiding
             # N resume turns when N workers finish in the same poll window.
@@ -1893,6 +1935,7 @@ class ConversationJobsMixin:
                 or self._cancel.is_set()
                 or bool(getattr(getattr(self, "_turn_guard_state", None), "implement_unverified_landed", False))
             )
+            flow_text_merged = False
             # Bound post-swarm keep-alive redispatch for the same normalized
             # failed/degraded objective so provider outages cannot create
             # endless resume chains. Successful substantive work resets the key;
@@ -2024,6 +2067,9 @@ class ConversationJobsMixin:
                                 "run a narrowed follow-up) without waiting for the user to ask."
                                 + thin_analysis_nudge
                             )
+                    if flow_wakes:
+                        resume_text = resume_text + "\n" + flows.continuation_text(flow_wakes)
+                        flow_text_merged = True
                     # Re-activate the pilot with a user-role continuation. But never
                     # create two adjacent user messages: some chat APIs (Anthropic)
                     # require strict user/assistant alternation, and the concurrency
@@ -2040,7 +2086,9 @@ class ConversationJobsMixin:
                     if emit_resume:
                         yield ConvEvent("pilot_resume", {
                             "job_id": finished_jobs[0][0],
-                            "job_ids": [jid for jid, _obj, _f, _e, _d in finished_jobs],
+                            "job_ids": [jid for jid, _obj, _f, _e, _d in finished_jobs] + (
+                                [wake.run_id for wake in flow_wakes] if flow_text_merged else []
+                            ),
                             "objective": finished_jobs[0][1],
                         })
                 except Exception:
@@ -2097,6 +2145,30 @@ class ConversationJobsMixin:
                                 })
                         except Exception:
                             pass
+            # Flow wakes alone (or after a capped / failed swarm merge). Exempt
+            # from the failed-objective resume cap: each wake is a new event.
+            if flow_wakes and not flow_text_merged and not suppress_resume:
+                try:
+                    resume_text = (
+                        f"{_BACKGROUND_RESUME_CONTROL}\n" + flows.continuation_text(flow_wakes)
+                    )
+                    if self._history and self._history[-1].get("role") == "user":
+                        self._history[-1]["content"] = (
+                            self._history[-1]["content"].rstrip() + "\n\n" + resume_text
+                        )
+                    else:
+                        self._history.append({"role": "user", "content": resume_text})
+                    if emit_resume:
+                        run_ids = [wake.run_id for wake in flow_wakes]
+                        yield ConvEvent("pilot_resume", {
+                            "job_id": run_ids[0],
+                            "job_ids": run_ids,
+                            "objective": str(
+                                (self._flow_runs.get(run_ids[0]) or {}).get("objective") or ""
+                            ),
+                        })
+                except Exception:
+                    pass
         finally:
             if acquired_here:
                 self._busy.release()

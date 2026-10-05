@@ -36,6 +36,8 @@ from .pilot_guards import (
 from .repo_resolve import resolve_effective_repo
 from .send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
+    dispatch_flow_action,
+    dispatch_flow_control_action,
     dispatch_implement_action,
     dispatch_memory_action,
     dispatch_parallel_action,
@@ -540,6 +542,21 @@ def execute_turn_actions(
                         action_seq=action_seq,
                         step=step,
                         swarms=swarms,
+                    )
+                elif act.kind == "run_flow":
+                    # A flow satisfies an explicit swarm ask like run_parallel.
+                    clear_session_pending_swarm_mandate(session)
+                    disposition = yield from dispatch_flow_action(
+                        session, act, aid, is_native,
+                        turn_actions=turn.actions,
+                        action_idx=idx,
+                        action_seq=action_seq,
+                        step=step,
+                        swarms=swarms,
+                    )
+                elif act.kind == "flow_control":
+                    disposition = yield from dispatch_flow_control_action(
+                        session, act, aid, is_native,
                     )
                 elif act.kind == "route_task":
                     disposition = yield from dispatch_route_task_action(

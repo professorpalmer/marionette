@@ -30,7 +30,8 @@ from .goal_mode import stash_turn_swarm_facts
 from .local_job_metadata import local_swarm_id
 
 DISPATCH_ACTION_KINDS: frozenset[str] = frozenset({
-    "run_swarm", "run_implement", "run_parallel", "route_task", "memory",
+    "run_swarm", "run_implement", "run_parallel", "run_flow", "flow_control",
+    "route_task", "memory",
 })
 
 
@@ -2384,6 +2385,94 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 pass
         return None
     return None
+
+def dispatch_flow_action(session, act, aid, is_native, *, turn_actions, action_idx, action_seq, step, swarms) -> Iterator[Any]:
+    """Start a run_flow graph in the background and close the turn.
+
+    The send loop already refused plan mode, no_delegation, and a missing
+    worker route (``run_flow`` is in ``DELEGATION_KINDS``) and emitted
+    ``action_start``. Generator return is ``None`` or ``"return"``.
+    """
+    from .conversation import ConvEvent
+    from . import flows
+
+    def _fail(message: str) -> Iterator[Any]:
+        yield ConvEvent('action_result', {'id': aid, 'error': message})
+        session._append_action_result(act, aid, f'(run_flow {aid} failed: {message})', is_native)
+
+    repo_override = ''
+    if (getattr(act, 'repo', '') or '').strip():
+        _abs, _err = session._validate_target_repo(act.repo)
+        if _err:
+            yield from _fail(f'target repo {act.repo} is not a valid git repository')
+            return None
+        repo_override = _abs
+    if not (repo_override or (session.config.repo or '').strip()):
+        yield from _fail('No workspace directory (config.repo) is open.')
+        return None
+    try:
+        run_id, _summary, objective = flows.launch(
+            session,
+            graph=act.graph,
+            flow_input=act.flow_input,
+            continue_from=act.continue_from,
+            goal=act.goal,
+            repo=repo_override,
+        )
+    except flows.FlowCallError as exc:
+        yield from _fail(str(exc))
+        return None
+    node_ids = [
+        str(node.get('id')) for node in (act.graph.get('nodes') or [])
+        if isinstance(node, dict) and node.get('id')
+    ]
+    message = (
+        f'Started flow {run_id} in the background (nodes: {", ".join(node_ids)}). '
+        'You will be woken when it is done, failed, stuck, stopped, interrupted or '
+        'waiting at a gate; node jobs show in the tracker. Background start is not completion.'
+    )
+    yield ConvEvent('swarm_pending', {'job_ids': [run_id], 'objective': objective, 'status': 'running'})
+    yield ConvEvent('action_result', {'id': aid, 'job_id': run_id, 'status': 'pending', 'message': message})
+    session._append_action_result(act, aid, f'(run_flow {aid} dispatched in background: {message})', is_native)
+    yield from session._answer_remaining_tool_calls(turn_actions, action_idx, is_native, action_seq)
+    yield ConvEvent('assistant_done', {'turns': step + 1, 'swarms': swarms + 1})
+    return 'return'
+
+
+def dispatch_flow_control_action(session, act, aid, is_native) -> Iterator[Any]:
+    """Answer, resume, cut or stop a flow run of this session (turn continues)."""
+    from .conversation import ConvEvent
+    from . import flows
+
+    def _fail(message: str) -> Iterator[Any]:
+        yield ConvEvent('action_result', {'id': aid, 'error': message})
+        session._append_action_result(act, aid, f'(flow_control {aid} failed: {message})', is_native)
+
+    if getattr(session.config, 'no_delegation', False):
+        yield from _fail('delegation is disabled for workers')
+        return None
+    if not (session.config.repo or '').strip():
+        yield from _fail('No workspace directory (config.repo) is open.')
+        return None
+    if act.control in ('answer', 'resume'):
+        probe = getattr(session, '_worker_delegation_available', None)
+        if callable(probe) and not probe():
+            yield from _fail('no working worker route is available for this session')
+            return None
+    try:
+        text = flows.control(session, act.run_id, act.control, act.answer, act.reason)
+    except flows.FlowCallError as exc:
+        yield from _fail(str(exc))
+        return None
+    record = (getattr(session, '_flow_runs', None) or {}).get(act.run_id) or {}
+    if act.control in ('answer', 'resume') and record.get('status') == 'running':
+        yield ConvEvent('swarm_pending', {
+            'job_ids': [act.run_id], 'objective': record.get('objective') or '', 'status': 'running',
+        })
+    yield ConvEvent('action_result', {'id': aid, 'job_id': act.run_id, 'status': 'ok', 'message': text})
+    session._append_action_result(act, aid, f'(flow_control {aid}: {text})', is_native)
+    return None
+
 
 def dispatch_route_task_action(session, act, aid, is_native) -> Iterator[Any]:
     """Assemble tool-results for ``route_task`` (peeled from ``_send_locked_inner``).

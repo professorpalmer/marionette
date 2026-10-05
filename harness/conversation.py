@@ -847,6 +847,9 @@ class ConversationalSession(
         self._rewind_stash = None  # type: ignore[assignment]
         # tracking background swarm job IDs for the session
         self._session_job_ids: list[str] = []
+        # run_flow runs of this session: run_id -> {objective, delivered, since,
+        # status}. Written only under _busy (dispatch and drain); see flows.py.
+        self._flow_runs: dict = {}
         # optional durable-knowledge integration (portable-llm-wiki)
         self._wiki = WikiClient()
         from .config import parse_truthy
@@ -1810,7 +1813,14 @@ class ConversationalSession(
 
     def has_pending_swarms(self) -> bool:
         with self._swarm_futures_lock:
-            return len(self._swarm_futures) > 0
+            if self._swarm_futures:
+                return True
+        try:
+            from .flows import active_flow_ids
+
+            return bool(active_flow_ids(self))
+        except Exception:
+            return False
 
     def _swarm_inflight(self) -> int:
         """Number of futures currently tracked in ``_swarm_futures``.
@@ -2069,6 +2079,7 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": self.export_display_transcript(),
             "job_ids": list(self._session_job_ids),
+            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
             "cache_preferences": {"retain_reasoning": getattr(self, "retain_reasoning", False)},
         }
 
@@ -2080,6 +2091,8 @@ class ConversationalSession(
             self.retain_reasoning = isinstance(preferences, dict) and preferences.get("retain_reasoning") is True
             self._display_transcript = messages.get("display", [])
             self._session_job_ids = messages.get("job_ids", [])
+            flow_runs = messages.get("flow_runs")
+            self._flow_runs = copy.deepcopy(flow_runs) if isinstance(flow_runs, dict) else {}
             if isinstance(self._display_transcript, list):
                 self._display_transcript = [
                     row for row in self._display_transcript
@@ -2090,6 +2103,7 @@ class ConversationalSession(
             self.retain_reasoning = False
             self._display_transcript = []
             self._session_job_ids = []
+            self._flow_runs = {}
 
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
@@ -2298,6 +2312,7 @@ class ConversationalSession(
             "history": self.export_history(),
             "display": list(display),
             "job_ids": list(self._session_job_ids or []),
+            "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
             "display_index": display_index,
             "user_ordinal": resolved_ordinal,
             "prefill": prefill,
@@ -2385,6 +2400,7 @@ class ConversationalSession(
             "history": stash.get("history") or [],
             "display": stash.get("display") or [],
             "job_ids": stash.get("job_ids") or [],
+            "flow_runs": stash.get("flow_runs") or {},
         })
         workspace_restored = False
         auto_id = stash.get("workspace_auto_snapshot_id")
