@@ -98,6 +98,10 @@ STAGNATION_STREAK_CAP = int(os.environ.get("HARNESS_STAGNATION_STREAK_CAP", "3")
 # failed/degraded objective before further pilot_resume events are suppressed.
 FAILED_OBJECTIVE_RESUME_CAP = int(os.environ.get("HARNESS_FAILED_OBJECTIVE_RESUME_CAP", "2"))
 
+# Pilot tools that hand work to Puppetmaster workers. Hidden under
+# no_delegation / no worker route and counted against the swarm budget.
+DELEGATION_KINDS = frozenset({"run_swarm", "run_implement", "run_parallel"})
+
 # Puppetmaster / structural tools — never blocked by the delegate gate.
 # search_state is exempt so durable recall (job:// / artifact:// / spill://)
 # stays available before a broad redispatch without counting as exploration.
@@ -107,17 +111,10 @@ DELEGATION_EXEMPT_KINDS = frozenset({
     "search_archive",
     "read_archived_chat",
     "query_wiki",
-    "run_swarm",
-    "run_implement",
-    "run_parallel",
     "route_task",
-})
+}) | DELEGATION_KINDS
 
-SWARM_DISPATCH_KINDS = frozenset({
-    "run_swarm",
-    "run_implement",
-    "run_parallel",
-})
+SWARM_DISPATCH_KINDS = DELEGATION_KINDS
 
 BROAD_SWARM_ROLES = (
     "explore",
@@ -1520,7 +1517,8 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
         if state.kernel_recovery:
             return False
         if not state.swarm_dispatched:
-            if kind in ("run_swarm", "run_parallel"):
+            # run_implement does not satisfy an explicit swarm ask.
+            if kind in DELEGATION_KINDS and kind != "run_implement":
                 return False
             if kind in ("search_codegraph", "search_state", "search_archive", "read_archived_chat", "route_task", "query_wiki"):
                 return False

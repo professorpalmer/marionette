@@ -2535,7 +2535,7 @@ class ConversationalSession(
             profile=profile,
         )
         if schema and not delegation_available:
-            delegation_names = {"run_swarm", "run_implement", "run_parallel"}
+            from .pilot_guards import DELEGATION_KINDS as delegation_names
 
             def _schema_name(item: Any) -> str:
                 if not isinstance(item, dict):
@@ -4771,9 +4771,7 @@ class ConversationalSession(
             # every read_file/write_file as a "swarm" made analysis workers
             # with max_swarms=2 halt after two tool calls
             # ("swarm ceiling reached (2/2)") before any FINDING summary.
-            _swarm_budget_kinds = frozenset({
-                "run_swarm", "run_implement", "run_parallel",
-            })
+            from .pilot_guards import DELEGATION_KINDS as _swarm_budget_kinds
             turn_images = pending_images
             pending_images = None
             receipt_args = {"input_id": input_id, "handoff_token": handoff_token} if cycle == 1 and input_id else {}
