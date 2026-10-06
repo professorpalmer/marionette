@@ -22,7 +22,7 @@ from pmharness.drivers.bedrock import (
     _usage_from_converse_usage,
 )
 from pmharness.drivers.openai_compat import OpenAICompatDriver
-from pmharness.drivers.token_usage import coerce_token_usage_detail, coerce_token_usage_record
+from pmharness.drivers.token_usage import coerce_token_usage_record
 import pmharness.drivers.retry
 
 
@@ -43,7 +43,7 @@ def mock_retry_sleep(monkeypatch):
 
 
 def test_shared_seam_openai_prompt_and_input_details():
-    tin, tout, cost, cached, write = coerce_token_usage_detail(
+    tin, tout, cost, cached, write = coerce_token_usage_record(
         {
             "usage": {
                 "prompt_tokens": 1_000,
@@ -51,10 +51,10 @@ def test_shared_seam_openai_prompt_and_input_details():
                 "prompt_tokens_details": {"cached_tokens": 700},
             }
         }
-    )
+    ).as_tuple()
     assert (tin, tout, cost, cached, write) == (1_000, 20, None, 700, 0)
 
-    tin, _tout, _cost, cached, write = coerce_token_usage_detail(
+    tin, _tout, _cost, cached, write = coerce_token_usage_record(
         {
             "usage": {
                 "input_tokens": 2_000,
@@ -65,7 +65,7 @@ def test_shared_seam_openai_prompt_and_input_details():
                 },
             }
         }
-    )
+    ).as_tuple()
     # OpenAI-style: cached is a subset of full prompt total — do not expand.
     assert tin == 2_000
     assert cached == 1_200

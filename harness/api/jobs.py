@@ -36,7 +36,6 @@ class JobServices:
     routing_saved_usd: Callable[..., float]
     cache_saved_usd_swarm: Callable[..., float]
     tokens_cached_swarm: Callable[..., int]
-    job_savings_fields: Callable[[str], dict]
     repo_session_stamped_meters: Callable[[str], dict]
     session_cost_split: Callable[..., float]
     cache_savings: Callable[..., float]
@@ -75,7 +74,6 @@ def make_job_services(**overrides: Any) -> JobServices:
         "routing_saved_usd": lambda *_a, **_k: 0.0,
         "cache_saved_usd_swarm": lambda *_a, **_k: 0.0,
         "tokens_cached_swarm": lambda *_a, **_k: 0,
-        "job_savings_fields": lambda *_a, **_k: {},
         "repo_session_stamped_meters": lambda *_a, **_k: {},
         "session_cost_split": lambda *_a, **_k: 0.0,
         "cache_savings": lambda *_a, **_k: 0.0,

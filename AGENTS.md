@@ -49,119 +49,119 @@ Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /
 
 # Puppetmaster orchestration
 
-Puppetmaster is an MCP-based agent orchestrator with structured worker
-swarms, durable SQLite state, tiered model routing, and zero-token
-follow-ups via stored artifacts. When Puppetmaster's MCP server is
-registered (`puppetmaster install-cursor-mcp` or
-`puppetmaster install-codex-mcp`), the `puppetmaster_*` MCP tools are
-available in this environment.
+Puppetmaster runs durable worker jobs and flow graphs for you through the
+`puppetmaster_*` MCP tools: workers that survive restarts, per-item check
+and repair, cheap worker models under an expensive pilot, and follow-ups
+that resume a worker's own session.
+
+## Are you a Puppetmaster worker? (check this first)
+
+**If `PUPPETMASTER_WORKER` is `1`, or Puppetmaster issued your prompt,
+every delegation rule below is void for you.** You *are* the worker it
+delegated to. Do the analysis or the edit yourself and return the
+artifacts your prompt asks for.
+
+You are a Puppetmaster worker if `PUPPETMASTER_WORKER=1` in the
+environment, or your prompt contains a `Puppetmaster artifact contract:`
+block, a `Role: <role>` + `Goal: <goal>` header, or an instruction to
+finish by calling `submit_findings` / `submit_report`. Nested job starts
+are refused while that env is set (override:
+`PUPPETMASTER_ALLOW_NESTED=1`). Workers run as plain agent CLIs with **no
+`puppetmaster_*` MCP tools**, so delegating is impossible. Use your own
+native tools.
 
 ## Trigger convention (must obey)
 
-When the user says **"Use Puppetmaster to …"**, **"PM this …"**, or
+When the user says **"Use Puppetmaster to ..."**, **"PM this ..."**, or
 otherwise names Puppetmaster for a task, route that work through the
-`puppetmaster_*` MCP tools — do not answer inline.
+`puppetmaster_*` MCP tools rather than answering inline.
 
-## Delegate-first gate (default path)
+## Solo first; fan out when it pays
 
-Before attempting multi-step work inline, start a Puppetmaster verb
-(`puppetmaster_start_cursor_swarm`, `puppetmaster_start_swarm`,
-`puppetmaster_start_implement`, or the matching sync verbs) when the
-task is any of:
+Do the work yourself unless parallel workers clearly finish sooner or
+better. One session that holds the whole problem beats any fan-out on
+small work: every worker pays a fixed start (its own context, reading,
+checks) and you pay to integrate. Fan out when the work splits into
+independent units that each take a worker minutes, or when there is more
+of it than you can finish well in one session (you are running long, or
+your context is filling with work that does not depend on itself). Many
+small units you could write in a few minutes are still solo work.
 
-- Multi-file (3+ files) or cross-cutting refactor/migration
-- An audit, review, or "find all X" search
-- Work whose result will be reused later in this or a future session
+- Exact edits, typos, small follow-ups and revisions: make them yourself.
+  If your instruction to a worker would spell out the change, it is
+  cheaper to make it.
+- A revision that needs a prior worker's context: continue its flow run
+  with `continue_from`, or resume the worker with `resume_from`, instead
+  of starting fresh sessions.
+- Marionette decides this for you from your plan and measured pace; on
+  other hosts, `puppetmaster sizing` gives the same decision.
 
-Swarms and reviews run read-only analysis; building goes through
-implement. Recall prior results with `puppetmaster_artifacts <job_id>`
-at zero token cost.
+## Fan out with one flow
 
-Reach for a Puppetmaster verb **before** native broad search/exploration:
-prefer `puppetmaster_codegraph_search` / `_context` over a repo-wide
-`Grep`/`Glob`/`find`, and a swarm over the built-in `Task` tool, for any
-multi-file investigation. When unsure whether a task qualifies, run the
-classifier-backed gate — `puppetmaster_route_task` (or
-`puppetmaster should-delegate "<prompt>"`) — which returns a delegate /
-inline verdict and a suggested verb with zero LLM cost.
+Write ONE flow graph and start it with `puppetmaster_flow` (action
+`run`), then call action `wait` (or end your turn). Puppetmaster walks it
+durably and wakes you only when it is done, failed, stuck, interrupted or
+waiting at a gate; do not launch, poll and hand off each step yourself.
+The tool description has the node shapes and a fan-out example.
 
-For deterministic enforcement, the user can install host hooks
-(`puppetmaster install-hooks`) that inject this directive on prompt submit
-and deny-redirect broad native exploration automatically. The kill switch
-is `PUPPETMASTER_AUTO_INVOKE_DISABLED=1`.
+- **Size workers to the work.** Group many small units into a few `map`
+  items (each an object with its unit names and files; 16 small modules:
+  3-5 workers) and set concurrency to the number of items so they all
+  run at once. Give a unit its own worker only when it is minutes of work.
+- **Check each unit.** Put the unit's own check (`shell`) after its build
+  with a `fail` edge back to the build (`max` 2), inside the map item, so
+  each unit is repaired alone.
+- **Armor for craft.** When the result is judged by how it looks, reads
+  or feels (visuals, geometry, UI, prose) and not only by a test, add a
+  `shell` step that produces the observable result (render, run,
+  screenshot) and a `judge` whose task is a numbered rubric from the
+  user's request, with its FAIL edge back to the build (`max` 2).
+  Passing tests is not the bar a user grades.
+- Leave the model unpinned unless the user named one: workers then run
+  the model you are configured with.
 
-## CodeGraph-first exploration (must obey)
+## Label every job you start (do it by default)
 
-CodeGraph is the default way to explore code — graph every directory you
-interact with, then explore the graph instead of crawling the tree:
+When you start any job verb (`puppetmaster_start_*`, `puppetmaster_edit`,
+or the matching sync verbs), pass a short human-readable `label` (3-6
+words, e.g. `"auth refactor audit"`). It becomes the job's headline on the
+dashboard and in `puppetmaster_jobs`.
 
-1. **Graph it first.** Before exploring any directory (the workspace root
-   or a subtree you're diving into), check `puppetmaster_codegraph_status`;
-   if it has no `.codegraph/`, run `puppetmaster_codegraph_init`
-   (`index: true`) — it returns immediately and indexes in the background.
-   Do not start grepping while you wait.
-2. **Ask the graph, not the tree.** Resolve "where is X / what calls Y /
-   what implements Z" with `puppetmaster_codegraph_search` /
-   `_context` / `_affected` / `_files`, then `Read` only the files it
-   points to.
-3. **Partial coverage is still coverage.** CodeGraph indexes the languages
-   it supports; unsupported files simply don't enter the graph. When part
-   of the tree is ungraphable, still answer from the graph for everything
-   it covers and scope native search narrowly to the ungraphed paths
-   only — never re-crawl directories the graph already covers, and reuse
-   that shared context instead of letting multiple workers/agents each
-   re-explore the same graphed code.
+## CodeGraph for unfamiliar code
 
-Native search is fine for plain-text matches (log strings, config values,
-comments), a single known file path, or when the user says "just grep".
-If a codegraph MCP call returns a transport error, fall back to the CLI
-passthrough `python -m puppetmaster codegraph …` — never a bare
-`codegraph` from the shell (Node ABI mismatch).
-
-## When NOT to use Puppetmaster (stay inline)
-
-- Trivial single-file edits, typos, one-line fixes
-- Quick factual questions
-- Fast interactive iteration where the user is steering turn-by-turn
-
-Routing those through Puppetmaster wastes tokens and latency.
+When you must find where something is, what calls it or what a change
+affects in code you have not read, ask the graph instead of crawling the
+tree: `puppetmaster_codegraph_status`, then `puppetmaster_codegraph_init`
+(`index: true`) if there is no index, then `puppetmaster_codegraph_search`
+/ `_context` / `_affected`, and read only the files it points to. Skip it
+for a small repository you can list at a glance, for files you already
+know, and for plain-text matches (log strings, config values). If a
+codegraph MCP call fails, use `python -m puppetmaster codegraph ...`,
+never a bare `codegraph` from the shell.
 
 ## Fallback
 
-If `puppetmaster_*` tools are not connected, fall back to native
-tooling — do not pretend the tools exist.
+If a `puppetmaster_*` observation tool is not connected, continue the same
+durable job through `python -m puppetmaster status|await|show <job_id>`.
+Check recent jobs before retrying a start; a dropped MCP reply is not proof
+that no job was created. Use native tooling only when no Puppetmaster job
+exists and the task itself permits inline work.
 
-## Usage
+## Other verbs
 
-1. `puppetmaster_route_task <prompt> --role <role>` — dry-run that
-   returns the chosen model, estimated cost, and reasoning. Use
-   whenever spend matters or the task is ambiguous.
-2. `puppetmaster_start_cursor_swarm` / `puppetmaster_start_swarm` for
-   read-only analysis; `puppetmaster_start_implement` /
-   `puppetmaster_start_claude_implement` / `puppetmaster_start_codex`
-   for full-edit builds.
-3. `puppetmaster_edit "<instruction>"` — a SINGLE focused in-place edit:
-   cheapest sufficient model, CodeGraph to locate the site, edits the
-   working tree directly, returns the diff synchronously, captures a
-   reviewable PATCH. Prefer it over an inline single-file edit when the
-   change benefits from CodeGraph or cheap-model routing; reserve
-   `puppetmaster_start_implement` for coupled multi-file features (isolated
-   worktree). Because it edits the live tree in place, `edit` is also the
-   right verb for **last-mile work that builds on uncommitted changes**
-   ("finish the module I just wrote", "add tests for the code I just
-   added") — `puppetmaster_start_implement` branches off HEAD in a clean
-   worktree and would never see that uncommitted work. Keep truly trivial
-   edits (typo/rename/comment) inline.
-4. `puppetmaster_artifacts <job_id>` — read structured outputs at zero
-   token cost (results persist in SQLite).
-5. `puppetmaster_dashboard [job_id]` — when the user asks to see/open
-   the job dashboard, call this (it starts the local server if needed)
-   and open the returned URL in a browser tab for them. CLI fallback:
-   `python -m puppetmaster dashboard [job_id]`.
-6. `puppetmaster_doctor` — sanity-check Puppetmaster's runtime
-   dependencies once per session.
-
-If `puppetmaster_doctor` reports critical failures, surface them to
-the user before continuing.
+- `puppetmaster_start_swarm` for read-only analysis across several
+  lenses; `puppetmaster_edit` for one focused in-place edit that builds on
+  uncommitted work; `puppetmaster_start_implement` for one coupled change
+  in an isolated worktree. With a provider API key but no vendor CLI
+  (keys-only), use `puppetmaster_agentic` / `puppetmaster_start_agentic`.
+- Every asynchronous `start_*` response is a resumable contract: follow
+  its returned `monitor_with` tool with the exact `job_ref`. Treat only
+  `delivery.verdict == "delivered"` as success.
+- `puppetmaster_artifacts <job_id>` reads stored results at zero token
+  cost; `puppetmaster_route_task` previews the routed model and price when
+  spend matters; `puppetmaster_dashboard` opens the job dashboard when the
+  user asks.
+- `puppetmaster_doctor` when a Puppetmaster call fails or behaves
+  unexpectedly; surface critical failures to the user. Not a ritual.
 
 <!-- puppetmaster:rules:end -->

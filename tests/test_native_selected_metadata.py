@@ -57,10 +57,9 @@ def test_producer_instruction_forecast_fallback_and_realized(tmp_path, monkeypat
     assert routes[-1]['created_by'] == 'router-fallback'
     assert routes[-1]['detail'] == 'Recorded fallback'
     assert job['model'] == read('tasks')[1]['rows'][0]['model'] == ''
-    runner._refresh_local_job_routed_model('local-native', 'actual-model', engine='agentic')
-    assert read('tasks')[1]['rows'][0]['model'] == 'agentic/actual-model'
     assert read('routing')[1]['rows'][-1]['model_kind'] == 'forecast'
     runner._finish_local_job('local-native', ok=True, model='actual-model', engine='agentic')
+    assert read('tasks')[1]['rows'][0]['model'] == 'agentic/actual-model'
     routes = read('routing')[1]['rows']
     assert all(r['model_kind'] == 'realized' and r['model'] == 'actual-model' for r in routes)
     assert routes[-1]['created_by'] == 'router-fallback'

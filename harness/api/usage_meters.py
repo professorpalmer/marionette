@@ -781,38 +781,6 @@ def _tool_output_savings_fields(price_in: float, *, process_wide: bool = False) 
     return payload
 
 
-def _job_savings_fields(job_id: str) -> dict:
-    """Per-job tool-output savings, merging harness + PM/CLI JSONL ledgers."""
-    try:
-        from ..cli_job_merge import resolve_cli_state_dir
-        from ..job_scoping import cli_cost_merge_enabled
-        from ..tool_output_savings import job_savings_payload
-
-        try:
-            from pmharness.registry import resolve_price
-
-            price_in, _ = resolve_price(_cfg().driver)
-            if price_in is None:
-                price_in = 0.0
-        except Exception:
-            price_in = 0.0
-        cli_dir = None
-        if cli_cost_merge_enabled():
-            cli_dir = resolve_cli_state_dir(getattr(_cfg(), "repo", "") or "")
-        return job_savings_payload(
-            _pilot().state_dir,
-            job_id,
-            cli_state_dir=cli_dir,
-            price_in=price_in,
-        )
-    except Exception:
-        return {
-            "tool_output_tokens_saved": 0,
-            "tool_output_savings_usd": 0.0,
-            "tool_output_compactions": 0,
-        }
-
-
 
 def _iter_live_runners() -> list:
     """Live registry runners plus the active pilot when it is not registered."""

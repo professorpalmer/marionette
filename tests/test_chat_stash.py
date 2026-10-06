@@ -69,14 +69,16 @@ def test_stash_round_trip_basic():
 
 
 def test_stash_caps_retained_entries():
+    from harness.api import sessions
+
     httpd, port, srv = _server()
     try:
-        srv._CHAT_STASH.clear()
-        ids = [srv._stash_put(f"msg-{i}") for i in range(srv._CHAT_STASH_MAX + 10)]
-        assert len(srv._CHAT_STASH) <= srv._CHAT_STASH_MAX
+        sessions._CHAT_STASH.clear()
+        ids = [srv._stash_put(f"msg-{i}") for i in range(sessions._CHAT_STASH_MAX + 10)]
+        assert len(sessions._CHAT_STASH) <= sessions._CHAT_STASH_MAX
         # The oldest ids should have been evicted; the newest should remain.
-        assert ids[-1] in srv._CHAT_STASH
-        assert ids[0] not in srv._CHAT_STASH
+        assert ids[-1] in sessions._CHAT_STASH
+        assert ids[0] not in sessions._CHAT_STASH
     finally:
         httpd.shutdown()
 
@@ -126,7 +128,8 @@ def test_get_chat_mid_resolves_stashed_message(owned_server):
             assert mock_pilot.send.call_args.kwargs["input_id"] == receipt["id"]
 
             # The stash entry was consumed (popped), not left to leak forever.
-            assert mid not in srv_inst._CHAT_STASH
+            from harness.api import sessions
+            assert mid not in sessions._CHAT_STASH
         finally:
             httpd.shutdown()
 

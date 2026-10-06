@@ -577,11 +577,10 @@ def test_micro_profile_has_no_flow_tools():
     assert "run_flow" not in names and "run_swarm" not in names
 
 
-def test_plan_mode_lists_match_and_block_flow_tools():
-    from harness.send_loop_phases import PLAN_SKIP_KINDS
+def test_plan_mode_blocks_flow_tools():
     from harness.tool_capabilities import MUTATING_KINDS, plan_mode_blocks
 
-    assert MUTATING_KINDS == PLAN_SKIP_KINDS
+    assert {"run_flow", "flow_control"} <= MUTATING_KINDS
     assert plan_mode_blocks("run_flow") and plan_mode_blocks("flow_control")
 
 

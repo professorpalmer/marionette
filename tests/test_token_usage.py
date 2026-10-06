@@ -4,7 +4,6 @@ from pmharness.drivers.token_usage import (
     ModalityBucket,
     attach_modality_fields,
     coerce_token_usage,
-    coerce_token_usage_detail,
     coerce_token_usage_record,
     expand_uncached_prompt_tokens,
 )
@@ -34,7 +33,7 @@ def test_later_blob_wins_nonzero():
 
 
 def test_coerce_cache_read_from_cursor_cli_shape():
-    tin, tout, cost, cached, write = coerce_token_usage_detail(
+    tin, tout, cost, cached, write = coerce_token_usage_record(
         {
             "usage": {
                 "input_tokens": 1000,
@@ -42,13 +41,13 @@ def test_coerce_cache_read_from_cursor_cli_shape():
                 "cache_read_input_tokens": 800,
             }
         }
-    )
+    ).as_tuple()
     # OpenAI/Anthropic-subset style: cached <= input → leave tin alone.
     assert (tin, tout, cost, cached, write) == (1000, 40, None, 800, 0)
 
 
 def test_coerce_cache_read_from_prompt_tokens_details():
-    _tin, _tout, _cost, cached, _write = coerce_token_usage_detail(
+    _tin, _tout, _cost, cached, _write = coerce_token_usage_record(
         {
             "usage": {
                 "prompt_tokens": 500,
@@ -56,7 +55,7 @@ def test_coerce_cache_read_from_prompt_tokens_details():
                 "prompt_tokens_details": {"cached_tokens": 400},
             }
         }
-    )
+    ).as_tuple()
     assert cached == 400
 
 
@@ -74,7 +73,7 @@ def test_expand_leaves_openai_full_prompt_alone():
 
 
 def test_coerce_cursor_cli_uncached_plus_cache_buckets():
-    tin, tout, cost, cached, write = coerce_token_usage_detail(
+    tin, tout, cost, cached, write = coerce_token_usage_record(
         {
             "usage": {
                 "inputTokens": 7,
@@ -83,7 +82,7 @@ def test_coerce_cursor_cli_uncached_plus_cache_buckets():
                 "cacheWriteTokens": 39_331,
             }
         }
-    )
+    ).as_tuple()
     assert tin == 7 + 147_695 + 39_331
     assert tout == 412
     assert cost is None
@@ -92,7 +91,7 @@ def test_coerce_cursor_cli_uncached_plus_cache_buckets():
 
 
 def test_coerce_nested_result_usage():
-    tin, tout, _cost, cached, write = coerce_token_usage_detail(
+    tin, tout, _cost, cached, write = coerce_token_usage_record(
         {
             "result": {
                 "usage": {
@@ -103,7 +102,7 @@ def test_coerce_nested_result_usage():
                 }
             }
         }
-    )
+    ).as_tuple()
     assert tin == 3 + 50_000 + 1_000
     assert tout == 9
     assert cached == 50_000
@@ -111,7 +110,7 @@ def test_coerce_nested_result_usage():
 
 
 def test_coerce_anthropic_uncached_plus_cache_creation():
-    tin, tout, _cost, cached, write = coerce_token_usage_detail(
+    tin, tout, _cost, cached, write = coerce_token_usage_record(
         {
             "usage": {
                 "input_tokens": 100,
@@ -120,7 +119,7 @@ def test_coerce_anthropic_uncached_plus_cache_creation():
                 "cache_creation_input_tokens": 200,
             }
         }
-    )
+    ).as_tuple()
     assert tin == 100 + 5_000 + 200
     assert (cached, write) == (5_000, 200)
     assert tout == 20
@@ -153,8 +152,8 @@ def test_openai_image_tokens_in_prompt_details():
             "prompt_tokens_details": {"image_tokens": 128, "cached_tokens": 50},
         }
     }
-    tin, tout, _cost, cached, _write = coerce_token_usage_detail(usage)
     detail = coerce_token_usage_record(usage)
+    tin, tout, _cost, cached, _write = detail.as_tuple()
     assert (tin, tout, cached) == (200, 10, 50)
     assert detail.image_tokens == ModalityBucket(basis="provider", count=128)
     assert detail.cached_tokens_detail == ModalityBucket(basis="provider", count=50)
@@ -237,7 +236,7 @@ def test_tuple_api_unchanged_with_modalities_present():
             "completion_tokens_details": {"reasoning_tokens": 99},
         }
     }
-    assert coerce_token_usage_detail(usage) == (10, 3, 0.02, 0, 0)
+    assert coerce_token_usage_record(usage).as_tuple() == (10, 3, 0.02, 0, 0)
     assert coerce_token_usage(usage) == (10, 3, 0.02)
 
 
@@ -269,7 +268,7 @@ def test_modality_rejects_bool_negative_fractional_and_non_finite():
             "completion_tokens_details": {"reasoning_tokens": True},
         }
     }
-    assert coerce_token_usage_detail(usage) == (10, 3, 0.02, 0, 0)
+    assert coerce_token_usage_record(usage).as_tuple() == (10, 3, 0.02, 0, 0)
     assert coerce_token_usage(usage) == (10, 3, 0.02)
     assert coerce_token_usage_record(usage).modality_dict() == {}
 
@@ -282,6 +281,6 @@ def test_openrouter_gemini_overlapping_cache_buckets_are_not_added_back():
         "prompt_tokens": 11564, "completion_tokens": 1, "cost": 0.0017,
         "prompt_tokens_details": {"cached_tokens": 10996, "cache_write_tokens": 10996},
     }}
-    tin, tout, cost, cached, write = coerce_token_usage_detail(usage)
+    tin, tout, cost, cached, write = coerce_token_usage_record(usage).as_tuple()
     assert (tin, cached, write) == (11564, 10996, 10996)
     assert coerce_token_usage_record(usage).tokens_in == 11564

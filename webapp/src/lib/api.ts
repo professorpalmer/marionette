@@ -738,9 +738,16 @@ export type Worktree = {
 export type Hook = {
   id: string;
   event: string;
-  command: string;
+  /** The server parses a submitted string into argv, so stored hooks are a list.
+   *  Pre-parse records on disk may still be a bare string. */
+  command: string | string[];
   enabled: boolean;
 };
+
+/** One display/edit line for a hook command, whichever shape it was stored in. */
+export function hookCommandText(command: Hook["command"]): string {
+  return Array.isArray(command) ? command.join(" ") : command;
+}
 
 export type ScheduleInfo = {
   interval_seconds?: number;

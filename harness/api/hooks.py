@@ -32,11 +32,17 @@ def post_hooks_add(body: dict) -> tuple[int, JsonPayload]:
     """POST /api/hooks/add."""
     from .. import hooks as _hk
     event = (body.get("event") or "").strip()
-    command = (body.get("command") or "").strip()
+    raw = body.get("command")
     if event not in _hk.ALLOWED_EVENTS:
         return 400, {"error": f"Invalid event. Allowed: {_hk.ALLOWED_EVENTS}"}
-    if not command:
+    if isinstance(raw, str):
+        raw = raw.strip()
+    if not raw:
         return 400, {"error": "Command cannot be empty"}
+    try:
+        command = _hk.normalize_hook_command(raw)
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
     hooks = _hk.get_hooks()
     new_hook = {
         "id": uuid.uuid4().hex[:12],
@@ -62,10 +68,16 @@ def post_hooks_update(body: dict, svc: HooksServices) -> tuple[int, JsonPayload]
     if "enabled" in body:
         hook["enabled"] = svc.parse_bool(body["enabled"])
     if "command" in body:
-        cmd = (body["command"] or "").strip()
-        if not cmd:
+        raw = body["command"]
+        if isinstance(raw, str):
+            raw = raw.strip()
+        if not raw:
             return 400, {"error": "Command cannot be empty"}
-        hook["command"] = cmd
+        try:
+            hook["command"] = _hk.normalize_hook_command(raw)
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        hook.pop("legacy_shell", None)
     _hk.save_hooks(hooks)
     return 200, hook
 

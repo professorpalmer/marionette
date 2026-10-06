@@ -725,7 +725,6 @@ def test_api_swarm_live_lists_owned_jobs_not_cwd_scope(tmp_path, monkeypatch):
             ))
             monkeypatch.setattr(srv, "_swarm_registry", lambda: [])
             monkeypatch.setattr(srv, "_job_swarm_accounting", lambda arts, registry: (0, 0.0))
-            monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
             monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
             srv._cfg.repo = repo_b
 
@@ -757,7 +756,6 @@ def test_api_jobs_and_swarm_live_keep_registered_legacy_job(tmp_path, monkeypatc
         ))
         monkeypatch.setattr(srv, "_swarm_registry", lambda: [])
         monkeypatch.setattr(srv, "_job_swarm_accounting", lambda arts, registry: (0, 0.0))
-        monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
         monkeypatch.setattr(srv._pilot, "_session_job_ids", [legacy_id], raising=False)
         srv._cfg.repo = repo_a

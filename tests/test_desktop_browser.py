@@ -128,7 +128,8 @@ def test_computer_tool_requires_attached_desktop_and_routes_session(monkeypatch,
     from unittest.mock import MagicMock
     from harness.pilot import PilotAction
     from harness.tool_discovery import ToolCatalog
-    from harness.send_loop_phases import dispatch_local_action, PLAN_SKIP_KINDS
+    from harness.send_loop_phases import dispatch_local_action
+    from harness.tool_capabilities import plan_mode_blocks
     catalog = ToolCatalog()
     catalog.refresh()
     assert catalog.activate(["computer_use"]) == ["builtin:computer_use"]
@@ -136,7 +137,7 @@ def test_computer_tool_requires_attached_desktop_and_routes_session(monkeypatch,
     args = {"operation": "snapshot", "app_id": "fixture.app"}
     list(dispatch_local_action(session, PilotAction(kind="computer_use", arguments=args), "call", False, [], plan=False))
     assert bridge[-1][1] == {"session_id": "owned", "action": "computer", "arguments": args}
-    assert "computer_use" in PLAN_SKIP_KINDS
+    assert plan_mode_blocks("computer_use")
     monkeypatch.setattr(desktop_browser, "_endpoint", None)
     catalog.refresh()
     assert catalog.activate(["computer_use"]) == []
@@ -161,7 +162,8 @@ def test_dispatch_carries_owned_session_and_respects_plan_mode(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
     from harness.pilot import PilotAction
-    from harness.send_loop_phases import dispatch_local_action, PLAN_SKIP_KINDS
+    from harness.send_loop_phases import dispatch_local_action
+    from harness.tool_capabilities import plan_mode_blocks
     session = SimpleNamespace(harness_session_id="owned", _append_action_result=MagicMock())
     for name, args in (("browser_snapshot", {}), ("browser_screenshot", {}),
                        ("browser_tabs", {}), ("browser_tab_activate", {"tab_id": "two"})):
@@ -169,4 +171,4 @@ def test_dispatch_carries_owned_session_and_respects_plan_mode(monkeypatch):
         monkeypatch.setattr(browser, name, operation)
         list(dispatch_local_action(session, PilotAction(kind=name, arguments=args), "call", False, [], plan=False))
         assert operation.call_args.kwargs["session_id"] == "owned"
-        assert name in PLAN_SKIP_KINDS
+        assert plan_mode_blocks(name)

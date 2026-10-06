@@ -98,7 +98,8 @@ def test_hooks_module_and_endpoints():
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["event"] == "preRun"
-        assert data["command"] == "echo 'hi'"
+        # The writer stores argv, never a string run_hooks would skip.
+        assert data["command"] == ["echo", "hi"]
         assert data["enabled"] is True
         assert "id" in data
         hid = data["id"]
@@ -152,6 +153,43 @@ def test_hooks_module_and_endpoints():
         httpd.shutdown()
         # Restore original hooks path
         _hk._HOOKS_JSON = original_hooks_json
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def test_hook_added_over_http_actually_executes():
+    """Regression: /api/hooks/add used to store a string run_hooks always skipped."""
+    import harness.hooks as hk
+
+    import shlex
+    import sys
+
+    tmp_dir = tempfile.mkdtemp()
+    original = hk._HOOKS_JSON
+    hk._HOOKS_JSON = os.path.join(tmp_dir, "hooks.json")
+    out_file = os.path.join(tmp_dir, "added_hook_ran.txt")
+    script = os.path.join(tmp_dir, "probe.py")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write("open(%r, 'w').write('ran')\n" % out_file)
+    argv = [sys.executable, script]
+    # A real UI command is one string; the server is what must turn it into argv.
+    command = (shlex.join(argv) if os.name == "posix"
+               else subprocess.list2cmdline(argv))
+    httpd, port, srv = _server()
+    try:
+        hk.save_hooks([])
+        headers = {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN}
+        resp = _post(port, "/api/hooks/add", {"event": "preRun", "command": command}, headers)
+        assert resp.status == 200
+        added = json.loads(resp.read().decode())
+        assert added["command"] == argv
+
+        outcomes = hk.run_hooks("preRun", {"probe": "1"})
+        assert outcomes == [{"id": added["id"], "status": "executed"}], outcomes
+        with open(out_file, "r", encoding="utf-8") as f:
+            assert f.read() == "ran"
+    finally:
+        httpd.shutdown()
+        hk._HOOKS_JSON = original
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 

@@ -13,7 +13,7 @@ from puppetmaster.store_contracts import task_binding
 from puppetmaster.store_factory import create_store
 
 from harness.api.jobs import make_job_services, post_swarm_cancel, get_cancellation_receipt
-from harness.api.scoped_cancellation import cancellation_view
+from harness.api.scoped_cancellation import parse_bindings, task_page
 from harness.job_scoping import job_label_for_session, stamp_task_payload
 
 
@@ -140,9 +140,8 @@ def test_capacity_never_silently_selects_first_200(case, count):
         assert code == 200 and result['receipt']['outcome'] == 'requested'
     else:
         assert code == 409 and receipt(store, body) is None
-    rendered = [{'id': t.id, 'binding': asdict(task_binding(t))} for t in tasks]
-    view = cancellation_view(store, JobRef(**body['selection']['job_ref']), rendered)
-    assert view['status'] == ('complete' if count == 200 else 'partial')
+    page = task_page(store, JobRef(**body['selection']['job_ref']))
+    assert page.outcome == ('complete' if count == 200 else 'partial')
 
 
 def test_mixed_terminal_workers_need_only_live_worker_observation(case):
@@ -174,12 +173,10 @@ def test_task_ownership_before_request_and_receipt(case, field, value):
     assert receipt(store, body) is None
 
 
-def test_bounded_metadata_no_list_tasks_and_mismatched_render_rejected(case):
+def test_bounded_metadata_never_reads_unbounded_task_list(case):
     store, task, svc, body = case
     store.list_tasks = lambda *_: pytest.fail('unbounded cancellation task read')
     assert post_swarm_cancel(body, svc)[0] == 200
-    rendered = [{'id': task.id, 'binding': asdict(replace(task_binding(task), generation=200))}]
-    assert cancellation_view(store, JobRef(**body['selection']['job_ref']), rendered)['status'] == 'unavailable'
 
 
 def test_real_supervised_command_stops(case, tmp_path, monkeypatch):
@@ -376,9 +373,11 @@ def test_published_bindings_match_request_boundary(case, field, length):
     store.save_task(task)
     binding = asdict(task_binding(task))
     body['selection']['bindings'] = [binding]
-    view = cancellation_view(store, JobRef(**body['selection']['job_ref']),
-                             [{'id': task.id, 'binding': binding}])
-    assert view['status'] == ('complete' if length == 256 else 'unavailable')
+    if length == 256:
+        assert parse_bindings([binding]) == (task_binding(task),)
+    else:
+        with pytest.raises(ValueError):
+            parse_bindings([binding])
     assert post_swarm_cancel(body, svc)[0] == (200 if length == 256 else 409)
 
 

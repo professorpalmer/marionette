@@ -157,7 +157,7 @@ def test_command_supplied_preview_and_provider_goal_never_become_labels(tmp_path
     for lane in ('actions', 'children', 'output'):
         detail = index.read_selected(ctx(), index.ref('local-command'), lane=lane)
         assert 'PRIVATE' not in json.dumps(detail.get('summary'))
-    runner._refresh_local_job_routed_model('local-native', 'selected-new', engine='agentic')
+    runner._finish_local_job('local-native', ok=True, model='selected-new', engine='agentic')
     assert projected(runner)['display']['model'] == 'agentic/selected-new'
 
 

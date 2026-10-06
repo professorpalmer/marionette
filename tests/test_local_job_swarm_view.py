@@ -550,7 +550,6 @@ def test_swarm_live_session_savings_exclude_external_cli_jobs(tmp_path, monkeypa
             lambda **kwargs: [],
         )
         monkeypatch.setattr(srv, "_swarm_registry", lambda: [])
-        monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
         srv._cfg.repo = str(repo)
         srv._sessions._active = "sess-live"

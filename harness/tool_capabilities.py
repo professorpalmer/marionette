@@ -29,7 +29,10 @@ class ToolCapability:
     risk_level: int
 
 
-# Keep in lockstep with send_loop_phases.PLAN_SKIP_KINDS. Tests assert both.
+# Mutating / side-effecting kinds. ``plan_mode_blocks`` reads this set through
+# ``capability_for``, so plan mode and the capability table cannot drift.
+# Browser_* counts: navigate/click/type are external side effects even when
+# some variants look observational (snapshot/screenshot still drive a live page).
 MUTATING_KINDS: FrozenSet[str] = frozenset({
     "run_implement", "run_parallel", "run_flow", "flow_control",
     "write_file", "edit_file", "hash_edit", "run_command",

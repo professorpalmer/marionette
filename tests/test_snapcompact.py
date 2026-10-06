@@ -10,7 +10,7 @@ from harness.api.session_control import (
     post_session_snapcompact,
 )
 from harness.compaction_archive import load_compaction_archive_messages
-from harness.compaction_vault import retrieve_vault_chunks, snap_compact
+from harness.compaction_vault import retrieve_vault_result, snap_compact
 from harness.history_compaction_journal import DB_FILENAME
 
 
@@ -40,11 +40,11 @@ def test_snap_compact_writes_archive_vault_and_journal(tmp_path):
     archived = load_compaction_archive_messages(str(tmp_path), "sess-snap")
     assert any(NONCE in str(row.get("content") or "") for row in archived)
 
-    hits = retrieve_vault_chunks(
+    hits = retrieve_vault_result(
         str(tmp_path),
         "sess-snap",
         "What snapcompact probe measurement token was returned?",
-    )
+    )["hits"]
     assert any(NONCE in hit for hit in hits)
 
     conn = sqlite3.connect(str(tmp_path / DB_FILENAME))

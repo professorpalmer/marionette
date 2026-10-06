@@ -10,6 +10,7 @@ import {
   type ProviderInfo,
   type BedrockStatus,
   type AuthPoolsResponse,
+  hookCommandText,
 } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import DeviceAccess from "./DeviceAccess";
@@ -2431,8 +2432,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                           </button>
                         </div>
                       </div>
-                      <div className="text-txt font-mono text-ui-10 bg-panel/70 p-1.5 rounded border border-edge/20 mt-1 select-all break-all" title={hk.command}>
-                        {hk.command.length > 50 ? hk.command.slice(0, 50) + "..." : hk.command}
+                      <div className="text-txt font-mono text-ui-10 bg-panel/70 p-1.5 rounded border border-edge/20 mt-1 select-all break-all" title={hookCommandText(hk.command)}>
+                        {hookCommandText(hk.command).length > 50
+                          ? hookCommandText(hk.command).slice(0, 50) + "..."
+                          : hookCommandText(hk.command)}
                       </div>
                     </div>
                   ))

@@ -1,6 +1,4 @@
 """Bounded cancellation views and strict public PM contract boundaries."""
-from dataclasses import asdict
-
 from importlib import import_module
 from inspect import signature
 
@@ -54,24 +52,3 @@ def parse_bindings(value):
 
 def task_page(store, ref):
     return store.list_task_refs(ref, limit=MAX_BINDINGS, max_bytes=262144, max_scan=201)
-
-
-def cancellation_view(store, ref, rendered_tasks):
-    """Never pair authority for a successor with a previously rendered worker."""
-    if not runtime_available(store):
-        return {'status': 'unavailable', 'limit': MAX_BINDINGS, 'reason': 'scoped_cancellation_unsupported'}
-    if ref.version != 2:
-        return {'status': 'unavailable', 'limit': MAX_BINDINGS, 'reason': 'legacy_ref'}
-    try:
-        page = task_page(store, ref)
-        if page.outcome != 'complete':
-            return {'status': page.outcome, 'limit': MAX_BINDINGS}
-        bindings = [asdict(item.binding) for item in page.items if item.binding is not None]
-        parse_bindings(bindings)
-        rendered = {t['id']: t.get('binding') for t in rendered_tasks}
-        if (not bindings or len(bindings) != len(page.items) or len(rendered) != len(bindings)
-                or any(rendered.get(b['task_id']) != b for b in bindings)):
-            return {'status': 'unavailable', 'limit': MAX_BINDINGS}
-        return {'status': 'complete', 'limit': MAX_BINDINGS, 'bindings': bindings}
-    except (AttributeError, OSError, TypeError, ValueError):
-        return {'status': 'unavailable', 'limit': MAX_BINDINGS}

@@ -206,13 +206,13 @@ def test_catalog_extractive_no_llm_and_redacts(tmp_path, monkeypatch):
     assert "sk-abcdefghijklmnopqrstuvwx" not in injected
     assert "REDACTED" in injected
     assert session._history[-1]["content"] == "continuing"
-    from harness.compaction_vault import retrieve_vault_chunks
+    from harness.compaction_vault import retrieve_vault_result
 
-    vault_hits = retrieve_vault_chunks(
+    vault_hits = retrieve_vault_result(
         str(tmp_path),
         "sess-residual",
         "What is the source of truth for the billing ledger?",
-    )
+    )["hits"]
     assert any("ledger_v3.py" in hit for hit in vault_hits)
 
 
