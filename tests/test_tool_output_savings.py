@@ -21,7 +21,7 @@ from harness.tool_output_savings import (
     aggregate_jsonl_records,
     estimate_tokens,
     get_ledger,
-    job_savings_payload,
+    merged_savings_summary,
     parse_jsonl_records,
     savings_usd,
     session_savings_payload,
@@ -328,12 +328,9 @@ def test_job_id_migration_and_filter(tmp_path):
     assert alpha.record_count == 1
     assert alpha.tokens_saved == tokens_avoided(4000, 400)
 
-    payload = job_savings_payload(state_dir, "job_beta", price_in=3.0)
-    assert payload["tool_output_tokens_saved"] == tokens_avoided(2000, 200)
-    assert payload["tool_output_compactions"] == 1
-    assert payload["tool_output_savings_usd"] == pytest.approx(
-        savings_usd(tokens_avoided(2000, 200), 3.0)
-    )
+    beta = ledger.summarize(job_id="job_beta")
+    assert beta.tokens_saved == tokens_avoided(2000, 200)
+    assert beta.record_count == 1
 
 
 def test_job_id_column_added_to_legacy_db(tmp_path):
@@ -406,7 +403,7 @@ def _write_pm_offload_jsonl(cli_dir, *, job_id: str, tool_call_id: str,
     return saved
 
 
-def test_job_savings_payload_merges_pm_jsonl_only(tmp_path):
+def test_job_merge_counts_pm_jsonl_only(tmp_path):
     """Job with only PM-state JSONL offloads still surfaces token savings + USD."""
     harness_dir = str(tmp_path / "harness")
     os.makedirs(harness_dir)
@@ -419,15 +416,12 @@ def test_job_savings_payload_merges_pm_jsonl_only(tmp_path):
         original_chars=20_000,
         compact_chars=2_000,
     )
-    payload = job_savings_payload(
-        harness_dir, "pm-job-1", cli_state_dir=cli_dir, price_in=3.0
-    )
-    assert payload["tool_output_tokens_saved"] == saved
-    assert payload["tool_output_compactions"] == 1
-    assert payload["tool_output_savings_usd"] == pytest.approx(savings_usd(saved, 3.0))
+    summary = merged_savings_summary(harness_dir, cli_state_dirs=[cli_dir], job_id="pm-job-1")
+    assert summary.tokens_saved == saved
+    assert summary.record_count == 1
 
 
-def test_job_savings_payload_dedupes_shared_tool_call_id(tmp_path):
+def test_job_merge_dedupes_shared_tool_call_id(tmp_path):
     harness_dir = str(tmp_path / "harness")
     cli_dir = str(tmp_path / "cli")
     os.makedirs(cli_dir)
@@ -453,12 +447,10 @@ def test_job_savings_payload_dedupes_shared_tool_call_id(tmp_path):
         original_chars=4_000,
         compact_chars=400,
     )
-    payload = job_savings_payload(
-        harness_dir, "job-x", cli_state_dir=cli_dir, price_in=2.0
-    )
+    summary = merged_savings_summary(harness_dir, cli_state_dirs=[cli_dir], job_id="job-x")
     expected = tokens_avoided(8_000, 1_000) + tokens_avoided(4_000, 400)
-    assert payload["tool_output_tokens_saved"] == expected
-    assert payload["tool_output_compactions"] == 2
+    assert summary.tokens_saved == expected
+    assert summary.record_count == 2
 
 
 def test_usage_and_swarm_live_pm_offloads_fail_closed_without_merge(tmp_path, monkeypatch):
