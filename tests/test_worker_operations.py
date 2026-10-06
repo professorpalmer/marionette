@@ -170,3 +170,35 @@ def test_invalid_loop_bounds(env, field, value):
 def test_unsupported_metadata_host_does_not_construct_reader():
     view = SimpleNamespace(supported=False, reader=lambda: pytest.fail('legacy metadata host'))
     assert worker_operation_handler('get_worker_operations')({}, view)[0] == 503
+
+
+def _unavailable_then(store, monkeypatch, failures):
+    from dataclasses import replace as _replace
+
+    real = store.list_task_refs
+    calls = []
+
+    def flaky(*args, **kwargs):
+        page = real(*args, **kwargs)
+        calls.append(1)
+        if failures is None or len(calls) <= failures:
+            return _replace(page, items=(), outcome='unavailable',
+                            reason='read_snapshot_unavailable', retry_after_ms=20)
+        return page
+    monkeypatch.setattr(store, 'list_task_refs', flaky)
+    return calls
+
+
+def test_a_briefly_busy_store_is_retried_not_a_view_change(env, monkeypatch):
+    store = env.reader.sources.stores[0].handle
+    calls = _unavailable_then(store, monkeypatch, failures=1)
+    status, result = post_worker_operation(action(env, 'broadcast', message='Check'), env.reader)
+    assert status == 409 and result['outcome'] == 'unsupported'
+    assert len(calls) == 2
+
+
+def test_a_store_that_stays_busy_is_unavailable_not_a_view_change(env, monkeypatch):
+    store = env.reader.sources.stores[0].handle
+    _unavailable_then(store, monkeypatch, failures=None)
+    status, result = post_worker_operation(action(env, 'broadcast', message='Check'), env.reader)
+    assert status == 503 and result['code'] == 'store_unavailable'
