@@ -1,7 +1,7 @@
 {
   "name": "pm-harness",
   "private": true,
-  "version": "0.9.592",
+  "version": "0.9.593",
   "type": "module",
   "scripts": {
     "dev": "vite",
