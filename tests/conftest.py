@@ -168,6 +168,17 @@ def _isolated_coordination_path(path, selected=None):
 
 
 _readonly_admission._coordination_path = _isolated_coordination_path
+# Puppetmaster after 1.32.1 reads this override, which also reaches the CLI
+# children tests spawn; the patch above covers the installed 1.32.1 in-process.
+os.environ["PUPPETMASTER_READER_COORDINATION_DIR"] = str(_coordination_root)
+
+# The suite runs 16-wide under -n auto, often beside a busy app. The product
+# honors read_snapshot_unavailable with a short bounded retry sized for an
+# interactive read; tests assert complete pages, so let them wait like a
+# patient client instead of failing when a reader is merely slow to start.
+from harness import job_readmodel as _job_readmodel
+
+_job_readmodel.SNAPSHOT_RETRIES = 20
 
 
 def pytest_unconfigure(config):
