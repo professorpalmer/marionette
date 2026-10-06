@@ -166,7 +166,6 @@ from .usage_meters import (  # noqa: E402
     _fold_runner_meters_into_boot_carry,
     _freeze_pilot_meters_into_boot_carry,
     _job_in_cost_window,
-    _job_savings_fields,
     _note_boot_repo,
     _persist_boot_usage,
     _repo_session_stamped_meters,

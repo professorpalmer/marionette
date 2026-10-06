@@ -155,7 +155,7 @@ def measure_repo(repo: Path, fixture: Path, root: Path, args) -> dict:
         boot_session_cost=lambda *a: meters["_tokens_used"] / 1e6,
         scoped_jobs_with_stores=scoped, job_in_cost_window=lambda _: True,
         swarm_registry=lambda: [], job_swarm_accounting=lambda *a: (0, 0.0),
-        tokens_cached_swarm=lambda _: 0, job_savings_fields=lambda _: {},
+        tokens_cached_swarm=lambda _: 0,
         active_session_total=lambda *a: dict(active), sum_job_set_savings=lambda *a, **kw: (0.0, 0.0),
         sum_job_set_savings_detail=lambda *a, **kw: {
             "routing_saved_usd": 0.0, "cache_saved_usd_swarm": 0.0,

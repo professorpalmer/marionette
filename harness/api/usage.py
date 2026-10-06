@@ -31,7 +31,6 @@ class UsageServices:
     swarm_registry: Callable[[], list]
     job_swarm_accounting: Callable[..., tuple]
     tokens_cached_swarm: Callable[..., int]
-    job_savings_fields: Callable[[str], dict]
     active_session_total: Callable[..., Any]
     sum_job_set_savings: Callable[..., tuple]
     sum_job_set_savings_detail: Callable[..., dict]

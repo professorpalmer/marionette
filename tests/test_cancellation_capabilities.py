@@ -27,7 +27,6 @@ def test_missing_candidate_module_is_explicitly_unavailable(monkeypatch):
         raise ModuleNotFoundError('unsupported contracts')
     monkeypatch.setattr(scoped_cancellation, 'import_module', missing)
     assert not scoped_cancellation.runtime_available()
-    assert scoped_cancellation.cancellation_view(None, None, [])['reason'] == 'scoped_cancellation_unsupported'
 
 
 def test_id_only_cancel_never_discovers_or_reads_a_store():

@@ -267,7 +267,6 @@ def test_api_swarm_live_cli_job_absent_not_just_zeroed(tmp_path, monkeypatch):
                 estimate_cost_usd=lambda tin, tout: (tin / 1_000_000.0) + (tout / 1_000_000.0) * 2.0,
             )
         ])
-        monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
         monkeypatch.setattr(srv._pilot, "_session_job_ids", [], raising=False)
         monkeypatch.setattr(srv._pilot, "_tokens_used", 12_000, raising=False)

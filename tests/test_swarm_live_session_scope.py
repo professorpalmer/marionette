@@ -128,7 +128,6 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch, factory
                     "cost_provenance": "provider",
                 },
             )
-            monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
             monkeypatch.setattr(srv, "_slim_swarm_list_artifacts", lambda arts, state: [])
             monkeypatch.setattr(srv, "_task_swarm_accounting", lambda arts, registry: {})
             monkeypatch.setattr(srv, "_routing_saved_usd", lambda arts: 0.0)
@@ -209,11 +208,13 @@ def test_swarm_live_repo_scope_excludes_active_pilot_meters(monkeypatch, factory
 
 def test_wiki_ingest_prepared_clears_graph_cache(monkeypatch):
     """POST /api/wiki/ingest-prepared must bust the wiki graph/status cache."""
+    from harness.api import wiki as wiki_api
+
     tmp_dir = tempfile.mkdtemp()
     try:
         httpd, port, srv = _server(tmp_dir)
         try:
-            srv._wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
+            wiki_api.wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
             monkeypatch.setattr(
                 srv._pilot, "ingest_prepared_pages", lambda pages: len(pages or [])
             )
@@ -226,7 +227,7 @@ def test_wiki_ingest_prepared_clears_graph_cache(monkeypatch):
             data = json.loads(resp.read().decode())
             assert data["ok"] is True
             assert data["ingested"] == 1
-            assert not srv._wiki_graph_cache
+            assert not wiki_api.wiki_graph_cache
         finally:
             httpd.shutdown()
     finally:

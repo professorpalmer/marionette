@@ -5,11 +5,8 @@ from harness.compaction_vault import (
     apply_topic_last_wins,
     build_plan_recap_chunk,
     build_turn_vault_cite,
-    build_turn_vault_section,
-    drop_ack_like_messages,
     index_elided_messages,
     is_recap_ask,
-    retrieve_vault_chunks,
     retrieve_vault_result,
     topic_last_wins_receipt,
     vault_match_query,
@@ -34,17 +31,17 @@ def test_vault_retrieve_recalls_elided_nonce(tmp_path):
     ]
     written = index_elided_messages(str(tmp_path), "sess-vault", messages)
     assert written >= 2
-    hits = retrieve_vault_chunks(
+    hits = retrieve_vault_result(
         str(tmp_path),
         "sess-vault",
         "What cache-shard measurement tokens were returned by the probe?",
-    )
+    )["hits"]
     assert any("omega-cache-token-9f3a" in hit for hit in hits)
-    section = build_turn_vault_section(
+    section = build_turn_vault_cite(
         str(tmp_path),
         "sess-vault",
         "What cache-shard measurement tokens were returned by the probe?",
-    )
+    )["section"]
     assert VAULT_HEADING in section
     assert "omega-cache-token-9f3a" in section
     cite = build_turn_vault_cite(
@@ -72,11 +69,11 @@ def test_vault_retrieve_is_session_scoped(tmp_path):
         "sess-b",
         [{"role": "user", "content": "omega-cache-token-9f3a"}],
     )
-    hits = retrieve_vault_chunks(
+    hits = retrieve_vault_result(
         str(tmp_path),
         "sess-a",
         "What early write constraint was set for the database files?",
-    )
+    )["hits"]
     assert any("production.db" in hit for hit in hits)
     assert not any("omega-cache-token-9f3a" in hit for hit in hits)
 
@@ -92,11 +89,11 @@ def test_vault_recalls_plain_measurement_nonce(tmp_path):
     ]
     written = index_elided_messages(str(tmp_path), "sess-miss", messages)
     assert written >= 1
-    section = build_turn_vault_section(
+    section = build_turn_vault_cite(
         str(tmp_path),
         "sess-miss",
         "What cache-shard measurement tokens were returned by the probe?",
-    )
+    )["section"]
     lowered = section.lower()
     assert "omega-cache-token-9f3a" in lowered
     assert "shard-omega-p95" in lowered
@@ -120,11 +117,11 @@ def test_vault_only_prose_selected_story_and_vault_hit(tmp_path):
     assert "fourteenth of each month" in catalog.lower()
     written = index_elided_messages(str(tmp_path), "sess-prose", messages)
     assert written >= 1
-    section = build_turn_vault_section(
+    section = build_turn_vault_cite(
         str(tmp_path),
         "sess-prose",
         "When is the billing cutoff for the ledger close?",
-    )
+    )["section"]
     assert "fourteenth of each month" in section.lower()
 
 
@@ -171,9 +168,9 @@ def test_vault_recap_paraphrase_and_twin_routes(tmp_path):
     assert para["route"] == "empty"
     assert para["hits"] == []
 
-    twin_hits = retrieve_vault_chunks(
+    twin_hits = retrieve_vault_result(
         str(tmp_path), "sess-twin", "Where does the canary ship?"
-    )
+    )["hits"]
     twin_blob = "\n".join(twin_hits).lower()
     assert "spare region" in twin_blob
     assert "primary region" not in twin_blob
@@ -200,11 +197,11 @@ def test_vault_survives_peek_archive_middle_eviction(tmp_path):
     assert "fourteenth" not in json.dumps(retained).lower()
     written = index_elided_messages(str(tmp_path), "sess-evict", messages)
     assert written >= 1
-    section = build_turn_vault_section(
+    section = build_turn_vault_cite(
         str(tmp_path),
         "sess-evict",
         "When is the billing cutoff for the ledger close?",
-    )
+    )["section"]
     assert "fourteenth of each month" in section.lower()
 
 
@@ -398,35 +395,17 @@ def test_vault_selector_default_worthy_contract(tmp_path):
     assert "spare region" not in "\n".join(fire_hit["hits"]).lower()
 
 
-def test_drop_ack_like_messages_skips_reversed():
-    kept = drop_ack_like_messages([
-        {"role": "user", "content": "go ahead and write to the live ledger now"},
-        {"role": "assistant", "content": "Reversed."},
-        {"role": "assistant", "content": "Write policy recorded in the ledger notes."},
-        {
-            "role": "assistant",
-            "content": "Noted.",
-            "tool_calls": [{"id": "c1", "function": {"name": "read_file"}}],
-        },
-    ])
-    texts = [row["content"] for row in kept]
-    assert "Reversed." not in texts
-    assert "go ahead and write to the live ledger now" in texts
-    assert "Write policy recorded in the ledger notes." in texts
-    assert any(row.get("tool_calls") for row in kept)
-
-
 def test_vault_redacts_secrets(tmp_path):
     index_elided_messages(
         str(tmp_path),
         "sess-secret",
         [{"role": "tool", "content": "failed with token sk-abcdefghijklmnopqrstuvwx"}],
     )
-    hits = retrieve_vault_chunks(
+    hits = retrieve_vault_result(
         str(tmp_path),
         "sess-secret",
         "What token failed?",
-    )
+    )["hits"]
     blob = "\n".join(hits)
     assert "sk-abcdefghijklmnopqrstuvwx" not in blob
 

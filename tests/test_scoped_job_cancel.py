@@ -161,7 +161,9 @@ def test_live_rows_expose_actual_store_refs(stores):
 
 @pytest.mark.parametrize('source', ['harness', 'cli'])
 def test_v2_store_refs_expose_complete_bindings_and_cancel_only_selected(v2_stores, source):
-    from harness.api.scoped_cancellation import cancellation_view
+    from dataclasses import asdict
+
+    from harness.api.scoped_cancellation import task_page
 
     primary, cli, svc, qs = v2_stores
     chosen, other = (primary, cli) if source == 'harness' else (cli, primary)
@@ -174,9 +176,10 @@ def test_v2_store_refs_expose_complete_bindings_and_cancel_only_selected(v2_stor
     tasks = [{'id': b['task_id'], 'binding': b} for b in selection_v2['bindings']]
     assert tasks
     before = [store_dump(s.store) for s in (chosen, other)]
-    view = cancellation_view(chosen.store, ref, tasks)
-    assert view['status'] == 'complete', view
-    assert view['bindings'] == [t['binding'] for t in tasks]
+    page = task_page(chosen.store, ref)
+    assert page.outcome == 'complete', page
+    bindings = [asdict(item.binding) for item in page.items if item.binding is not None]
+    assert bindings == [t['binding'] for t in tasks]
     assert [store_dump(s.store) for s in (chosen, other)] == before
     wrong = {**selection_v2, 'job_ref': other.store.job_ref(jid).as_dict()}
     assert jobs.post_swarm_cancel({'selection': wrong, 'request_id': 'wrong-store'}, svc)[0] == 409
@@ -185,7 +188,7 @@ def test_v2_store_refs_expose_complete_bindings_and_cancel_only_selected(v2_stor
     assert code == 200
     assert result['receipt']['outcome'] == 'requested'
     assert result['receipt']['job_ref'] == ref.as_dict()
-    assert result['receipt']['bindings'] == tuple(view['bindings'])
+    assert result['receipt']['bindings'] == tuple(bindings)
     assert chosen.store.get_cancellation_receipt(ref, 'v2-cancel') is not None
     assert store_dump(other.store) == before[1]
     assert not is_cancelled(jid)

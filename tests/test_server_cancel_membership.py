@@ -43,7 +43,7 @@ def test_make_job_services_fills_inert_defaults():
     )
     assert svc.routing_saved_usd() == 0.0
     assert svc.scoped_jobs_snapshot() == []
-    assert svc.job_savings_fields("j1") == {}
+    assert svc.tool_output_savings_fields() == {}
 
 
 class _FakeStore:

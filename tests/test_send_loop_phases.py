@@ -1031,7 +1031,6 @@ def test_meter_pilot_step_accumulates_tokens_and_provider_cost(monkeypatch):
     assert session._provider_billed_tokens_in == 100
     assert session._tokens_in_measured == 100
     assert getattr(session, "_tokens_in_estimated", 0) == 0
-    assert session._last_tokens_in_basis == "provider"
     assert resp.meta["tokens_in_basis"] == "provider"
     assert meters["estimated_cost_usd"] == 0.0123
     assert meters["input_tokens"] == 100
@@ -1137,7 +1136,6 @@ def test_meter_pilot_step_estimates_tokens_in_from_prompt():
     assert session._last_prompt_tokens == 25
     assert session._tokens_in_estimated == 25
     assert getattr(session, "_tokens_in_measured", 0) == 0
-    assert session._last_tokens_in_basis == "estimated"
     assert resp.meta["tokens_in_basis"] == "estimated"
     assert meters["input_tokens"] == 25
 
@@ -1186,7 +1184,6 @@ def test_meter_pilot_step_provider_cost_without_input_keeps_billed_in_clean():
     assert session._last_prompt_tokens == 20
     assert session._tokens_cached == 12
     assert session._tokens_cache_write == 3
-    assert session._last_tokens_in_basis == "estimated"
     assert resp.meta["tokens_in_basis"] == "estimated"
     assert session._tokens_in_estimated == 20
     assert getattr(session, "_tokens_in_measured", 0) == 0
@@ -1233,7 +1230,6 @@ def test_meter_pilot_step_cumulative_measured_and_estimated_counters():
     assert session._tokens_in == 70
     assert session._tokens_in_measured == 40
     assert session._tokens_in_estimated == 30
-    assert session._last_tokens_in_basis == "estimated"
     assert estimated.meta["tokens_in_basis"] == "estimated"
     assert measured.meta["tokens_in_basis"] == "provider"
 
@@ -1250,7 +1246,6 @@ def _meter_session(*, driver: str = "anthropic/claude-test") -> SimpleNamespace:
         _tokens_cache_write=0,
         _tokens_cache_write_5m=0,
         _tokens_cache_write_1h=0,
-        _last_cache_write_ttl_basis="",
         _plan_billing=False,
         _price_source="",
         _provider_cost_usd=0.0,
@@ -1312,7 +1307,6 @@ def test_meter_pilot_step_inferred_ttl_not_measured(monkeypatch):
     assert session._tokens_cache_write_1h == 0
     assert session._provider_billed_tokens_cache_write_5m == 0
     assert session._provider_billed_tokens_cache_write_1h == 0
-    assert session._last_cache_write_ttl_basis == "inferred"
 
     expected = _session_cost(
         full_in, tout, read, 1.0, 5.0, cache_write=write,
@@ -1354,7 +1348,6 @@ def test_meter_pilot_step_provider_ttl_is_measured(monkeypatch):
     assert session._provider_billed_tokens_cache_write == write
     assert session._provider_billed_tokens_cache_write_5m == write_5m
     assert session._provider_billed_tokens_cache_write_1h == write_1h
-    assert session._last_cache_write_ttl_basis == "provider"
     assert session.meters["estimated_cost_usd"] == 0.42
 
 
@@ -1416,7 +1409,6 @@ def test_meter_pilot_step_missing_ttl_basis_keeps_provider_shaped_buckets(monkey
     assert session._tokens_cache_write == write
     assert session._tokens_cache_write_5m == write
     assert session._tokens_cache_write_1h == 0
-    assert session._last_cache_write_ttl_basis == ""
 
 
 def test_drain_idle_turn_delivers_steers_and_continues():
@@ -2107,9 +2099,9 @@ def test_dispatch_local_action_call_mcp_refuses_untracked_start():
 
 def test_dispatch_local_action_plan_mode_blocks_mcp_mutate_paths():
     """Phases-layer plan gate: call_mcp / manage_mcp never reach the manager."""
-    from harness.send_loop_phases import PLAN_SKIP_KINDS
+    from harness.tool_capabilities import plan_mode_blocks
 
-    assert "call_mcp" in PLAN_SKIP_KINDS and "manage_mcp" in PLAN_SKIP_KINDS
+    assert plan_mode_blocks("call_mcp") and plan_mode_blocks("manage_mcp")
     mcp = MagicMock()
     session = SimpleNamespace(
         _mcp=mcp,
@@ -2130,7 +2122,7 @@ def test_dispatch_local_action_plan_mode_blocks_mcp_mutate_paths():
 
 def test_dispatch_local_action_plan_mode_blocks_browser_tools():
     """Phases-layer plan gate: browser_* never reaches the browser driver."""
-    from harness.send_loop_phases import PLAN_SKIP_KINDS
+    from harness.tool_capabilities import plan_mode_blocks
 
     browser_kinds = (
         "browser_navigate",
@@ -2144,7 +2136,7 @@ def test_dispatch_local_action_plan_mode_blocks_browser_tools():
         "browser_auth_handoff",
     )
     for kind in browser_kinds:
-        assert kind in PLAN_SKIP_KINDS, kind
+        assert plan_mode_blocks(kind), kind
 
     session = SimpleNamespace(_append_action_result=MagicMock())
     for kind in browser_kinds:

@@ -7,7 +7,7 @@ from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.ipython_kernel import PersistentPythonKernel, get_or_create_kernel
 from harness.pilot import PilotAction, build_tools_schema, from_wire
-from harness.send_loop_phases import PLAN_SKIP_KINDS
+from harness.tool_capabilities import plan_mode_blocks
 from harness.tool_dispatch import ToolDispatchMixin
 
 
@@ -36,7 +36,7 @@ def test_run_ipython_requires_code():
 
 
 def test_plan_mode_skips_run_ipython():
-    assert "run_ipython" in PLAN_SKIP_KINDS
+    assert plan_mode_blocks("run_ipython")
 
 
 def test_kernel_state_persists_across_executions(tmp_path):

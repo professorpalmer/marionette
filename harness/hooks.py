@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import subprocess
 import tempfile
 from typing import Any
@@ -33,7 +34,56 @@ def get_hooks() -> list[dict]:
     return []
 
 
+def normalize_hook_command(command: Any) -> list[str]:
+    """Return the argv ``run_hooks`` will execute, or raise ``ValueError``.
+
+    ``_valid_record`` only runs a list[str] argv (shell=False); a bare string
+    needs two opt-ins. So the single place a command enters storage parses it
+    into argv instead of keeping a string the runner would always skip.
+    """
+    if isinstance(command, str):
+        posix = os.name == "posix"
+        try:
+            argv = shlex.split(command, posix=posix)
+        except ValueError as exc:
+            raise ValueError(f"Could not parse command: {exc}") from None
+        if not posix:
+            # posix=False keeps backslashes intact (right for Windows paths) but
+            # also keeps the quote characters inside each token. Strip a matched
+            # outer pair so a quoted path is the real path.
+            argv = [
+                tok[1:-1] if len(tok) > 1 and tok[0] == tok[-1] and tok[0] in "\"'" else tok
+                for tok in argv
+            ]
+    elif isinstance(command, list):
+        argv = list(command)
+    else:
+        raise ValueError("Command must be a string or a list of strings")
+    if not argv or any(not isinstance(x, str) or not x or "\x00" in x for x in argv):
+        raise ValueError("Command must be a non-empty argv with no NUL bytes")
+    return argv
+
+
+def _migrate_string_commands(hooks: list[dict]) -> list[dict]:
+    """Convert stored string commands to argv so saved hooks stay runnable.
+
+    ``legacy_shell`` records are left alone: they are the explicit opt-in to
+    shell execution and must keep their string form.
+    """
+    out: list[dict] = []
+    for hook in hooks:
+        if (isinstance(hook, dict) and isinstance(hook.get("command"), str)
+                and hook.get("legacy_shell") is not True):
+            try:
+                hook = {**hook, "command": normalize_hook_command(hook["command"])}
+            except ValueError:
+                pass
+        out.append(hook)
+    return out
+
+
 def save_hooks(hooks: list[dict]) -> None:
+    hooks = _migrate_string_commands(hooks)
     os.makedirs(os.path.dirname(_HOOKS_JSON), exist_ok=True)
     try:
         temp_fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(_HOOKS_JSON))

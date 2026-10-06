@@ -433,17 +433,3 @@ def coerce_token_usage(*blobs: Any) -> Tuple[int, int, Optional[float]]:
     """
     detail = coerce_token_usage_record(*blobs)
     return detail.tokens_in, detail.tokens_out, detail.cost
-
-
-def coerce_token_usage_detail(
-    *blobs: Any,
-) -> Tuple[int, int, Optional[float], int, int]:
-    """Return (tokens_in, tokens_out, cost|None, cache_read, cache_write).
-
-    ``tokens_in`` is the FULL prompt total (uncached + cache read + cache
-    write) so StatusBar meters and ``_session_cost`` stay coherent. Cache
-    buckets remain available for the cache-savings chip and write premiums.
-
-    Optional modality buckets are available via ``coerce_token_usage_record``.
-    """
-    return coerce_token_usage_record(*blobs).as_tuple()

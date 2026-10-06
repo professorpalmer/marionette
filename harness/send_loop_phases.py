@@ -131,24 +131,6 @@ LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "cancel_job",
 })
 
-# Mutating / side-effecting kinds blocked in plan mode (same gate as write/edit
-# and run_implement). Includes MCP call + manage so plan turns cannot mutate
-# external servers or invoke tools that may write. Browser_* is the MCP-sibling
-# peel: navigate/click/type/etc. are external side effects even when some
-# variants are observational (snapshot/screenshot still drive a live page).
-PLAN_SKIP_KINDS: frozenset[str] = frozenset({
-    "run_implement", "run_parallel", "run_flow", "flow_control",
-    "write_file", "edit_file", "hash_edit", "run_command",
-    "run_command_batch", "run_ipython",
-    "call_mcp", "manage_mcp", "memory", "cancel_job",
-    "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_back",
-    "browser_get_text", "browser_screenshot", "browser_auth_handoff",
-    "browser_tabs", "browser_tab_activate",
-    "computer_use",
-    "browser_input",
-})
-
 # Cap for run_command SSE ``output`` so the UI card can show an excerpt without
 # dumping unbounded shell stdout into the event stream.
 _RUN_COMMAND_UI_OUTPUT_CAP = 4 * 1024
@@ -2281,7 +2263,6 @@ def meter_pilot_step(
     session._tokens_out += _t_out
     session._turn_output_tokens += _t_out
     session._tokens_in += _t_in
-    session._last_tokens_in_basis = _tokens_in_basis
     # Lazy cumulative provenance splits — lightweight test sessions omit these.
     if _tokens_in_basis == "provider":
         session._tokens_in_measured = (
@@ -2341,8 +2322,6 @@ def meter_pilot_step(
         session._tokens_cache_write += _write_delta
         session._tokens_cache_write_5m += _write_5m
         session._tokens_cache_write_1h += _write_1h
-        # Additive telemetry only — empty when the driver omitted provenance.
-        session._last_cache_write_ttl_basis = _ttl_basis
     except Exception:
         _meta = {}
         _cache_delta = 0
@@ -3108,9 +3087,10 @@ def dispatch_local_action(
     ConvEvent shapes and history appends; mutates ``turn_changed_files`` on
     successful writes/edits.
 
-    ``plan=True`` is a second gate for PLAN_SKIP_KINDS (call_mcp / manage_mcp /
-    browser_* / write-edit / run_command) so a caller that forgets the
-    actions-layer skip still cannot mutate or drive a live browser in plan mode.
+    ``plan=True`` is a second gate via ``plan_mode_blocks`` (call_mcp /
+    manage_mcp / browser_* / write-edit / run_command) so a caller that forgets
+    the actions-layer skip still cannot mutate or drive a live browser in plan
+    mode.
     """
     import json
     import os

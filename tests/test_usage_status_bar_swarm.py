@@ -232,7 +232,6 @@ def test_api_usage_excludes_unowned_cli_store_jobs(tmp_path, monkeypatch):
             "_swarm_registry",
             lambda: [_registry_spec("worker-model")],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -313,7 +312,6 @@ def test_session_total_includes_task_stamp_not_unstamped_legacy(
             "_swarm_registry",
             lambda: [_registry_spec("worker-model")],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -401,7 +399,6 @@ def test_duplicate_job_id_across_stores_counted_once(tmp_path, monkeypatch):
             "_swarm_registry",
             lambda: [_registry_spec("worker-model")],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         # The process rollup still exercises the legacy helper at a conspicuous
         # value. The active-session total must instead consume the canonical PM
@@ -483,7 +480,6 @@ def test_api_usage_routing_saved_usd_in_response(tmp_path, monkeypatch):
             "_swarm_registry",
             lambda: [_registry_spec("cheap-model")],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -679,7 +675,6 @@ def test_api_swarm_live_tasks_carry_per_task_tokens_and_cost(tmp_path, monkeypat
             "_swarm_registry",
             lambda: [_registry_spec("worker-model")],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -794,7 +789,6 @@ def test_api_usage_tokens_used_is_pilot_only_plus_job_tokens(tmp_path, monkeypat
             "_swarm_registry",
             lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -917,7 +911,6 @@ def test_api_usage_combined_cache_keeps_pilot_only_when_disjoint(tmp_path, monke
             "_swarm_registry",
             lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 
@@ -1121,7 +1114,6 @@ def test_api_usage_exposes_cache_token_split_reconcilable_with_usd(
             "_swarm_registry",
             lambda: [_registry_spec("worker-model", input_per_mtok_usd=3.0)],
         )
-        monkeypatch.setattr(server, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(server, "_job_in_cost_window", lambda created_at: True)
         server._cfg.repo = str(repo)
 

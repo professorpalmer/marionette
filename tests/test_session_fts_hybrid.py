@@ -444,7 +444,6 @@ def test_get_artifacts_hook_indexes_headlines():
             routing_saved_usd=lambda *_a, **_k: 0.0,
             cache_saved_usd_swarm=lambda *_a, **_k: 0.0,
             tokens_cached_swarm=lambda *_a, **_k: 0,
-            job_savings_fields=lambda _jid: {},
             repo_session_stamped_meters=lambda _repo: {},
             session_cost_split=lambda *_a, **_k: 0.0,
             cache_savings=lambda *_a, **_k: 0.0,

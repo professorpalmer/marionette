@@ -114,7 +114,6 @@ from .api.cost import (  # noqa: E402
     _freeze_pilot_meters_into_boot_carry,
     _job_cost,
     _job_in_cost_window,
-    _job_savings_fields,
     _job_swarm_accounting,
     _job_swarm_accounting_detail,
     _live_price_task,
@@ -1662,7 +1661,6 @@ def _job_services():
         cache_saved_usd_swarm=_cache_saved_usd_swarm,
         cache_saved_usd_swarm_detail=_cache_saved_usd_swarm_detail,
         tokens_cached_swarm=_tokens_cached_swarm,
-        job_savings_fields=_job_savings_fields,
         repo_session_stamped_meters=_repo_session_stamped_meters,
         session_cost_split=_session_cost_split,
         cache_savings=_cache_savings,
@@ -2021,7 +2019,6 @@ def _usage_services():
         swarm_registry=_swarm_registry,
         job_swarm_accounting=_job_swarm_accounting,
         tokens_cached_swarm=_tokens_cached_swarm,
-        job_savings_fields=_job_savings_fields,
         active_session_total=_active_session_total,
         sum_job_set_savings=_sum_job_set_savings,
         sum_job_set_savings_detail=_sum_job_set_savings_detail,
@@ -2494,21 +2491,13 @@ restrict_dir_to_owner(_UPLOAD_DIR)
 # Chat stash lives in harness.api.sessions; re-export historical names for
 # tests and SSE GET mid= resolution.
 from .api.sessions import (  # noqa: E402
-    _CHAT_STASH,
-    _CHAT_STASH_MAX,
     stash_put as _stash_put,
     stash_pop as _stash_pop,
 )
 
-# Wiki graph cache / handoff nonces / status helpers live in harness.api.wiki;
-# re-export historical names for tests and pilot._on_wiki_ingest.
-from .api.wiki import (  # noqa: E402
-    wiki_graph_cache as _wiki_graph_cache,
-    wiki_cache_key as _wiki_cache_key,
-    clear_wiki_graph_cache as _clear_wiki_graph_cache,
-    mint_wiki_connect_nonce as _mint_wiki_connect_nonce,
-    wiki_status_extras as _wiki_status_extras,
-)
+# Wiki graph cache lives in harness.api.wiki; re-export the invalidation hook
+# that pilot._on_wiki_ingest needs.
+from .api.wiki import clear_wiki_graph_cache as _clear_wiki_graph_cache  # noqa: E402
 
 _endpoint_instance = None
 _endpoint_lock = threading.Lock()

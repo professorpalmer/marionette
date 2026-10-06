@@ -258,20 +258,6 @@ def select_story_lines(messages: Any) -> List[str]:
     return _fit_newest_lines(novel, _STORY_CHAR_BUDGET)
 
 
-def drop_ack_like_messages(messages: Any) -> List[dict]:
-    """Drop one-word assistant acks so they cannot rewrite later policy."""
-    kept: List[dict] = []
-    for msg in messages or []:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "")
-        text = str(msg.get("content") or "").strip()
-        if role == "assistant" and _ack_like(text) and not msg.get("tool_calls"):
-            continue
-        kept.append(msg)
-    return kept
-
-
 def build_plan_recap_chunk(messages: Any) -> str:
     """Compact-time selector: last-N non-filler user/assistant lines."""
     lines = select_story_lines(messages)
@@ -399,22 +385,6 @@ def _hits_overlapping_query(query: str, hits: List[str]) -> List[str]:
     return kept
 
 
-def retrieve_vault_chunks(
-    state_dir: str,
-    session_id: str,
-    query: str,
-    *,
-    limit: int = _DEFAULT_HIT_LIMIT,
-    char_budget: int = _DEFAULT_CHAR_BUDGET,
-) -> List[str]:
-    """Return ranked vault bodies for this session. Empty on miss or error."""
-    return list(
-        (retrieve_vault_result(
-            state_dir, session_id, query, limit=limit, char_budget=char_budget
-        ).get("hits") or [])
-    )
-
-
 def retrieve_vault_result(
     state_dir: str,
     session_id: str,
@@ -514,15 +484,6 @@ def build_turn_vault_cite(
         }
     except Exception:
         return empty
-
-
-def build_turn_vault_section(
-    state_dir: str,
-    session_id: str,
-    user_message: str,
-) -> str:
-    """Wiki-style inject for the current user ask. Never raises."""
-    return str(build_turn_vault_cite(state_dir, session_id, user_message).get("section") or "")
 
 
 def snap_compact(

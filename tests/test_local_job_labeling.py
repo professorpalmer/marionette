@@ -178,36 +178,6 @@ def test_preview_is_not_selected_identity_until_finish(monkeypatch):
     assert s._local_jobs["local-truth"]["model"] == "agentic/gpt-5"
 
 
-def test_refresh_local_job_routed_model_stamps_actual_only(monkeypatch):
-    monkeypatch.setattr(
-        "harness.local_job_routing.preview_agentic_route",
-        lambda *a, **k: {
-            "model_id": "gpt-5.6-luna",
-            "artifact": {
-                "type": "ROUTING",
-                "headline": "Routed to gpt-5.6-luna",
-                "model": "gpt-5.6-luna",
-            },
-        },
-    )
-    s = _session(driver="stub-oracle-v2")
-    s._register_local_job(
-        "local-ref", "edit foo", role="implement",
-        engine="agentic", model="",
-    )
-    assert s._local_jobs["local-ref"]["model"] == ""
-    s._refresh_local_job_routed_model("local-ref", "gpt-5", engine="agentic")
-    assert s._local_jobs["local-ref"]["model"] == "agentic/gpt-5"
-    assert s._local_jobs["local-ref"]["tasks"][0]["model"] == "agentic/gpt-5"
-
-
-def test_refresh_local_job_routed_model_never_raises():
-    s = _session()
-    s._refresh_local_job_routed_model("", "gpt-5")
-    s._refresh_local_job_routed_model("missing", "gpt-5")
-    s._refresh_local_job_routed_model("local-x", "agentic")
-
-
 def test_worker_result_engine_model_defaults_back_compat():
     r = WorkerResult(ok=True, summary="x")
     assert r.engine == ""

@@ -11,7 +11,6 @@ from harness.local_jobs import LocalJobsMixin
 
 MOVED_METHODS = (
     "_register_local_job",
-    "_refresh_local_job_routed_model",
     "_finish_local_job",
     "_persist_local_jobs_locked",
     "_persist_local_jobs",

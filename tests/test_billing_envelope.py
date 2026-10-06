@@ -35,7 +35,6 @@ def _svc(*, driver="m1", repo="", meters=None, cache=None, pilot=None):
         swarm_registry=lambda: [],
         job_swarm_accounting=lambda arts, reg: (0, 0.0),
         tokens_cached_swarm=lambda arts: 0,
-        job_savings_fields=lambda jid: {},
         active_session_total=lambda ids, arts, reg, reports: None,
         sum_job_set_savings=lambda ids, arts, reg, **kw: (0.0, 0.0),
         sum_job_set_savings_detail=lambda ids, arts, reg, **kw: {

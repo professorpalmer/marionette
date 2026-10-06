@@ -1422,10 +1422,10 @@ class LocalJobsMixin:
         For agentic jobs with no model yet, dry-run the router and stamp a
         ROUTING artifact + estimate as metadata only. Preview ``model_id`` is
         not the selected ``job.model`` — that stays empty until
-        ``_refresh_local_job_routed_model`` or ``_finish_local_job`` receives
-        a real routed id. Orchestrator.run is blocking and does not expose a
-        mid-run routing event without invasive hooks, so mid-flight identity
-        is explicitly provisional. Zero-work full reuse passes
+        ``_finish_local_job`` receives a real routed id. Orchestrator.run is
+        blocking and does not expose a mid-run routing event without invasive
+        hooks, so mid-flight identity is explicitly provisional. Zero-work
+        full reuse passes
         ``skip_routing_preview=True`` so preview economics are never stamped
         or exported for a job that performs no adapter work.
         """
@@ -1598,45 +1598,6 @@ class LocalJobsMixin:
                 self._sync_parallel_wave_from_children(wave_id)
         except Exception:
             pass
-
-    def _refresh_local_job_routed_model(
-        self, job_id: str, model: str, engine: str = "",
-    ) -> None:
-        """Best-effort mid-run stamp of an actually routed model.
-
-        Preview / dry-run ids must not be passed here. Never copies identity
-        from an EXTERNAL card. Never raises. ``_finish_local_job`` remains
-        terminal truth.
-        """
-        try:
-            if not job_id:
-                return
-            model_id = collapse_engine_prefixes((model or "").strip()) or (
-                model or ""
-            ).strip()
-            if not model_id or is_engine_only_model_id(model_id):
-                return
-            with self._local_jobs_lock:
-                job = self._local_jobs.get(job_id)
-                if not isinstance(job, dict):
-                    return
-                status = str(job.get("status") or "").strip().lower()
-                if status in _TERMINAL_LOCAL_JOB_STATUSES:
-                    return
-                engine_label = (engine or job.get("adapter") or "").strip().lower()
-                if engine_label not in ("agentic", "native"):
-                    engine_label = ""
-                display = envelope_model_id(engine_label, model_id)
-                if not display or is_engine_only_model_id(display):
-                    return
-                import time
-                job["model"] = display
-                job["updated_at"] = time.time()
-                if job.get("tasks"):
-                    job["tasks"][0]["model"] = display
-                self._persist_local_jobs_locked()
-        except Exception:
-            return
 
     def _finish_local_job(self, job_id: str, ok: bool, summary: str = "",
                           files: Optional[list] = None, tokens: int = 0,

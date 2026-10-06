@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from harness.send_loop_phases import PLAN_SKIP_KINDS
 from harness.send_loop_phases import READ_ONLY_KINDS as PHASE_READ_ONLY_KINDS
 from harness.tool_capabilities import (
     MUTATING_KINDS,
@@ -12,9 +11,9 @@ from harness.tool_capabilities import (
 )
 
 
-def test_declared_mutating_kinds_match_plan_skip_catalog():
-    assert MUTATING_KINDS == PLAN_SKIP_KINDS
+def test_declared_read_only_kinds_match_phase_catalog():
     assert READ_ONLY_KINDS == PHASE_READ_ONLY_KINDS
+    assert not (MUTATING_KINDS & READ_ONLY_KINDS)
 
 
 def test_read_only_kinds_are_not_plan_blocked():
@@ -26,8 +25,8 @@ def test_read_only_kinds_are_not_plan_blocked():
         assert plan_mode_blocks(kind) is False
 
 
-def test_plan_skip_kinds_are_mutating():
-    for kind in PLAN_SKIP_KINDS:
+def test_mutating_kinds_are_plan_blocked():
+    for kind in MUTATING_KINDS:
         assert plan_mode_blocks(kind) is True
 
 

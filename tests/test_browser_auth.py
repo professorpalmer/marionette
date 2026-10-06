@@ -4,7 +4,8 @@ from __future__ import annotations
 import types
 
 from harness.pilot import VALID_ACTION_KINDS, build_tools_schema
-from harness.send_loop_phases import LOCAL_ACTION_KINDS, PLAN_SKIP_KINDS
+from harness.send_loop_phases import LOCAL_ACTION_KINDS
+from harness.tool_capabilities import plan_mode_blocks
 import harness.browser_auth as auth
 
 
@@ -93,7 +94,7 @@ def test_dispatch_auth_handoff_returns_engine_string(monkeypatch):
     assert "example.com/login" in logged
     assert "browser_auth_handoff" in VALID_ACTION_KINDS
     assert "browser_auth_handoff" in LOCAL_ACTION_KINDS
-    assert "browser_auth_handoff" in PLAN_SKIP_KINDS
+    assert plan_mode_blocks("browser_auth_handoff")
     names = [
         (item.get("function") or {}).get("name")
         for item in build_tools_schema(browser_enabled=True)

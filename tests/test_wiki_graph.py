@@ -7,6 +7,7 @@ import urllib.parse
 from http.server import ThreadingHTTPServer
 
 import pytest
+from harness.api import wiki as wiki_api
 from harness.wiki import WikiClient, parse_graph_from_response
 
 
@@ -87,8 +88,8 @@ def test_wiki_status_reuses_graph_cache_counts():
         def manifest_meta(self):
             return {}
 
-    cache_key = srv._wiki_cache_key(_FakeClient())
-    srv._wiki_graph_cache[cache_key] = (
+    cache_key = wiki_api.wiki_cache_key(_FakeClient())
+    wiki_api.wiki_graph_cache[cache_key] = (
         __import__("time").monotonic() + 60.0,
         {
             "configured": True,
@@ -115,7 +116,7 @@ def test_wiki_status_reuses_graph_cache_counts():
     finally:
         wiki_mod.WikiClient = orig_cls
         srv._cfg.wiki_url = orig_url
-        srv._wiki_graph_cache.pop(cache_key, None)
+        wiki_api.wiki_graph_cache.pop(cache_key, None)
         httpd.shutdown()
 
 
@@ -279,8 +280,6 @@ def test_wiki_client_graph_live_mocked(monkeypatch):
 
 def test_wiki_status_extras_private_share_token_not_needs_auth():
     """Personal LLM share tokens are not owner; must not force needs_auth."""
-    import harness.server as srv
-
     class _Client:
         base_url = "https://api.portablellm.wiki/t/acme"
         token = "share-tok"
@@ -292,15 +291,13 @@ def test_wiki_status_extras_private_share_token_not_needs_auth():
                 "viewer_is_owner": False,
             }
 
-    extras = srv._wiki_status_extras(_Client())
+    extras = wiki_api.wiki_status_extras(_Client())
     assert extras.get("status") != "needs_auth"
     assert extras.get("viewer_tier") == "private"
     assert extras.get("viewer_is_owner") is False
 
 
 def test_wiki_status_extras_public_with_token_needs_auth():
-    import harness.server as srv
-
     class _Client:
         base_url = "https://api.portablellm.wiki/t/acme"
         token = "bad-tok"
@@ -312,21 +309,19 @@ def test_wiki_status_extras_public_with_token_needs_auth():
                 "viewer_is_owner": False,
             }
 
-    extras = srv._wiki_status_extras(_Client())
+    extras = wiki_api.wiki_status_extras(_Client())
     assert extras.get("status") == "needs_auth"
     assert "Disconnect" in (extras.get("hint") or "")
 
 
 def test_wiki_cache_key_changes_with_token():
-    import harness.server as srv
-
     class _C:
         def __init__(self, tok):
             self.base_url = "https://api.portablellm.wiki/t/acme"
             self.token = tok
 
-    assert srv._wiki_cache_key(_C("")) != srv._wiki_cache_key(_C("secret"))
-    assert srv._wiki_cache_key(_C("a")) == srv._wiki_cache_key(_C("a"))
+    assert wiki_api.wiki_cache_key(_C("")) != wiki_api.wiki_cache_key(_C("secret"))
+    assert wiki_api.wiki_cache_key(_C("a")) == wiki_api.wiki_cache_key(_C("a"))
 
 
 def test_wiki_connect_and_disconnect_endpoints(tmp_path, monkeypatch):
@@ -336,8 +331,8 @@ def test_wiki_connect_and_disconnect_endpoints(tmp_path, monkeypatch):
     httpd, port, srv = _server()
     try:
         # Seed a stale public cache entry that must clear on connect/disconnect.
-        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "needs_auth"})
-        nonce = srv._mint_wiki_connect_nonce()
+        wiki_api.wiki_graph_cache["stale"] = (999999.0, {"status": "needs_auth"})
+        nonce = wiki_api.mint_wiki_connect_nonce()
         personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
         connect_path = (
             "/api/wiki/connect?nonce=%s&url=%s"
@@ -347,7 +342,7 @@ def test_wiki_connect_and_disconnect_endpoints(tmp_path, monkeypatch):
         assert resp.status == 200
         body = resp.read().decode()
         assert "Wiki linked" in body
-        assert not srv._wiki_graph_cache
+        assert not wiki_api.wiki_graph_cache
         cfg = json.loads((state / "wiki.json").read_text(encoding="utf-8"))
         assert cfg["api_base"] == "https://api.portablellm.wiki/t/acme"
         assert cfg["owner_token"] == "fresh-token"
@@ -391,7 +386,7 @@ def test_wiki_connect_rejects_expired_nonce(tmp_path, monkeypatch):
         now = [100.0]
         monkeypatch.setattr(wiki_api.time, "monotonic", lambda: now[0])
 
-        nonce = srv._mint_wiki_connect_nonce()
+        nonce = wiki_api.mint_wiki_connect_nonce()
         personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
         connect_path = (
             "/api/wiki/connect?nonce=%s&url=%s"
@@ -417,7 +412,7 @@ def test_wiki_connect_rejects_non_loopback_host_even_pre_auth(tmp_path, monkeypa
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
     httpd, port, srv = _server()
     try:
-        nonce = srv._mint_wiki_connect_nonce()
+        nonce = wiki_api.mint_wiki_connect_nonce()
         personal = "https://portablellm.wiki/acme/llm?t=fresh-token"
         connect_path = (
             "/api/wiki/connect?nonce=%s&url=%s"
@@ -445,7 +440,7 @@ def test_wiki_connect_rejects_untrusted_api_base_after_nonce(tmp_path, monkeypat
     monkeypatch.setenv("HARNESS_STATE_DIR", str(state))
     httpd, port, srv = _server()
     try:
-        nonce = srv._mint_wiki_connect_nonce()
+        nonce = wiki_api.mint_wiki_connect_nonce()
         evil = "https://evil-exfil.example/llm?t=planted"
         connect_path = (
             "/api/wiki/connect?nonce=%s&url=%s"
@@ -523,7 +518,7 @@ def test_in_process_ingest_prepared_pages_clears_graph_cache(monkeypatch):
 
     httpd, port, srv = _server()
     try:
-        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
+        wiki_api.wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
         pilot = srv._pilot
         pilot._wiki.base_url = "https://wiki.example.com"
         pilot._wiki.token = "tok"
@@ -534,7 +529,7 @@ def test_in_process_ingest_prepared_pages_clears_graph_cache(monkeypatch):
             [{"kind": "concept", "title": "t", "body": "b"}]
         )
         assert count == 1
-        assert not srv._wiki_graph_cache
+        assert not wiki_api.wiki_graph_cache
     finally:
         httpd.shutdown()
 
@@ -545,7 +540,7 @@ def test_maybe_ingest_clears_graph_cache(monkeypatch):
 
     httpd, port, srv = _server()
     try:
-        srv._wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
+        wiki_api.wiki_graph_cache["stale"] = (999999.0, {"status": "ok"})
         pilot = srv._pilot
         pilot._wiki.base_url = "https://wiki.example.com"
         pilot._wiki.token = "tok"
@@ -558,7 +553,7 @@ def test_maybe_ingest_clears_graph_cache(monkeypatch):
             ["checked middleware"],
             [{"type": "finding", "headline": "Auth uses JWT"}],
         )
-        assert not srv._wiki_graph_cache
+        assert not wiki_api.wiki_graph_cache
     finally:
         httpd.shutdown()
 

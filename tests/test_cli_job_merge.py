@@ -544,7 +544,6 @@ def test_api_swarm_live_excludes_unstamped_cli_jobs(tmp_path, monkeypatch):
                 estimate_cost_usd=lambda tin, tout: (tin / 1_000_000.0) + (tout / 1_000_000.0) * 2.0,
             )
         ])
-        monkeypatch.setattr(srv, "_job_savings_fields", lambda jid: {})
         monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
         srv._cfg.repo = str(repo)
 
