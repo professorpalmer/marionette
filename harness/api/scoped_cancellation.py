@@ -51,4 +51,8 @@ def parse_bindings(value):
 
 
 def task_page(store, ref):
-    return store.list_task_refs(ref, limit=MAX_BINDINGS, max_bytes=262144, max_scan=201)
+    # A writer's lock burst reads as read_snapshot_unavailable; retry it a
+    # bounded number of times like every other job read.
+    from ..job_readmodel import _read_page
+
+    return _read_page(store.list_task_refs, ref, limit=MAX_BINDINGS, max_bytes=262144, max_scan=201)

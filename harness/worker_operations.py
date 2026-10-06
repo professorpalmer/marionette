@@ -146,6 +146,9 @@ def validate_action_scope(reader, selection, bindings, command):
 
     store, row = selected_store(reader, selection)
     page = task_page(store, selection.job_ref)
+    if page.outcome == 'unavailable':
+        # A busy store is not a changed view: report it as unavailable (503).
+        raise RuntimeError('task scope read unavailable')
     if page.outcome != 'complete':
         raise ViewChanged()
     current = {item.id: item.binding for item in page.items}
