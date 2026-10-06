@@ -151,9 +151,28 @@ _checkpoint_module.Path = SimpleNamespace(
     home=lambda: Path(os.environ["HARNESS_STATE_DIR"]) / "checkpoint-home",
 )
 
+# Puppetmaster serializes readonly-helper spawns machine-wide through one lock
+# under /tmp, shared with the running app and every other Puppetmaster process.
+# Observer reads in tests then queue behind them and come back 'unavailable'.
+# Give the suite its own coordination root.
+from puppetmaster import readonly_admission as _readonly_admission
+
+_coordination_path = _readonly_admission._coordination_path
+_coordination_root = Path(os.environ["HARNESS_STATE_DIR"]) / "puppetmaster-readers"
+
+
+def _isolated_coordination_path(path, selected=None):
+    _coordination_root.mkdir(mode=0o700, exist_ok=True)
+    key = _readonly_admission._key(_readonly_admission._identity(path, selected))
+    return _coordination_root / (key + ".lock")
+
+
+_readonly_admission._coordination_path = _isolated_coordination_path
+
 
 def pytest_unconfigure(config):
     _checkpoint_module.Path = _checkpoint_paths
+    _readonly_admission._coordination_path = _coordination_path
     _report_lingering_work()
 
 
