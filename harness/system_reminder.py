@@ -79,16 +79,6 @@ def model_disabled(model: str) -> bool:
     return False
 
 
-def append_critical(session: Any, text: str, *, provider_id: str = "host") -> None:
-    bag = getattr(session, "_sr_critical", None)
-    if not isinstance(bag, list):
-        bag = []
-        session._sr_critical = bag
-    cleaned = (text or "").strip()
-    if cleaned:
-        bag.append(SystemReminder(provider_id=provider_id, text=cleaned, critical=True))
-
-
 def resolve_critical(session: Any) -> List[SystemReminder]:
     bag = getattr(session, "_sr_critical", None)
     if not isinstance(bag, list):

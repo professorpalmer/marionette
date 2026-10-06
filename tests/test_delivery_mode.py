@@ -10,7 +10,6 @@ from harness.delivery_mode import (
     normalize_delivery_mode,
     realized_steer_action,
     resolve_delivery,
-    schedule_should_inject,
 )
 from harness.schedule_core import Schedule
 from harness.session_actions import ActionKind, DeliveryPolicy, SessionActionStore
@@ -119,7 +118,6 @@ def test_schedule_busy_session_honors_delivery_mode():
     )
     session = _FakeSession()
     session._busy = True
-    assert schedule_should_inject(schedule, True) is True
     delivered = deliver_schedule_to_session(schedule, session, session_busy=True)
     assert delivered["ok"] is True
     assert delivered["action"] == "enqueue_steer"
@@ -133,7 +131,6 @@ def test_schedule_busy_session_honors_delivery_mode():
         cron="0 * * * *",
         delivery_mode="",
     )
-    assert schedule_should_inject(legacy, True) is False
     assert deliver_schedule_to_session(legacy, session, session_busy=True)["spawn"] is True
 
 

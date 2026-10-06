@@ -15,7 +15,6 @@ from harness.secret_vault import (
     presence_payload,
     put_secret,
     redact_secret_text,
-    subprocess_env,
     vault_path,
 )
 
@@ -62,7 +61,8 @@ def test_subprocess_twine_fixture_never_returns_token(tmp_path, monkeypatch):
     for key in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"):
         if key in os.environ:
             base[key] = os.environ[key]
-    env = subprocess_env("sess-a", base)
+    env = dict(base)
+    apply_to_environ("sess-a", env)
     assert env["TWINE_USERNAME"] == "__token__"
     assert env["TWINE_PASSWORD"] == token
     script = (

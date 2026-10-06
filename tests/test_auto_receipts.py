@@ -8,7 +8,6 @@ from harness.auto_receipts import (
     format_auto_halt_receipt,
     format_auto_status_receipt,
     format_budget_meters,
-    format_command_blocked_receipt,
 )
 from harness.autobudget import AutoBudget
 from harness.config import HarnessConfig
@@ -71,10 +70,6 @@ def test_auto_halt_receipt_labels_are_truthful():
     halted = format_auto_halt_receipt("swarm ceiling reached (3/3)", snap)
     assert halted.startswith("Full-auto halted:")
     assert "executed" not in halted.lower()
-
-    blocked = format_command_blocked_receipt("remote command execution", "remote-shell")
-    assert blocked.startswith("Command not run:")
-    assert "remote command execution" in blocked
 
 
 def test_auto_halt_event_carries_snapshot_without_success_flags():

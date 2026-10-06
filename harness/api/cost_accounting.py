@@ -397,21 +397,12 @@ def _job_cost(tokens_in: float, tokens_out: float, tokens_total: float,
     (completion tokens dominate cost, matching the session fallback) rather than
     a naive 50/50 blend that mis-prices output-heavy jobs.
 
-    Unsplit totals are estimates — callers should surface ``estimated`` via
-    :func:`_job_cost_is_unsplit` rather than inventing a fixed in/out ratio."""
+    Unsplit totals are estimates — callers should surface ``estimated`` rather
+    than inventing a fixed in/out ratio."""
     if tokens_in or tokens_out:
         return ((float(tokens_in) / 1.0e6) * price_in
                 + (float(tokens_out) / 1.0e6) * price_out)
     return (float(tokens_total) / 1.0e6) * price_out
-
-
-def _job_cost_is_unsplit(
-    tokens_in: float, tokens_out: float, tokens_total: float
-) -> bool:
-    """True when cost came from a combined token total (no in/out split)."""
-    if tokens_in or tokens_out:
-        return False
-    return float(tokens_total or 0.0) > 0.0
 
 
 def _log_price_fallback(where: str, err: BaseException) -> None:

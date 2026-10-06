@@ -274,17 +274,6 @@ def _find_registry_rows(
     return found
 
 
-def _find_registry_row(
-    models: list[Any],
-    by_id: dict[str, dict[str, Any]],
-    canonical_id: str,
-    aliases: dict[str, tuple[str, ...]],
-) -> Optional[dict[str, Any]]:
-    """Resolve a ladder/demote id against canonical, flattened, or alias keys."""
-    rows = _find_registry_rows(models, by_id, canonical_id, aliases)
-    return rows[0] if rows else None
-
-
 def _is_text_only_row(canonical_id: str, row: dict[str, Any]) -> bool:
     if canonical_id in _TEXT_ONLY_LADDER_IDS:
         return True

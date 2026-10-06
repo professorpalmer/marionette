@@ -860,14 +860,3 @@ def all_driver_names() -> list:
     return ["stub-oracle"] + model_names()
 
 
-def has_vision(name: str) -> bool:
-    """True if the model accepts native image input (HF task image-text-to-text)."""
-    return bool(_entry(name).get("vision", False))
-
-
-def vision_sidecars() -> list:
-    """Cheap open VLMs the harness can use to transcribe image -> text artifact so
-    a text-only DRIVER can consume it. Vision is a harness capability, not a
-    driver requirement."""
-    return [m["name"] for m in load_catalog()["models"]
-            if m.get("tier") == "vision_sidecar"]

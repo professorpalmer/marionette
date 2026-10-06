@@ -342,14 +342,6 @@ def _extract_tool_event(update: Any) -> Optional[dict]:
     return out
 
 
-def _extract_tool_hint(update: Any) -> str:
-    """Back-compat string form (kind / humanized name) for tests and logs."""
-    ev = _extract_tool_event(update)
-    if not ev:
-        return ""
-    return str(ev.get("name") or "")
-
-
 class AcpTransport:
     """JSON-RPC NDJSON client over a subprocess stdin/stdout pair."""
 

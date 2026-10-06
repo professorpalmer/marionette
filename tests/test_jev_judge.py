@@ -195,11 +195,11 @@ def test_judgment_cache_is_bounded_and_keeps_recent():
     for i in range(judge._CACHE_MAX + 40):
         judge._remember((f"request {i}", ()), Judgment())
     assert len(judge._CACHE) == judge._CACHE_MAX
-    assert judge.peek_cached("request 0") is None
-    assert judge.peek_cached(f"request {judge._CACHE_MAX + 39}") is not None
+    assert judge._CACHE.get(("request 0", ())) is None
+    assert judge._CACHE.get((f"request {judge._CACHE_MAX + 39}", ())) is not None
     # A hit refreshes recency, so the oldest surviving entry outlives a new insert.
     oldest = next(iter(judge._CACHE))[0]
     judge.judge_turn(oldest, [])
     judge._remember(("one more", ()), Judgment())
-    assert judge.peek_cached(oldest) is not None
+    assert judge._CACHE.get((oldest, ())) is not None
     judge.clear_cache()

@@ -5,7 +5,6 @@ from harness.tool_pairing import (
     event_delta,
     in_progress_count,
     nearest_balanced_split,
-    pairing_balanced_after,
     pairing_balanced_before,
 )
 
@@ -31,7 +30,6 @@ def test_empty_and_no_tools_are_balanced():
     assert pairing_balanced_before(history, 0)
     assert pairing_balanced_before(history, 1)
     assert pairing_balanced_before(history, 2)
-    assert pairing_balanced_after(history, 1)
 
 
 def test_two_calls_balanced_only_after_both_results():
@@ -47,7 +45,6 @@ def test_two_calls_balanced_only_after_both_results():
     assert not pairing_balanced_before(history, 3)
     assert not pairing_balanced_before(history, 4)
     assert pairing_balanced_before(history, 5)
-    assert pairing_balanced_after(history, 4)
 
 
 def test_cut_that_keeps_result_and_summarizes_call_is_unbalanced():

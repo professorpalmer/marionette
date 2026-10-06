@@ -15,7 +15,7 @@ registry) -- it is the productization of what Stage 1-3.5 proved, not a rewrite.
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Iterator, Literal, Optional, get_args
+from typing import Iterator, Literal, Optional
 
 from pmharness.intent import validate_intent, parse_intent_text, IntentError, DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
@@ -52,9 +52,6 @@ SessionEventKind = Literal[
     "error",
     "vision",
 ]
-
-VALID_SESSION_EVENT_KINDS: frozenset[str] = frozenset(get_args(SessionEventKind))
-
 
 @dataclass
 class SessionEvent:

@@ -14,8 +14,6 @@ from typing import Any, Callable, Iterator
 WAIT_DEFAULT_SEC = 2.0
 WAIT_MAX_SEC = 30.0
 WAIT_SLICE_SEC = 0.25
-WAIT_KEEPALIVE_SEC = 2.0
-WAIT_KEEPALIVE_CAP = 90
 
 
 def parse_wait_seconds(raw: Any, default: float = WAIT_DEFAULT_SEC) -> float:
@@ -172,55 +170,6 @@ def apply_ready_command_results(session: Any) -> Iterator[Any]:
             yield ConvEvent("action_result", receipt)
 
 
-def keep_alive_wait_slice(
-    session: Any,
-    seconds: float = WAIT_KEEPALIVE_SEC,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> Iterator[Any]:
-    """Sleep up to ``seconds``, emit wait chrome, apply any finished jobs."""
-    from .conversation import ConvEvent
-
-    seconds = parse_wait_seconds(seconds, default=WAIT_KEEPALIVE_SEC)
-    deadline = monotonic() + seconds
-    last_notice = 0.0
-    yield ConvEvent("notice", {
-        "kind": "wait",
-        "message": "Waiting for background jobs…",
-    })
-    while monotonic() < deadline:
-        if _cancel_requested(session):
-            yield ConvEvent("notice", {
-                "kind": "wait",
-                "message": "Wait interrupted.",
-            })
-            return
-        for ev in apply_ready_swarm_results(session):
-            yield ev
-        for ev in apply_ready_command_results(session):
-            yield ev
-        if not pending_jobs_keep_alive(session):
-            yield ConvEvent("notice", {
-                "kind": "wait",
-                "message": "Background jobs finished.",
-            })
-            return
-        now = monotonic()
-        if now - last_notice >= 1.0:
-            last_notice = now
-            remain = max(0.0, deadline - now)
-            yield ConvEvent("notice", {
-                "kind": "wait",
-                "message": f"Waiting for background jobs… {remain:.0f}s left",
-            })
-        sleep(min(WAIT_SLICE_SEC, max(0.0, deadline - monotonic())))
-    for ev in apply_ready_swarm_results(session):
-        yield ev
-    for ev in apply_ready_command_results(session):
-        yield ev
-
-
 def dispatch_wait_action(
     session: Any,
     act: Any,
@@ -281,10 +230,3 @@ def dispatch_wait_action(
         "settled": settled,
     })
     session._append_action_result(act, aid, body, is_native, ok=True)
-
-
-def note_keep_alive_wait(session: Any) -> bool:
-    """Count harness-injected waits; False once the per-turn cap is hit."""
-    n = int(getattr(session, "_keep_alive_waits", 0) or 0) + 1
-    session._keep_alive_waits = n
-    return n <= WAIT_KEEPALIVE_CAP

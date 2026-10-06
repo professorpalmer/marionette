@@ -55,7 +55,6 @@ from .stream_performance_store import (
     copy_stream_performance,
 )
 from .terminal_cause import (
-    TERMINAL_CANCELLED,
     TERMINAL_CONTENT_FILTER,
     TERMINAL_DRIVER_SWAP,
     TERMINAL_EMPTY_LOOP,
@@ -321,10 +320,6 @@ def finalize_assistant_turn(
         payload["incomplete_reason"] = raw_incomplete
     if extra:
         payload.update(extra)
-    try:
-        session._last_stop_cause = cause
-    except Exception:
-        pass
     mark_latest_receipt_assistant_done(
         session,
         stop_cause=cause,
@@ -2056,7 +2051,6 @@ def yield_session_interrupted(session: Any) -> Iterator[Any]:
     """Stop unwind: keep ``interrupted`` for old tests, also emit assistant_done."""
     from .conversation import ConvEvent
 
-    session._last_stop_cause = TERMINAL_CANCELLED
     yield ConvEvent("interrupted", {"reason": "session interrupted"})
     try:
         mark_latest_receipt_assistant_done(session, stop_cause="cancelled")
@@ -2461,7 +2455,6 @@ def reset_fresh_turn_state(session: Any) -> None:
     session._stagnation_streak = 0
     session._invalid_only_streak = 0
     session._failed_objective_resume_counts = {}
-    session._keep_alive_waits = 0
 
 
 def drain_idle_turn(

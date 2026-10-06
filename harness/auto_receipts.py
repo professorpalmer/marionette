@@ -82,11 +82,3 @@ def format_auto_halt_receipt(
     return f"{body} · {meters}" if meters else body
 
 
-def format_command_blocked_receipt(
-    reason: str = "",
-    category: str = "",
-) -> str:
-    detail = (reason or "").strip() or (category or "").strip() or (
-        "Full-auto safety policy blocked this command"
-    )
-    return f"Command not run: {detail}"

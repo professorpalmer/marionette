@@ -72,7 +72,6 @@ from .api.sse import (
     sse_pump,
     sse_write,
 )
-from .api.streams import CHECKPOINT_KINDS as _CHECKPOINT_KINDS
 
 
 # Cost / usage / swarm-accounting helpers live under harness.api.cost*
@@ -114,7 +113,6 @@ from .api.cost import (  # noqa: E402
     _fold_runner_meters_into_boot_carry,
     _freeze_pilot_meters_into_boot_carry,
     _job_cost,
-    _job_cost_is_unsplit,
     _job_in_cost_window,
     _job_savings_fields,
     _job_swarm_accounting,
@@ -125,7 +123,6 @@ from .api.cost import (  # noqa: E402
     _note_boot_repo,
     _persist_boot_usage,
     _pilot_write_buckets,
-    _registry_input_per_mtok,
     _repo_session_stamped_meters,
     _resolve_active_prices,
     _resolve_active_prices_with_source,
@@ -135,7 +132,6 @@ from .api.cost import (  # noqa: E402
     _spend_is_estimated,
     _routing_estimate_by_task,
     _routing_estimate_cost,
-    _delegation_saved_usd,
     _delegation_saved_usd_detail,
     _routing_saved_usd,
     _routing_saved_usd_detail,
@@ -1368,11 +1364,6 @@ def _build_conversational_pilot(*, config: Optional[HarnessConfig] = None, copy_
     return new_pilot
 
 
-def _active_pilot() -> Any:
-    """Return the runner for the current active view (compat: same as ``_pilot``)."""
-    return _pilot
-
-
 def _lease_exhausted_body(exc: Optional[BaseException] = None) -> dict:
     """Build the shared lease_exhausted 409 JSON from the live registry.
 
@@ -2512,15 +2503,10 @@ from .api.sessions import (  # noqa: E402
 # Wiki graph cache / handoff nonces / status helpers live in harness.api.wiki;
 # re-export historical names for tests and pilot._on_wiki_ingest.
 from .api.wiki import (  # noqa: E402
-    WIKI_NEEDS_AUTH_HINT as _WIKI_NEEDS_AUTH_HINT,
     wiki_graph_cache as _wiki_graph_cache,
-    WIKI_GRAPH_TTL as _WIKI_GRAPH_TTL,
-    wiki_connect_nonces as _wiki_connect_nonces,
-    WIKI_CONNECT_NONCE_TTL as _WIKI_CONNECT_NONCE_TTL,
     wiki_cache_key as _wiki_cache_key,
     clear_wiki_graph_cache as _clear_wiki_graph_cache,
     mint_wiki_connect_nonce as _mint_wiki_connect_nonce,
-    consume_wiki_connect_nonce as _consume_wiki_connect_nonce,
     wiki_status_extras as _wiki_status_extras,
 )
 
@@ -2690,21 +2676,15 @@ def _parse_bool(val) -> bool:
 # historical names for tests and callers. Scalar status/proc state is read
 # through __getattr__ so assignments on the api module stay visible here.
 from .api.codegraph_index import (  # noqa: E402
-    CODEGRAPH_STALE_DEBOUNCE as _CODEGRAPH_STALE_DEBOUNCE,
-    CODEGRAPH_STATUS_TTL as _CODEGRAPH_STATUS_TTL,
     CodegraphIndexDeps as _CodegraphIndexDeps,
     bind_deps as _bind_codegraph_index_deps,
     clear_active_codegraph as _clear_active_codegraph,
-    codegraph_api_payload as _codegraph_api_payload,
     codegraph_fail_until as _codegraph_fail_until,
     codegraph_index_alive as _codegraph_index_alive,
     codegraph_index_lock as _codegraph_index_lock,
-    codegraph_index_log_path as _codegraph_index_log_path,
     codegraph_indexed as _codegraph_indexed,
     codegraph_is_stale as _codegraph_is_stale,
     codegraph_status_cache as _codegraph_status_cache,
-    codegraph_stale_check_at as _codegraph_stale_check_at,
-    codegraph_tail_log as _codegraph_tail_log,
     get_codegraph_status as _get_codegraph_status,
     index_codegraph_bg as _index_codegraph_bg,
     maybe_auto_index_codegraph as _maybe_auto_index_codegraph,
@@ -2712,7 +2692,6 @@ from .api.codegraph_index import (  # noqa: E402
     prepare_codegraph_scope as _prepare_codegraph_scope,
     reindex_codegraph_bg as _reindex_codegraph_bg,
 )
-from .api import codegraph_index as _codegraph_index_mod  # noqa: E402
 
 _bind_codegraph_index_deps(_CodegraphIndexDeps(
     # Late-bind through module globals so test monkeypatches on harness.server
@@ -2743,10 +2722,6 @@ def _strip_markdown_fences(text: str) -> str:
 # historical names for inline-edit and any tests that patch harness.server.
 from .api.files import (  # noqa: E402
     resolve_editor_path as _resolve_editor_path,
-    guess_file_mime as _guess_file_mime,
-    sqlite_table_names as _sqlite_table_names,
-    binary_file_payload as _binary_file_payload,
-    parse_multipart_files as _parse_multipart_files,
 )
 
 

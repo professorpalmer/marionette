@@ -13,6 +13,11 @@ import pytest
 from harness import credential_pool as cp
 
 
+def _tok(provider):
+    entry = cp.resolve_entry(provider)
+    return entry.runtime_token if entry is not None else None
+
+
 @pytest.fixture
 def pool_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
@@ -24,17 +29,17 @@ def pool_dir(tmp_path, monkeypatch):
 def test_add_and_select_fill_first(pool_dir):
     a = cp.add_api_key("openrouter", "sk-aaa-1111111111", label="a")
     b = cp.add_api_key("openrouter", "sk-bbb-2222222222", label="b")
-    tok = cp.resolve_token("openrouter")
+    tok = _tok("openrouter")
     assert tok == a.access_token
     # fill_first keeps using first until exhausted
-    assert cp.resolve_token("openrouter") == a.access_token
+    assert _tok("openrouter") == a.access_token
     assert a.id != b.id
 
 
 def test_rotate_on_plan_limit(pool_dir):
     a = cp.add_api_key("cursor", "key-aaaa-11111111", label="cursor-1")
     b = cp.add_api_key("cursor", "key-bbbb-22222222", label="cursor-2")
-    assert cp.resolve_token("cursor") == a.access_token
+    assert _tok("cursor") == a.access_token
     nxt = cp.report_failure(
         "cursor",
         a.id,
@@ -48,7 +53,7 @@ def test_upstream_block_does_not_exhaust_opencode_go(pool_dir):
     """OpenCode Go 401 'blocked by upstream' must not mark the key exhausted."""
     a = cp.add_api_key("opencode-go", "sk-go-aaaaaaaaaa", label="go-1")
     cp.add_api_key("opencode-go", "sk-go-bbbbbbbbbb", label="go-2")
-    assert cp.resolve_token("opencode-go") == a.access_token
+    assert _tok("opencode-go") == a.access_token
     nxt = cp.report_failure(
         "opencode-go",
         a.id,
@@ -57,7 +62,7 @@ def test_upstream_block_does_not_exhaust_opencode_go(pool_dir):
     )
     assert nxt is None
     # First credential still healthy — not rotated away as dead/exhausted.
-    assert cp.resolve_token("opencode-go") == a.access_token
+    assert _tok("opencode-go") == a.access_token
     pool = cp.load_pool("opencode-go")
     entry = next(e for e in pool.entries() if e.id == a.id)
     assert entry.last_status != cp.STATUS_EXHAUSTED
@@ -68,7 +73,7 @@ def test_persist_roundtrip(pool_dir):
     path = os.path.join(str(pool_dir), "auth_pool.json")
     assert os.path.isfile(path)
     cp.clear_pools_for_tests()
-    tok = cp.resolve_token("openai")
+    tok = _tok("openai")
     assert tok == "sk-persist-abcdefgh"
     data = json.loads(open(path, encoding="utf-8").read())
     assert "openai" in data["pools"]

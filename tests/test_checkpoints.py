@@ -338,8 +338,6 @@ def test_checkpoint_git_timeout_handled_gracefully(temp_git_repo, monkeypatch):
     assert diff_res["ok"] is False
     assert "Failed to verify checkpoint" in diff_res["error"]
 
-    store.prune()
-
 
 def test_checkpoint_init_git_timeout_disables_store(temp_git_repo, monkeypatch):
     def run_raises_timeout(*args, **kwargs):

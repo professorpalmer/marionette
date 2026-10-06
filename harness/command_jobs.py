@@ -24,17 +24,6 @@ from typing import Any, Dict, Optional
 from harness.api.redaction import redact_secret_text
 from harness.job_scoping import ACCOUNTING_SCOPE_MARIONETTE
 
-# Contract: artifacts/chat_loop_resilience_contract.json durable_job_states.
-COMMAND_JOB_STATES = frozenset({
-    "registered",
-    "running",
-    "unknown",
-    "completed",
-    "failed",
-    "cancelled",
-    "timeout",
-    "truncated",
-})
 COMMAND_TERMINAL_STATES = frozenset({
     "completed",
     "failed",

@@ -18,9 +18,6 @@ _TERMINAL_STATUSES = frozenset({
     "completed", "failed", "cancelled", "complete", "done",
     "timeout", "truncated", "partial", "timed_out",
 })
-_RUNNING_STATUSES = frozenset({
-    "running", "in_progress", "pending", "started", "registered",
-})
 _NONTERMINAL_TASK_STATUSES = frozenset({
     "", "pending", "running", "in_progress", "started", "registered", "queued",
 })
@@ -323,7 +320,3 @@ def merge_local_jobs_into_swarm_live(
         out.append(project_local_job_for_swarm_live(job))
         existing_ids.add(jid)
     return out
-
-
-def local_job_is_running(status: Any) -> bool:
-    return str(status or "").strip().lower() in _RUNNING_STATUSES

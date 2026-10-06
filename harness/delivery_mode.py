@@ -265,12 +265,6 @@ def _apply_delivery(
     return {"ok": True, "action": action, "deferred": True, "text": cleaned}
 
 
-def schedule_should_inject(schedule: Any, session_busy: bool) -> bool:
-    """True when a schedule opts into busy-session inject via delivery_mode."""
-    mode = normalize_delivery_mode(getattr(schedule, "delivery_mode", None))
-    return bool(mode) and bool(session_busy)
-
-
 def deliver_schedule_to_session(
     schedule: Any,
     session: Any,

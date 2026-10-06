@@ -11,12 +11,10 @@ auto-run by this helper — callers must still require a prior allowlist hit
 """
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Optional
 
 from .command_allowlist import allowlist_contains
 from .command_policy import CommandVerdict, classify_command, suggested_amendment
-
-SmartVerdict = Literal["approve", "amend", "pending"]
 
 
 def smart_approve(
@@ -52,30 +50,3 @@ def smart_approve(
     return {"action": "pending", "reason": reason}
 
 
-def smart_approve_verdict(
-    command: str,
-    *,
-    state_dir: str | None = None,
-    suggested: str | None = None,
-    workspace_root: str = "",
-) -> SmartVerdict:
-    """Return ``approve`` / ``amend`` / ``pending`` for a command string."""
-    cmd = (command or "").strip()
-    if not cmd:
-        return "pending"
-    if allowlist_contains(cmd, state_dir=state_dir, workspace_root=workspace_root):
-        return "approve"
-    amendment = (suggested or "").strip() or (suggested_amendment(cmd) or "")
-    if amendment and amendment != cmd:
-        return "amend"
-    return "pending"
-
-
-def as_payload(verdict: Any) -> dict[str, str]:
-    """Normalize a string or dict verdict into the pending-payload shape."""
-    if isinstance(verdict, dict):
-        action = str(verdict.get("action") or "pending")
-        reason = str(verdict.get("reason") or "")
-        return {"action": action, "reason": reason}
-    action = str(verdict or "pending")
-    return {"action": action, "reason": ""}

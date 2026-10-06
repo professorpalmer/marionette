@@ -225,21 +225,6 @@ class MemoryGraph:
             self._append_journal({"event": "add_edge", "edge": edge})
         return edge
 
-    def remove_edge(self, edge_id: str) -> bool:
-        """Remove an edge by id. Returns True when a row was deleted."""
-        eid = (edge_id or "").strip()
-        if not eid:
-            return False
-        with self._lock:
-            cur = self._conn.execute("DELETE FROM edges WHERE id = ?", (eid,))
-            self._conn.commit()
-            removed = cur.rowcount > 0
-            if removed:
-                self._append_journal(
-                    {"event": "remove_edge", "id": eid, "created_at": time.time()}
-                )
-            return removed
-
     def search(self, query: str) -> Dict[str, List[Dict[str, Any]]]:
         """Filter memory nodes by casefold substring, then related edges.
 

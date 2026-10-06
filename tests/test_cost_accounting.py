@@ -18,7 +18,6 @@ from harness.server import (
     _cache_savings_with_basis,
     _cost_source_label,
     _job_cost,
-    _job_cost_is_unsplit,
     _normalize_price_source,
     _resolve_active_prices_with_source,
     _spend_is_estimated,
@@ -370,13 +369,11 @@ def test_provider_override_keeps_spend_non_estimated():
     assert _spend_is_estimated("mixed", "static") is True
 
 
-def test_unsplit_job_cost_is_labeled_estimate():
-    """No in/out split → price_out total, flagged estimated (no fabricated ratio)."""
+def test_unsplit_job_cost_prices_total_at_price_out():
+    """No in/out split → price_out total (no fabricated 50/50 ratio)."""
     tokens = 500_000
     cost = _job_cost(0, 0, tokens, PRICE_IN, PRICE_OUT)
     assert cost == (tokens / 1.0e6) * PRICE_OUT
-    assert _job_cost_is_unsplit(0, 0, tokens) is True
-    assert _job_cost_is_unsplit(100, 0, tokens) is False
 
 
 def test_cache_savings_capped_to_provider_spend():

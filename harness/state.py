@@ -485,7 +485,3 @@ class DurableState:
         except Exception:
             events, new_cursor = [], cursor
         return {"events": events, "cursor": new_cursor}
-
-
-# Brief / tracker name for the job-event read facade.
-JobStore = DurableState

@@ -230,25 +230,6 @@ def ingest_worker_events(events: Optional[Iterable[Any]]) -> list:
     return actions
 
 
-def merge_action_lists(base: Optional[list], incoming: Optional[list]) -> list:
-    """Merge two sanitized action lists by action_id (incoming wins fields)."""
-    out = list(base or [])
-    for row in incoming or []:
-        if isinstance(row, dict):
-            sanitized = sanitize_action_row(
-                action_id=str(row.get("action_id") or ""),
-                kind=str(row.get("kind") or ""),
-                goal=str(row.get("goal") or ""),
-                status=str(row.get("status") or "running"),
-                duration_ms=row.get("duration_ms"),
-                error=row.get("error"),
-                worker_id=str(row.get("worker_id") or ""),
-            )
-            if sanitized:
-                out = upsert_action_row(out, sanitized)
-    return out
-
-
 def sanitize_actions_list(actions: Optional[Iterable[Any]]) -> list:
     """Re-sanitize persisted/tampered action rows through the allowlist + bounds."""
     out: list = []

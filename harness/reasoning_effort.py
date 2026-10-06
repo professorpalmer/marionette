@@ -52,15 +52,6 @@ def session_reasoning(fn):
                 _turn_efforts.reset(token)
     return scoped
 
-REASONING_EFFORT_LABELS = {
-    "none": "None",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "xhigh": "Extra High",
-    "max": "Max",
-}
-
 # Aliases users or older builds might send.
 _ALIASES = {
     "": DEFAULT_CODEX_REASONING_EFFORT,
@@ -142,13 +133,6 @@ def codex_api_effort(ui_effort: str) -> Optional[str]:
     if level == "none":
         return None
     return level
-
-
-def reasoning_effort_label(level: str) -> str:
-    return REASONING_EFFORT_LABELS.get(
-        normalize_reasoning_effort(level),
-        REASONING_EFFORT_LABELS[DEFAULT_CODEX_REASONING_EFFORT],
-    )
 
 
 # Anthropic / Bedrock Claude extended-thinking budgets (tokens). ``none`` omits

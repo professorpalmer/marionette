@@ -77,16 +77,3 @@ def test_vision_flags_present_on_all():
         assert "vision" in m, f"{m['name']} missing vision flag"
 
 
-def test_text_only_drivers_marked_no_vision():
-    # GLM-5.2 and DeepSeek are text-only in the current field
-    assert reg.has_vision("glm-5.2") is False
-    assert reg.has_vision("deepseek-v4-pro") is False
-
-
-def test_kimi_has_vision():
-    assert reg.has_vision("kimi-k3") is True
-
-
-def test_vision_sidecars_exist():
-    sc = reg.vision_sidecars()
-    assert sc and "glm-ocr" in sc

@@ -93,7 +93,6 @@ class WikiDistillMixin:
             if not hits:
                 self._wiki_cache_key = user_message
                 self._wiki_cache_section = ""
-                self._wiki_cache_pages = 0
                 return wiki_section
 
             authoritative = (
@@ -150,7 +149,6 @@ class WikiDistillMixin:
 
             self._wiki_cache_key = user_message
             self._wiki_cache_section = wiki_section
-            self._wiki_cache_pages = len(hits)
         except Exception:
             pass
         return wiki_section
@@ -305,7 +303,6 @@ class WikiDistillMixin:
             return None
 
         self._distilled_findings_hwm = len(self._session_findings)
-        self._distilled_turns_hwm = self._turn_count
         self._distilled_tool_calls_hwm = self._total_tool_calls
         self._distilled_corrections_hwm = len(self._corrections)
 

@@ -13,7 +13,7 @@ from typing import get_args, get_type_hints
 from harness.api.sse import SseEventRing, SseRingEvent, StreamEventDict, sse_pump
 from harness.api.streams import _encode_chat_sse_frame, _encode_run_sse_frame
 from harness.conversation import VALID_CONV_EVENT_KINDS, ConvEvent, ConvEventKind
-from harness.session import VALID_SESSION_EVENT_KINDS, SessionEvent, SessionEventKind
+from harness.session import SessionEvent, SessionEventKind
 
 
 def test_conv_event_kind_literal_matches_valid_set():
@@ -25,7 +25,6 @@ def test_conv_event_kind_literal_matches_valid_set():
 
 
 def test_session_event_kind_literal_matches_valid_set():
-    assert frozenset(get_args(SessionEventKind)) == VALID_SESSION_EVENT_KINDS
     hints = get_type_hints(SessionEvent)
     assert hints["kind"] is SessionEventKind
     # Shapes stay split: SessionEvent has turn; ConvEvent does not.

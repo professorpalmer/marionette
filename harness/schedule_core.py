@@ -476,16 +476,6 @@ def _coalesce_latest_counted(
     return latest, count
 
 
-def _coalesce_latest_fire(
-    cron: CronExpr,
-    first: datetime,
-    now_min: datetime,
-) -> datetime:
-    """Walk from first missed fire to the latest real fire at or before now_min."""
-    latest, _count = _coalesce_latest_counted(cron, first, now_min)
-    return latest
-
-
 def _collect_missed_slots(
     cron: CronExpr,
     first: datetime,

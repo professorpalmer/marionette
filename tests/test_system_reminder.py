@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from harness.system_reminder import (
     SystemReminder,
     SystemReminderRegistry,
-    append_critical,
     build_system_reminders,
     format_reminders,
     model_disabled,
@@ -13,9 +12,13 @@ from harness.system_reminder import (
 )
 
 
+def _seed_critical(session, text):
+    session._sr_critical = [SystemReminder("host", text, True)]
+
+
 def test_critical_then_full_order():
     session = SimpleNamespace()
-    append_critical(session, "stop now")
+    _seed_critical(session, "stop now")
     registry = SystemReminderRegistry()
     registry.register(lambda _s: SystemReminder("full", "later note", critical=False))
     text, diag = build_system_reminders(session, model="x", registry=registry)
@@ -27,7 +30,7 @@ def test_critical_then_full_order():
 
 def test_resolve_critical_is_one_shot():
     session = SimpleNamespace()
-    append_critical(session, "once")
+    _seed_critical(session, "once")
     first, _ = build_system_reminders(session, model="x", registry=SystemReminderRegistry())
     second, _ = build_system_reminders(session, model="x", registry=SystemReminderRegistry())
     assert "once" in first
@@ -40,7 +43,7 @@ def test_per_model_disable(monkeypatch):
     assert model_disabled("local-qwen")
     assert not model_disabled("anthropic/claude")
     session = SimpleNamespace()
-    append_critical(session, "hidden")
+    _seed_critical(session, "hidden")
     text, diag = build_system_reminders(session, model="openai/gpt-4")
     assert text == ""
     assert diag.disabled is True

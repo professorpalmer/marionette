@@ -486,25 +486,6 @@ class CheckpointStore:
         except Exception as e:
             return {"ok": False, "error": f"Failed to generate diff: {e}"}
 
-    def prune(self) -> None:
-        """
-        Prunes metadata entries and limits storage to last 50 entries.
-        """
-        if not self._enabled or not self._meta_file or not self._meta_file.exists():
-            return
-        try:
-            raw = self._list_raw_checkpoints()
-            valid = self._filter_existing_commits(raw)
-            valid = valid[-50:]
-            temp_file = str(self._meta_file) + ".tmp"
-            with open(temp_file, "w", encoding="utf-8", newline="\n") as f:
-                json.dump(valid, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_file, self._meta_file)
-        except Exception as exc:
-            logger.warning("failed to prune checkpoint metadata in %s: %s", self._meta_file, exc)
-
     def _filter_existing_commits(self, raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return only checkpoints whose commit still exists, using a SINGLE
         `git cat-file --batch-check` process instead of one `git cat-file -e`
