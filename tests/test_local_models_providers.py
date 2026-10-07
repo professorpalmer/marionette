@@ -651,3 +651,30 @@ def test_local_endpoint_sampling_reaches_the_request_body(tmp_path, monkeypatch)
     assert isinstance(kimi["reasoning_budget_tokens"], int)
     assert "temperature" not in glm and "top_p" not in glm
     assert "reasoning_budget_tokens" not in glm
+
+
+def test_a_reasoning_budget_gets_room_for_the_answer(tmp_path, monkeypatch):
+    # Omitting max_tokens hands the server its own output limit, which can
+    # be smaller than the budget and cut the reply off inside its thinking.
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HARNESS_MAX_TOKENS", raising=False)
+    reset_manager_for_tests()
+    catalog = {"version": 1, "runtime": {"id": "llama.cpp", "release": "t", "binary": "llama-server", "assets": {}},
+               "models": []}
+    mgr = LocalModelManager(root=str(tmp_path / "local-models"), catalog=catalog)
+    state = mgr._state()
+    state["externals"] = [{"id": "loop", "vendor": "openai-compatible", "base_url": "http://127.0.0.1:8080/v1",
+                           "models": ["bonsai", "plain"], "selected_model": "bonsai", "healthy": True,
+                           "kind": "loopback", "requires_key": False}]
+    mgr._save(state)
+    mgr.set_external_sampling("loop", "bonsai", {"reasoning_budget_tokens": 40960})
+    monkeypatch.setattr("harness.local_model_manager.get_manager", lambda: mgr)
+
+    def body(spec):
+        return prov.build_pilot(spec)._build_chat_body([{"role": "user", "content": "hi"}])
+
+    assert body("local:loop/bonsai")["max_tokens"] == 40960 + prov.REASONING_ANSWER_HEADROOM
+    assert "max_tokens" not in body("local:loop/plain")
+    monkeypatch.setenv("HARNESS_MAX_TOKENS", "8000")
+    assert body("local:loop/bonsai")["max_tokens"] == 8000  # an explicit cap is the user's
+    assert prov.local_output_limit(None, {"reasoning_budget_tokens": -1}) is None

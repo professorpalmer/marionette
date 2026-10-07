@@ -517,6 +517,25 @@ _UNLIMITED_MAX_TOKENS = frozenset({"0", "off", "none", "unlimited"})
 _REQUIRED_MAX_TOKENS_FALLBACK = REQUIRED_MAX_OUTPUT_TOKENS
 
 
+# Room for the answer after a forced end of thinking. A request that omits
+# max_tokens gets the server's own output limit, which can be smaller than the
+# reasoning budget (Bonsai's launcher used 24576 while clients sent 40960), so
+# the reply was cut off inside its thinking.
+REASONING_ANSWER_HEADROOM = 4096
+
+
+def local_output_limit(max_tokens: Optional[int], sampling: dict) -> Optional[int]:
+    """The output limit for a local request that carries a reasoning budget.
+
+    An explicit limit (HARNESS_MAX_TOKENS or a session goal cap) is the
+    user's and stays. Otherwise the limit covers the budget plus the answer.
+    """
+    budget = sampling.get("reasoning_budget_tokens")
+    if max_tokens is not None or type(budget) is not int or budget <= 0:
+        return max_tokens
+    return budget + REASONING_ANSWER_HEADROOM
+
+
 def requested_max_output_tokens() -> Optional[int]:
     """HARNESS_MAX_TOKENS as a request-time ceiling.
 
@@ -797,6 +816,7 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         sampling = resolved.get("sampling") or {}
         if sampling:
             extra_body = {**(extra_body or {}), **sampling}
+        max_tokens = local_output_limit(max_tokens, sampling)
         if vendor == "llama.cpp":
             driver_name = "llama-cpp:%s" % model
         requires_key = bool(resolved.get("requires_key"))
