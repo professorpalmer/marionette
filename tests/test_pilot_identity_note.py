@@ -30,6 +30,7 @@ def test_refreeze_after_compaction_and_pilot_change_keeps_one_identity(tmp_path)
     from harness.config import HarnessConfig
 
     sess = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path)))
+    sess.pilot = SimpleNamespace(model="stub-oracle-v2")
     base = sess._history[0]["content"]
     first = sess._ensure_frozen_system_prompt(base)
     assert first.count("PILOT IDENTITY") == 1
@@ -38,6 +39,7 @@ def test_refreeze_after_compaction_and_pilot_change_keeps_one_identity(tmp_path)
     # prompt; a pilot replacement carries that history over the same way.
     sess._reset_append_only_freeze()
     sess.config.driver = "openai-codex:gpt-5.6-luna"
+    sess.pilot = SimpleNamespace(model="gpt-5.6-luna")
     second = sess._ensure_frozen_system_prompt(sess._history[0]["content"])
     assert second.count("PILOT IDENTITY") == 1
     assert "gpt-5.6-luna" in second
