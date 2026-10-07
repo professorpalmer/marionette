@@ -282,6 +282,8 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 
 Swarm job costs in the UI come from measured usage priced against ~/.puppetmaster/models.json, then the live OpenRouter /models map (cached under ~/.pmharness/or_models_cache.json), then the router pre-flight estimate. Bedrock agentic workers use the same usage -> price_job / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like z-ai/glm-5.2.
 
+A llama.cpp server that reports `timings.reasoning_budget_exhausted` has each step's force-close and reasoning token count stored in the session's stream receipts. `python scripts/reasoning_budget_report.py` prints the force-close rate per session. A step without the field counts as unknown, not as finished.
+
 ## Conventions
 
 - No emojis or decorative pictographs anywhere (code, docs, commits, output).

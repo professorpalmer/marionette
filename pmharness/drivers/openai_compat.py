@@ -284,6 +284,9 @@ class _OpenAIChatSseAccumulator:
         self.saw_done = False
         self.malformed_sse_chunks = 0
         self.think_scrubber = StreamingThinkScrubber()
+        # llama.cpp budget report: None until the server says (absent = unknown).
+        self.reasoning_budget_exhausted = None
+        self.reasoning_tokens = None
 
     def feed(self, line) -> bool:
         """Consume one SSE line. Return False after ``[DONE]``."""
@@ -332,6 +335,20 @@ class _OpenAIChatSseAccumulator:
             step_cost = OpenAICompatDriver._cost_from_usage(chunk_usage)
             if step_cost is not None:
                 self.provider_cost_usd = step_cost
+            details = chunk_usage.get("completion_tokens_details")
+            if isinstance(details, dict):
+                count = _nonneg_int(details.get("reasoning_tokens"))
+                if count is not None:
+                    self.reasoning_tokens = count
+
+        timings = chunk.get("timings")
+        if isinstance(timings, dict):
+            exhausted = timings.get("reasoning_budget_exhausted")
+            if isinstance(exhausted, bool):
+                self.reasoning_budget_exhausted = exhausted
+            count = _nonneg_int(timings.get("reasoning_n"))
+            if count is not None:
+                self.reasoning_tokens = count
 
         choices = chunk.get("choices") or []
         if not choices:
@@ -480,7 +497,24 @@ class _OpenAIChatSseAccumulator:
             "cached_tokens": self.cached_tokens,
             "cache_write_tokens": self.cache_write_tokens,
             "provider_cost_usd": self.provider_cost_usd,
+            "stream_performance": self.budget_performance(),
         }
+
+    def budget_performance(self) -> dict:
+        """Per-step reasoning-budget counts for the session receipt."""
+        perf = {}
+        if self.reasoning_budget_exhausted is not None:
+            perf["reasoning_budget_reported_count"] = 1
+            perf["reasoning_budget_exhausted_count"] = int(self.reasoning_budget_exhausted)
+        if self.reasoning_tokens is not None:
+            perf["reasoning_tokens"] = self.reasoning_tokens
+        return perf
+
+
+def _nonneg_int(value):
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _drain_llama_cpp_usage_tail(resp, acc: _OpenAIChatSseAccumulator) -> None:
@@ -558,7 +592,10 @@ def _drain_llama_cpp_usage_tail(resp, acc: _OpenAIChatSseAccumulator) -> None:
         usage = payload.get("usage")
         if not isinstance(usage, dict) or not usage:
             return True
-        acc.feed("data: " + json.dumps({"choices": [], "usage": usage}))
+        tail = {"choices": [], "usage": usage}
+        if isinstance(payload.get("timings"), dict):
+            tail["timings"] = payload["timings"]
+        acc.feed("data: " + json.dumps(tail))
         return True
 
     def interrupt_read() -> None:
@@ -1639,6 +1676,8 @@ class OpenAICompatDriver:
                 meta["provider_cost_usd"] = parsed["provider_cost_usd"]
             if parsed["served_model"]:
                 meta["served_model"] = parsed["served_model"]
+            if parsed["stream_performance"]:
+                meta["stream_performance"] = parsed["stream_performance"]
             return DriverResponse(
                 text=parsed["text"],
                 tokens_in=parsed["tokens_in"],
@@ -1754,12 +1793,12 @@ class OpenAICompatDriver:
             except Exception as e:
                 result = _response_from_acc(acc, t0=t0, transport_error=repr(e))
                 if idle_armed and isinstance(e, TimeoutError):
-                    result.meta["stream_performance"] = {"local_idle_cutoff_count": 1}
+                    result.meta.setdefault("stream_performance", {})["local_idle_cutoff_count"] = 1
                 return result
 
             result = _response_from_acc(acc, t0=t0)
             if local_cutoff:
-                result.meta["stream_performance"] = {local_cutoff: 1}
+                result.meta.setdefault("stream_performance", {})[local_cutoff] = 1
             return result
 
         def _one_stream(msgs: list) -> DriverResponse:
