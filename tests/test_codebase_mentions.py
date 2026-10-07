@@ -19,6 +19,14 @@ from harness.mention_context import (
     is_codebase_mention,
 )
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _workspace_owns_its_codegraph_index(monkeypatch):
+    # These fixtures fake CodeGraph readiness for a temp repo with no index.
+    monkeypatch.setattr("harness.codegraph_inject.index_in_scope", lambda repo: True)
+
 
 def _server():
     import harness.server as srv

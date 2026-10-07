@@ -566,6 +566,28 @@ def loop_exit_message(cause: str) -> str:
     return "(Turn ended.)"
 
 
+_UNANSWERED_REASONS = {
+    TERMINAL_TURN_BUDGET: "turn budget exhausted before this action ran",
+    TERMINAL_STEP_CAP: "step cap reached before this action ran",
+    TERMINAL_STAGNATION: "turn auto-halted for repeating the same actions",
+    TERMINAL_INVALID_TOOL: "turn auto-halted on invalid tool calls",
+    TERMINAL_CANCELLED: "cancelled by the user (Stop)",
+    TERMINAL_TRANSPORT_ERROR: "provider connection lost",
+    TERMINAL_PROVIDER_EOF: "provider stream ended early",
+    TERMINAL_LENGTH: "model output hit its length limit",
+    TERMINAL_INCOMPLETE: "provider reported the response incomplete",
+    TERMINAL_CONTENT_FILTER: "provider content filter stopped the turn",
+    TERMINAL_EMPTY_LOOP: "turn ended after empty model steps",
+    TERMINAL_DRIVER_SWAP: "pilot was swapped mid-turn",
+}
+
+
+def describe_unanswered_cause(cause: str) -> str:
+    """Why a tool call issued this turn never got a result, for its stub."""
+    named = canonicalize_terminal_cause(cause)
+    return _UNANSWERED_REASONS.get(named, "turn ended before this action ran")
+
+
 def finalize_stop_cause(
     classified: Optional[TerminalClassification],
     *,
@@ -606,6 +628,7 @@ __all__ = (
     "blocking_terminal_message",
     "canonicalize_terminal_cause",
     "classify_provider_terminal",
+    "describe_unanswered_cause",
     "finalize_stop_cause",
     "loop_exit_message",
     "provider_tools_are_executable",

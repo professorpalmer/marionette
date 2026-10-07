@@ -357,3 +357,35 @@ def test_do_run_command_rechecks_danger_rewrite_in_auto(tmp_path):
     assert status == "blocked"
     assert ran == []
     assert "rewritten command needs its own approval" in val["message"]
+
+
+def test_unbounded_scan_reason_flags_home_and_root_walks():
+    from harness.command_preflight import unbounded_scan_reason
+
+    for command in (
+        "grep -rn foo ~",
+        "grep -r foo $HOME",
+        "find / -name x",
+        "rg TODO ~",
+        "cat x | grep -r y /",
+        "ls -R ~",
+        "du -h ~",
+        "sudo find / -name x",
+    ):
+        assert unbounded_scan_reason(command), command
+
+
+def test_unbounded_scan_reason_allows_scoped_or_bounded_scans():
+    from harness.command_preflight import unbounded_scan_reason
+
+    for command in (
+        "grep -rn foo .",
+        "grep -n foo ~/notes.txt",
+        "find / -maxdepth 2 -name x",
+        "rg TODO src",
+        "du -sh ~",
+        "ls -la ~",
+        "git grep foo",
+        "cd ~ && ls",
+    ):
+        assert unbounded_scan_reason(command) is None, command

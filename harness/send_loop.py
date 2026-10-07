@@ -639,6 +639,7 @@ class SendLoopMixin:
         # Settled on assistant_done (complete) or cancel/error finally (interrupted).
         turn_native_prep_cards: dict = {}
         native_prep_settled_at_done = False
+        turn_error = ""
         try:
             import time
             action_starts = {}
@@ -795,8 +796,20 @@ class SendLoopMixin:
                             card["call_id"] = call_id
                         self._display_transcript.append(card)
 
+                if ev.kind == "error":
+                    turn_error = str((ev.data or {}).get("error") or "")[:200]
                 if ev.kind == "assistant_done":
                     self._turn_count += 1
+                    # Close calls this turn issued but never ran (budget, step
+                    # cap, halt) with the real cause instead of a bare stub.
+                    try:
+                        from .terminal_cause import describe_unanswered_cause
+
+                        self._sanitize_tool_pairs(reason=describe_unanswered_cause(
+                            str((ev.data or {}).get("stop_cause") or ""),
+                        ))
+                    except Exception:
+                        pass
                     # Settle leftover result:null display cards owned by this
                     # turn so reload/export cannot resurrect forever-spinning
                     # rows after a missing action_result. Background jobs that
@@ -952,6 +965,17 @@ class SendLoopMixin:
                 self._settle_turn_native_tool_prep_cards(
                     turn_native_prep_cards, complete=False, error="cancelled",
                 )
+                with self._busy_meta:
+                    owned = busy_gen == self._busy_gen
+                if owned:
+                    try:
+                        self._sanitize_tool_pairs(reason=(
+                            f"turn failed: {turn_error}" if turn_error
+                            else "turn ended without completing (client or "
+                            "provider connection lost)"
+                        ))
+                    except Exception:
+                        pass
             else:
                 turn_native_prep_cards.clear()
             # Append-only freezes an enriched system prompt (MCP catalog, pilot
@@ -1029,6 +1053,10 @@ class SendLoopMixin:
         MAX_BYTES = 4096
         repo = getattr(self.config, "repo", None)
         if not repo or not query or not query.strip():
+            return ""
+        from .codegraph_inject import index_in_scope
+
+        if not index_in_scope(repo):
             return ""
         from harness.context_budget import truncate_bytes
         try:
@@ -1110,7 +1138,7 @@ class SendLoopMixin:
         halt_reason = invalid_only_halt_reason(self)
         if not halt_reason:
             return False
-        self._sanitize_tool_pairs()
+        self._sanitize_tool_pairs(reason="turn auto-halted on invalid tool calls")
         yield ConvEvent("auto_halt", {"reason": halt_reason})
         yield ConvEvent("error", {"error": halt_reason})
         yield from finalize_assistant_turn(
@@ -1365,7 +1393,9 @@ class SendLoopMixin:
             step_emitted_user_prose = False
             synthesis_nudge_active = post_swarm_nudge_active
             post_swarm_nudge_active = False
-            base_sys = self._history[0]["content"]
+            from .conversation import SESSION_CONTEXT_MARKER, static_system_base
+
+            base_sys = static_system_base(self._history[0]["content"])
             cg_section = ""
             # Skip the per-turn CodeGraph context build for no_delegation worker sessions:
             # a worker runs in a fresh git worktree with NO .codegraph index, so this call
@@ -1378,6 +1408,10 @@ class SendLoopMixin:
             _skip_cg, _skip_wiki = profile_skips_auto_inject(self, user_message)
             cg_event = None
             want_cg = bool(self.config.repo) and not _no_deleg and not append_only and not _skip_cg
+            if want_cg:
+                from .codegraph_inject import index_in_scope
+
+                want_cg = index_in_scope(self.config.repo)
             want_wiki = self._wiki.configured and not append_only and not _skip_wiki
             # CodeGraph (a Node subprocess) and the wiki search (HTTP) are
             # independent: start both, then wait for them together under one
@@ -1457,7 +1491,7 @@ class SendLoopMixin:
                         prompt = self._render_history()
                         self._record_prompt_stability(prompt)
                     else:
-                        sys_prompt = base_sys
+                        sys_prompt = base_sys + SESSION_CONTEXT_MARKER.rstrip("\n")
                         if cg_section:
                             sys_prompt += "\n\n" + cg_section
                         if wiki_section:
@@ -1773,7 +1807,9 @@ class SendLoopMixin:
                         if self._stagnation_streak >= stagnation_streak_cap():
                             # Heal any tool_call pairing from this assistant turn
                             # before exiting so history stays valid for the next send.
-                            self._sanitize_tool_pairs()
+                            self._sanitize_tool_pairs(
+                                reason="turn auto-halted for repeating the same actions",
+                            )
                             yield from emit_stagnation_halt(
                                 self, last_classified=last_classified,
                                 user_message=user_message, step=step,
@@ -1895,7 +1931,7 @@ class SendLoopMixin:
             if _action_disposition == "return":
                 # Cancel mid-spree: heal unanswered tool_calls before exit so
                 # the next send/resume/export never sees a dangling tool_use.
-                self._sanitize_tool_pairs()
+                self._sanitize_tool_pairs(reason="cancelled by the user (Stop)")
                 return
 
             if (yield from self._iter_invalid_tool_halt(

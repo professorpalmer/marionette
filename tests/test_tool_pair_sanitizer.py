@@ -696,3 +696,33 @@ def test_canonicalize_synthesizes_empty_and_missing_tool_call_ids():
     again = canonicalize_outbound_tool_call_ids(src)
     assert [tc["id"] for tc in again[1]["tool_calls"]] == ids
     assert src == snapshot
+
+
+def test_stub_names_the_reason_the_call_went_unanswered():
+    from harness.terminal_cause import describe_unanswered_cause
+
+    s = _session()
+    s._history = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+        ]},
+    ]
+    s._sanitize_tool_pairs(reason=describe_unanswered_cause("turn_budget"))
+    stub = s._history[-1]["content"]
+    assert stub.startswith("(no result: interrupted")
+    assert "turn budget exhausted" in stub
+    assert describe_unanswered_cause("transport_error") == "provider connection lost"
+    assert "Stop" in describe_unanswered_cause("cancelled")
+
+
+def test_stub_without_a_recorded_cause_says_so():
+    s = _session()
+    s._history = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": "acting", "tool_calls": [
+            {"id": "toolu_A", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+        ]},
+    ]
+    s._sanitize_tool_pairs()
+    assert "no recorded cause" in s._history[-1]["content"]

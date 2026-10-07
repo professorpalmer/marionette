@@ -27,6 +27,7 @@ from .pilot_guards import (
     dedupe_dispatch_actions,
     guards_active,
     record_action_execution,
+    record_loop_refusal,
     reuse_or_new_turn_guard_state,
     session_pending_swarm_active,
     session_pending_swarm_goal,
@@ -211,7 +212,7 @@ def execute_turn_actions(
             # Cancel before steer inject so a Stop mid-spree never delivers
             # queued steers into an abandoned generator (S2 boundary).
             if session._cancel.is_set():
-                session._sanitize_tool_pairs()
+                session._sanitize_tool_pairs(reason="cancelled by the user (Stop)")
                 flush = getattr(session, "_flush_stop_boundary_notices", None)
                 if callable(flush):
                     yield from flush()
@@ -232,11 +233,11 @@ def execute_turn_actions(
                 # Inject only happens at a safe boundary (after pairs are
                 # complete); if inject deferred, the next step-start drain
                 # appends the first-class user message before chat().
-                session._sanitize_tool_pairs()
+                session._sanitize_tool_pairs(reason="superseded by a user steer")
                 break
         if session._cancel.is_set():
             # Heal unanswered sibling tool_calls before abandoning the spree.
-            session._sanitize_tool_pairs()
+            session._sanitize_tool_pairs(reason="cancelled by the user (Stop)")
             flush = getattr(session, "_flush_stop_boundary_notices", None)
             if callable(flush):
                 yield from flush()
@@ -457,6 +458,8 @@ def execute_turn_actions(
                         })
                         session._append_action_result(act, aid, guard_verdict.message, is_native, ok=True)
                         continue
+                    if getattr(guard_verdict, "reason", "") == "loop":
+                        record_loop_refusal(guard_state, act.kind, act)
                     _diag_note(
                         "pilot_guards",
                         msg=f"{guard_verdict.reason} suppressed {act.kind}: {guard_verdict.message[:200]}",

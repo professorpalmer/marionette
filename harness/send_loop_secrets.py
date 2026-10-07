@@ -43,7 +43,7 @@ def iter_extracted_secret_turn(
         "session_id": getattr(session, "harness_session_id", "") or "default",
         "ends_turn": True,
     })
-    session._sanitize_tool_pairs()
+    session._sanitize_tool_pairs(reason="turn paused for a secret request")
     yield from finalize_assistant_turn(
         session, user_message=user_message, step=step,
         swarms=swarms, turn_prose=turn_prose,
@@ -71,7 +71,7 @@ def iter_secret_action_turn(
     from .send_loop_phases import classified_finish_kwargs, finalize_assistant_turn
     from .terminal_cause import TERMINAL_NATURAL
 
-    session._sanitize_tool_pairs()
+    session._sanitize_tool_pairs(reason="turn paused for a secret request")
     yield from finalize_assistant_turn(
         session, user_message=user_message, step=step,
         swarms=swarms, turn_prose=turn_prose,

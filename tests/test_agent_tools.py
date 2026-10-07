@@ -264,7 +264,7 @@ def test_cached_run_command_reexecutes_after_native_file_mutation(
     if rerun_exit_code:
         assert any(
             event.kind == "action_result"
-            and "repeat run_command" in event.data.get("error", "")
+            and "identical run_command call" in event.data.get("error", "")
             for event in events
         )
 

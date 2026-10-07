@@ -448,6 +448,23 @@ def append_failed_declarative_checks_summary(summary: str, declarative_checks) -
 
 
 _TURN_CONTEXT_MARKER = "[context for this turn]"
+
+# Separates the static system base from session context composed onto it
+# (pilot identity, MCP catalog). Recompose always cuts here first, so a
+# re-freeze after compaction or a pilot replacement never stacks a second
+# (possibly contradictory) identity block onto a prompt that already has one.
+SESSION_CONTEXT_MARKER = "\n\n[session context]\n"
+_LEGACY_IDENTITY_MARKER = "\n\nPILOT IDENTITY (authoritative"
+
+
+def static_system_base(prompt: str) -> str:
+    """The system prompt with any composed session context removed."""
+    text = str(prompt or "")
+    for marker in (SESSION_CONTEXT_MARKER, _LEGACY_IDENTITY_MARKER):
+        cut = text.find(marker)
+        if cut >= 0:
+            text = text[:cut]
+    return text
 _CODEGRAPH_INJECTION_PREFIX = "CODEGRAPH HAS ALREADY BEEN QUERIED"
 
 
@@ -3066,9 +3083,11 @@ class ConversationalSession(
         except Exception:
             pass
         try:
-            from .codegraph_inject import working_query, wrap_slice
+            from .codegraph_inject import index_in_scope, working_query, wrap_slice
             from puppetmaster.codegraph import codegraph_context
 
+            if not index_in_scope(self.config.repo):
+                return cg_section
             query = working_query(self, user_message)
             if self._cg_cache_key == query:
                 cached = self._cg_cache_section
@@ -3236,10 +3255,10 @@ class ConversationalSession(
                 self._history[0]["content"] = self._frozen_system_prompt
             return self._frozen_system_prompt
         try:
-            sys_prompt = base_sys
+            sys_prompt = static_system_base(base_sys) + SESSION_CONTEXT_MARKER
             identity_note = self._pilot_identity_system_note()
             if identity_note:
-                sys_prompt += "\n\n" + identity_note
+                sys_prompt += identity_note
             mcp_section = _format_mcp_tools_section(
                 self._mcp,
                 self._tool_catalog,
@@ -3307,11 +3326,15 @@ class ConversationalSession(
         )
 
     @staticmethod
-    def _interruption_stub(tool_call_id: str) -> dict:
+    def _interruption_stub(tool_call_id: str, reason: str = "") -> dict:
+        why = reason or (
+            "no recorded cause; the harness restarted or the turn was lost "
+            "before the action returned"
+        )
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": "(no result: the previous action was interrupted before it completed)",
+            "content": f"(no result: interrupted — {why})",
         }
 
     def _replace_stub_tool_result(self, tool_call_id: str, msg: dict) -> bool:
@@ -3343,7 +3366,7 @@ class ConversationalSession(
             return True
         return False
 
-    def _sanitize_tool_pairs(self) -> None:
+    def _sanitize_tool_pairs(self, reason: str = "") -> None:
         """Guarantee every assistant tool_call has a matching tool result before
         the next model request. Anthropic 400s ("tool_use ids were found without
         tool_result blocks immediately after") if an assistant message carries
@@ -3370,7 +3393,10 @@ class ConversationalSession(
         appended anyway (crash-resume, steer races). Within each adjacent run we
         keep only the FIRST result per id and drop the rest. Results whose id
         matches no tool_call on the preceding assistant message are orphans
-        (equally rejected by the API) and are dropped as well."""
+        (equally rejected by the API) and are dropped as well.
+
+        ``reason`` names why the calls went unanswered (Stop, turn budget,
+        lost connection) so the stub tells the model and a reviewer which."""
         history = self._history
         out = []
         i = 0
@@ -3421,7 +3447,7 @@ class ConversationalSession(
                 for tc in m.get("tool_calls") or []:
                     tcid = tc.get("id")
                     if tcid and tcid not in run_ids:
-                        out.append(self._interruption_stub(tcid))
+                        out.append(self._interruption_stub(tcid, reason))
                         run_ids.add(tcid)
                 i = j
                 continue
