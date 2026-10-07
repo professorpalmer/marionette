@@ -7,10 +7,10 @@ and both the chat **pilot** and agentic **workers** (swarm / implement) run on
 that credential. No Cursor, Claude, or Codex CLI install is required.
 
 Puppetmaster is the bundled kernel — not a second product to set up.
-stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.33.2` is the one
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.33.3` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.601**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.602**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. `run_flow` hands Puppetmaster one graph for a multi-step pipeline (build, check, review, repair, or one task per item) and wakes the pilot only when the run is done, failed, stuck, stopped, interrupted or waiting at a gate; `flow_control` answers gates and resumes, restarts, cuts or stops a run. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.33.2`; the installer and self-update use the same version. |
+| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. `run_flow` hands Puppetmaster one graph for a multi-step pipeline (build, check, review, repair, or one task per item) and wakes the pilot only when the run is done, failed, stuck, stopped, interrupted or waiting at a gate; `flow_control` answers gates and resumes, restarts, cuts or stops a run. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.33.3`; the installer and self-update use the same version. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Durable memory graph** | Local durable facts/preferences (`MemoryStore`) plus optional relations via `MemoryGraph` (`GET /api/memory/graph`, shape `{nodes,edges}` like the wiki graph; sqlite + append-only jsonl). |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
@@ -281,6 +281,8 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `HARNESS_ADVISOR_COMPACTION` | Proactively run history compaction before the next turn once advice reaches level `now` (default on; set `0` to rely on the hard 75% trigger only). |
 
 Swarm job costs in the UI come from measured usage priced against ~/.puppetmaster/models.json, then the live OpenRouter /models map (cached under ~/.pmharness/or_models_cache.json), then the router pre-flight estimate. Bedrock agentic workers use the same usage -> price_job / tracker path (including cache-read discount). No manual registry entry is required for OpenRouter-hosted models like z-ai/glm-5.2.
+
+A llama.cpp server that reports `timings.reasoning_budget_exhausted` has each step's force-close and reasoning token count stored in the session's stream receipts. `python scripts/reasoning_budget_report.py` prints the force-close rate per session. A step without the field counts as unknown, not as finished.
 
 ## Conventions
 

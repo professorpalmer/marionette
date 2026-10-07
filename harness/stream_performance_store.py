@@ -68,6 +68,7 @@ _THROUGHPUT_BASIS_ALLOWED = frozenset({THROUGHPUT_BASIS})
 _PERF_COUNT_KEYS = frozenset({
     "content_delta_count", "recovery_attempt_count", "recovery_success_count",
     "recovery_failure_count", "local_idle_cutoff_count", "local_keepalive_cutoff_count",
+    "reasoning_budget_reported_count", "reasoning_budget_exhausted_count", "reasoning_tokens",
 })
 _KNOWN_PERF_KEYS = frozenset({
     *_PERF_COUNT_KEYS,
