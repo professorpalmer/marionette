@@ -1389,6 +1389,14 @@ class SendLoopMixin:
             yield from self._check_and_inject_steer()
             self._steer_pending = False
 
+            from .turn_split import local_turn_split_steps, split_due
+
+            if split_due(step, local_turn_split_steps(self)):
+                yield from yield_timed_phase(
+                    timing, "advisory_compaction",
+                    self._maybe_compact_history(force=True),
+                )
+
             # 1. Ask the pilot for its next conversational turn.
             step_emitted_user_prose = False
             synthesis_nudge_active = post_swarm_nudge_active

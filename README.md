@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.33.2` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.600**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.601**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -270,6 +270,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State > MCP); not used by native `web_fetch`. |
 | `HARNESS_JEV` | Opt-in Jev turn judgment. Default off. `1`/`true`/`on`/`yes` only. Never required; no OpenRouter key needed for the harness. |
 | `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
+| `HARNESS_LOCAL_TURN_SPLIT_STEPS` | Local-model pilots compact a long tool loop every N steps (default 24; `0` = never), so each segment stays inside the depth where a local model holds its task. Cloud pilots keep one unbroken turn. |
 | `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_BROWSER_REAL_PROFILE` | Consent-gated copy of last-used Chrome/Chromium login data into `~/.pmharness/browser-profile-real`. Default off. Settings > Safety: Use my Chrome login. |
