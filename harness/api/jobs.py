@@ -250,6 +250,10 @@ def post_swarm_cancel(body: dict, svc: JobServices) -> tuple[int, dict]:
     return _scoped_cancel(body, svc, read_only=False)
 
 
+class _StoreBusy(Exception):
+    """A job read stayed ``unavailable`` through its bounded retries."""
+
+
 def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[int, dict]:
     """Cancel one versioned selection without using PM's global job-id flag.
 
@@ -265,6 +269,7 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
     from ..job_scoping import job_owned_by_marionette
     from ..paths import same_workspace_path
     from puppetmaster.store_factory import create_store
+    from ..job_readmodel import _read_page
 
     refused = (409, {"ok": False, "code": "job_cancel_unavailable",
                      "error": "Cancel is unavailable for this job selection."})
@@ -380,7 +385,9 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
         if callable(attach):
             attach()
         def owned_summary():
-            page = store.list_job_summaries(job_ref=job_ref, limit=1, max_scan=2, max_bytes=8192)
+            page = _read_page(store.list_job_summaries, job_ref=job_ref, limit=1, max_scan=2, max_bytes=8192)
+            if page.outcome == 'unavailable' and getattr(page, 'reason', None) == 'read_snapshot_unavailable':
+                raise _StoreBusy()
             if page.outcome != 'complete' or len(page.items) != 1:
                 return None
             row = page.items[0]
@@ -444,6 +451,9 @@ def _scoped_cancel(body: dict, svc: JobServices, *, read_only: bool) -> tuple[in
 
     except identity_errors:
         return refused
+    except _StoreBusy:
+        return 503, {"ok": False, "code": "store_unavailable",
+                     "error": "The job store is busy. Retry the same request."}
     except Exception as exc:
         svc.diag("server.swarm_cancel_scoped", exc)
         return 503, {"ok": False, "error": "Job cancellation could not be completed."}

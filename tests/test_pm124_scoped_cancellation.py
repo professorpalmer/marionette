@@ -409,3 +409,25 @@ def test_cli_selection_uses_owning_store_not_workspace_default(case, tmp_path, m
     assert code == 200, result
     assert result['receipt']['outcome'] == 'requested'
     assert receipt(store, body) is not None
+
+
+@pytest.mark.parametrize('busy_reads', [1, 99])
+def test_a_busy_summary_read_retries_then_reports_the_store_busy(real_session_case, monkeypatch, busy_reads):
+    # Under a parallel suite a writer's lock burst made the ownership read look
+    # like a foreign job, so a valid receipt read was refused with 409.
+    from puppetmaster.projections import MetadataPage
+    store, _, svc, body = real_session_case
+    assert post_swarm_cancel(body, svc)[0] == 200
+    original = type(store).list_job_summaries
+    reads = []
+    def busy(current_store, *args, **kwargs):
+        reads.append(True)
+        if len(reads) <= busy_reads:
+            return MetadataPage((), 'unavailable', 0, reason='read_snapshot_unavailable', retry_after_ms=20)
+        return original(current_store, *args, **kwargs)
+    monkeypatch.setattr(type(store), 'list_job_summaries', busy)
+    code, payload = get_cancellation_receipt(query(body), svc)
+    if busy_reads == 1:
+        assert code == 200
+    else:
+        assert (code, payload['code']) == (503, 'store_unavailable')
