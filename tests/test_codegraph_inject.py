@@ -43,3 +43,26 @@ def test_wrap_normalizes_generated_guidance_and_preserves_source(
     assert "do not Read a file shown here" not in guidance
     assert "authoritative starting points" not in guidance
     assert "not a verbatim on-disk guarantee" in guidance
+
+
+def test_index_scope_ignores_an_ancestor_index_spanning_other_repos(tmp_path):
+    import subprocess
+
+    from harness.codegraph_inject import index_in_scope, index_scope_root
+
+    parent = tmp_path / "projects"
+    (parent / ".codegraph").mkdir(parents=True)
+    (parent / ".codegraph" / "codegraph.db").write_bytes(b"")
+    repo = parent / "app"
+    (repo / "src").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    # Only the ancestor has an index: its hits belong to sibling repos.
+    assert not index_in_scope(str(repo))
+    # A bare .codegraph/ config dir (as $HOME has) is not an index either.
+    (repo / ".codegraph").mkdir()
+    assert not index_in_scope(str(repo))
+
+    (repo / ".codegraph" / "codegraph.db").write_bytes(b"")
+    import os
+    assert index_scope_root(str(repo / "src")) == os.path.realpath(repo)

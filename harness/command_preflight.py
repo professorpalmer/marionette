@@ -239,6 +239,89 @@ def _resolve_command_preflight(command: str, repo: str) -> Dict[str, Any]:
     return _identity(text, workspace, tokens)
 
 
+_SCAN_PROGRAMS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "fd", "du", "ls", "tree"})
+_RECURSIVE_BY_DEFAULT = frozenset({"rg", "ag", "ack", "find", "fd", "du"})
+_HOME_SPELLINGS = frozenset({"~", "~/", "$HOME", "$HOME/", "${HOME}", "${HOME}/"})
+_SYSTEM_ROOTS = frozenset({"/", "/Users", "/Users/", "/home", "/home/", "/Volumes", "/System", "C:\\", "C:/", "C:"})
+_SEGMENT_SPLIT = frozenset({"&&", "||", "|", ";", "&"})
+
+
+def _broad_target(token: str, home: str) -> bool:
+    if token in _HOME_SPELLINGS or token in _SYSTEM_ROOTS:
+        return True
+    if home and token.rstrip("/\\") == home.rstrip("/\\"):
+        return True
+    return False
+
+
+def _scan_is_bounded(program: str, args: List[str]) -> bool:
+    if program == "find":
+        return "-maxdepth" in args
+    if program == "du":
+        return any(
+            a in ("--summarize", "--max-depth") or a.startswith("--max-depth=")
+            or (a.startswith("-") and not a.startswith("--") and ("s" in a or "d" in a))
+            for a in args
+        )
+    if program == "tree":
+        return "-L" in args
+    if program in ("rg", "fd"):
+        return any(a in ("--max-depth", "-d") or a.startswith("--max-depth=") for a in args)
+    return False
+
+
+def _is_recursive(program: str, args: List[str]) -> bool:
+    if program in _RECURSIVE_BY_DEFAULT or program == "tree":
+        return True
+    flag = "r" if program in ("grep", "egrep", "fgrep") else "R"
+    for a in args:
+        if a in ("--recursive", "--dereference-recursive"):
+            return True
+        if a.startswith("-") and not a.startswith("--") and (
+            flag in a[1:] or (program != "ls" and "R" in a[1:])
+        ):
+            return True
+    return False
+
+
+def unbounded_scan_reason(command: str) -> Optional[str]:
+    """Name an obviously unbounded filesystem scan, or None.
+
+    ``grep -r ~``, ``find /``, ``rg pattern $HOME`` and friends walk every
+    repo, cache and library on the machine: minutes of wall time, a flood of
+    output, and hits from other projects. A recursive scan program aimed at a
+    home or system root, with no depth bound, is never the scoped search a
+    workspace task needs. Never raises.
+    """
+    try:
+        tokens = shlex.split(command or "", posix=True)
+    except ValueError:
+        return None
+    home = os.path.expanduser("~")
+    segment: List[str] = []
+    for token in tokens + [";"]:
+        if token not in _SEGMENT_SPLIT:
+            segment.append(token)
+            continue
+        idx = _skip_env_assignments(segment)
+        if idx < len(segment):
+            program = _program_name(segment[idx])
+            if program in ("sudo", "nice", "time", "command") and idx + 1 < len(segment):
+                idx += 1
+                program = _program_name(segment[idx])
+            args = segment[idx + 1:]
+            if (
+                program in _SCAN_PROGRAMS
+                and _is_recursive(program, args)
+                and not _scan_is_bounded(program, args)
+            ):
+                target = next((a for a in args if _broad_target(a, home)), None)
+                if target is not None:
+                    return f"{program} recursively over {target}"
+        segment = []
+    return None
+
+
 def classify_env_prerequisite_failure(
     command: str,
     exit_code: int,

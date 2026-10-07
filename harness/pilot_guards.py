@@ -52,7 +52,9 @@ from typing import Any, Optional
 from .task_profile import is_conversational_followup
 
 # Thresholds (override via env for tuning in the field).
-LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "3"))
+# Identical calls allowed per turn (1 real run + CAP-1 cached replays) before
+# a hard STOP refusal. A replay hands back the same bytes and spends a step.
+LOOP_REPEAT_CAP = int(os.environ.get("HARNESS_LOOP_REPEAT_CAP", "2"))
 DELEGATE_THRESHOLD = int(os.environ.get("HARNESS_DELEGATE_THRESHOLD", "8"))
 SWARM_GATE_READ_ALLOWANCE = int(os.environ.get("HARNESS_SWARM_GATE_READ_ALLOWANCE", "2"))
 # How many full swarm-gate redirect messages to emit per turn before switching
@@ -1587,11 +1589,18 @@ def is_swarm_gate_blocked_exploration(state: TurnGuardState, kind: str, act: Any
 
 def _loop_suppress_message(kind: str, repeat_count: int) -> str:
     return (
-        f"(SUPPRESSED: repeat {kind} call #{repeat_count + 1} this turn — identical or "
-        f"near-identical arguments to a call already executed. Change your approach: try "
-        f"search_codegraph for structure, dispatch run_swarm/run_implement for broad work, "
-        f"or reformulate with different parameters. Loop guard cap={LOOP_REPEAT_CAP}.)"
+        f"(SUPPRESSED: loop guard) STOP: identical {kind} call {repeat_count + 1} "
+        f"times this turn — change approach. The result will not change: it was "
+        f"not executed again. Use the earlier result already in context, or try "
+        f"something different (other arguments, another tool, search_codegraph, "
+        f"run_swarm/run_implement for broad work). Loop guard cap={LOOP_REPEAT_CAP}."
     )
+
+
+def _loop_replay_message(cached: str, repeat_count: int) -> str:
+    final = repeat_count + 1 >= LOOP_REPEAT_CAP
+    note = " (the next identical call will be refused)" if final else ""
+    return f"[cached repeat of identical call #{repeat_count + 1}{note}]\n{cached}"
 
 
 def _swarm_gate_suppress_message(
@@ -2132,7 +2141,7 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
         return GuardVerdict(
             suppress=True,
             reason="loop_replay",
-            message=f"[cached repeat of identical call]\n{cached}",
+            message=_loop_replay_message(cached, prior),
             replay=True,
         )
 
@@ -2142,6 +2151,12 @@ def check_loop_guard(state: TurnGuardState, kind: str, act: Any) -> GuardVerdict
         reason="loop",
         message=_loop_suppress_message(kind, prior),
     )
+
+
+def record_loop_refusal(state: TurnGuardState, kind: str, act: Any) -> None:
+    """Count a refused identical call so the next STOP names the real total."""
+    key = (kind, normalize_action_args(kind, act))
+    state.execution_counts[key] = state.execution_counts.get(key, 0) + 1
 
 
 def record_successful_result(state: TurnGuardState, kind: str, act: Any, content: str) -> None:

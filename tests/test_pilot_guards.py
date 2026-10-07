@@ -763,7 +763,7 @@ def test_loop_replays_identical_successful_call():
     assert verdict.suppress is True
     assert verdict.replay is True
     assert verdict.reason == "loop_replay"
-    assert "[cached repeat of identical call]" in verdict.message
+    assert "[cached repeat of identical call" in verdict.message
     assert "hello" in verdict.message
     assert "SUPPRESSED" not in verdict.message
 
@@ -1224,7 +1224,7 @@ def test_session_suppresses_duplicate_read(monkeypatch, tmp_path):
     history_text = " ".join(
         m.get("content", "") for m in session._history if isinstance(m.get("content"), str)
     )
-    assert "[cached repeat of identical call]" in history_text
+    assert "[cached repeat of identical call" in history_text
 
 
 @pytest.mark.parametrize(

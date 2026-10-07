@@ -383,6 +383,13 @@ def expand_codebase_mention(
                 token,
                 reason="CodeGraph index not ready (run codegraph init / wait for indexing)",
             )
+        from .codegraph_inject import index_in_scope
+
+        if not index_in_scope(repo):
+            return format_codebase_mention_skip(
+                token,
+                reason="no CodeGraph index for this workspace (the nearest index covers a parent directory)",
+            )
         cg_slice = cg.codegraph_context(task=task, cwd=repo)
         if not cg_slice:
             return format_codebase_mention_skip(

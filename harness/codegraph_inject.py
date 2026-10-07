@@ -100,3 +100,40 @@ def wrap_slice(cg_slice: str) -> tuple[str, int]:
     except Exception:
         section = text
     return _WRAP + section, symbols
+
+
+def index_scope_root(repo: str):
+    """Nearest CodeGraph index root that belongs to this workspace, or None.
+
+    CodeGraph resolves the nearest ``.codegraph/codegraph.db`` at or above the
+    working directory. A workspace without its own index (or with a bare
+    ``.codegraph/`` config dir, as ``$HOME`` has) then reads an ancestor index
+    that spans sibling repos, and injects their symbols as if they were this
+    project's. Only an index at the workspace or between it and its git
+    toplevel counts; anything higher is someone else's tree.
+    """
+    import os
+
+    from .paths import git_toplevel
+
+    if not repo:
+        return None
+    try:
+        start = os.path.realpath(repo)
+        ceiling = os.path.realpath(git_toplevel(start) or start)
+    except Exception:
+        return None
+    current = start
+    while True:
+        if os.path.isfile(os.path.join(current, ".codegraph", "codegraph.db")):
+            return current
+        if current == ceiling:
+            return None
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def index_in_scope(repo: str) -> bool:
+    return index_scope_root(repo) is not None

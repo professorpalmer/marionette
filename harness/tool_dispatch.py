@@ -576,6 +576,14 @@ class ToolDispatchMixin:
         # the model's tool output as noise. The passthrough runs under the
         # interpreter driving the backend and auto-rebuilds the native binding,
         # giving clean, fast results.
+        from .codegraph_inject import index_in_scope
+
+        if not index_in_scope(self.config.repo):
+            return True, "success", ((act.arguments.get("kind") or "search"), (
+                "CodeGraph has no index for this workspace (the nearest index "
+                "covers a parent directory, so its hits would come from other "
+                "projects). Use search_files / read_file here instead."
+            ))
         kind = (act.arguments.get("kind") or "search").strip().lower()
         if kind == "context":
             subcommand = "context"
@@ -1947,7 +1955,25 @@ class ToolDispatchMixin:
         from .command_preflight import (
             classify_env_prerequisite_failure,
             resolve_command_preflight,
+            unbounded_scan_reason,
         )
+
+        scan = unbounded_scan_reason(act.command or "")
+        if scan:
+            message = (
+                f"NOT RUN: unbounded scan ({scan}). That walks every project, "
+                f"cache and library on the machine and mostly returns hits from "
+                f"other repos. Scope it to the workspace ({self.config.repo}) or a "
+                f"specific directory, add a depth bound (find -maxdepth, rg "
+                f"--max-depth), or use search_files."
+            )
+            return False, "error", {
+                "output": message,
+                "exit_code": -1,
+                "status": "error",
+                "cwd": self.config.repo,
+                "hint": message,
+            }
 
         preflight = resolve_command_preflight(act.command or "", self.config.repo)
         effective_command = preflight.get("command") or act.command or ""

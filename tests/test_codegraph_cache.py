@@ -5,6 +5,14 @@ import tempfile
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _workspace_owns_its_codegraph_index(monkeypatch):
+    # These fixtures fake CodeGraph readiness for a temp repo with no index.
+    monkeypatch.setattr("harness.codegraph_inject.index_in_scope", lambda repo: True)
+
 
 def test_codegraph_cache_fields_initialized():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
