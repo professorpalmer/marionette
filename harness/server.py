@@ -3399,6 +3399,11 @@ def _available_pilots():
     return out
 
 
+def _settings_output_style():
+    from .output_style import pilot_output_style
+    return pilot_output_style()
+
+
 def _settings_compaction_residual():
     try:
         from .compaction_residual import settings_residual_choice
@@ -3479,6 +3484,7 @@ def _get_settings_dict():
         "swarm_reasoning_effort": current_swarm_reasoning_effort(),
         "reasoning_support": reasoning_support,
         "compactionResidual": _settings_compaction_residual(),
+        "outputStyle": _settings_output_style(),
         "state_dir": _session.state_dir,
         "repo": _cfg.repo,
         "has_api_key": status["has_key"],

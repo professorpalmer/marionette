@@ -3221,6 +3221,12 @@ class ConversationalSession(
                     parts.append(policy_note)
             except Exception:
                 pass
+            from .output_style import output_style_turn_note
+
+            style_note = output_style_turn_note()
+            if style_note:
+                parts.append(_unchanged_section("Output style")
+                             if self._in_user_history(style_note) else style_note)
             # Sticky session goal is supplemental turn context — never folded
             # into the frozen system prompt prefix.
             try:

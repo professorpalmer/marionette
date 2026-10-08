@@ -27,6 +27,7 @@ export function toSafeSettingsSnapshot(s: Settings): Settings {
     reasoning_effort: s.reasoning_effort,
     swarm_reasoning_effort: s.swarm_reasoning_effort,
     compactionResidual: s.compactionResidual,
+    outputStyle: s.outputStyle,
     wiki_auto: s.wiki_auto,
     state_dir: s.state_dir,
     repo: s.repo,
