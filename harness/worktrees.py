@@ -20,7 +20,8 @@ logger = logging.getLogger("pmharness.worktrees")
 
 _managed_lock = threading.Lock()
 # Normalized worktree path -> {pid: kind}
-_managed_processes: dict[str, dict[int, str]] = {}
+# pid -> (kind, process start identity at register time, or None)
+_managed_processes: dict[str, dict[int, tuple[str, Optional[str]]]] = {}
 
 
 def _normalize_worktree_path(path: str) -> str:
@@ -70,7 +71,7 @@ def register_worktree_process(
     key = _normalize_worktree_path(root)
     with _managed_lock:
         bucket = _managed_processes.setdefault(key, {})
-        bucket[int(pid)] = kind or "worker"
+        bucket[int(pid)] = (kind or "worker", _start_identity(int(pid)))
 
 
 def unregister_worktree_process(worktree_or_cwd: str, pid: int) -> None:
@@ -111,10 +112,28 @@ def clear_worktree_process_registry(path: str) -> None:
         _managed_processes.pop(key, None)
 
 
+def _start_identity(pid: int) -> Optional[str]:
+    try:
+        from puppetmaster.proc_identity import process_identity
+        return process_identity(pid)
+    except Exception:
+        return None
+
+
 def _registered_pids_for_worktree(path: str) -> list[int]:
+    """Registered pids that still name the process that was registered.
+
+    A child that exited without release leaves its pid here, and the OS can
+    give that pid to an unrelated process.
+    """
     key = _normalize_worktree_path(path)
     with _managed_lock:
-        return list(_managed_processes.get(key, {}).keys())
+        entries = list(_managed_processes.get(key, {}).items())
+    try:
+        from puppetmaster.proc_identity import pid_reused
+    except Exception:
+        return [pid for pid, _ in entries]
+    return [pid for pid, (_kind, identity) in entries if not pid_reused(pid, identity)]
 
 
 def clear_managed_process_registry_for_tests() -> None:
@@ -535,7 +554,10 @@ def reap_worktree_processes(path: str) -> int:
                 continue
         if targets:
             _time.sleep(0.6)
+            survivors = set(_registered_pids_for_worktree(wt_key))
             for pid in targets:
+                if pid not in survivors:
+                    continue
                 try:
                     os.kill(pid, 0)          # still alive?
                     os.kill(pid, _signal.SIGKILL)

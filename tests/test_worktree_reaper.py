@@ -372,3 +372,32 @@ def test_proc_linux_returns_empty_on_error(monkeypatch):
     )
 
     assert wt._worktree_pid_cwds_proc_linux() == []
+
+
+def test_reap_leaves_a_recycled_pid_alone(tmp_path, monkeypatch):
+    # A child that exited without release leaves its pid registered; the OS can
+    # give that pid to an unrelated process before the worktree is removed.
+    wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        wt.register_worktree_process(wtpath, other.pid, kind="worker")
+        key = wt._normalize_worktree_path(wt.managed_worktree_root(wtpath))
+        wt._managed_processes[key][other.pid] = ("worker", "an-earlier-process")
+        assert wt.reap_worktree_processes(wtpath) == 0
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_reap_stops_the_registered_process(tmp_path):
+    wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        wt.register_worktree_process(wtpath, child.pid, kind="worker")
+        assert wt.reap_worktree_processes(wtpath) == 1
+        assert child.wait(timeout=10) is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()

@@ -108,10 +108,28 @@ def test_boot_reaps_only_ledger_pids_the_runfile_still_names(monkeypatch, tmp_pa
     ledger.write_text(json.dumps({"/s/a": 111, "/s/b": 222}))
     monkeypatch.setattr(pd, "_owned", {})
     monkeypatch.setattr(pmd, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(pmd, "pid_reused", lambda pid, identity: False)
     monkeypatch.setattr(pmd, "read_dashboard_runfile",
-                        lambda sd: {"/s/a": {"pid": 111}, "/s/b": {"pid": 999}}[sd])
+                        lambda sd: {"/s/a": {"pid": 111, "identity": "a"},
+                                    "/s/b": {"pid": 999, "identity": "b"}}[sd])
     stopped = []
     monkeypatch.setattr(pd, "_stop_process", lambda pid, proc=None: stopped.append(pid))
     assert pd.reap_orphaned_dashboards(str(ledger)) == 1
     assert stopped == [111]
     assert json.loads(ledger.read_text()) == {}
+
+
+def test_boot_reap_leaves_a_recycled_pid_alone(monkeypatch, tmp_path):
+    # A crash leaves the same dead pid in the ledger and in the runfile; the OS
+    # then gives it to an unrelated process.
+    import puppetmaster.dashboard as pmd
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps({"/s/a": 111}))
+    monkeypatch.setattr(pd, "_owned", {})
+    monkeypatch.setattr(pmd, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(pmd, "pid_reused", lambda pid, identity: True)
+    monkeypatch.setattr(pmd, "read_dashboard_runfile", lambda sd: {"pid": 111, "identity": "a"})
+    stopped = []
+    monkeypatch.setattr(pd, "_stop_process", lambda pid, proc=None: stopped.append(pid))
+    assert pd.reap_orphaned_dashboards(str(ledger)) == 0
+    assert stopped == []
