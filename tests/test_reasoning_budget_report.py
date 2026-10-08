@@ -119,3 +119,33 @@ def test_report_script_divides_by_reported_steps(tmp_path):
     assert session["session_id"] == "sess1"
     assert session["steps"] == 4
     assert session["models"] == ["bonsai"]
+
+
+def test_a_non_streamed_reply_is_counted_too(monkeypatch):
+    payload = {
+        "choices": [{"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20490},
+        "timings": {"reasoning_budget_exhausted": True, "reasoning_n": 20480},
+    }
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setenv("LLAMA_CPP_API_KEY", "local-test-key")
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp(json.dumps(payload).encode("utf-8")))
+    driver = OpenAICompatDriver(
+        name="llama-cpp:bonsai", model="bonsai",
+        base_url="http://127.0.0.1:8080/v1", api_key_env="LLAMA_CPP_API_KEY",
+    )
+    resp = driver.chat([{"role": "user", "content": "go"}])
+    assert resp.error is None
+    assert resp.meta["stream_performance"] == {
+        "reasoning_budget_reported_count": 1,
+        "reasoning_budget_exhausted_count": 1,
+        "reasoning_tokens": 20480,
+    }
