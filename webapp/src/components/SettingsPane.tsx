@@ -1200,6 +1200,34 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("general", "output style ste simplified technical english asd-ste100 controlled language prose") && settings && (
+        <div className="space-y-1.5">
+          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
+            Output Style
+          </label>
+          <button
+            onClick={() => update({ outputStyle: settings.outputStyle === "ste" ? "off" : "ste" })}
+            disabled={saving}
+            aria-pressed={settings.outputStyle === "ste"}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
+              settings.outputStyle === "ste"
+                ? "bg-accent/10 border-accent/30 text-accent"
+                : "bg-panel2 border-edge text-muted"
+            } disabled:opacity-50`}
+          >
+            <span className="font-medium text-ui-11">Simplified Technical English (ASD-STE100)</span>
+            <span className="text-ui-10 uppercase font-bold tracking-wider">
+              {settings.outputStyle === "ste" ? "on" : "off"}
+            </span>
+          </button>
+          <p className="text-ui-10 text-muted">
+            The pilot and new workers write short, controlled sentences: one
+            thought per sentence, active voice, and only can, must, or will as
+            helping verbs. Code, paths, and quoted text stay exact. The change
+            applies from the next turn.
+          </p>
+        </div>
+        )}
         {gate("safety", "browser chrome cookies real profile login") && settings && (
         <div className="space-y-1.5">
           <button

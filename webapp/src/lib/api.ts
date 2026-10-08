@@ -111,6 +111,7 @@ export type Settings = {
   reasoning_effort?: ReasoningEffort;
   swarm_reasoning_effort?: ReasoningEffort;
   compactionResidual?: "summary" | "hybrid" | "catalog";
+  outputStyle?: "off" | "ste";
   wiki_auto?: boolean;
   state_dir: string;
   repo: string;

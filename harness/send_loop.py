@@ -1544,6 +1544,11 @@ class SendLoopMixin:
                         )
                         if policy_note:
                             sys_prompt += "\n\n" + policy_note
+                        from .output_style import output_style_turn_note
+
+                        style_note = output_style_turn_note()
+                        if style_note:
+                            sys_prompt += "\n\n" + style_note
 
                         self._history[0]["content"] = sys_prompt
                         prompt = self._render_history()

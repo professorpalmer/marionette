@@ -333,5 +333,13 @@ def post_settings(body: dict, svc: SettingsServices) -> tuple[int, JsonPayload]:
         if raw not in SETTINGS_RESIDUAL_CHOICES:
             return 400, {"error": "Invalid compactionResidual"}
         _set_env_setting("HARNESS_COMPACTION_RESIDUAL", raw)
+    if "outputStyle" in body:
+        from ..output_style import CHOICES, OUTPUT_STYLE_ENV, WORKER_OUTPUT_STYLE_ENV
+
+        raw = str(body["outputStyle"] or "").strip().lower()
+        if raw not in CHOICES:
+            return 400, {"error": "Invalid outputStyle"}
+        _set_env_setting(OUTPUT_STYLE_ENV, raw)
+        _set_env_setting(WORKER_OUTPUT_STYLE_ENV, raw)
 
     return 200, svc.get_settings_dict()
