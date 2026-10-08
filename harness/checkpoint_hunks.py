@@ -591,6 +591,9 @@ def record_agent_write(repo: Optional[str], rel_path: str, session_id: Optional[
         hunk_tracker_for_store(store, session_id=session_id).record_agent_write(rel_path)
     except Exception as exc:
         logger.debug("record_agent_write skipped: %s", exc)
+    from .flows import claim_pilot_write
+
+    claim_pilot_write(repo, rel_path)
 
 
 def fs_notify(repo: Optional[str], rel_path: str, session_id: Optional[str] = None) -> None:
