@@ -86,17 +86,19 @@ def stop_owned_dashboards() -> None:
 def reap_orphaned_dashboards(ledger_path: str) -> int:
     """Adopt the ledger and stop boards a crashed backend left running.
 
-    A pid is only stopped while its store's runfile still names it, so a
-    recycled pid or a board the user started themselves is never touched.
+    A pid is only stopped while its store's runfile still names it and the
+    runfile's process identity still matches. A crash leaves the same dead pid
+    in the ledger and the runfile, so a matching pid alone does not exclude a
+    recycled one.
     """
     global _ledger_path
-    from puppetmaster.dashboard import pid_alive, read_dashboard_runfile
+    from puppetmaster.dashboard import read_dashboard_runfile, tracked_dashboard_pid
     with _LOCK:
         _ledger_path = ledger_path
         stopped = 0
         for state_dir, pid in _read_ledger().items():
             tracked = read_dashboard_runfile(state_dir) or {}
-            if state_dir not in _owned and pid_alive(pid) and tracked.get("pid") == pid:
+            if state_dir not in _owned and tracked_dashboard_pid(tracked) == pid:
                 _stop_process(pid)
                 stopped += 1
         _write_ledger()
