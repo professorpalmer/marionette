@@ -67,7 +67,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.37.0"
+          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.38.0"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope
@@ -102,7 +102,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.37.0"
+          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.38.0"
 
       - name: Run the offline test suite (shard)
         env:
@@ -126,7 +126,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.37.0"
+          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.38.0"
 
       - name: Run the offline test suite
         run: python -m pytest -q -p no:cacheprovider -n 4 --dist loadscope
@@ -177,7 +177,7 @@ jobs:
       - name: Install (rig + dev extras + Puppetmaster from PyPI)
         run: |
           python -m pip install --upgrade pip
-          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.37.0"
+          python scripts/pip_install_retry.py -e ".[dev]" "puppetmaster-ai==1.38.0"
 
       - name: Run offline pmharness/intent/registry units
         run: python -m pytest -q -p no:cacheprovider -n 0 tests/test_intent.py tests/test_registry.py tests/test_registry_wizard.py tests/test_pilot_driver_templates.py
