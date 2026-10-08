@@ -71,6 +71,23 @@ def flow_call(state_dir: str, action: str, params: dict) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def claim_pilot_write(repo: Optional[str], path: str) -> None:
+    """Claim a file that the pilot wrote, in each flow that walks over ``repo``.
+
+    A worker's write_scope gate then does not charge the file to that worker,
+    unless the worker's own events name it. When no flow walks, this is one
+    directory listing. A failure never reaches the tool call.
+    """
+    if not repo or not path:
+        return
+    try:
+        from puppetmaster.claim_hook import claim_edits
+
+        claim_edits({"cwd": repo, "tool_input": {"file_path": path}})
+    except Exception:
+        pass
+
+
 def max_active_flows() -> int:
     try:
         return max(1, int(os.environ.get("HARNESS_MAX_ACTIVE_FLOWS", DEFAULT_MAX_ACTIVE_FLOWS)))
