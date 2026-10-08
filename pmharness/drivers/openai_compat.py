@@ -335,20 +335,12 @@ class _OpenAIChatSseAccumulator:
             step_cost = OpenAICompatDriver._cost_from_usage(chunk_usage)
             if step_cost is not None:
                 self.provider_cost_usd = step_cost
-            details = chunk_usage.get("completion_tokens_details")
-            if isinstance(details, dict):
-                count = _nonneg_int(details.get("reasoning_tokens"))
-                if count is not None:
-                    self.reasoning_tokens = count
 
-        timings = chunk.get("timings")
-        if isinstance(timings, dict):
-            exhausted = timings.get("reasoning_budget_exhausted")
-            if isinstance(exhausted, bool):
-                self.reasoning_budget_exhausted = exhausted
-            count = _nonneg_int(timings.get("reasoning_n"))
-            if count is not None:
-                self.reasoning_tokens = count
+        exhausted, count = _budget_report(chunk_usage, chunk.get("timings"))
+        if exhausted is not None:
+            self.reasoning_budget_exhausted = exhausted
+        if count is not None:
+            self.reasoning_tokens = count
 
         choices = chunk.get("choices") or []
         if not choices:
@@ -501,20 +493,37 @@ class _OpenAIChatSseAccumulator:
         }
 
     def budget_performance(self) -> dict:
-        """Per-step reasoning-budget counts for the session receipt."""
-        perf = {}
-        if self.reasoning_budget_exhausted is not None:
-            perf["reasoning_budget_reported_count"] = 1
-            perf["reasoning_budget_exhausted_count"] = int(self.reasoning_budget_exhausted)
-        if self.reasoning_tokens is not None:
-            perf["reasoning_tokens"] = self.reasoning_tokens
-        return perf
+        return _budget_performance(self.reasoning_budget_exhausted, self.reasoning_tokens)
 
 
 def _nonneg_int(value):
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
+
+
+def _budget_report(usage, timings):
+    """(force-closed, reasoning tokens) from one llama.cpp payload. None is unknown."""
+    exhausted = count = None
+    if isinstance(usage, dict) and isinstance(usage.get("completion_tokens_details"), dict):
+        count = _nonneg_int(usage["completion_tokens_details"].get("reasoning_tokens"))
+    if isinstance(timings, dict):
+        if isinstance(timings.get("reasoning_budget_exhausted"), bool):
+            exhausted = timings["reasoning_budget_exhausted"]
+        if _nonneg_int(timings.get("reasoning_n")) is not None:
+            count = timings["reasoning_n"]
+    return exhausted, count
+
+
+def _budget_performance(exhausted, reasoning_tokens) -> dict:
+    """Per-step reasoning-budget counts for the session receipt."""
+    perf = {}
+    if exhausted is not None:
+        perf["reasoning_budget_reported_count"] = 1
+        perf["reasoning_budget_exhausted_count"] = int(exhausted)
+    if reasoning_tokens is not None:
+        perf["reasoning_tokens"] = reasoning_tokens
+    return perf
 
 
 def _drain_llama_cpp_usage_tail(resp, acc: _OpenAIChatSseAccumulator) -> None:
@@ -1357,6 +1366,9 @@ class OpenAICompatDriver:
             served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
             if served:
                 meta["served_model"] = served
+            budget = _budget_performance(*_budget_report(usage, raw.get("timings")))
+            if budget:
+                meta["stream_performance"] = budget
             from .token_usage import coerce_token_usage_record
 
             usage_detail = coerce_token_usage_record(usage)
@@ -1588,6 +1600,9 @@ class OpenAICompatDriver:
             served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
             if served:
                 meta["served_model"] = served
+            budget = _budget_performance(*_budget_report(usage, raw.get("timings")))
+            if budget:
+                meta["stream_performance"] = budget
             from .token_usage import coerce_token_usage_record
 
             usage_detail = coerce_token_usage_record(usage)
