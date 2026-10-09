@@ -1489,6 +1489,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               // the imported key. Disconnect is also available so a replacement
               // can be pasted — the toggle alone never reveals the key field.
               const envBacked = !!p.has_env;
+              // Claude Code authenticates through its own CLI login (Accounts
+              // above). A pasted value cannot connect it, so its row is a switch.
+              const loginBacked = p.api_mode === "claude_cli";
+              const switchable = envBacked || loginBacked;
               const enabled = !p.disconnected;
               const connected = p.has_key;
               const busy = provBusy === p.name;
@@ -1524,7 +1528,9 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                       title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
                       className="text-faint text-ui-10 font-mono truncate"
                     >
-                      {envBacked
+                      {loginBacked
+                        ? (!enabled ? "disabled - via login" : connected ? "connected - via login" : "not signed in")
+                        : envBacked
                         ? `${enabled ? "connected" : "disabled"} - via env`
                         : p.has_key
                           ? "connected - via key"
@@ -1532,7 +1538,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    {envBacked ? (
+                    {switchable ? (
                       <button
                         role="switch"
                         aria-checked={enabled}
@@ -1544,7 +1550,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                         <SwitchTrack on={enabled} />
                       </button>
                     ) : null}
-                    {connected ? (
+                    {connected && !loginBacked ? (
                       <button
                         onClick={() => handleClearProviderKey(p.name)}
                         disabled={busy}
@@ -1555,7 +1561,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     ) : null}
                   </div>
                 </div>
-                {!connected && (
+                {!connected && !loginBacked && (
                   <div className="flex gap-2 mt-1.5">
                     <input
                       type="password"
@@ -1809,7 +1815,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   {claudeCliStatus?.installed === false
                     ? (claudeCliStatus.error || "claude binary not found")
                     : claudeCliStatus?.authenticated
-                      ? `Signed in as ${claudeCliStatus.label || "Claude account"}`
+                      ? `Signed in as ${claudeCliStatus.label || "Claude account"}${
+                          providers.some((p) => p.name === "claude-code" && p.disconnected)
+                            ? " - off in API keys"
+                            : ""
+                        }`
                       : (claudeCliStatus?.error || "Not signed in")}
                 </span>
               </div>
