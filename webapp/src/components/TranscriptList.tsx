@@ -2594,6 +2594,13 @@ function getCardMeta(card: Card): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
+/** Summed known duration of thought slices; 0 when none reports one. */
+function thoughtDurationMs(thoughts: ReadonlyArray<{ duration_ms?: number | null }>): number {
+  return thoughts.reduce((sum, t) => (
+    typeof t.duration_ms === "number" && Number.isFinite(t.duration_ms) ? sum + Math.max(0, t.duration_ms) : sum
+  ), 0);
+}
+
 function ActivityGroup({
   items,
   onToggleCard,
@@ -2734,6 +2741,13 @@ function ActivityGroup({
   ]);
   const stepHeadline = actionCount > 0 ? exploringHeadline(kindSummary, true) : "Thinking";
   const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking });
+  // The live line under the fold shows the newest step. Its row joins the
+  // list only when the next step replaces it, so no step paints twice.
+  const liveLineShown = investigating && actionCount > 0;
+  const liveLineCard = liveLineShown && runningCard ? focusCard : undefined;
+  const liveLineThinking = liveLineShown && !runningKind && liveThinking;
+  const isLiveLineCard = (card: Card) =>
+    liveLineCard != null && (card === liveLineCard || (Boolean(card.id) && card.id === liveLineCard.id));
 
   const { items: displayItems, duplicateCounts } = collapseDuplicateFailedRoutingItems(items);
 
@@ -2978,6 +2992,35 @@ function ActivityGroup({
     return null;
   }
 
+  // A sealed reasoning-only group beside prose would read "Thought" over a
+  // "Thought" row. The row alone is the group. A whole-turn group keeps its
+  // Worked for clock, and a live group keeps its node as cards append.
+  const reasoningOnly = !investigating
+    && sealedTitle === "explored"
+    && thinkingItems.length > 0
+    && actionCount === 0
+    && narrationMsgs.length === 0
+    && checkpointItems.length === 0
+    && swarmResults.length === 0
+    && swarmPendingItems.length === 0
+    && telemetryItems.length === 0;
+  if (reasoningOnly) {
+    const thoughtMs = thoughtDurationMs(thinkingItems);
+    const blockId = thinkingItems[0].id || `${groupId}-think-0`;
+    return (
+      <div className="my-0.5 w-full" ref={foldRootRef} data-testid="activity-fold">
+        <ThinkingBlock
+          key={blockId}
+          blockId={blockId}
+          text={joinThoughtFoldText(thinkingItems.map((t) => t.text))}
+          live={false}
+          durationMs={thoughtMs > 0 ? thoughtMs : null}
+          row
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="my-0.5 w-full" ref={foldRootRef} data-testid="activity-fold" data-worked-for={!investigating ? "1" : undefined}>
       <FoldHeader
@@ -3011,15 +3054,11 @@ function ActivityGroup({
             if (row.kind === "thought") {
               const thoughts = row.items.filter(
                 (it): it is Extract<ActivityItem, { kind: "thinking" }> =>
-                  it.kind === "thinking",
+                  it.kind === "thinking" && !(liveLineThinking && it.streaming),
               );
               const first = thoughts[0];
               if (!first) return null;
-              const durationMs = thoughts.reduce((sum, t) => {
-                return typeof t.duration_ms === "number" && Number.isFinite(t.duration_ms)
-                  ? sum + Math.max(0, t.duration_ms)
-                  : sum;
-              }, 0);
+              const durationMs = thoughtDurationMs(thoughts);
               return (
                 <ThinkingBlock
                   key={first.id || `${groupId}-think-${row.indexes[0]}`}
@@ -3043,11 +3082,12 @@ function ActivityGroup({
                 />
               );
             }
+            if (row.item.kind === "card" && isLiveLineCard(row.item.card)) return null;
             return renderInner(row.item, row.index);
           })}
         </div>
       )}
-      {investigating && actionCount > 0 ? (
+      {liveLineShown ? (
         <LiveActivityLine text={liveLine} />
       ) : null}
     </div>
