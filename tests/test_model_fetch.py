@@ -39,6 +39,36 @@ def test_fetch_success_clears_prior_error(monkeypatch):
     assert mf.last_fetch_error("anthropic") is None
 
 
+def test_anthropic_oauth_token_lists_with_bearer(monkeypatch):
+    # A Claude Max OAuth token sent as x-api-key got HTTP 401, and Settings
+    # showed the curated 4.x list in place of the account's models.
+    seen = {}
+
+    def _fake_get(url, headers):
+        seen.update(headers)
+        return {"data": [{"id": "claude-opus-5-5"}]}
+
+    monkeypatch.setattr(mf, "_get", _fake_get)
+    out = mf._fetch_provider_models(prov.get_provider("anthropic"), "sk-ant-oat01-test")
+    assert out == ["claude-opus-5-5"]
+    assert seen["Authorization"] == "Bearer sk-ant-oat01-test"
+    assert "oauth-2025-04-20" in seen["anthropic-beta"]
+    assert "x-api-key" not in seen
+
+
+def test_anthropic_api_key_lists_with_x_api_key(monkeypatch):
+    seen = {}
+
+    def _fake_get(url, headers):
+        seen.update(headers)
+        return {"data": []}
+
+    monkeypatch.setattr(mf, "_get", _fake_get)
+    mf._fetch_provider_models(prov.get_provider("anthropic"), "sk-ant-api03-test")
+    assert seen["x-api-key"] == "sk-ant-api03-test"
+    assert "Authorization" not in seen
+
+
 def test_zai_models_accept_name_when_id_missing(monkeypatch):
     monkeypatch.setattr(
         mf, "_get",

@@ -126,9 +126,9 @@ _KNOWN_MODEL_SPECS = {
 # model_fetch; these are the last-resort curated sets.
 _CURATED_MODELS = {
     "anthropic": [
-        ("claude-opus-4-8", "frontier", "claude-opus-4-8"),
-        ("claude-sonnet-4-5", "balanced", "claude-sonnet-4-5"),
-        ("claude-haiku-4-5", "cheap", "claude-haiku-4-5"),
+        ("claude-opus-5-5", "frontier", "claude-opus-5-5"),
+        ("claude-sonnet-5-5", "balanced", "claude-sonnet-5-5"),
+        ("claude-haiku-5-5", "cheap", "claude-haiku-5-5"),
     ],
     "openai-api": [
         ("gpt-5.4", "frontier", "gpt-5.4"),

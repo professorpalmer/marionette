@@ -80,7 +80,7 @@ wheels = [
 
 [[package]]
 name = "pm-harness"
-version = "0.9.617"
+version = "0.9.618"
 source = { editable = "." }
 dependencies = [
     { name = "puppetmaster-ai" },

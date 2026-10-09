@@ -215,8 +215,12 @@ PROVIDERS = (
         env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"),
         base_url="https://api.anthropic.com",
         api_mode="anthropic_messages", display_name="Anthropic",
-        pilot_models=("claude-opus-4-8", "claude-sonnet-4-5", "claude-haiku-4-5"),
-        vision_model="claude-haiku-4-5",
+        # Older ids stay after the 5.5 family: saved bare pilot names
+        # resolve against this list, and the API still serves them.
+        pilot_models=("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+                      "claude-fable-5-1", "claude-opus-4-8", "claude-sonnet-4-5",
+                      "claude-haiku-4-5"),
+        vision_model="claude-haiku-5-5",
     ),
     Provider(
         name="openai", aliases=("oai",),
@@ -269,13 +273,17 @@ PROVIDERS = (
         base_url="",
         api_mode="claude_cli", display_name="Claude Code (Max)",
         pilot_models=(
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-4-5",
             "claude-haiku-4-5",
             "claude-opus-4-6",
-            "claude-opus-5",
         ),
-        vision_model="claude-sonnet-4-5",
+        vision_model="claude-sonnet-5-5",
         billing="plan",
     ),
     # Cursor Agent CLI plan pilot. Distinct from platform which('cursor') and

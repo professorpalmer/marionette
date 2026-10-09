@@ -291,10 +291,16 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
     _LAST_ERROR.pop(name, None)
     try:
         if name == "anthropic":
-            data = _get(
-                "https://api.anthropic.com/v1/models",
-                {"x-api-key": key, "anthropic-version": "2023-06-01"},
-            )
+            from .oauth_anthropic import is_anthropic_oauth_token
+            headers = {"anthropic-version": "2023-06-01"}
+            # A Claude Max OAuth token is a Bearer credential: sent as
+            # x-api-key it gets 401 and Settings falls back to curated.
+            if is_anthropic_oauth_token(key):
+                headers["Authorization"] = f"Bearer {key}"
+                headers["anthropic-beta"] = "oauth-2025-04-20"
+            else:
+                headers["x-api-key"] = key
+            data = _get("https://api.anthropic.com/v1/models?limit=100", headers)
             return [m["id"] for m in data.get("data", []) if m.get("id")]
         if name == "openrouter":
             data = _get(
