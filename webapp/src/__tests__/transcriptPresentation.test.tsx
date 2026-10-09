@@ -1257,7 +1257,12 @@ describe("live command token clicks", () => {
     );
     expect(screen.getByTestId("activity-fold")).toBe(fold);
     expect(screen.getByRole("button", { name: /Exploring 3 files/i })).toHaveAttribute("aria-expanded", "true");
-    expect(within(screen.getByTestId("activity-rows")).getAllByText(/^Read/)).toHaveLength(3);
+    // The newest step is the live line only. lg1 rolled out of the wheel
+    // into the rows; it is not painted twice.
+    const rows = within(screen.getByTestId("activity-rows"));
+    expect(rows.getAllByText(/^Read/)).toHaveLength(2);
+    expect(rows.getByText("lg1.ts")).toBeTruthy();
+    expect(rows.queryByText("lr2.ts")).toBeNull();
     // The wheel: the new line rolls in while the old one rolls out, hidden
     // from assistive tech.
     const line = screen.getByTestId("live-activity-line");

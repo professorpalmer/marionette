@@ -216,9 +216,10 @@ describe("live fold (Exploring + live line + flat rows)", () => {
     expect(screen.queryByTestId("ran-commands-fold")).toBeNull();
     const rows = screen.getByTestId("activity-rows");
     expect(within(rows).getByTestId("thought-fold").textContent).toMatch(/Thinking/);
-    expect(within(rows).getAllByText("Running")).toHaveLength(2);
+    // The live line already names rg ActionForm; its row waits for the next step.
+    expect(within(rows).getAllByText("Running")).toHaveLength(1);
     expect(within(rows).getByText("git status")).toBeTruthy();
-    expect(within(rows).getByText("rg ActionForm")).toBeTruthy();
+    expect(within(rows).queryByText("rg ActionForm")).toBeNull();
   });
 });
 
@@ -352,5 +353,28 @@ describe("stacked Swarm done fold", () => {
 
     fireEvent.click(within(fold).getByRole("button"));
     expect(screen.getAllByText(/swarm done:/i).length).toBe(8);
+  });
+});
+
+describe("reasoning-only group beside prose", () => {
+  it("is one flat Thought row, not a Thought fold over a Thought row", () => {
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "check the build" } },
+      { kind: "thinking", text: "start with the build log", id: "th-top", duration_ms: 3000 },
+      { kind: "msg", msg: { role: "assistant", text: "I check the build log first." } },
+      sealedCommand("c1", "npm run build", 1500),
+      { kind: "msg", msg: { role: "assistant", text: "The build is green." } },
+    ];
+
+    render(<TranscriptList {...listProps(items)} />);
+
+    // The turn seals as one Worked for fold; the reasoning group sits at its top.
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/ }));
+    const thoughts = screen.getAllByText("Thought 3s");
+    expect(thoughts).toHaveLength(1);
+    expect(thoughts[0].closest("[data-testid='thought-fold']")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Thought 3s$/ })?.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: /^Thought 3s$/ }));
+    expect(screen.getByText(/start with the build log/)).toBeTruthy();
   });
 });
