@@ -3149,19 +3149,25 @@ function FoldHeader({
  * shimmers. Reduced motion shows the swap without movement (index.css).
  */
 function LiveActivityLine({ text }: { text: string }) {
-  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number }>(
-    () => ({ current: text, previous: null, turn: 0 }),
+  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean }>(
+    () => ({ current: text, previous: null, turn: 0, swapping: false }),
   );
   if (lines.current !== text) {
-    setLines({ current: text, previous: lines.current, turn: lines.turn + 1 });
+    // An unfocused window pauses every animation (html.app-idle in index.css).
+    // A swap paused at its first frame sits below the box at opacity 0, so
+    // the live line looked empty. Unfocused, swap at once without motion.
+    const animate = !document.documentElement.classList.contains("app-idle");
+    setLines({ current: text, previous: animate ? lines.current : null, turn: lines.turn + 1, swapping: animate });
   }
   useEffect(() => {
-    if (lines.previous == null) return;
+    if (!lines.swapping) return;
+    // Drop the swap classes when the swap ends, so a swap the idle pause
+    // froze halfway still settles visible, and refocus does not replay it.
     const id = window.setTimeout(() => {
-      setLines((cur) => (cur.turn === lines.turn ? { ...cur, previous: null } : cur));
+      setLines((cur) => (cur.turn === lines.turn ? { ...cur, previous: null, swapping: false } : cur));
     }, WHEEL_SWAP_MS);
     return () => window.clearTimeout(id);
-  }, [lines.turn, lines.previous]);
+  }, [lines.turn, lines.swapping]);
   return (
     <div className="live-wheel text-ui-12 font-sans" data-testid="live-activity-line" role="status" aria-live="polite">
       {lines.previous != null ? (
@@ -3169,7 +3175,7 @@ function LiveActivityLine({ text }: { text: string }) {
           {lines.previous}
         </span>
       ) : null}
-      <span key={`in-${lines.turn}`} className={`fold-shimmer text-faint/80 ${lines.turn > 0 ? "live-wheel-in" : ""}`} title={lines.current}>
+      <span key={`in-${lines.turn}`} className={`fold-shimmer text-faint/80 ${lines.swapping ? "live-wheel-in" : ""}`} title={lines.current}>
         {lines.current}
       </span>
     </div>

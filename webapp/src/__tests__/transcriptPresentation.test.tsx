@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   TranscriptList,
@@ -1270,6 +1270,57 @@ describe("live command token clicks", () => {
     expect(line.lastElementChild?.className).toMatch(/live-wheel-in/);
     expect(line.firstElementChild?.textContent).toBe("Reading lg1.ts");
     expect(line.firstElementChild).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("swaps the live line without motion while the window is unfocused", () => {
+    // index.css pauses every animation under html.app-idle. A swap paused at
+    // its first frame sat below the box at opacity 0: an empty live line.
+    const card = (id: string, running = false): Item => ({
+      kind: "card",
+      card: { id, goal: `${id}.ts`, cwd: null, kind: "read_file", running, open: false,
+        result: running ? undefined : { status: "ok" } },
+    });
+    const user: Item = { kind: "msg", msg: { role: "user", text: "look around" } };
+    const { rerender } = render(
+      <TranscriptList {...listProps([user, card("lr1"), card("lg1", true)])} status="executing" turnOpen />,
+    );
+    document.documentElement.classList.add("app-idle");
+    try {
+      rerender(
+        <TranscriptList {...listProps([user, card("lr1"), card("lg1"), card("lr2", true)])} status="executing" turnOpen />,
+      );
+      const line = screen.getByTestId("live-activity-line");
+      expect(line.children).toHaveLength(1);
+      expect(line.textContent).toBe("Reading lr2.ts");
+      expect(line.firstElementChild?.className).not.toMatch(/live-wheel/);
+    } finally {
+      document.documentElement.classList.remove("app-idle");
+    }
+  });
+
+  it("drops the swap classes when the swap ends", () => {
+    vi.useFakeTimers();
+    try {
+      const card = (id: string, running = false): Item => ({
+        kind: "card",
+        card: { id, goal: `${id}.ts`, cwd: null, kind: "read_file", running, open: false,
+          result: running ? undefined : { status: "ok" } },
+      });
+      const user: Item = { kind: "msg", msg: { role: "user", text: "look around" } };
+      const { rerender } = render(
+        <TranscriptList {...listProps([user, card("lr1"), card("lg1", true)])} status="executing" turnOpen />,
+      );
+      rerender(
+        <TranscriptList {...listProps([user, card("lr1"), card("lg1"), card("lr2", true)])} status="executing" turnOpen />,
+      );
+      expect(screen.getByTestId("live-activity-line").lastElementChild?.className).toMatch(/live-wheel-in/);
+      act(() => { vi.advanceTimersByTime(300); });
+      const line = screen.getByTestId("live-activity-line");
+      expect(line.children).toHaveLength(1);
+      expect(line.firstElementChild?.className).not.toMatch(/live-wheel/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
