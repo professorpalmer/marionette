@@ -10,7 +10,10 @@ import {
   resolveSealedWorkMs,
   formatBusyElapsed,
   latchWaitingPhaseStartedAt,
-  investigatingHeadline,
+  exploringHeadline,
+  liveActivityLine,
+  partitionActivityRows,
+  toolVerb,
   itemsInCurrentTurn,
   resolveCardCliInput,
   shortenGoal,
@@ -23,9 +26,6 @@ import {
   turnHasVisibleBusySurface,
   turnHasLiveInvestigation,
   turnLooksAnswerComplete,
-  explorationShelfAnchorId,
-  isExplorationShelfKind,
-  partitionExplorationShelf,
 } from "../lib/turnProgress";
 import {
   clearToolPrepPlaceholders,
@@ -225,29 +225,27 @@ describe("deriveBusyProgress", () => {
   });
 });
 
-describe("investigatingHeadline / exploration summary", () => {
-  it("shows Investigating focus while tools run", () => {
-    expect(
-      investigatingHeadline(3, true, "read", "config.txt", "3 files"),
-    ).toBe("Investigating · read config.txt");
+describe("exploring headline / live line / exploration summary", () => {
+  it("names the running tool with a progressive verb and its target", () => {
+    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "config.txt" })).toBe("Reading config.txt");
+    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "pytest -q" })).toBe("Running pytest -q");
+    expect(liveActivityLine({ runningKind: "web_fetch", runningGoal: "https://x.dev" })).toBe("Fetching https://x.dev");
   });
 
-  it("does not paint tool tool when kind and goal are the same", () => {
-    expect(
-      investigatingHeadline(1, true, "tool", "tool", "1 step"),
-    ).toBe("Investigating · tool");
+  it("drops a goal that only restates the tool or is model junk", () => {
+    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "read file" })).toBe("Reading");
+    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "null | wc -l" })).toBe("Running");
   });
 
-  it("falls back to kind counts while live without a focus tool", () => {
-    expect(
-      investigatingHeadline(3, true, "", "", "2 files, 1 search"),
-    ).toBe("Investigating · 2 files, 1 search");
+  it("says Thinking during live reasoning and Planning next moves in a quiet gap", () => {
+    expect(liveActivityLine({ liveThinking: true })).toBe("Thinking");
+    expect(liveActivityLine({})).toBe("Planning next moves");
   });
 
-  it("aggregates Explored summary when done", () => {
-    expect(
-      investigatingHeadline(4, false, "", "", "3 files, 1 search"),
-    ).toBe("Explored 3 files, 1 search");
+  it("reads Exploring while live and Explored when done", () => {
+    expect(exploringHeadline("2 files, 1 search", true)).toBe("Exploring 2 files, 1 search");
+    expect(exploringHeadline("3 files, 1 search", false)).toBe("Explored 3 files, 1 search");
+    expect(exploringHeadline("", false)).toBe("Explored");
   });
 
   it("buckets kinds Cursor-style", () => {
@@ -259,7 +257,16 @@ describe("investigatingHeadline / exploration summary", () => {
         "grep",
         "run_command",
       ]),
-    ).toBe("3 files, 1 search, 1 command");
+    ).toBe("3 files, 1 search, ran 1 command");
+  });
+
+  it("gives each tool a past verb for its row and a live verb for the wheel line", () => {
+    expect(toolVerb("read_file", false)).toBe("Read");
+    expect(toolVerb("grep", false)).toBe("Grepped");
+    expect(toolVerb("run_command", false)).toBe("Ran");
+    expect(toolVerb("ShellToolCall", true)).toBe("Running");
+    expect(toolVerb("edit_file", true)).toBe("Editing");
+    expect(toolVerb("custom_probe", false)).toBe("Custom Probe");
   });
 
   it("maps tool kinds to row labels", () => {
@@ -1181,24 +1188,19 @@ describe("tool card CLI input + stale running", () => {
   });
 });
 
-describe("exploration shelf grouping", () => {
-  it("groups consecutive read/search cards and leaves commands alone", () => {
-    expect(isExplorationShelfKind("read_file")).toBe(true);
-    expect(isExplorationShelfKind("grep")).toBe(true);
-    expect(isExplorationShelfKind("run_command")).toBe(false);
-    const rows = partitionExplorationShelf(
-      ["read_file", "grep", "run_command", "read_file"],
-      (k) => k,
+describe("flat activity rows", () => {
+  it("keeps one row per tool and joins only consecutive thoughts and finished swarms", () => {
+    type Row = { k: "card" | "think" | "swarm_done" };
+    const rows = partitionActivityRows<Row>(
+      [{ k: "card" }, { k: "think" }, { k: "think" }, { k: "card" }, { k: "card" }, { k: "swarm_done" }, { k: "swarm_done" }],
+      (r) => ({ isThinking: r.k === "think", isTerminalSwarmPending: r.k === "swarm_done" }),
     );
-    expect(rows).toHaveLength(3);
-    expect(rows[0]).toMatchObject({ kind: "shelf", items: ["read_file", "grep"] });
-    expect(rows[1]).toMatchObject({ kind: "item", item: "run_command" });
-    expect(rows[2]).toMatchObject({ kind: "item", item: "read_file" });
+    expect(rows.map((r) => r.kind)).toEqual(["item", "thought", "item", "item", "swarms"]);
   });
 
-  it("anchors shelf identity on the first card so appends do not remount", () => {
-    expect(explorationShelfAnchorId(["r1", "g1"])).toBe("expl-shelf-r1");
-    expect(explorationShelfAnchorId(["r1", "g1", "r2"])).toBe("expl-shelf-r1");
+  it("leaves a single finished swarm as its own row", () => {
+    const rows = partitionActivityRows(["swarm"], () => ({ isThinking: false, isTerminalSwarmPending: true }));
+    expect(rows).toEqual([{ kind: "item", item: "swarm", index: 0 }]);
   });
 });
 

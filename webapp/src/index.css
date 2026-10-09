@@ -900,6 +900,64 @@ body.is-row-resizing iframe {
 .transcript-fold-chrome {
   font-weight: 400;
 }
+/* Live fold text: a light band sweeps left to right across the words.
+   text-fill is transparent so `color` (and currentColor) stays the base hue. */
+.fold-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    currentColor 0%,
+    currentColor 38%,
+    theme('colors.txt') 50%,
+    currentColor 62%,
+    currentColor 100%
+  );
+  background-size: 250% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: fold-shimmer 2.2s linear infinite;
+}
+@keyframes fold-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+/* The live status line under an Exploring fold: one line tall. A new line
+   rolls in from below while the old one rolls up and out. */
+.live-wheel {
+  position: relative;
+  height: 1.6em;
+  line-height: 1.6em;
+  overflow: hidden;
+}
+.live-wheel > span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.live-wheel-in {
+  animation: live-wheel-in theme('transitionDuration.base') theme('transitionTimingFunction.base') both;
+}
+.live-wheel-in.fold-shimmer {
+  animation:
+    live-wheel-in theme('transitionDuration.base') theme('transitionTimingFunction.base') both,
+    fold-shimmer 2.2s linear infinite;
+}
+.live-wheel-out {
+  animation: live-wheel-out theme('transitionDuration.base') theme('transitionTimingFunction.base') both;
+}
+@keyframes live-wheel-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes live-wheel-out {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-100%); opacity: 0; }
+}
 /* Cmd/Ctrl+F in chat (CSS Custom Highlight API; see lib/transcriptFind.ts). */
 ::highlight(transcript-find) {
   background-color: theme('colors.accent / 28%');

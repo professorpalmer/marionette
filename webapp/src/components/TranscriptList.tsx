@@ -48,11 +48,10 @@ import {
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
-  explorationShelfAnchorId,
-  investigatingHeadline,
+  exploringHeadline,
   joinThoughtFoldText,
-  partitionStackedActivity,
-  ranCommandsLabel,
+  liveActivityLine,
+  partitionActivityRows,
   swarmDoneFoldLabel,
   resolveCardCliInput,
   shortenGoal,
@@ -60,11 +59,12 @@ import {
   quietWorkingCueVisible,
   shouldShowBusyFooter,
   thoughtFoldLabel,
-  toolFocusPhrase,
   toolInputFieldKey,
   toolRowLabel,
+  toolVerb,
+  isRedundantToolGoal,
   workFoldLabel,
-  ranGoalLine,
+  workedForLabel,
   resolveSealedWorkMs,
   turnSpanMs,
   maxKnown,
@@ -386,7 +386,13 @@ export type GroupedItem =
     }
   | { kind: "verification"; passed: boolean; output?: string; cmd?: string }
   | { kind: "turn_terminal"; id?: string; cause: string; state: string; text: string }
-  | { kind: "activity_group"; items: ActivityItem[] };
+  | { kind: "activity_group"; items: ActivityItem[] }
+  | { kind: "turn_work"; rows: TurnWorkRow[] };
+
+/** One row inside a sealed turn's Worked for fold: a tool group or said prose. */
+type TurnWorkRow =
+  | { kind: "activity_group"; items: ActivityItem[] }
+  | { kind: "msg"; msg: Msg };
 
 type ActivityItem =
   | { kind: "card"; card: Card }
@@ -704,23 +710,6 @@ export function collectIntermediateAssistantItems(
   return intermediateItems;
 }
 
-/**
- * One fold per turn. Spoken prose stays a top-level Bubble where it painted
- * (it is never re-filed into the fold); activity after it joins the turn's
- * fold above it, so every tool call of a turn lives in one collapse with the
- * prose beneath it, and that fold's "Worked for" is the turn's duration.
- * User / steer / questions end the walk: a new turn opens its own fold.
- */
-function turnFoldAcrossSpokenProse(grouped: GroupedItem[]): ActivityItem[] | null {
-  for (let k = grouped.length - 1; k >= 0; k--) {
-    const g = grouped[k];
-    if (g.kind === "msg" && g.msg.role === "assistant") continue;
-    if (g.kind === "activity_group") return g.items;
-    return null;
-  }
-  return null;
-}
-
 export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>): GroupedItem[] {
   // The feed is a conversation, not an event log. Top-level painted rows are
   // msg / question (command_approval, secret_request) / file (pending_review) /
@@ -736,18 +725,17 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       .map((item) => item.job_id),
   );
 
+  // Spoken prose ends the strip: activity after it opens a new group below
+  // it, so a live turn reads prose, group, prose, group in stream order.
   const flush = () => {
     const activityItems = [...currentGroup, ...terminalSwarmItems];
     if (activityItems.length > 0) {
-      const turnFold = turnFoldAcrossSpokenProse(grouped);
-      if (turnFold) turnFold.push(...activityItems);
-      else grouped.push({ kind: "activity_group", items: activityItems });
+      grouped.push({ kind: "activity_group", items: activityItems });
       currentGroup = [];
       terminalSwarmItems = [];
     }
   };
 
-  // Spoken prose flushes the strip; the next flush joins the turn's fold.
   const pushActivity = (item: ActivityItem) => {
     currentGroup.push(item);
   };
@@ -853,6 +841,83 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   return grouped;
 }
 
+function isUserRow(row: GroupedItem): boolean {
+  return row.kind === "msg" && row.msg.role === "user";
+}
+
+/**
+ * One finished turn: everything but the final answer goes under one Worked
+ * for fold (Cursor). The final answer is the last assistant message of the
+ * turn and paints below the fold. An explicit `channel: "answer"` message
+ * and operator rows (questions, steers, reviews, terminal chips) stay top
+ * level and split the fold. A lone tool group is its own Worked for fold.
+ */
+function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
+  let finalIdx = -1;
+  for (let k = span.length - 1; k >= 0; k--) {
+    const row = span[k];
+    if (row.kind === "msg" && row.msg.role === "assistant") {
+      finalIdx = k;
+      break;
+    }
+  }
+  const out: GroupedItem[] = [];
+  let run: TurnWorkRow[] = [];
+  let heldFinal: GroupedItem | null = null;
+  const closeRun = () => {
+    const groups = run.filter((row) => row.kind === "activity_group").length;
+    if (groups > 0 && run.length >= 2) out.push({ kind: "turn_work", rows: run });
+    else out.push(...run);
+    run = [];
+    if (heldFinal) {
+      out.push(heldFinal);
+      heldFinal = null;
+    }
+  };
+  span.forEach((row, k) => {
+    if (k === finalIdx) {
+      heldFinal = row;
+      return;
+    }
+    if (row.kind === "activity_group") {
+      run.push(row);
+      return;
+    }
+    if (row.kind === "msg" && row.msg.role === "assistant" && row.msg.channel !== "answer") {
+      run.push({ kind: "msg", msg: row.msg });
+      return;
+    }
+    closeRun();
+    out.push(row);
+  });
+  closeRun();
+  return out;
+}
+
+/**
+ * Wrap each finished turn in its Worked for fold. The live turn (the span
+ * after the last user message while the agent loop is open) stays in stream
+ * order: prose, Explored group, prose, Exploring group.
+ */
+export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): GroupedItem[] {
+  const out: GroupedItem[] = [];
+  let i = 0;
+  while (i < grouped.length) {
+    if (isUserRow(grouped[i])) {
+      out.push(grouped[i]);
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < grouped.length && !isUserRow(grouped[j])) j += 1;
+    const span = grouped.slice(i, j);
+    if (j === grouped.length && liveTurnOpen) out.push(...span);
+    else out.push(...wrapTurnSpan(span));
+    i = j;
+  }
+  return out;
+}
+
 /** Items that groupAgentActivity skips or Bubble would not paint. */
 function msgItemPaints(msg: Msg): boolean {
   if (msg.role === "user") {
@@ -865,6 +930,7 @@ function msgItemPaints(msg: Msg): boolean {
 function groupedItemPaints(it: GroupedItem): boolean {
   if (it.kind === "msg") return msgItemPaints(it.msg);
   if (it.kind === "activity_group") return it.items.length > 0;
+  if (it.kind === "turn_work") return it.rows.length > 0;
   return true;
 }
 
@@ -965,13 +1031,17 @@ function objKey(obj: object): string {
 // Session-prefixed keys (`sessionId::groupId`) so keep-alive panes do not
 // share open/closed prefs. clearActivityFoldPrefs() remains for tests.
 const __activityOpen = new Map<string, boolean>();
-// Last live Worked for wall-clock, keyed by groupId. Prior folds must not
-// inherit the next turn's busy timer or fall back to a 1s thinking slice.
+// Last live Worked for wall-clock, keyed by groupId (or by turnWorkMemoryKey
+// for a whole turn). Prior folds must not inherit the next turn's busy timer
+// or fall back to a 1s thinking slice.
 const __sealedWorkMs = new Map<string, number>();
+
+/** Memory key for a turn's busy clock: the turn's first tool group. */
+function turnWorkMemoryKey(sessionId: string | undefined, firstGroupCanon: string): string {
+  return sessionFoldPrefKey(sessionId, `turn:${firstGroupCanon}`);
+}
 // Reasoning expand preference (user click) survives remounts / live→idle flips.
 const __thinkingExpanded = new Map<string, boolean>();
-// Ran N command mid-fold expand preference (user click) survives remounts.
-const __commandFoldOpen = new Map<string, boolean>();
 const __swarmDoneFoldOpen = new Map<string, boolean>();
 // Alias every durable member of an investigation onto one canon key so a
 // thinking-only group does not remount when the first tool card arrives (and
@@ -987,7 +1057,6 @@ const __activityGroupCanon = new Map<string, string>();
 export function clearActivityFoldPrefs(): void {
   __activityOpen.clear();
   __thinkingExpanded.clear();
-  __commandFoldOpen.clear();
   __swarmDoneFoldOpen.clear();
   __activityGroupCanon.clear();
   __sealedWorkMs.clear();
@@ -1068,6 +1137,14 @@ export function activityFoldInvestigating(opts: {
       )
     )
   );
+}
+
+/** Stable id for a sealed turn's Worked for fold: its first tool group. */
+function turnWorkStableId(rows: TurnWorkRow[], fallbackIndex: number): string {
+  const first = rows.find((row) => row.kind === "activity_group");
+  return first && first.kind === "activity_group"
+    ? activityGroupStableId(first.items, fallbackIndex)
+    : `turn-${fallbackIndex}`;
 }
 
 /** Stable React key for one investigation fold. Exported for unit tests. */
@@ -1153,6 +1230,8 @@ export function stableItemKey(it: GroupedItem, i: number): string {
       // React key keeps the index so duplicate-card corruption cannot collide;
       // ActivityGroup's groupId (open map) stays on the canon alone.
       return `${activityGroupStableId(it.items, i)}#${i}`;
+    case "turn_work":
+      return `work-${turnWorkStableId(it.rows, i)}`;
     case "swarm_result":
       return `swres-${it.job_id}`;
     case "swarm_pending":
@@ -1250,7 +1329,7 @@ const VirtualTranscriptRow = memo(
   const attachDom = shouldAttachDomMeasure(item, feedSettled);
   const remasureNow = paintedLive || shouldRemeasureImmediately(item);
   const measureSignal = rowMeasureSignal(item);
-  const keepMeasure = attachDom || remasureNow || item.kind === "activity_group";
+  const keepMeasure = attachDom || remasureNow || item.kind === "activity_group" || item.kind === "turn_work";
 
   useLayoutEffect(() => {
     if (!keepMeasure) {
@@ -1600,7 +1679,10 @@ export const TranscriptList = memo(function TranscriptList({
   // (uncompiled) component without changing the transcript.
   const { intermediateItems, grouped } = useMemo(() => {
     const intermediate = collectIntermediateAssistantItems(items, agentLoopOpen);
-    return { intermediateItems: intermediate, grouped: groupAgentActivity(items, intermediate) };
+    return {
+      intermediateItems: intermediate,
+      grouped: wrapSealedTurns(groupAgentActivity(items, intermediate), agentLoopOpen),
+    };
   }, [items, agentLoopOpen]);
   const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
   const rowKeys = useMemo(() => transcriptRowKeys(grouped), [grouped]);
@@ -1610,6 +1692,41 @@ export const TranscriptList = memo(function TranscriptList({
     return index;
   }, [items]);
   const lastActivityGroupIdx = liveActivityGroupIndex(grouped);
+  // Only the group at the foot of the live turn is Exploring. Once prose
+  // streams below it, it reads Explored, and the next tool opens a new group.
+  const liveFoldIdx = agentLoopOpen && lastActivityGroupIdx >= 0
+    && !grouped.slice(lastActivityGroupIdx + 1).some((row) => row.kind === "msg")
+    ? lastActivityGroupIdx
+    : -1;
+  const liveTurnStart = (() => {
+    for (let k = grouped.length - 1; k >= 0; k--) if (isUserRow(grouped[k])) return k + 1;
+    return 0;
+  })();
+  // The current turn's busy clock is its Worked for (live, and sealed until
+  // the next prompt). Remember it so the fold keeps it after the next prompt.
+  const currentTurnWorkKey = (() => {
+    for (const row of grouped.slice(liveTurnStart)) {
+      if (row.kind === "activity_group") {
+        return turnWorkMemoryKey(sessionId, activityGroupStableId(row.items, liveTurnStart));
+      }
+      if (row.kind === "turn_work") {
+        return turnWorkMemoryKey(sessionId, turnWorkStableId(row.rows, liveTurnStart));
+      }
+    }
+    return null;
+  })();
+  useEffect(() => {
+    if (currentTurnWorkKey && busyElapsedMs != null && busyElapsedMs > 0) {
+      __sealedWorkMs.set(currentTurnWorkKey, Math.max(__sealedWorkMs.get(currentTurnWorkKey) ?? 0, busyElapsedMs));
+    }
+  }, [currentTurnWorkKey, busyElapsedMs]);
+  const rememberedTurnMs = (firstGroupCanon: string): number | null => {
+    const key = turnWorkMemoryKey(sessionId, firstGroupCanon);
+    return maxKnown(
+      __sealedWorkMs.get(key) ?? null,
+      key === currentTurnWorkKey && busyElapsedMs != null && busyElapsedMs > 0 ? busyElapsedMs : null,
+    );
+  };
   const { head: virtualGrouped, tail: liveTailGrouped, tailStartIndex } =
     partitionTranscriptLiveTail(grouped, {
       lastLiveActivityIdx: lastActivityGroupIdx,
@@ -2184,17 +2301,52 @@ export const TranscriptList = memo(function TranscriptList({
         </div>
       );
     } else if (it.kind === "activity_group") {
-      const openId = sessionFoldPrefKey(sessionId, activityGroupStableId(it.items, i));
+      const canon = activityGroupStableId(it.items, i);
+      const inLiveTurn = agentLoopOpen && i >= liveTurnStart;
       return (
         <ActivityGroup
           key={key}
-          groupId={openId}
+          groupId={sessionFoldPrefKey(sessionId, canon)}
           items={it.items}
-          isLiveFold={i === lastActivityGroupIdx}
-          loopOpen={agentLoopOpen && i === lastActivityGroupIdx}
-          pausePoint={pausePoint && i === lastActivityGroupIdx}
-          busyElapsedMs={busyElapsedMs}
+          isLiveFold={i === liveFoldIdx}
+          loopOpen={i === liveFoldIdx}
+          pausePoint={pausePoint && i === liveFoldIdx}
+          busyElapsedMs={i === liveFoldIdx ? busyElapsedMs : null}
+          sealedTitle={inLiveTurn ? "explored" : "worked"}
+          rememberedTurnMs={rememberedTurnMs(canon)}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
+        />
+      );
+    } else if (it.kind === "turn_work") {
+      const canon = turnWorkStableId(it.rows, i);
+      return (
+        <TurnWorkFold
+          key={key}
+          foldId={sessionFoldPrefKey(sessionId, `work:${canon}`)}
+          rows={it.rows}
+          rememberedMs={rememberedTurnMs(canon)}
+          renderRow={(row, k) => {
+            if (row.kind === "msg") {
+              return (
+                <Bubble
+                  key={row.msg.id || objKey(row.msg)}
+                  msg={row.msg}
+                  showLabel={false}
+                  onImageClick={(url) => onImageClick(url)}
+                />
+              );
+            }
+            const rowCanon = activityGroupStableId(row.items, k);
+            return (
+              <ActivityGroup
+                key={rowCanon}
+                groupId={sessionFoldPrefKey(sessionId, rowCanon)}
+                items={row.items}
+                sealedTitle="explored"
+                onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
+              />
+            );
+          }}
         />
       );
     }
@@ -2294,8 +2446,10 @@ export const TranscriptList = memo(function TranscriptList({
   // Latch the step/timer line to the open agent loop. Do not hide it just
   // because a card or stream is already on screen — that gap is the flicker
   // between tool calls (and while the current tool is still running).
+  // The Exploring fold's live line owns the busy cue while it is the tail row.
   const showBusyFooter =
-    shouldShowBusyFooter(items, status, agentLoopOpen) || pausePoint;
+    (shouldShowBusyFooter(items, status, agentLoopOpen) && !(liveFoldIdx >= 0 && !pausePoint))
+    || pausePoint;
   const showStall = quietWorkingCueVisible(
     items,
     status,
@@ -2440,65 +2594,6 @@ function getCardMeta(card: Card): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-function ExplorationShelf({
-  items,
-  duplicateCounts,
-  onToggleCard,
-  activityGroupOpen,
-}: {
-  items: Array<{ kind: "card"; card: Card }>;
-  duplicateCounts: number[];
-  onToggleCard: (card: Card) => void;
-  activityGroupOpen: boolean;
-}) {
-  const anyRunning = items.some((it) => cardEffectivelyRunning(it.card));
-  const [open, setOpen] = useState(anyRunning);
-  const userCollapsedRef = useRef(false);
-  useEffect(() => {
-    if (anyRunning && !userCollapsedRef.current) {
-      setOpen(true);
-    }
-  }, [anyRunning]);
-  const kinds = items.map((it) => it.card.kind || "action");
-  const summary = aggregateExplorationSummary(kinds) || `${items.length} steps`;
-  const headline = anyRunning ? `Exploring · ${summary}` : summary;
-  const shelfId = explorationShelfAnchorId(items.map((it) => it.card.id));
-  return (
-    <div className="w-full" data-testid="exploration-shelf" data-count={items.length}>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={`Exploration ${summary}`}
-        onClick={() => {
-          setOpen((v) => {
-            const next = !v;
-            userCollapsedRef.current = !next;
-            return next;
-          });
-        }}
-        className="flex items-center gap-1.5 py-0.5 text-ui-11 font-sans font-normal text-faint/80 hover:text-muted transition w-fit max-w-full select-none bg-transparent border-0 p-0 cursor-pointer text-left"
-      >
-        {open ? <ChevronDown size={10} className="text-faint/55 shrink-0" /> : <ChevronRight size={10} className="text-faint/55 shrink-0" />}
-        {anyRunning ? <Loader2 size={10} className="animate-spin text-faint/60 shrink-0" /> : null}
-        <span className="truncate">{headline}</span>
-      </button>
-      {open && (
-        <div className="flex flex-col gap-0.5 pl-2 mt-0.5">
-          {items.map((it, idx) => (
-            <ActionCard
-              key={it.card.id || `${shelfId}-${idx}`}
-              card={it.card}
-              onToggle={() => onToggleCard(it.card)}
-              duplicateCount={duplicateCounts[idx] || 1}
-              activityGroupOpen={activityGroupOpen}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ActivityGroup({
   items,
   onToggleCard,
@@ -2507,6 +2602,8 @@ function ActivityGroup({
   pausePoint: pausePointProp,
   isLiveFold: isLiveFoldProp,
   busyElapsedMs: busyElapsedMsProp,
+  sealedTitle: sealedTitleProp,
+  rememberedTurnMs: rememberedTurnMsProp,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -2522,7 +2619,17 @@ function ActivityGroup({
   isLiveFold?: boolean;
   /** Wall-clock ms for the live busy turn — seeds Worked for when sealing. */
   busyElapsedMs?: number | null;
+  /**
+   * Sealed headline: "worked" (Worked for {duration}) when this group is the
+   * whole turn; "explored" (Explored {counts}) when prose or other groups of
+   * the same turn sit beside it.
+   */
+  sealedTitle?: "worked" | "explored";
+  /** The turn's remembered busy clock, for a group that is the whole turn. */
+  rememberedTurnMs?: number | null;
 }) {
+  const sealedTitle = sealedTitleProp ?? "worked";
+  const rememberedTurnMs = rememberedTurnMsProp ?? null;
   const loopOpen = loopOpenProp ?? false;
   const pausePoint = pausePointProp ?? false;
   const isLiveFold = isLiveFoldProp ?? false;
@@ -2570,9 +2677,9 @@ function ActivityGroup({
     runningCard,
     (card) => resolveCardCliInput(card) || "",
   );
-  const runningKind = toolFocusPhrase(
-    focusCard?.kind || runningNested?.kind || "",
-  );
+  const runningKind = anyRunning || runningNested
+    ? focusCard?.kind || runningNested?.kind || ""
+    : "";
   const runningGoal = shortenGoal(
     resolveCardCliInput(focusCard || {}) || runningNested?.goal || "",
   );
@@ -2625,13 +2732,8 @@ function ActivityGroup({
     ...cards.map((c) => c.card.kind || "action"),
     ...nestedRows.map((a) => a.kind || "action"),
   ]);
-  const stepHeadline = investigatingHeadline(
-    actionCount,
-    investigating,
-    runningKind,
-    runningGoal,
-    kindSummary,
-  );
+  const stepHeadline = actionCount > 0 ? exploringHeadline(kindSummary, true) : "Thinking";
+  const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking });
 
   const { items: displayItems, duplicateCounts } = collapseDuplicateFailedRoutingItems(items);
 
@@ -2804,7 +2906,7 @@ function ActivityGroup({
       fromItems: maxKnown(activityWorkDurationMs(items), turnSpanMs(items)),
       busyElapsedMs,
       isLiveFold,
-      rememberedMs: __sealedWorkMs.get(groupId) ?? null,
+      rememberedMs: maxKnown(__sealedWorkMs.get(groupId) ?? null, rememberedTurnMs),
       hasVisibleWork: actionCount > 0 || thinkingItems.length > 0,
     });
     if (rememberMs != null) __sealedWorkMs.set(groupId, rememberMs);
@@ -2816,10 +2918,13 @@ function ActivityGroup({
       if (swarmPendingItems.length > 0 && actionCount === 0) {
         return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
       }
-      // Work-fold chrome owns Investigating… — never spoken-prose Working...
+      // Work-fold chrome owns Exploring — never spoken-prose Working...
       return workFoldLabel({ live: true, headline: stepHeadline });
     }
     if (!isLiveFold && durableJobRunning) return "job still running";
+    if (sealedTitle === "explored" && (actionCount > 0 || thinkingItems.length > 0)) {
+      return actionCount > 0 ? exploringHeadline(kindSummary, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
+    }
     // Sealed turn: Cursor-style Worked for {duration} — not Explored counts.
     if (actionCount > 0 || thinkingItems.length > 0 || swarmResults.length > 0 || swarmPendingItems.length > 0) {
       if (swarmResults.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
@@ -2867,9 +2972,6 @@ function ActivityGroup({
   ]
     .filter(Boolean)
     .join(" · ");
-  const compactNarrationPreview = narrationMsgs.length > 0
-    ? normalizeReasoningPreview(narrationPreview, 72)
-    : "";
 
   // No timer and no other sealed title → hide the Worked for row entirely.
   if (!investigating && !String(quietSummary || "").trim()) {
@@ -2877,43 +2979,30 @@ function ActivityGroup({
   }
 
   return (
-    <div className="my-1 w-full" ref={foldRootRef} data-testid="activity-fold" data-worked-for={!investigating ? "1" : undefined}>
-      <button
-        type="button"
-        onClick={toggleOpen}
-        aria-expanded={open}
-        className="transcript-fold-chrome flex items-center gap-1.5 py-0.5 text-ui-12 font-sans font-normal text-faint/75 hover:text-muted transition w-fit max-w-full select-none"
-      >
-        {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
-        {investigating ? <Loader2 size={11} className="animate-spin text-faint/60 shrink-0" /> : null}
-        <span
-          className="truncate max-w-[52ch] normal-case"
-          title={foldTitle}
-        >
-          {quietSummary}
-        </span>
-        {!open
-          && compactNarrationPreview
-          && compactNarrationPreview !== quietSummary
-          && !isWorkingEllipsisFallback(compactNarrationPreview) ? (
-            <span className="truncate max-w-[52ch] text-faint/55 normal-case">
-              {compactNarrationPreview}
-            </span>
-          ) : null}
-        {cgItems.length > 0 && (
-          <span className="ml-0.5 text-ui-10 text-faint/40">+ CodeGraph</span>
-        )}
-        {checkpointItems.length > 0 && (
-          <span className="ml-0.5 text-ui-10 text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
-        )}
-        {swarmResults.length > 0 && actionCount > 0 && (
-          <span className="ml-0.5 text-ui-10 text-faint/40">+ swarm</span>
-        )}
-      </button>
+    <div className="my-0.5 w-full" ref={foldRootRef} data-testid="activity-fold" data-worked-for={!investigating ? "1" : undefined}>
+      <FoldHeader
+        label={quietSummary}
+        title={foldTitle}
+        open={open}
+        live={investigating}
+        onToggle={toggleOpen}
+        extras={
+          <>
+            {cgItems.length > 0 && (
+              <span className="ml-0.5 text-ui-10 text-faint/40">+ CodeGraph</span>
+            )}
+            {checkpointItems.length > 0 && (
+              <span className="ml-0.5 text-ui-10 text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
+            )}
+            {swarmResults.length > 0 && actionCount > 0 && (
+              <span className="ml-0.5 text-ui-10 text-faint/40">+ swarm</span>
+            )}
+          </>
+        }
+      />
       {open && (
-        <div className="flex flex-col gap-0.5 pl-3 mt-1 border-l border-edge/30 w-full">
-          {partitionStackedActivity(displayItems, (row) => ({
-            cardKind: row.kind === "card" ? String(row.card.kind || "") : null,
+        <div className="flex flex-col gap-px mt-0.5 w-full" data-testid="activity-rows">
+          {partitionActivityRows(displayItems, (row) => ({
             isThinking: row.kind === "thinking",
             isTerminalSwarmPending: row.kind === "swarm_pending" && (
               (row.status || (row.resolved ? "done" : "running")) !== "running"
@@ -2938,23 +3027,7 @@ function ActivityGroup({
                   text={joinThoughtFoldText(thoughts.map((t) => t.text))}
                   live={thoughts.some((t) => t.streaming)}
                   durationMs={durationMs > 0 ? durationMs : null}
-                />
-              );
-            }
-            if (row.kind === "commands") {
-              const cmdCards = row.items.filter(
-                (it): it is { kind: "card"; card: Card } => it.kind === "card",
-              );
-              const foldKey = `cmd-fold-${cmdCards[0]?.card.id || row.indexes[0]}`;
-              return (
-                <CommandFold
-                  key={foldKey}
-                  foldId={`${groupId}-${foldKey}`}
-                  items={row.items}
-                  indexes={row.indexes}
-                  duplicateCounts={row.indexes.map((idx) => duplicateCounts[idx] || 1)}
-                  onToggleCard={onToggleCard}
-                  renderInner={renderInner}
+                  row
                 />
               );
             }
@@ -2970,22 +3043,142 @@ function ActivityGroup({
                 />
               );
             }
-            if (row.kind === "shelf") {
-              const shelfCards = row.items.filter(
-                (it): it is { kind: "card"; card: Card } => it.kind === "card",
-              );
-              return (
-                <ExplorationShelf
-                  key={explorationShelfAnchorId(shelfCards.map((c) => c.card.id))}
-                  items={shelfCards}
-                  duplicateCounts={row.indexes.map((idx) => duplicateCounts[idx] || 1)}
-                  onToggleCard={onToggleCard}
-                  activityGroupOpen={open}
-                />
-              );
-            }
             return renderInner(row.item, row.index);
           })}
+        </div>
+      )}
+      {investigating && actionCount > 0 ? (
+        <LiveActivityLine text={liveLine} />
+      ) : null}
+    </div>
+  );
+}
+
+/** The verb of fold chrome paints brighter than its counts or duration. */
+function splitFoldLabel(label: string): [string, string] {
+  const text = String(label || "").trim();
+  const lead = /^(Worked for|Exploring|Explored|Thought)\s+/.exec(text);
+  return lead ? [lead[1], text.slice(lead[0].length)] : [text, ""];
+}
+
+/**
+ * One-line fold chrome (Cursor): "Explored 3 files, 1 search" with the verb
+ * brighter than the counts, and the chevron after the text, shown on hover
+ * or while open. A live label shimmers.
+ */
+function FoldHeader({
+  label,
+  title,
+  open,
+  live,
+  onToggle,
+  extras,
+}: {
+  label: string;
+  title?: string;
+  open: boolean;
+  live: boolean;
+  onToggle: () => void;
+  extras?: ReactNode;
+}) {
+  const [lead, rest] = splitFoldLabel(label);
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="transcript-fold-chrome group/fold flex items-center gap-1 py-0.5 text-ui-12 font-sans font-normal text-left w-fit max-w-full min-w-0 select-none bg-transparent border-0 p-0 cursor-pointer"
+    >
+      <span className="truncate normal-case" title={title || label}>
+        <span className={live ? "fold-shimmer text-muted" : "text-muted/90 group-hover/fold:text-txt/90 transition-colors"}>{lead}</span>
+        {rest ? <span className="text-faint/60 group-hover/fold:text-faint/80 transition-colors"> {rest}</span> : null}
+      </span>
+      {extras}
+      <ChevronDown
+        size={11}
+        aria-hidden
+        className={`shrink-0 text-faint/55 transition ${open ? "opacity-100" : "-rotate-90 opacity-0 group-hover/fold:opacity-100"}`}
+      />
+    </button>
+  );
+}
+
+/**
+ * The live status line under an Exploring fold. A new line rolls in from
+ * below while the old one rolls up and out (the wheel), and the live text
+ * shimmers. Reduced motion shows the swap without movement (index.css).
+ */
+function LiveActivityLine({ text }: { text: string }) {
+  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number }>(
+    () => ({ current: text, previous: null, turn: 0 }),
+  );
+  if (lines.current !== text) {
+    setLines({ current: text, previous: lines.current, turn: lines.turn + 1 });
+  }
+  useEffect(() => {
+    if (lines.previous == null) return;
+    const id = window.setTimeout(() => {
+      setLines((cur) => (cur.turn === lines.turn ? { ...cur, previous: null } : cur));
+    }, WHEEL_SWAP_MS);
+    return () => window.clearTimeout(id);
+  }, [lines.turn, lines.previous]);
+  return (
+    <div className="live-wheel text-ui-12 font-sans" data-testid="live-activity-line" role="status" aria-live="polite">
+      {lines.previous != null ? (
+        <span key={`out-${lines.turn}`} className="live-wheel-out text-faint/70" aria-hidden>
+          {lines.previous}
+        </span>
+      ) : null}
+      <span key={`in-${lines.turn}`} className={`fold-shimmer text-faint/80 ${lines.turn > 0 ? "live-wheel-in" : ""}`} title={lines.current}>
+        {lines.current}
+      </span>
+    </div>
+  );
+}
+
+/** Drop the outgoing line just after the 200ms base swap in index.css ends. */
+const WHEEL_SWAP_MS = 220;
+
+/**
+ * A finished turn's Worked for fold. Everything the turn did except its final
+ * answer sits here in stream order: said prose and Explored groups.
+ */
+function TurnWorkFold({
+  foldId,
+  rows,
+  rememberedMs,
+  renderRow,
+}: {
+  foldId: string;
+  rows: TurnWorkRow[];
+  rememberedMs: number | null;
+  renderRow: (row: TurnWorkRow, index: number) => ReactNode;
+}) {
+  const [open, setOpen] = useState(() => resolveActivityGroupOpen(foldId));
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    requestFeedRowRemeasure(rootRef.current);
+  }, [open]);
+  const items = rows.flatMap((row) => (row.kind === "activity_group" ? row.items : []));
+  const fromItems = maxKnown(activityWorkDurationMs(items), turnSpanMs(items));
+  const durationMs = maxKnown(fromItems, rememberedMs) ?? 1000;
+  return (
+    <div className="my-0.5 w-full" ref={rootRef} data-testid="turn-work-fold" data-worked-for="1">
+      <FoldHeader
+        label={workedForLabel(durationMs)}
+        open={open}
+        live={false}
+        onToggle={() => {
+          setOpen((v) => {
+            const next = !v;
+            __activityOpen.set(foldId, next);
+            return next;
+          });
+        }}
+      />
+      {open && (
+        <div className="flex flex-col gap-1 mt-1 w-full">
+          {rows.map((row, k) => renderRow(row, k))}
         </div>
       )}
     </div>
@@ -3054,81 +3247,6 @@ function SwarmDoneFold({
 
 
 /**
- * Nestable Ran N command mid-fold. Expand shows specific Ran {goal} lines and
- * any Thought rows that interleaved mid-tooling (Cursor stacked folds).
- */
-function CommandFold({
-  foldId,
-  items,
-  indexes,
-  duplicateCounts,
-  onToggleCard,
-  renderInner,
-}: {
-  foldId: string;
-  items: ActivityItem[];
-  indexes: number[];
-  duplicateCounts: number[];
-  onToggleCard: (card: Card) => void;
-  renderInner: (it: ActivityItem, idx: number) => ReactNode;
-}) {
-  const [open, setOpen] = useState(() => {
-    if (__commandFoldOpen.has(foldId)) return Boolean(__commandFoldOpen.get(foldId));
-    return false;
-  });
-  const rootRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    requestFeedRowRemeasure(rootRef.current);
-  }, [open]);
-
-  const cardCount = items.filter((it) => it.kind === "card").length;
-  const label = ranCommandsLabel(cardCount);
-
-  return (
-    <div className="flex flex-col w-full py-0.5 min-w-0" ref={rootRef} data-testid="ran-commands-fold">
-      <button
-        type="button"
-        onClick={() => {
-          setOpen((v) => {
-            const next = !v;
-            __commandFoldOpen.set(foldId, next);
-            return next;
-          });
-        }}
-        aria-expanded={open}
-        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"
-        title={open ? "Collapse commands" : "Expand commands"}
-      >
-        {open ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
-        <span className="shrink-0">{label}</span>
-      </button>
-      {open && (
-        <div className="mt-0.5 pl-2.5 ml-1 border-l border-edge/40 flex flex-col gap-0.5 w-full min-w-0">
-          {items.map((it, i) => {
-            const idx = indexes[i] ?? i;
-            const dup = duplicateCounts[i] || 1;
-            if (it.kind === "card") {
-              return (
-                <ActionCard
-                  key={it.card.id || `ran-card-${idx}`}
-                  card={it.card}
-                  onToggle={() => onToggleCard(it.card)}
-                  duplicateCount={dup}
-                  activityGroupOpen={open}
-                  ranLine
-                />
-              );
-            }
-            return renderInner(it, idx);
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
-/**
  * Quiet collapsed-reasoning preview: first line only, strip markdown emphasis
  * markers so `**Plan**` / `*italic*` never leak into the Cursor-like row.
  */
@@ -3186,12 +3304,16 @@ function ThinkingBlock({
   live: liveProp,
   blockId,
   durationMs: durationMsProp,
+  row: rowProp,
 }: {
   text: string;
   live?: boolean;
   blockId: string;
   durationMs?: number | null;
+  /** Flat row inside an activity fold: "Thought 3s", no preview. */
+  row?: boolean;
 }) {
+  const row = rowProp ?? false;
   const live = liveProp ?? false;
   const durationMs = durationMsProp ?? null;
   // Cursor/Hermes-style compression: reasoning stays a single header line
@@ -3266,15 +3388,30 @@ function ThinkingBlock({
             return next;
           });
         }}
-        className="transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"
+        className={row
+          ? "transcript-fold-chrome group/thought flex items-center gap-1 text-faint/75 hover:text-muted transition font-sans font-normal text-ui-12 text-left w-fit max-w-full min-w-0 select-none bg-transparent border-0 p-0 cursor-pointer"
+          : "transcript-fold-chrome flex items-center gap-1.5 text-faint/65 hover:text-muted/90 transition font-sans font-normal text-ui-12 text-left w-full min-w-0 select-none"}
         aria-expanded={expanded}
         title={expanded ? "Collapse reasoning" : "Expand reasoning"}
       >
-        {expanded ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
-        <span className="shrink-0">{foldLabel}</span>
-        {!expanded && preview ? (
-          <span className="ml-0.5 truncate text-faint/50">{preview}</span>
-        ) : null}
+        {row ? (
+          <>
+            <span className={`shrink-0 ${live ? "fold-shimmer" : ""}`}>{foldLabel}</span>
+            <ChevronRight
+              size={11}
+              aria-hidden
+              className={`shrink-0 text-faint/50 transition ${expanded ? "rotate-90 opacity-100" : "opacity-0 group-hover/thought:opacity-100"}`}
+            />
+          </>
+        ) : (
+          <>
+            {expanded ? <ChevronDown size={11} className="text-faint/55 shrink-0" /> : <ChevronRight size={11} className="text-faint/55 shrink-0" />}
+            <span className="shrink-0">{foldLabel}</span>
+            {!expanded && preview ? (
+              <span className="ml-0.5 truncate text-faint/50">{preview}</span>
+            ) : null}
+          </>
+        )}
       </button>
       {expanded && (
         <div
@@ -3942,7 +4079,6 @@ function ActionCard({
   onToggle,
   duplicateCount: duplicateCountProp,
   activityGroupOpen: activityGroupOpenProp,
-  ranLine: ranLineProp,
 }: {
   card: Card;
   onToggle: () => void;
@@ -3954,14 +4090,10 @@ function ActionCard({
    * them, so a second forced-closed layer would lie about the timeline.
    */
   activityGroupOpen?: boolean;
-  /** Inside Ran N fold: paint as `Ran {goal}` instead of tool-kind chrome. */
-  ranLine?: boolean;
 }) {
   const duplicateCount = duplicateCountProp ?? 1;
   const activityGroupOpen = activityGroupOpenProp ?? false;
-  const ranLine = ranLineProp ?? false;
   const openSwarmJob = useOpenSwarmJob();
-  const toolName = toolRowLabel(card.kind || "");
   // Prefer the real CLI input (path/command/query), recovering from nested
   // goals / artifact headlines when the stream left ``goal`` empty.
   const cliInput = resolveCardCliInput(card);
@@ -3973,11 +4105,12 @@ function ActionCard({
     ? card.goals.map((g) => shortenGoal(g, 40)).join(" · ")
     : "";
   const rawGoal = multiGoals || commandKv || cliInput;
-  const goalPreview = shortenGoal(rawGoal, 56);
-  const ranLabel = ranLine ? ranGoalLine(goalPreview || rawGoal || toolName) : "";
+  // Model-junk goals ("null | wc -l") and kind restatements read as noise.
+  const goalPreview = isRedundantToolGoal(card.kind || "", rawGoal) ? "" : shortenGoal(rawGoal, 72);
   const meta = getCardMeta(card);
   const nested = Array.isArray(card.actions) ? card.actions : [];
   const effectivelyRunning = cardEffectivelyRunning(card);
+  const verb = toolVerb(card.kind || "", effectivelyRunning);
   // One expand level: open ActivityGroup OR expanded parent card reveals
   // nested worker tools as a flat chronological list (not double-collapsed).
   const showNested = nested.length > 0 && (card.open || activityGroupOpen);
@@ -4049,47 +4182,36 @@ function ActionCard({
 
   return (
     <div className="flex flex-col w-full select-none">
-      <div className="flex items-center justify-between w-full py-0.5 px-1 rounded-sm hover:bg-panel2/20 text-left text-ui-12 font-sans font-normal group transition-colors">
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+      <div className="flex items-center justify-between w-full py-px rounded-sm text-left text-ui-12 font-sans font-normal group transition-colors">
+        <div className="flex items-center gap-1 min-w-0 flex-1">
           <button
             type="button"
             onClick={onToggle}
             aria-expanded={card.open}
-            className="flex items-center gap-2 min-w-0 text-left bg-transparent border-0 p-0 cursor-pointer font-sans font-normal text-ui-12"
+            className="flex items-center gap-1 min-w-0 shrink-0 text-left bg-transparent border-0 p-0 cursor-pointer font-sans font-normal text-ui-12"
           >
-            <div className="flex items-center justify-center w-3.5 h-3.5 shrink-0">
-              {effectivelyRunning ? (
-                <Loader2 size={11} className="animate-spin text-faint/60" aria-label="running" />
-              ) : isErr ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-risk/70" aria-label="failed" title="failed" />
-              ) : suppressed ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-faint/45" aria-label="suppressed" title="suppressed" />
-              ) : null}
-            </div>
-            <span className={`shrink-0 font-normal ${isErr ? "text-risk/80" : suppressed ? "text-faint/70" : "text-faint/80"}`}>
-              {ranLine ? ranLabel : toolName}
+            {isErr ? (
+              <span className="w-1.5 h-1.5 mr-0.5 rounded-full bg-risk/70 shrink-0" aria-label="failed" title="failed" />
+            ) : suppressed ? (
+              <span className="w-1.5 h-1.5 mr-0.5 rounded-full bg-faint/45 shrink-0" aria-label="suppressed" title="suppressed" />
+            ) : null}
+            <span
+              className={`shrink-0 font-normal ${effectivelyRunning ? "fold-shimmer text-muted" : isErr ? "text-risk/80" : suppressed ? "text-faint/70" : "text-muted/85 group-hover:text-txt/90"}`}
+              aria-label={effectivelyRunning ? `${verb} (running)` : undefined}
+            >
+              {verb}
             </span>
             {duplicateCount > 1 ? (
               <span className="shrink-0 text-faint/55 tabular-nums" title={`${duplicateCount} identical failures`}>
                 ×{duplicateCount}
               </span>
             ) : null}
-            {!ranLine && goalPreview && (linkKind === "none" || !goalValue) ? (
-              <span className="text-faint/65 truncate max-w-[70%] font-normal" title={rawGoal}>
-                {goalPreview}
-              </span>
-            ) : null}
-            <ChevronRight
-              size={11}
-              className={`text-faint/35 group-hover:text-faint/60 transition shrink-0 ${
-                card.open ? "rotate-90" : ""
-              }`}
-            />
           </button>
-          {!ranLine && goalPreview && linkKind !== "none" && goalValue ? (            <button
+          {goalPreview && linkKind !== "none" && goalValue ? (
+            <button
               type="button"
               onClick={onGoalClick}
-              className="text-accent/75 hover:underline underline-offset-2 truncate max-w-[70%] font-normal cursor-pointer bg-transparent border-0 p-0 text-ui-12 font-sans"
+              className="text-faint/60 hover:text-accent/85 hover:underline underline-offset-2 truncate min-w-0 font-normal cursor-pointer bg-transparent border-0 p-0 text-ui-12 font-sans text-left"
               title={
                 linkKind === "file"
                   ? `Open ${goalValue}`
@@ -4108,10 +4230,24 @@ function ActionCard({
             >
               {goalPreview}
             </button>
+          ) : goalPreview ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="text-faint/60 truncate min-w-0 font-normal bg-transparent border-0 p-0 text-ui-12 font-sans text-left cursor-pointer"
+              title={rawGoal}
+            >
+              {goalPreview}
+            </button>
           ) : null}
+          <ChevronRight
+            size={11}
+            aria-hidden
+            className={`text-faint/50 transition shrink-0 ${card.open ? "rotate-90 opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+          />
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2">
+        <div className="flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
           {linkKind === "command" && goalValue && (
             <button
               type="button"

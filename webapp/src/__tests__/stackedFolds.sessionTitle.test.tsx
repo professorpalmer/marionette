@@ -6,8 +6,7 @@ import {
   type Item,
 } from "../components/TranscriptList";
 import {
-  partitionStackedActivity,
-  ranCommandsLabel,
+  partitionActivityRows,
   swarmDoneFoldLabel,
   thoughtFoldLabel,
   workFoldLabel,
@@ -62,7 +61,7 @@ function listProps(items: Item[]) {
 }
 
 describe("stacked fold labels", () => {
-  it("formats Worked for / Thought / Ran chrome", () => {
+  it("formats Worked for / Thought chrome", () => {
     expect(workedForLabel(23_000)).toBe("Worked for 23s");
     expect(workedForLabel(6 * 60_000)).toBe("Worked for 6m");
     expect(workedForLabel(0)).toBe("");
@@ -72,8 +71,6 @@ describe("stacked fold labels", () => {
     expect(workedForLabel(500)).not.toMatch(/0s/);
     expect(thoughtFoldLabel({ live: true })).toBe("Thinking…");
     expect(thoughtFoldLabel({ durationMs: 8_000 })).toBe("Thought 8s");
-    expect(ranCommandsLabel(1)).toBe("Ran 1 command");
-    expect(ranCommandsLabel(3)).toBe("Ran 3 commands");
     expect(swarmDoneFoldLabel(8, "done")).toBe("Swarm done · 8");
     expect(swarmDoneFoldLabel(1, "done")).toBe("Swarm done");
     expect(swarmDoneFoldLabel(2, "failed")).toBe("Swarm failed · 2");
@@ -91,22 +88,15 @@ describe("stacked fold labels", () => {
     expect(workFoldLabel({ live: false, durationMs: 12_000 })).toBe("Worked for 12s");
   });
 
-  it("nests Thought inside a Ran commands partition", () => {
+  it("keeps tool rows flat between thoughts (no Ran N sub-fold)", () => {
     const items = [
       { kind: "thinking" as const },
-      { kind: "card", cardKind: "run_command" },
+      { kind: "card" as const },
       { kind: "thinking" as const },
-      { kind: "card", cardKind: "run_command" },
+      { kind: "card" as const },
     ];
-    const rows = partitionStackedActivity(items, (row) => ({
-      cardKind: row.kind === "card" ? row.cardKind : null,
-      isThinking: row.kind === "thinking",
-    }));
-    expect(rows.map((r) => r.kind)).toEqual(["thought", "commands"]);
-    expect(rows[1]?.kind).toBe("commands");
-    if (rows[1]?.kind !== "commands") return;
-    expect(rows[1].items).toHaveLength(3);
-    expect(rows[1].items.filter((it) => it.kind === "thinking")).toHaveLength(1);
+    const rows = partitionActivityRows(items, (row) => ({ isThinking: row.kind === "thinking" }));
+    expect(rows.map((r) => r.kind)).toEqual(["thought", "item", "thought", "item"]);
   });
 
   it("coalesces consecutive terminal swarm_pending into one Swarm done fold", () => {
@@ -118,8 +108,7 @@ describe("stacked fold labels", () => {
       { kind: "other" as const },
       { kind: "swarm_pending" as const, terminal: true },
     ];
-    const rows = partitionStackedActivity(items, (row) => ({
-      cardKind: null,
+    const rows = partitionActivityRows(items, (row) => ({
       isThinking: row.kind === "thinking",
       isTerminalSwarmPending: row.kind === "swarm_pending" && row.terminal,
     }));
@@ -137,8 +126,7 @@ describe("stacked fold labels", () => {
 
   it("leaves a single terminal swarm_pending as its own pill", () => {
     const items = [{ kind: "swarm_pending" as const, terminal: true }];
-    const rows = partitionStackedActivity(items, (row) => ({
-      cardKind: null,
+    const rows = partitionActivityRows(items, (row) => ({
       isThinking: false,
       isTerminalSwarmPending: row.kind === "swarm_pending",
     }));
@@ -150,18 +138,17 @@ describe("stacked fold labels", () => {
       { kind: "thinking" as const },
       { kind: "thinking" as const },
       { kind: "thinking" as const },
-      { kind: "card", cardKind: "run_command" },
+      { kind: "card" as const },
       { kind: "other" as const },
       { kind: "thinking" as const },
       { kind: "thinking" as const },
     ];
-    const rows = partitionStackedActivity(items, (row) => ({
-      cardKind: row.kind === "card" ? row.cardKind : null,
+    const rows = partitionActivityRows(items, (row) => ({
       isThinking: row.kind === "thinking",
     }));
     expect(rows.map((r) => r.kind)).toEqual([
       "thought",
-      "commands",
+      "item",
       "item",
       "thought",
     ]);
@@ -176,8 +163,8 @@ describe("stacked fold labels", () => {
   });
 });
 
-describe("live stacked folds (Investigating + Thinking + Ran)", () => {
-  it("shows three distinct live labels and never Working...", () => {
+describe("live fold (Exploring + live line + flat rows)", () => {
+  it("shows Exploring, a live line for the running tool, and never Working...", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "debug the redirect" } },
       {
@@ -218,35 +205,25 @@ describe("live stacked folds (Investigating + Thinking + Ran)", () => {
       />,
     );
 
-    // Outer work fold is live Investigating (not Working...).
-    const workChrome = screen.getByRole("button", { name: /Investigating/i });
+    const workChrome = screen.getByRole("button", { name: /Exploring ran 2 commands/i });
     expect(workChrome.textContent || "").not.toMatch(/Working\.\.\./i);
     expect(screen.queryByText("Working...")).toBeNull();
+    expect(screen.getByTestId("live-activity-line").textContent).toBe("Running rg ActionForm");
 
     fireEvent.click(workChrome);
 
-    const thought = screen.getByTestId("thought-fold");
-    const ran = screen.getByTestId("ran-commands-fold");
-    const thoughtLabel = thought.querySelector(".transcript-fold-chrome")?.textContent || "";
-    const ranLabel = ran.querySelector(".transcript-fold-chrome")?.textContent || "";
-    const workLabel = workChrome.textContent || "";
-
-    expect(thoughtLabel).toMatch(/Thinking/);
-    expect(ranLabel).toMatch(/Ran 2 commands/i);
-    expect(workLabel).toMatch(/Investigating/);
-
-    const labels = [workLabel, thoughtLabel, ranLabel].map((l) => l.trim());
-    // Three distinct chrome strings; none equal the spoken-prose fallback.
-    expect(new Set(labels).size).toBe(3);
-    for (const label of labels) {
-      expect(label).not.toBe("Working...");
-      expect(label).not.toMatch(/^Working\.\.\.?$/i);
-    }
+    // One flat row per step: no Ran N sub-fold.
+    expect(screen.queryByTestId("ran-commands-fold")).toBeNull();
+    const rows = screen.getByTestId("activity-rows");
+    expect(within(rows).getByTestId("thought-fold").textContent).toMatch(/Thinking/);
+    expect(within(rows).getAllByText("Running")).toHaveLength(2);
+    expect(within(rows).getByText("git status")).toBeTruthy();
+    expect(within(rows).getByText("rg ActionForm")).toBeTruthy();
   });
 });
 
-describe("sealed stacked folds (Worked for + Thought + Ran)", () => {
-  it("shows Worked for + finale Bubble; Thought separate; finale never inside fold", () => {
+describe("sealed fold (Worked for + flat Thought / Ran rows)", () => {
+  it("shows Worked for + finale Bubble; rows are flat; finale never inside fold", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "fix the redirect bug" } },
       {
@@ -276,30 +253,22 @@ describe("sealed stacked folds (Worked for + Thought + Ran)", () => {
 
     expect(screen.getByText(/Worked for/i)).toBeTruthy();
     expect(screen.queryByText(/Explored/i)).toBeNull();
-    expect(screen.queryByText(/Investigating/i)).toBeNull();
+    expect(screen.queryByText(/Exploring/i)).toBeNull();
 
     // Finale stays a top-level Bubble — visible without expanding Worked for.
-    expect(
-      screen.getByText(/The redirect was missing a return/i),
-    ).toBeTruthy();
     const finale = screen.getByText(/The redirect was missing a return/i);
     expect(finale.closest(".transcript-msg-body")?.className).toMatch(/font-normal/);
 
-    // Thought / Ran stay collapsed until the Worked for row opens.
     expect(screen.queryByTestId("thought-fold")).toBeNull();
-    expect(screen.queryByTestId("ran-commands-fold")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
-    expect(screen.getAllByTestId("thought-fold").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByTestId("ran-commands-fold")).toBeTruthy();
-    expect(screen.getByText(/^Thought/)).toBeTruthy();
-    expect(screen.getByText(/Ran 2 commands/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /Ran 2 commands/i }));
-    expect(screen.getByText(/Ran git status/i)).toBeTruthy();
-    // Nested Thought lives inside the Ran fold.
-    const ranFold = screen.getByTestId("ran-commands-fold");
-    expect(ranFold.querySelectorAll('[data-testid="thought-fold"]').length).toBeGreaterThanOrEqual(1);
+    const rows = screen.getByTestId("activity-rows");
+    expect(within(rows).getAllByTestId("thought-fold")).toHaveLength(2);
+    expect(within(rows).getByText("Thought 8s")).toBeTruthy();
+    expect(within(rows).getByText("Thought 2s")).toBeTruthy();
+    expect(within(rows).getAllByText("Ran")).toHaveLength(2);
+    expect(within(rows).getByText("git status")).toBeTruthy();
+    expect(rows.contains(finale)).toBe(false);
   });
 });
 
@@ -375,7 +344,7 @@ describe("stacked Swarm done fold", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Investigating/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Exploring/i }));
 
     const fold = screen.getByTestId("swarm-done-fold");
     expect(fold.querySelector(".transcript-fold-chrome")?.textContent || "").toMatch(/Swarm done · 8/);
