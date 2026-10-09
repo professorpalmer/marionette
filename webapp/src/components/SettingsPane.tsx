@@ -39,6 +39,8 @@ export {
   writeSettingsSnapshot,
 } from "./settingsSnapshot";
 
+type OAuthFlowOwner = "openai-codex" | "xai-oauth" | "nous" | "anthropic" | "claude-cli" | "cursor-cli";
+
 export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
   // Settings search/filter: when a query is active we search ACROSS all sections
@@ -108,7 +110,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [poolKeyInput, setPoolKeyInput] = useState("");
   const [poolLabelInput, setPoolLabelInput] = useState("");
   const POOL_FOCUS = ["cursor", "cursor-cli", "openrouter", "anthropic", "openai", "openai-codex", "xai-oauth", "nous"] as const;
-  const [oauthBusy, setOauthBusy] = useState(false);
+  // One sign-in flow at a time. "awaiting_code" is the paste step of the
+  // Claude Max flow: Complete must be clickable while it waits.
+  const [oauthFlow, setOauthFlow] = useState<{ owner: OAuthFlowOwner; phase: "running" | "awaiting_code" } | null>(null);
+  const oauthBusy = oauthFlow !== null;
+  const flowOwner = oauthFlow?.owner ?? null;
   const [oauthHint, setOauthHint] = useState("");
   const [oauthSessionId, setOauthSessionId] = useState("");
   const [oauthPasteCode, setOauthPasteCode] = useState("");
@@ -546,7 +552,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const handleDeviceOAuthSignIn = async (provider: "openai-codex" | "xai-oauth" | "nous", labelFallback: string) => {
     oauthAbortRef.current = false;
-    setOauthBusy(true);
+    setOauthFlow({ owner: provider, phase: "running" });
     setOauthHint("");
     setOauthSessionId("");
     setError("");
@@ -601,7 +607,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           : "Sign-in failed — fix the issue above, then Sign in again.",
       );
     } finally {
-      setOauthBusy(false);
+      setOauthFlow(null);
       oauthAbortRef.current = false;
     }
   };
@@ -610,11 +616,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     oauthAbortRef.current = true;
     const sid = oauthSessionId;
     if (sid) {
-      api.cancelAuthOAuth(sid, poolProvider).catch(() => { /* best-effort */ });
+      api.cancelAuthOAuth(sid, flowOwner ?? poolProvider).catch(() => { /* best-effort */ });
     }
     setOauthSessionId("");
     setOauthPasteCode("");
-    setOauthBusy(false);
+    setOauthFlow(null);
     // Cursor CLI often finishes browser login before the poll/trust step;
     // Cancel must not overwrite an already-good account with "cancelled".
     if (cursorCliStatus?.authenticated) {
@@ -670,7 +676,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const handleClaudeCliSignIn = async () => {
     oauthAbortRef.current = false;
-    setOauthBusy(true);
+    setOauthFlow({ owner: "claude-cli", phase: "running" });
     setOauthHint("");
     setError("");
     const workspace = (settings?.repo || "").trim();
@@ -712,12 +718,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Claude Code login failed");
     } finally {
-      setOauthBusy(false);
+      setOauthFlow(null);
     }
   };
 
   const handleClaudeCliLogout = async () => {
-    setOauthBusy(true);
+    setOauthFlow({ owner: "claude-cli", phase: "running" });
     try {
       await api.logoutClaudeCli();
       await refreshClaudeCliStatus();
@@ -725,13 +731,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Claude Code logout failed");
     } finally {
-      setOauthBusy(false);
+      setOauthFlow(null);
     }
   };
 
   const handleCursorCliSignIn = async () => {
     oauthAbortRef.current = false;
-    setOauthBusy(true);
+    setOauthFlow({ owner: "cursor-cli", phase: "running" });
     setOauthHint("");
     setError("");
     const workspace = (settings?.repo || "").trim();
@@ -807,13 +813,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       setError(e?.message || e?.error || "Cursor CLI sign-in failed");
       setOauthHint("Sign-in failed — install/login via Cursor Agent CLI, then try again.");
     } finally {
-      setOauthBusy(false);
+      setOauthFlow(null);
       oauthAbortRef.current = false;
     }
   };
 
   const handleCursorCliLogout = async () => {
-    setOauthBusy(true);
+    setOauthFlow({ owner: "cursor-cli", phase: "running" });
     try {
       await api.logoutCursorCli();
       setOauthHint("Signed out of Cursor account.");
@@ -823,13 +829,13 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     } catch (e: any) {
       setError(e?.message || "Cursor CLI logout failed");
     } finally {
-      setOauthBusy(false);
+      setOauthFlow(null);
     }
   };
 
   const handleAnthropicSignIn = async () => {
     oauthAbortRef.current = false;
-    setOauthBusy(true);
+    setOauthFlow({ owner: "anthropic", phase: "running" });
     setOauthHint("");
     setOauthPasteCode("");
     setOauthSessionId("");
@@ -840,25 +846,25 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         throw new Error(start.error || "oauth start failed");
       }
       setOauthSessionId(start.session_id);
+      setOauthFlow({ owner: "anthropic", phase: "awaiting_code" });
       setOauthHint("Browser opened — authorize, then paste the code below (code#state).");
       try {
         window.open(start.auth_url, "_blank");
       } catch {
         setOauthHint(`Open ${start.auth_url} then paste the code below.`);
       }
-      // Stay busy until paste-complete or Cancel (parity with device flows).
     } catch (e: any) {
       console.error("Anthropic OAuth start failed", e);
       setError(e?.message || e?.error || "Claude sign-in failed to start");
       setOauthHint("Sign-in failed — click Sign in (Claude Max) to try again.");
-      setOauthBusy(false);
+      setOauthFlow(null);
     }
   };
 
   const handleAnthropicComplete = async () => {
     const code = oauthPasteCode.trim();
     if (!oauthSessionId || !code) return;
-    setOauthBusy(true);
+    setOauthFlow({ owner: "anthropic", phase: "running" });
     setError("");
     try {
       const res = await api.completeAuthOAuth(oauthSessionId, code, "anthropic");
@@ -868,6 +874,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       setOauthHint(`Signed in as ${res.label || "claude-max"}`);
       setOauthPasteCode("");
       setOauthSessionId("");
+      setOauthFlow(null);
       await refreshAuthPools();
       await refreshProviders();
       setPoolProvider("anthropic");
@@ -875,8 +882,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     } catch (e: any) {
       console.error("Anthropic OAuth complete failed", e);
       setError(e?.message || e?.error || "Claude sign-in failed");
-    } finally {
-      setOauthBusy(false);
+      // The session is still open: let the user paste again or Cancel.
+      setOauthFlow({ owner: "anthropic", phase: "awaiting_code" });
     }
   };
 
@@ -1636,7 +1643,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy || poolBusy === "openai-codex"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                  {flowOwner === "openai-codex" ? "Waiting for browser..." : "Sign in"}
                 </button>
                 {poolEntriesFor("openai-codex").length ? (
                   <button
@@ -1648,7 +1655,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Sign out
                   </button>
                 ) : null}
-                {oauthBusy ? (
+                {flowOwner === "openai-codex" ? (
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
@@ -1687,7 +1694,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy || poolBusy === "anthropic"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for code..." : "Sign in"}
+                  {flowOwner === "anthropic" ? "Waiting for code..." : "Sign in"}
                 </button>
                 {poolEntriesFor("anthropic").length ? (
                   <button
@@ -1699,7 +1706,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Sign out
                   </button>
                 ) : null}
-                {oauthBusy || oauthSessionId ? (
+                {flowOwner === "anthropic" || oauthSessionId ? (
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
@@ -1728,7 +1735,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   <button
                     type="button"
                     onClick={handleAnthropicComplete}
-                    disabled={oauthBusy || !oauthPasteCode.trim()}
+                    disabled={oauthFlow?.phase === "running" || !oauthPasteCode.trim()}
                     className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                   >
                     Complete
@@ -1761,7 +1768,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for login..." : "Sign in"}
+                  {flowOwner === "cursor-cli" ? "Waiting for login..." : "Sign in"}
                 </button>
                 {cursorCliStatus?.authenticated ? (
                   <button
@@ -1773,7 +1780,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Sign out
                   </button>
                 ) : null}
-                {oauthBusy ? (
+                {flowOwner === "cursor-cli" ? (
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
@@ -1816,7 +1823,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for login..." : "Sign in"}
+                  {flowOwner === "claude-cli" ? "Waiting for login..." : "Sign in"}
                 </button>
                 {claudeCliStatus?.authenticated ? (
                   <button
@@ -1855,7 +1862,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy || poolBusy === "xai-oauth"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                  {flowOwner === "xai-oauth" ? "Waiting for browser..." : "Sign in"}
                 </button>
                 {poolEntriesFor("xai-oauth").length ? (
                   <button
@@ -1867,7 +1874,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Sign out
                   </button>
                 ) : null}
-                {oauthBusy ? (
+                {flowOwner === "xai-oauth" ? (
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
@@ -1903,7 +1910,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                   disabled={oauthBusy || poolBusy === "nous"}
                   className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
                 >
-                  {oauthBusy ? "Waiting for browser..." : "Sign in"}
+                  {flowOwner === "nous" ? "Waiting for browser..." : "Sign in"}
                 </button>
                 {poolEntriesFor("nous").length ? (
                   <button
@@ -1915,7 +1922,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
                     Sign out
                   </button>
                 ) : null}
-                {oauthBusy ? (
+                {flowOwner === "nous" ? (
                   <button
                     type="button"
                     onClick={handleCancelOAuth}
