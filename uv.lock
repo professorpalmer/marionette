@@ -80,7 +80,7 @@ wheels = [
 
 [[package]]
 name = "pm-harness"
-version = "0.9.615"
+version = "0.9.616"
 source = { editable = "." }
 dependencies = [
     { name = "puppetmaster-ai" },
@@ -97,7 +97,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "puppetmaster-ai", specifier = "==1.41.0" },
+    { name = "puppetmaster-ai", specifier = "==1.42.0" },
     { name = "pypdf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },
@@ -107,11 +107,11 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "puppetmaster-ai"
-version = "1.41.0"
+version = "1.42.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8c/ad/f4330696d8fe44458d56ad276dcf03ebd5866ee087cd201522b67743843e/puppetmaster_ai-1.41.0.tar.gz", hash = "sha256:0146adff26c8d3f4b658f42ce96428f69b0c87d15155534d63c0e7f96050752d", size = 2307072, upload-time = "2026-10-09T03:36:56.163Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/1d/dbc12a71bb41d4359f34711a90aa35d603426458c267ec98e59efdd17cb6/puppetmaster_ai-1.42.0.tar.gz", hash = "sha256:0f876e8f48069b37cca6addb59c913260221dd11ab90b85ab980155050b6abbb", size = 2343224, upload-time = "2026-10-09T05:14:50.066Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/b3/9be351ba1ae527027fe79f55034a985bda3bee1d1974f1cdf115bab5f9be/puppetmaster_ai-1.41.0-py3-none-any.whl", hash = "sha256:18cae4199d968b2e701d4062c4aee7f8b60581411fc8d51ff6c9863cb7e55bc0", size = 1243151, upload-time = "2026-10-09T03:36:53.143Z" },
+    { url = "https://files.pythonhosted.org/packages/47/15/8567845b8f42d5827821e53bff18700d1d0a54b72bc9a9612aec1289576f/puppetmaster_ai-1.42.0-py3-none-any.whl", hash = "sha256:5e620b97bedfe5cbc090bf03173fd83599e6ee192d7a629708c0225e976ca9f6", size = 1254890, upload-time = "2026-10-09T05:14:47.268Z" },
 ]
 
 [[package]]
