@@ -161,7 +161,10 @@ describe("transcript presentation contract", () => {
     expect(classes).toMatch(/font-sans/);
     expect(classes).toMatch(/font-normal/);
     expect(thought.textContent || "").not.toMatch(/\*\*/);
-    expect(within(thought).getByText(/Plan: scan auth handlers/i)).toBeTruthy();
+    // A flat Thought row is its label alone (Cursor); the body opens on click.
+    expect(thought.textContent).toBe("Thought");
+    fireEvent.click(thought);
+    expect(screen.getByText(/Plan: scan auth handlers/i)).toBeTruthy();
     expect(screen.queryByText(/REASONING/i)).toBeNull();
   });
 
@@ -710,17 +713,15 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
 
     render(<TranscriptList {...listProps(items)} />);
     // Sealed chrome is Worked for, not Explored kind-buckets. Nested worker
-    // rows stay unmounted until Worked for and then Ran are opened.
+    // rows stay unmounted until Worked for is opened.
     const foldBtn = screen.getByRole("button", { name: /Worked for/i });
     expect(foldBtn.textContent || "").toMatch(/Worked for/i);
     expect(foldBtn.textContent || "").not.toMatch(/Explored/i);
     expect(screen.queryAllByTestId("nested-worker-action")).toHaveLength(0);
 
     fireEvent.click(foldBtn);
-    const ranBtn = screen.getByRole("button", { name: /Ran 1 command/i });
-    fireEvent.click(ranBtn);
-    // Opening Ran reveals nested tools even though the parent run_implement
-    // card stays open:false.
+    // Opening the fold reveals nested tools even though the parent
+    // run_implement card stays open:false.
     const nested = screen.getAllByTestId("nested-worker-action");
     expect(nested).toHaveLength(2);
     expect(nested[0]).toHaveAttribute("data-action-id", "nested-read-1");
@@ -755,7 +756,6 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
 
     render(<TranscriptList {...listProps(items)} />);
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     expect(screen.getAllByLabelText("failed").length).toBeGreaterThan(0);
     expect(screen.getAllByText("failed", { selector: ".sr-only" }).length).toBeGreaterThan(0);
   });
@@ -829,7 +829,7 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     // Fold stays default-closed — do not force-open for workerStream.
     expect(screen.queryByText(/worker streaming/i)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Investigating/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Exploring/i }));
     // Bubble capped ticker chrome (label + tokens), not a muted narration <pre>.
     expect(screen.getByText(/worker streaming/i)).toBeTruthy();
     expect(screen.getByText(/worker live tokens line one/i)).toBeTruthy();
@@ -911,7 +911,6 @@ describe("job_id → Jobs deep-link chrome", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
     const cta = screen.getByTestId("spill-output-peek");
     expect(cta).toHaveTextContent(/Full output \(9,?000 chars\)/);
     fireEvent.click(cta);
@@ -956,7 +955,6 @@ describe("job_id → Jobs deep-link chrome", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Ran 1 command/i }));
 
     const kvLink = screen.getByTestId("job-id-link");
     expect(kvLink).toHaveTextContent("job_abcdef012345");
@@ -1167,87 +1165,65 @@ describe("live command token clicks", () => {
     expect(screen.queryByRole("button", { name: /Investigating|Worked for/i })).toBeNull();
   });
 
-  it("keeps mid-turn narration visible below the turn's one fold instead of absorbing it", () => {
+  it("keeps mid-turn narration between its tool folds while live, and the answer below Worked for at seal", () => {
     const spoken: Item = {
       kind: "msg",
       msg: { role: "assistant", text: "I will patch auth next." },
     };
+    const card = (id: string, goal: string, kind: string): Item => ({
+      kind: "card",
+      card: { id, goal, cwd: null, kind, running: false, open: false, result: { status: "ok" } },
+    });
     const items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "fix auth" } },
-      {
-        kind: "card",
-        card: {
-          id: "c-pre",
-          goal: "auth.ts",
-          cwd: null,
-          kind: "read_file",
-          running: false,
-          open: false,
-          result: { status: "ok" },
-        },
-      },
+      card("c-pre", "auth.ts", "read_file"),
       spoken,
-      {
-        kind: "card",
-        card: {
-          id: "c-post",
-          goal: "apply patch",
-          cwd: null,
-          kind: "edit_file",
-          running: false,
-          open: false,
-          result: { status: "ok" },
-        },
-      },
+      card("c-post", "apply patch", "edit_file"),
     ];
     expect(collectIntermediateAssistantItems(items, false).has(spoken)).toBe(false);
-    render(<TranscriptList {...listProps(items)} />);
-    // Visible without expanding anything, between the two tool folds.
-    expect(screen.getByText(/I will patch auth next/i)).toBeVisible();
-    // Both tool cards share one fold; the narration sits beneath it.
+
+    const { rerender } = render(<TranscriptList {...listProps(items)} status="executing" turnOpen />);
+    const prose = () => screen.getByText(/I will patch auth next/i);
+    expect(prose()).toBeVisible();
     const folds = screen.getAllByTestId("activity-fold");
-    expect(folds).toHaveLength(1);
-    expect(folds[0].compareDocumentPosition(screen.getByText(/I will patch auth next/i)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(folds).toHaveLength(2);
+    expect(folds[0].compareDocumentPosition(prose()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(prose().compareDocumentPosition(folds[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    rerender(<TranscriptList {...listProps(items)} />);
+    // Sealed: both tool folds sit under one Worked for; the last prose stays out.
+    expect(screen.queryAllByTestId("activity-fold")).toHaveLength(0);
+    const work = screen.getByTestId("turn-work-fold");
+    expect(prose()).toBeVisible();
+    expect(work.compareDocumentPosition(prose()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("groups consecutive read/search cards into one exploration shelf", () => {
+  it("paints each tool of an open fold as one flat row", () => {
     render(
       <TranscriptList
         {...listProps([
           { kind: "msg", msg: { role: "user", text: "look around" } },
           {
             kind: "card",
-            card: {
-              id: "r1",
-              goal: "auth.ts",
-              cwd: null,
-              kind: "read_file",
-              running: false,
-              open: false,
-              result: { status: "ok" },
-            },
+            card: { id: "r1", goal: "auth.ts", cwd: null, kind: "read_file", running: false, open: false, result: { status: "ok" } },
           },
           {
             kind: "card",
-            card: {
-              id: "g1",
-              goal: "login",
-              cwd: null,
-              kind: "grep",
-              running: false,
-              open: false,
-              result: { status: "ok" },
-            },
+            card: { id: "g1", goal: "login", cwd: null, kind: "grep", running: false, open: false, result: { status: "ok" } },
           },
         ])}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Worked for/i }));
-    expect(screen.getByTestId("exploration-shelf")).toBeTruthy();
-    expect(screen.getByTestId("exploration-shelf")).toHaveAttribute("data-count", "2");
+    const rows = screen.getByTestId("activity-rows");
+    expect(within(rows).getByText("Read")).toBeTruthy();
+    expect(within(rows).getByText("auth.ts")).toBeTruthy();
+    expect(within(rows).getByText("Grepped")).toBeTruthy();
+    expect(within(rows).getByText("login")).toBeTruthy();
+    expect(screen.queryByTestId("exploration-shelf")).toBeNull();
   });
 
-  it("does not remount the exploration shelf when a consecutive card appends", () => {
+  it("keeps a live fold open and the same node when a card appends", () => {
     const card = (id: string, running = false): Item => ({
       kind: "card",
       card: {
@@ -1263,28 +1239,32 @@ describe("live command token clicks", () => {
     const user: Item = { kind: "msg", msg: { role: "user", text: "look around" } };
     const { rerender } = render(
       <TranscriptList
-        {...listProps([user, card("r1", true), card("g1", true)])}
+        {...listProps([user, card("lr1"), card("lg1", true)])}
         status="executing"
         turnOpen
       />,
     );
-    if (!screen.queryByRole("button", { name: /^Exploration /i })) {
-      fireEvent.click(screen.getByRole("button", { name: /Investigating|Worked for/i }));
-    }
-    const shelfToggle = screen.getByRole("button", { name: /^Exploration /i });
-    expect(shelfToggle).toHaveAttribute("aria-expanded", "true");
-    fireEvent.click(shelfToggle);
-    expect(shelfToggle).toHaveAttribute("aria-expanded", "false");
+    const toggle = screen.getByRole("button", { name: /Exploring 2 files/i });
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const fold = screen.getByTestId("activity-fold");
     rerender(
       <TranscriptList
-        {...listProps([user, card("r1", true), card("g1", true), card("r2", true)])}
+        {...listProps([user, card("lr1"), card("lg1"), card("lr2", true)])}
         status="executing"
         turnOpen
       />,
     );
-    const shelfAfter = screen.getByRole("button", { name: /^Exploration /i });
-    expect(screen.getByTestId("exploration-shelf")).toHaveAttribute("data-count", "3");
-    expect(shelfAfter).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByTestId("activity-fold")).toBe(fold);
+    expect(screen.getByRole("button", { name: /Exploring 3 files/i })).toHaveAttribute("aria-expanded", "true");
+    expect(within(screen.getByTestId("activity-rows")).getAllByText(/^Read/)).toHaveLength(3);
+    // The wheel: the new line rolls in while the old one rolls out, hidden
+    // from assistive tech.
+    const line = screen.getByTestId("live-activity-line");
+    expect(line.lastElementChild?.textContent).toBe("Reading lr2.ts");
+    expect(line.lastElementChild?.className).toMatch(/live-wheel-in/);
+    expect(line.firstElementChild?.textContent).toBe("Reading lg1.ts");
+    expect(line.firstElementChild).toHaveAttribute("aria-hidden", "true");
   });
 });
 

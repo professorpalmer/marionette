@@ -13,6 +13,7 @@ import {
   activityGroupStableId,
   clearActivityFoldPrefs,
   groupAgentActivity,
+  wrapSealedTurns,
   liveActivityGroupIndex,
   resolveActivityGroupOpen,
   resolveThinkingExpanded,
@@ -285,7 +286,7 @@ describe("swarm terminal rows stay inside the activity strip", () => {
     ]);
   });
 
-  it("one Worked-for fold after spoken prose plus a later sealed swarm", () => {
+  it("one Worked-for fold holds the tools on both sides of spoken prose", () => {
     const items: Item[] = [
       { kind: "thinking", id: "th-1", text: "Inspecting the repo." },
       {
@@ -309,13 +310,14 @@ describe("swarm terminal rows stay inside the activity strip", () => {
       },
     ];
     const grouped = groupAgentActivity(items, new Set());
-    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg"]);
-    if (grouped[0].kind !== "activity_group") return;
-    expect(grouped[0].items.map((item) => item.kind)).toEqual([
-      "thinking",
-      "card",
-      "swarm_result",
-    ]);
+    // Stream order: tools, the spoken prose, then the swarm receipt below it.
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg", "activity_group"]);
+    // Sealed: one Worked for fold holds both groups; the prose is the answer.
+    const sealed = wrapSealedTurns(grouped, false);
+    expect(sealed.map((row) => row.kind)).toEqual(["turn_work", "msg"]);
+    if (sealed[0].kind !== "turn_work") return;
+    expect(sealed[0].rows.flatMap((row) => (row.kind === "activity_group" ? row.items.map((it) => it.kind) : [row.kind])))
+      .toEqual(["thinking", "card", "swarm_result"]);
   });
 });
 

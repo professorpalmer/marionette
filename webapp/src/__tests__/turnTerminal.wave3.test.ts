@@ -20,7 +20,6 @@ import {
   transcriptResponseToItems,
 } from "../components/conversation/transcriptItems";
 import { appendTurnTerminal } from "../components/conversation/streamApply";
-import { explorationShelfAnchorId } from "../lib/turnProgress";
 import { isPilotMouthBusy } from "../components/conversation/runnersBusy";
 import { appendStreamingTextToItems } from "../components/conversation/streamBubbles";
 import { flushTypewriterBuffer } from "../components/conversation/streamTypewriter";
@@ -789,7 +788,7 @@ describe("Wave 3 last-mile: turn_terminal hydrate / merge", () => {
   });
 });
 
-describe("Wave 3 last-mile: unique keys and shelf identity", () => {
+describe("Wave 3 last-mile: unique keys", () => {
   it("gives each turn_terminal a unique id, not cause+state", () => {
     const first = appendTurnTerminal([], {
       cause: "provider_eof",
@@ -809,13 +808,6 @@ describe("Wave 3 last-mile: unique keys and shelf identity", () => {
     expect(chips[0]?.id).not.toBe(chips[1]?.id);
     expect(stableItemKey(chips[0]!, 0)).not.toBe(stableItemKey(chips[1]!, 1));
     expect(stableItemKey(chips[0]!, 0)).not.toMatch(/^turn-term-provider_eof-settled_incomplete$/);
-  });
-
-  it("keeps the exploration shelf anchored as cards append", () => {
-    expect(explorationShelfAnchorId(["r1", "g1"])).toBe(
-      explorationShelfAnchorId(["r1", "g1", "r2"]),
-    );
-    expect(explorationShelfAnchorId(["r1", "g1"])).toBe("expl-shelf-r1");
   });
 });
 

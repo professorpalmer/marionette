@@ -359,64 +359,10 @@ const BUCKET_ORDER: ExplorationBucket[] = [
   "other",
 ];
 
-/** Read / search / wiki / fetch cards may collapse into one activity shelf. */
-export function isExplorationShelfKind(kind: string): boolean {
-  const b = explorationBucket(kind);
-  return b === "files" || b === "searches" || b === "wiki" || b === "fetches";
-}
-
-export type ExplorationShelfRow<T> =
-  | { kind: "item"; item: T; index: number }
-  | { kind: "shelf"; items: T[]; indexes: number[] };
-
 /**
- * Collapse consecutive exploration tool cards into one shelf. Commands and
- * edits stay individual so a Run/Write never hides inside a Read group.
+ * Aggregate card kinds into Cursor's explored summary:
+ * "4 files, 7 searches, ran 1 command".
  */
-/** First card id — appending more exploration cards must not remount the shelf. */
-export function explorationShelfAnchorId(
-  cardIds: Array<string | undefined | null>,
-): string {
-  for (const id of cardIds) {
-    const text = String(id || "").trim();
-    if (text) return `expl-shelf-${text}`;
-  }
-  return "expl-shelf";
-}
-
-export function partitionExplorationShelf<T>(
-  items: T[],
-  cardKind: (item: T) => string | null,
-): ExplorationShelfRow<T>[] {
-  const out: ExplorationShelfRow<T>[] = [];
-  let i = 0;
-  while (i < items.length) {
-    const kind = cardKind(items[i]);
-    if (kind && isExplorationShelfKind(kind)) {
-      const start = i;
-      const group: T[] = [];
-      const indexes: number[] = [];
-      while (i < items.length) {
-        const nextKind = cardKind(items[i]);
-        if (!nextKind || !isExplorationShelfKind(nextKind)) break;
-        group.push(items[i]);
-        indexes.push(i);
-        i += 1;
-      }
-      if (group.length >= 2) {
-        out.push({ kind: "shelf", items: group, indexes });
-      } else {
-        out.push({ kind: "item", item: group[0], index: start });
-      }
-      continue;
-    }
-    out.push({ kind: "item", item: items[i], index: i });
-    i += 1;
-  }
-  return out;
-}
-
-/** Aggregate card kinds into "3 files, 1 search" (Cursor explored summary). */
 export function aggregateExplorationSummary(kinds: string[]): string {
   const counts: Partial<Record<ExplorationBucket, number>> = {};
   for (const kind of kinds) {
@@ -428,21 +374,80 @@ export function aggregateExplorationSummary(kinds: string[]): string {
     const n = counts[b];
     if (!n) continue;
     const [one, many] = BUCKET_LABELS[b];
-    parts.push(`${n} ${n === 1 ? one : many}`);
+    const phrase = `${n} ${n === 1 ? one : many}`;
+    parts.push(b === "commands" ? `ran ${phrase}` : phrase);
   }
   return parts.join(", ");
 }
 
-/** Run / shell / terminal tool cards nest under a Ran N command fold.
- *  Also treat edit/other actionable tools as Ran rows so nested Thought can
- *  live between tool steps (Cursor stacked folds). Exploration shelves still
- *  win for consecutive file/search reads via partition order.
+type ToolVerbs = { past: string; live: string };
+
+const TOOL_VERBS: Record<string, ToolVerbs> = {
+  read_file: { past: "Read", live: "Reading" },
+  read: { past: "Read", live: "Reading" },
+  write_file: { past: "Wrote", live: "Writing" },
+  edit_file: { past: "Edited", live: "Editing" },
+  apply_hashline: { past: "Edited", live: "Editing" },
+  hash_edit: { past: "Edited", live: "Editing" },
+  grep: { past: "Grepped", live: "Grepping" },
+  search: { past: "Searched", live: "Searching" },
+  glob: { past: "Listed files", live: "Listing files" },
+  run_command: { past: "Ran", live: "Running" },
+  run_terminal: { past: "Ran", live: "Running" },
+  execute: { past: "Ran", live: "Running" },
+  shell: { past: "Ran", live: "Running" },
+  query_wiki: { past: "Queried wiki", live: "Querying wiki" },
+  wiki: { past: "Queried wiki", live: "Querying wiki" },
+  web_fetch: { past: "Fetched", live: "Fetching" },
+  fetch: { past: "Fetched", live: "Fetching" },
+  codegraph_search: { past: "Queried graph", live: "Querying graph" },
+  codegraph_context: { past: "Queried graph", live: "Querying graph" },
+  codegraph: { past: "Queried graph", live: "Querying graph" },
+  call_mcp: { past: "Called", live: "Calling" },
+  mcp: { past: "Called", live: "Calling" },
+  view_image: { past: "Viewed", live: "Viewing" },
+  open_project: { past: "Opened", live: "Opening" },
+  delete: { past: "Deleted", live: "Deleting" },
+  move: { past: "Moved", live: "Moving" },
+};
+
+/**
+ * Verb for one flat activity row: past tense when done ("Read", "Grepped",
+ * "Ran"), progressive while live ("Reading"). Unknown tools keep their label.
  */
-export function isCommandCardKind(kind: string): boolean {
-  const k = (kind || "").trim();
-  if (!k) return false;
-  if (isExplorationShelfKind(k)) return false;
-  return true;
+export function toolVerb(kind: string, live: boolean): string {
+  const k = normalizeToolKind(kind) || (kind || "").toLowerCase().replace(/-/g, "_").trim();
+  const verbs = TOOL_VERBS[k];
+  if (verbs) return live ? verbs.live : verbs.past;
+  const label = toolRowLabel(kind);
+  return live ? `Running ${label.toLowerCase()}` : label;
+}
+
+/**
+ * The one live status line under an Exploring fold (the "wheel" line).
+ * A running tool names its verb and target; live reasoning is Thinking;
+ * a quiet gap while the loop is open is Planning next moves.
+ */
+export function liveActivityLine(opts: {
+  runningKind?: string | null;
+  runningGoal?: string | null;
+  liveThinking?: boolean;
+}): string {
+  const kind = String(opts.runningKind || "").trim();
+  if (kind) {
+    const goal = String(opts.runningGoal || "").trim();
+    const verb = toolVerb(kind, true);
+    return goal && !isRedundantToolGoal(kind, goal) ? `${verb} ${goal}` : verb;
+  }
+  if (opts.liveThinking) return "Thinking";
+  return "Planning next moves";
+}
+
+/** Fold headline: "Exploring 4 files, 1 search" live; "Explored ..." done. */
+export function exploringHeadline(kindSummary: string, live: boolean): string {
+  const verb = live ? "Exploring" : "Explored";
+  const summary = String(kindSummary || "").trim();
+  return summary ? `${verb} ${summary}` : verb;
 }
 
 /** Compact duration for Worked for / Thought chrome (`23s`, `6m`, `1m 5s`). */
@@ -479,7 +484,7 @@ export function workFoldLabel(opts: {
   /** Swarm/hold pause — StatusPill-aligned cue instead of Investigating… */
   pausePoint?: boolean;
   durationMs?: number | null;
-  /** Live investigatingHeadline (focus / kind counts); ignored when empty or Working... */
+  /** Live exploringHeadline (kind counts); ignored when empty or Working... */
   headline?: string | null;
 }): string {
   if (opts.live) {
@@ -508,12 +513,6 @@ export function thoughtFoldLabel(opts: {
   return "Thought";
 }
 
-/** Mid-summary command fold — expand shows specific Ran {goal} lines. */
-export function ranCommandsLabel(count: number): string {
-  const n = Math.max(0, Math.floor(count));
-  return n === 1 ? "Ran 1 command" : `Ran ${n} commands`;
-}
-
 /** Mid-summary swarm-lifecycle fold — expand shows per-job SwarmPendingPill rows. */
 export function swarmDoneFoldLabel(
   count: number,
@@ -527,12 +526,6 @@ export function swarmDoneFoldLabel(
         ? "Swarm results"
         : "Swarm done";
   return n <= 1 ? noun : `${noun} · ${n}`;
-}
-
-/** One expanded command row under Ran N — `Ran {goal}`. */
-export function ranGoalLine(goal: string): string {
-  const g = String(goal || "").trim();
-  return g ? `Ran ${g}` : "Ran command";
 }
 
 /**
@@ -658,11 +651,9 @@ export function resolveSealedWorkMs(opts: {
   return { durationMs: null, rememberMs: remembered };
 }
 
-export type StackedActivityRow<T> =
+export type ActivityRow<T> =
   | { kind: "thought"; items: T[]; indexes: number[] }
-  | { kind: "commands"; items: T[]; indexes: number[] }
   | { kind: "swarms"; items: T[]; indexes: number[] }
-  | { kind: "shelf"; items: T[]; indexes: number[] }
   | { kind: "item"; item: T; index: number };
 
 const THOUGHT_SNAPSHOT_MIN = 12;
@@ -721,109 +712,35 @@ export function joinThoughtFoldText(texts: string[]): string {
 }
 
 /**
- * Partition an open activity fold into Cursor-style stacked rows:
- * leading Thought siblings, nestable Ran N command groups (with interleaved
- * thoughts inside), exploration shelves, then other items.
+ * Partition an open activity fold into Cursor-style flat rows: one line per
+ * tool, consecutive reasoning snapshots joined into one Thought row, and runs
+ * of finished swarm receipts joined into one row. No nested folds.
  */
-export function partitionStackedActivity<T>(
+export function partitionActivityRows<T>(
   items: T[],
-  meta: (item: T) => {
-    cardKind: string | null;
-    isThinking: boolean;
-    isTerminalSwarmPending?: boolean;
-  },
-): StackedActivityRow<T>[] {
-  const out: StackedActivityRow<T>[] = [];
+  meta: (item: T) => { isThinking: boolean; isTerminalSwarmPending?: boolean },
+): ActivityRow<T>[] {
+  const out: ActivityRow<T>[] = [];
   let i = 0;
-  let seenCommand = false;
-
   while (i < items.length) {
     const cur = meta(items[i]);
-
-    if (cur.isThinking && !seenCommand) {
+    if (cur.isThinking || cur.isTerminalSwarmPending) {
+      const same = (item: T) => {
+        const m = meta(item);
+        return cur.isThinking ? m.isThinking : Boolean(m.isTerminalSwarmPending);
+      };
       const group: T[] = [];
       const indexes: number[] = [];
-      while (i < items.length && meta(items[i]).isThinking) {
+      while (i < items.length && same(items[i])) {
         group.push(items[i]);
         indexes.push(i);
         i += 1;
       }
-      out.push({ kind: "thought", items: group, indexes });
+      if (cur.isThinking) out.push({ kind: "thought", items: group, indexes });
+      else if (group.length >= 2) out.push({ kind: "swarms", items: group, indexes });
+      else out.push({ kind: "item", item: group[0], index: indexes[0] });
       continue;
     }
-
-    if (cur.cardKind && isCommandCardKind(cur.cardKind)) {
-      seenCommand = true;
-      const group: T[] = [];
-      const indexes: number[] = [];
-      while (i < items.length) {
-        const next = meta(items[i]);
-        if (next.cardKind && isCommandCardKind(next.cardKind)) {
-          group.push(items[i]);
-          indexes.push(i);
-          i += 1;
-          continue;
-        }
-        // Thoughts (and only thoughts) nest inside the Ran fold between commands.
-        if (next.isThinking) {
-          group.push(items[i]);
-          indexes.push(i);
-          i += 1;
-          continue;
-        }
-        break;
-      }
-      out.push({ kind: "commands", items: group, indexes });
-      continue;
-    }
-
-    if (cur.isThinking) {
-      const group: T[] = [];
-      const indexes: number[] = [];
-      while (i < items.length && meta(items[i]).isThinking) {
-        group.push(items[i]);
-        indexes.push(i);
-        i += 1;
-      }
-      out.push({ kind: "thought", items: group, indexes });
-      continue;
-    }
-
-    if (cur.cardKind && isExplorationShelfKind(cur.cardKind)) {
-      const start = i;
-      const group: T[] = [];
-      const indexes: number[] = [];
-      while (i < items.length) {
-        const nextKind = meta(items[i]).cardKind;
-        if (!nextKind || !isExplorationShelfKind(nextKind)) break;
-        group.push(items[i]);
-        indexes.push(i);
-        i += 1;
-      }
-      if (group.length >= 2) {
-        out.push({ kind: "shelf", items: group, indexes });
-      } else {
-        out.push({ kind: "item", item: group[0], index: start });
-      }
-      continue;
-    }
-
-    if (cur.isTerminalSwarmPending) {
-      const group: T[] = [];
-      const indexes: number[] = [];
-      while (i < items.length && meta(items[i]).isTerminalSwarmPending) {
-        group.push(items[i]);
-        indexes.push(i);
-        i += 1;
-      }
-      if (group.length >= 2) {
-        out.push({ kind: "swarms", items: group, indexes });
-      } else {
-        out.push({ kind: "item", item: group[0], index: indexes[0] });
-      }
-      continue;
-    }
-
     out.push({ kind: "item", item: items[i], index: i });
     i += 1;
   }
@@ -1234,42 +1151,6 @@ export function headlineFocusCard<C extends { goal?: string }>(
   return [...cards].reverse().find((c) => goalOf(c)) ?? running;
 }
 
-/**
- * Cursor-style Investigating / Explored headline for the activity fold.
- * Live: "Investigating · run command …" (or kind counts).
- * Done: "Explored 3 files, 1 search".
- */
-export function investigatingHeadline(
-  actionCount: number,
-  anyRunning: boolean,
-  runningKind: string,
-  runningGoal: string,
-  kindSummary: string,
-): string {
-  // Reasoning-only Investigating (Cursor thought stream before tool_call).
-  if (actionCount <= 0) return anyRunning ? "Investigating…" : "";
-  if (anyRunning) {
-    // Avoid "tool tool" / "read read" when kind and goal are the same string
-    // (Cursor CLI tool_prep used to set both from the hint name).
-    const kind = (runningKind || "").trim();
-    const goal = (runningGoal || "").trim();
-    const k = kind.toLowerCase().replace(/_/g, " ");
-    const g = goal.toLowerCase().replace(/_/g, " ");
-    let focus = "";
-    if (kind && goal) {
-      if (!g || g === k || g === "tool") focus = kind;
-      else if (!k || k === "tool") focus = goal;
-      else focus = `${kind} ${goal}`;
-    } else {
-      focus = kind || goal;
-    }
-    if (focus) return `Investigating · ${focus}`;
-    if (kindSummary) return `Investigating · ${kindSummary}`;
-    return "Investigating…";
-  }
-  if (kindSummary) return `Explored ${kindSummary}`;
-  return `Explored ${actionCount} step${actionCount === 1 ? "" : "s"}`;
-}
 
 /**
  * True when the current turn's activity fold is actively investigating.

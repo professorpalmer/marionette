@@ -173,6 +173,7 @@ export function rowNeedsDomMeasure(item: GroupedItem): boolean {
     case "steer":
       return Boolean(item.images?.length || item.documents?.length);
     case "activity_group":
+    case "turn_work":
       return true;
     case "command_approval":
     case "secret_request":
@@ -394,6 +395,8 @@ function rowContentSignature(item: GroupedItem): string {
       return `think:${item.text.length}`;
     case "activity_group":
       return `fold:${item.items.length}`;
+    case "turn_work":
+      return `work:${item.rows.length}`;
     default:
       return item.kind;
   }
@@ -408,6 +411,8 @@ export function rowMeasureSignal(item: GroupedItem): string {
       return `think:${item.streaming ? 1 : 0}:${item.text.length}:${item.text.slice(-32)}`;
     case "activity_group":
       return `fold:${item.items.length}`;
+    case "turn_work":
+      return `work:${item.rows.length}`;
     default:
       return item.kind;
   }
@@ -415,7 +420,7 @@ export function rowMeasureSignal(item: GroupedItem): string {
 
 /** Immediate attach — skip the 2-rAF settle so tokens / folds remasure this frame. */
 export function shouldRemeasureImmediately(item: GroupedItem): boolean {
-  if (item.kind === "activity_group" || item.kind === "thinking") return true;
+  if (item.kind === "activity_group" || item.kind === "turn_work" || item.kind === "thinking") return true;
   if (item.kind === "msg" && (item.msg.streaming || item.msg.workerStream)) return true;
   return false;
 }
