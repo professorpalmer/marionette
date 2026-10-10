@@ -1272,6 +1272,36 @@ describe("live command token clicks", () => {
     expect(line.firstElementChild).toHaveAttribute("aria-hidden", "true");
   });
 
+  it("opens the running command from the live line", () => {
+    // The newest step shows only as the live line, so the line itself must
+    // open the command's terminal view, like a row click does.
+    _resetAgentCommandIndexForTests();
+    const opened: Array<{ id?: string; command?: string }> = [];
+    const onOpen = (e: Event) => opened.push((e as CustomEvent).detail);
+    window.addEventListener("harness-open-agent-terminal", onOpen);
+    try {
+      const user: Item = { kind: "msg", msg: { role: "user", text: "check git" } };
+      const read: Item = {
+        kind: "card",
+        card: { id: "r1", goal: "a.ts", cwd: null, kind: "read_file", running: false, open: false,
+          result: { status: "ok" } },
+      };
+      const run: Item = {
+        kind: "card",
+        card: { id: "c1", goal: "cd ~/Projects/marionette && git status --short", cwd: null,
+          kind: "run_command", running: true, open: false },
+      };
+      render(<TranscriptList {...listProps([user, read, run])} status="executing" turnOpen />);
+      const line = screen.getByTestId("live-activity-line");
+      fireEvent.click(within(line).getByRole("button", { name: /git status --short/ }));
+      expect(opened).toHaveLength(1);
+      expect(opened[0].id).toBe("c1");
+      expect(opened[0].command).toBe("cd ~/Projects/marionette && git status --short");
+    } finally {
+      window.removeEventListener("harness-open-agent-terminal", onOpen);
+    }
+  });
+
   it("swaps the live line without motion while the window is unfocused", () => {
     // index.css pauses every animation under html.app-idle. A swap paused at
     // its first frame sat below the box at opacity 0: an empty live line.

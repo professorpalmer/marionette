@@ -783,14 +783,21 @@ export function currentTurnStep(items: TurnItem[]): string | null {
   return [kind, goal].filter(Boolean).join(" ") || null;
 }
 
-/** Prefer basename-ish tail of a path/goal so the pill stays readable. */
+const LEADING_CD = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*)+/;
+
+/**
+ * Short goal for a pill or live line. A bare path keeps its file name.
+ * A command keeps its start, without a leading `cd <dir> &&`: the text
+ * after the last slash of a command is a fragment.
+ */
 export function shortenGoal(goal: string, max = 42): string {
   const g = (goal || "").trim().replace(/\s+/g, " ");
   if (!g) return "";
-  const parts = g.split(/[/\\]/);
-  const tail = parts[parts.length - 1] || g;
-  if (tail.length <= max) return tail;
-  return tail.slice(0, max - 1) + "…";
+  const shown = /\s/.test(g)
+    ? g.replace(LEADING_CD, "") || g
+    : g.split(/[/\\]/).pop() || g;
+  if (shown.length <= max) return shown;
+  return shown.slice(0, max - 1) + "…";
 }
 
 export function formatBusyElapsed(ms: number): string {
