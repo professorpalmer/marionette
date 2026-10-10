@@ -1443,19 +1443,25 @@ function LiveTailRow({
   );
 }
 
-/** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
-/** Registers a command card; returns the index id, or null for non-command cards. */
-function indexCardCommandSession(card: Card, sessionId?: string): string | null {
+/** The process id and command a command card reveals, or null for other cards. */
+function cardCommandTarget(card: Card): { id: string; command: string } | null {
   const cliInput = resolveCardCliInput(card);
   const resultCommand = String(card.result?.command || "").trim();
   const inputKey = toolInputFieldKey(card.kind || "");
   const commandKv = inputKey === "command" && resultCommand ? resultCommand : cliInput;
-  const rawGoal = commandKv || cliInput;
-  const { linkKind, value } = classifyActionGoal(card.kind || "", rawGoal);
+  const { linkKind, value } = classifyActionGoal(card.kind || "", commandKv || cliInput);
+  const id = String(card.result?.job_id || "").trim() || String(card.id || "").trim();
+  return linkKind === "command" && id && value ? { id, command: value } : null;
+}
+
+/** Bind run_command cards even when Investigating is collapsed (Hermes procId). */
+/** Registers a command card; returns the index id, or null for non-command cards. */
+function indexCardCommandSession(card: Card, sessionId?: string): string | null {
+  const target = cardCommandTarget(card);
+  if (!target) return null;
+  const { id, command: value } = target;
   const jobId = String(card.result?.job_id || "").trim();
   const cardId = String(card.id || "").trim();
-  const id = jobId || cardId;
-  if (linkKind !== "command" || !id || !value) return null;
   if (jobId && cardId && jobId !== cardId) dismissAgentCommandSession(cardId);
   const rawStatus = String(card.result?.status || "").trim().toLowerCase();
   const exitCode =
@@ -2687,8 +2693,10 @@ function ActivityGroup({
   const runningKind = anyRunning || runningNested
     ? focusCard?.kind || runningNested?.kind || ""
     : "";
+  // The live line ends with an ellipsis at its own width (.live-wheel).
   const runningGoal = shortenGoal(
     resolveCardCliInput(focusCard || {}) || runningNested?.goal || "",
+    120,
   );
   const narrationMsgs = items.filter(
     (it) => it.kind === "msg" && (it as { kind: "msg"; msg: Msg }).msg.text.trim()
@@ -2746,6 +2754,15 @@ function ActivityGroup({
   const liveLineShown = investigating && actionCount > 0;
   const liveLineCard = liveLineShown && runningCard ? focusCard : undefined;
   const liveLineThinking = liveLineShown && !runningKind && liveThinking;
+  // The running command lives only in the live line, so the line opens it.
+  const liveLineTarget = liveLineCard ? cardCommandTarget(liveLineCard) : null;
+  const liveLineOpen = liveLineTarget
+    ? () => openAgentCommand(liveLineTarget.command, {
+      id: liveLineTarget.id,
+      output: String(liveLineCard?.result?.output || ""),
+      run: false,
+    })
+    : undefined;
   const isLiveLineCard = (card: Card) =>
     liveLineCard != null && (card === liveLineCard || (Boolean(card.id) && card.id === liveLineCard.id));
 
@@ -3088,7 +3105,7 @@ function ActivityGroup({
         </div>
       )}
       {liveLineShown ? (
-        <LiveActivityLine text={liveLine} />
+        <LiveActivityLine text={liveLine} onOpen={liveLineOpen} />
       ) : null}
     </div>
   );
@@ -3148,7 +3165,7 @@ function FoldHeader({
  * below while the old one rolls up and out (the wheel), and the live text
  * shimmers. Reduced motion shows the swap without movement (index.css).
  */
-function LiveActivityLine({ text }: { text: string }) {
+function LiveActivityLine({ text, onOpen }: { text: string; onOpen?: () => void }) {
   const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean }>(
     () => ({ current: text, previous: null, turn: 0, swapping: false }),
   );
@@ -3176,7 +3193,20 @@ function LiveActivityLine({ text }: { text: string }) {
         </span>
       ) : null}
       <span key={`in-${lines.turn}`} className={`fold-shimmer text-faint/80 ${lines.swapping ? "live-wheel-in" : ""}`} title={lines.current}>
-        {lines.current}
+        {onOpen ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onOpen();
+            }}
+            title="Reveal running command"
+            className="max-w-full truncate bg-transparent border-0 p-0 text-left text-inherit cursor-pointer hover:underline underline-offset-2"
+          >
+            {lines.current}
+          </button>
+        ) : lines.current}
       </span>
     </div>
   );

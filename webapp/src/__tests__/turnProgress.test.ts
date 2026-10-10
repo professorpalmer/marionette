@@ -299,6 +299,16 @@ describe("exploring headline / live line / exploration summary", () => {
   it("shortens path tails", () => {
     expect(shortenGoal("a/b/c/very-long-name-that-exceeds-limit.lua", 20).endsWith("…")).toBe(true);
   });
+
+  it("keeps the head of a command, not the text after its last slash", () => {
+    expect(shortenGoal('cd ~/Projects/marionette && rg -n "foo" webapp/src | head -n 5', 72))
+      .toBe('rg -n "foo" webapp/src | head -n 5');
+    expect(shortenGoal("git diff --stat -- webapp/src/lib", 20)).toBe("git diff --stat -- …");
+    // A real pilot heredoc: the row showed "gdn-ab.json')) print([ (r['label'], ...".
+    const heredoc = "python3 - <<'PY'\nimport json,statistics\nj=json.load(open('artifacts/uzu/gdn-ab.json'))\nPY";
+    expect(shortenGoal(heredoc, 72))
+      .toBe("python3 - <<'PY' import json,statistics j=json.load(open('artifacts/uzu…");
+  });
 });
 
 describe("turnHasLiveInvestigation", () => {

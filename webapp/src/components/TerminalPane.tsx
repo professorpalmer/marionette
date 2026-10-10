@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITerminalInitOnlyOptions, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
@@ -47,6 +47,28 @@ function attachTerminalLinkHandlers(term: Terminal): void {
 }
 
 type AgentView = { id: string; command: string };
+
+/**
+ * Read-only agent mirror. Command output comes from a pipe, not a PTY, so
+ * its lines end in a bare LF. Without convertEol each line starts at the
+ * column where the previous line ended.
+ */
+export const AGENT_TERMINAL_OPTIONS: ITerminalOptions & ITerminalInitOnlyOptions = {
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 12,
+  theme: {
+    background: "#0a0a0c",
+    foreground: "#d4d4d8",
+    cursor: "#7c8cff",
+    selectionBackground: "#2a2a3a",
+  },
+  cursorBlink: false,
+  disableStdin: true,
+  convertEol: true,
+  scrollback: 5000,
+  cols: 80,
+  rows: 24,
+};
 
 // Built-in terminal: xterm.js front-end over the harness PTY backend.
 // create -> SSE stream output (base64 frames) -> POST keystrokes -> resize -> kill.
@@ -214,21 +236,7 @@ export default function TerminalPane() {
     let term = agentTermRef.current;
     let fit = agentFitRef.current;
     if (!term) {
-      term = new Terminal({
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        fontSize: 12,
-        theme: {
-          background: "#0a0a0c",
-          foreground: "#d4d4d8",
-          cursor: "#7c8cff",
-          selectionBackground: "#2a2a3a",
-        },
-        cursorBlink: false,
-        disableStdin: true,
-        scrollback: 5000,
-        cols: 80,
-        rows: 24,
-      });
+      term = new Terminal(AGENT_TERMINAL_OPTIONS);
       fit = new FitAddon();
       term.loadAddon(fit);
       attachTerminalLinkHandlers(term);
