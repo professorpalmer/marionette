@@ -13,6 +13,7 @@ import {
 import {
   getSessionTodos,
   getSessionTodosSessionId,
+  getSessionTodosVersion,
   clearSessionTodos,
   publishSessionTodos,
   subscribeSessionTodos,
@@ -57,6 +58,36 @@ function activeTaskContent(snapshot: SessionTodoSnapshot): string | null {
   return snapshot.next || null;
 }
 
+/**
+ * The checklist shows while an owned job is live, or while the turn is open
+ * and the pilot published the list during this turn. A list from an earlier
+ * turn stays hidden when the user sends a new message, until the pilot
+ * updates it again.
+ */
+export function useTodoChecklistVisible(
+  jobs: readonly Job[],
+  sessionId: string,
+  active: boolean,
+): boolean {
+  const snapshot = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
+  const storedSid = useSyncExternalStore(
+    subscribeSessionTodos,
+    getSessionTodosSessionId,
+    getSessionTodosSessionId,
+  );
+  const version = useSyncExternalStore(
+    subscribeSessionTodos,
+    getSessionTodosVersion,
+    getSessionTodosVersion,
+  );
+  // Store version when the turn opened. -1: mounted mid-turn, show the list.
+  const [turn, setTurn] = useState({ active, startVersion: -1 });
+  if (turn.active !== active) setTurn({ active, startVersion: active ? version : -1 });
+  if (!todoHasWork(snapshot) || storedSid !== sessionId) return false;
+  if (sessionHasLiveTodoOwner(jobs, sessionId)) return true;
+  return active && version > turn.startVersion;
+}
+
 export default function ComposerTodoPanel({
   jobs = [],
   sessionId,
@@ -85,10 +116,7 @@ export default function ComposerTodoPanel({
     () => litTodoContentsFromGroups(snapshot, liveJobTodoLabelGroups(jobs, sessionId)),
     [jobs, sessionId, snapshot],
   );
-  const hasLiveOwner = useMemo(
-    () => sessionHasLiveTodoOwner(jobs, sessionId),
-    [jobs, sessionId],
-  );
+  const visible = useTodoChecklistVisible(jobs, sessionId, active);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -103,7 +131,7 @@ export default function ComposerTodoPanel({
     };
   }, [sessionId, storedSid]);
 
-  if (!todoHasWork(snapshot) || storedSid !== sessionId || (!active && !hasLiveOwner)) return null;
+  if (!visible) return null;
   const { done, total } = todoSnapshotProgress(snapshot);
   const next = snapshot.next;
   const liveStep = active && pilotStep ? { task: activeTaskContent(snapshot), step: pilotStep } : null;

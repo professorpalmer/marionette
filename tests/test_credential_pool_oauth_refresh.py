@@ -13,7 +13,10 @@ from harness import keys as keys_mod
 @pytest.fixture
 def pool(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # add_oauth_entry mirrors the token into os.environ directly. setenv
+    # records the prior state, so teardown removes it; delenv on an unset
+    # name records nothing and leaked the token into later tests.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     stored_keys = {}
     monkeypatch.setattr(keys_mod, "_read_keys", lambda: dict(stored_keys))
     monkeypatch.setattr(keys_mod, "_write_keys", lambda k: stored_keys.update(k))
