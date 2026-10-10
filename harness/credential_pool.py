@@ -470,9 +470,92 @@ def peek_token(provider: str) -> Optional[str]:
         return chosen.runtime_token
 
 
+# Refresh an OAuth access token this long before it expires.
+_OAUTH_REFRESH_MARGIN_MS = 60_000
+
+
+def _oauth_refresher(provider: str):
+    """Token refresh call for providers whose pool entries can renew."""
+    if provider == "anthropic":
+        from .oauth_anthropic import refresh_anthropic_tokens
+        return refresh_anthropic_tokens
+    return None
+
+
+def _adopt_newer_disk_token(entry: PooledCredential, now_ms: int) -> bool:
+    """Take a token that another process already refreshed for this entry.
+
+    Each process writes the whole pool file. Without this, two processes can
+    spend the same refresh token, and the server can reject the second use.
+    """
+    raw = (_load_store().get("pools") or {}).get(entry.provider) or []
+    for stored in raw:
+        if not isinstance(stored, dict) or stored.get("id") != entry.id:
+            continue
+        token = str(stored.get("access_token") or "").strip()
+        expires = stored.get("expires_at_ms")
+        if (token and token != entry.access_token and isinstance(expires, int)
+                and expires > now_ms + _OAUTH_REFRESH_MARGIN_MS):
+            entry.access_token = token
+            entry.refresh_token = stored.get("refresh_token") or entry.refresh_token
+            entry.expires_at_ms = expires
+            return True
+    return False
+
+
+def _replace_mirrored_token(provider: str, old: str, new: str) -> None:
+    """Point env vars and keys.json that held the old access token at the new one."""
+    env_names = [env_var_for_provider(provider), *_PROVIDER_TO_ENV_EXTRAS.get(provider, ())]
+    for env_name in env_names:
+        if env_name and os.environ.get(env_name) == old:
+            os.environ[env_name] = new
+    try:
+        from .keys import _read_keys, _write_keys
+        keys = _read_keys()
+        if keys.get(provider) == old:
+            keys[provider] = new
+            _write_keys(keys)
+    except Exception as e:
+        _diag("credential_pool.refresh_keys_mirror", e)
+
+
+def refresh_oauth_entry(entry: PooledCredential) -> bool:
+    """Renew an OAuth entry's access token in place. True when it is fresh."""
+    refresher = _oauth_refresher(entry.provider)
+    if refresher is None or entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
+        return False
+    with _lock:
+        old = entry.access_token
+        now_ms = int(time.time() * 1000)
+        if not _adopt_newer_disk_token(entry, now_ms):
+            result = refresher(entry.refresh_token)
+            if not result:
+                return False
+            entry.access_token = result["access_token"]
+            if result.get("refresh_token"):
+                entry.refresh_token = result["refresh_token"]
+            entry.expires_at_ms = now_ms + int(result["expires_in"]) * 1000
+        entry.last_status = STATUS_OK
+        entry.last_status_at = None
+        entry.last_error_code = None
+        entry.last_error_message = None
+        _persist_all()
+        _replace_mirrored_token(entry.provider, old, entry.access_token)
+        return True
+
+
+def _expires_soon(entry: PooledCredential) -> bool:
+    expires = entry.expires_at_ms
+    return (isinstance(expires, int)
+            and expires - int(time.time() * 1000) < _OAUTH_REFRESH_MARGIN_MS)
+
+
 def resolve_entry(provider: str) -> Optional[PooledCredential]:
     with _lock:
-        return load_pool(provider).select()
+        entry = load_pool(provider).select()
+        if entry is not None and entry.auth_type == AUTH_TYPE_OAUTH and _expires_soon(entry):
+            refresh_oauth_entry(entry)
+        return entry
 
 
 def report_failure(
@@ -493,6 +576,12 @@ def report_failure(
         is_upstream_provider_block = lambda _m: False  # type: ignore[assignment]
     if is_upstream_provider_block(message):
         return None
+    if status_code == 401:
+        # An expired OAuth access token is not a dead credential: renew it.
+        with _lock:
+            for entry in load_pool(provider).entries():
+                if entry.id == entry_id and refresh_oauth_entry(entry):
+                    return entry.runtime_token
     immediate = False
     if status_code in (402,):
         immediate = True
