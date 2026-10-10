@@ -285,10 +285,21 @@ class AnthropicDriver(CacheRefreshDriver):
 
         return with_retry(_call)
 
-    def _build_body(self, messages: list, tools: list | None, system: str | None) -> dict:
+    def _build_body(
+        self,
+        messages: list,
+        tools: list | None = None,
+        system: str | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> dict:
         """Build the Anthropic /v1/messages request body (messages + tools +
         system). Shared by chat() and chat_stream() so both speak the same
-        native tool-calling protocol -- only streaming vs blocking differs."""
+        native tool-calling protocol -- only streaming vs blocking differs.
+
+        ``session_id`` is accepted like the other drivers' builders, because
+        the request snapshot sends the chat keywords here. It goes into
+        headers (``_headers``), not the body."""
         anthropic_msgs = []
         for msg in messages:
             role = msg.get("role")
@@ -776,6 +787,8 @@ class AnthropicDriver(CacheRefreshDriver):
                         system=system,
                         on_delta=on_delta,
                         on_reasoning_delta=on_reasoning_delta,
+                        on_tool_hint=on_tool_hint,
+                        session_id=session_id,
                     )
             return DriverResponse(
                 text="", model=self.name, error=f"HTTP {e.code}: {detail}",

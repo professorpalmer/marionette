@@ -92,6 +92,46 @@ def start_anthropic_pkce_login(*, label: str = "") -> Dict[str, Any]:
     }
 
 
+def refresh_anthropic_tokens(refresh_token: str) -> Optional[Dict[str, Any]]:
+    """Exchange a refresh token for a new access token, or None on failure.
+
+    Returns ``access_token``, ``expires_in`` and ``refresh_token`` (the
+    server can rotate it; None when it keeps the old one).
+    """
+    data = json.dumps({
+        "grant_type": "refresh_token",
+        "client_id": _OAUTH_CLIENT_ID,
+        "refresh_token": refresh_token,
+    }).encode("utf-8")
+    for endpoint in _OAUTH_TOKEN_URLS:
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": _OAUTH_TOKEN_USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            _diag("oauth_anthropic.token_refresh", exc)
+            continue
+        access_token = str(result.get("access_token") or "")
+        if not access_token:
+            _diag("oauth_anthropic.token_refresh", msg="no access_token in response")
+            continue
+        rotated = result.get("refresh_token")
+        return {
+            "access_token": access_token,
+            "expires_in": int(result.get("expires_in") or 3600),
+            "refresh_token": rotated if isinstance(rotated, str) and rotated else None,
+        }
+    return None
+
+
 def complete_anthropic_pkce_login(session_id: str, auth_code: str) -> Dict[str, Any]:
     """Exchange pasted authorization code for tokens and pool them."""
     with _lock:

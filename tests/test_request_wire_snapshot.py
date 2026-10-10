@@ -269,3 +269,26 @@ def test_managed_frozen_body_and_recovery_keep_request_lease(monkeypatch, stream
         request.recovery_method(value, **kwargs)
     assert not active
     assert request.wire_receipt()['wire_status'] == 'verified'
+
+
+@pytest.mark.parametrize('kind', ['openai', 'anthropic', 'codex'])
+@pytest.mark.parametrize('stream', [False, True])
+def test_capture_accepts_the_send_loop_session_id(monkeypatch, kind, stream):
+    # The send loop adds session_id when the driver method declares it. The
+    # Anthropic body builder rejected it, so every native Anthropic pilot
+    # turn failed with "unexpected keyword argument 'session_id'".
+    from harness.send_loop_phases import maybe_attach_pilot_session_id
+
+    constructors = {
+        'openai': lambda: OpenAICompatDriver('test', 'original', 'https://example.invalid/v1', 'TEST_REQUEST_KEY'),
+        'anthropic': lambda: AnthropicDriver('test', 'original'),
+        'codex': lambda: CodexResponsesDriver('test', 'original', chatgpt_backend=False),
+    }
+    driver = constructors[kind]()
+    method = driver.chat_stream if stream else driver.chat
+    kwargs = {'tools': [], 'system': 'original-system'}
+    maybe_attach_pilot_session_id(kwargs, method, 'session-abc')
+    assert kwargs.get('session_id') == 'session-abc'
+    request = FrozenRequest.capture(method, [{'role': 'user', 'content': 'hi'}], kwargs, driver.model)
+    assert request.wire_receipt()['wire_status'] == 'absent'
+    assert 'session-abc' not in request.boundary.payload.decode()
