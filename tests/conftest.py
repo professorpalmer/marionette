@@ -413,6 +413,31 @@ def pytest_collection_modifyitems(config, items):
         items[:] = selected
 
 
+@pytest.fixture(scope="session")
+def _session_environ():
+    """os.environ as collection left it: the state every test starts from."""
+    return dict(os.environ)
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ(monkeypatch, _session_environ):
+    """Put os.environ back to the session state after each test.
+
+    Credential code (pool mirroring, set_api_key, OAuth refresh) writes
+    provider tokens into os.environ directly. monkeypatch cannot undo a write
+    it never recorded, and a delenv after such a write records the token as
+    the original and puts it back at undo. Either way a test's OAuth token
+    leaked into later tests and changed how their drivers built requests.
+    """
+    yield
+    monkeypatch.undo()
+    for name in set(os.environ) - set(_session_environ):
+        del os.environ[name]
+    for name, value in _session_environ.items():
+        if os.environ.get(name) != value:
+            os.environ[name] = value
+
+
 @pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
     # allow loopback (local harness server tests) but block outbound by patching

@@ -6,11 +6,9 @@ import {
   subscribeAgentCommandIndex,
 } from "../../lib/agentCommandIndex";
 import { pickTaskSourceJob } from "../../lib/composerTasks";
-import { sessionHasLiveTodoOwner, todoHasWork } from "../../lib/composerTodos";
-import { getSessionTodos, getSessionTodosSessionId, subscribeSessionTodos } from "../../lib/sessionTodos";
 import ComposerStatusStack from "./ComposerStatusStack";
 import ComposerTasksPanel from "./ComposerTasksPanel";
-import ComposerTodoPanel from "./ComposerTodoPanel";
+import ComposerTodoPanel, { useTodoChecklistVisible } from "./ComposerTodoPanel";
 import { COMPOSER_FAMILY_SURFACE } from "./composerFamily";
 import { buildComposerStatusStackRows } from "./composerStatusStackData";
 
@@ -39,15 +37,7 @@ export default function ComposerActivityRail({
     () => buildComposerStatusStackRows({ swarmJobs: bodyJobs, commandSessions, sessionId }),
     [commandSessions, bodyJobs, sessionId],
   );
-  const todos = useSyncExternalStore(subscribeSessionTodos, getSessionTodos, getSessionTodos);
-  const todoSessionId = useSyncExternalStore(
-    subscribeSessionTodos,
-    getSessionTodosSessionId,
-    getSessionTodosSessionId,
-  );
-  const showTodos = todoHasWork(todos)
-    && todoSessionId === sessionId
-    && (active || sessionHasLiveTodoOwner(bodyJobs, sessionId));
+  const showTodos = useTodoChecklistVisible(bodyJobs, sessionId, active);
   const showTasks = !!pickTaskSourceJob(bodyJobs, sessionId);
   const hasOverview = showTasks || showTodos || stackRows.length > 0;
 

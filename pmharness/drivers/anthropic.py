@@ -7,6 +7,8 @@ it gets a dedicated driver. stdlib-only. Key read from env at call time.
 
 import json
 import os
+import re
+import subprocess
 import time
 import urllib.request
 import urllib.error
@@ -28,6 +30,51 @@ from .prompt_cache import (
 from .retry import with_retry
 from pmharness.reasoning import extract_reasoning, strip_think_blocks
 from .metering import metered
+
+
+# OAuth requests identify as Claude Code. The API refuses a model to a client
+# older than it requires (error_code claude_code_version_too_old), so send the
+# installed CLI version, never below this floor.
+_CLAUDE_CODE_VERSION_FLOOR = "2.1.283"
+_claude_code_version: str | None = None
+# A Claude Max OAuth token gets HTTP 429 "Error" unless the first system
+# block is this identity (same token and headers return 200 with it).
+_CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+_REQUIRED_VERSION_RE = re.compile(r"version (\d+\.\d+\.\d+) or newer is required")
+
+
+def _version_key(version: str) -> tuple:
+    return tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+
+
+def claude_code_version() -> str:
+    """The Claude Code version for OAuth headers: installed CLI or the floor."""
+    global _claude_code_version
+    if _claude_code_version is None:
+        installed = ""
+        try:
+            from harness.claude_cli_auth import resolve_claude_binary
+            binary = resolve_claude_binary()
+            if binary:
+                out = subprocess.run([binary, "--version"], capture_output=True,
+                                     text=True, timeout=10).stdout
+                match = re.match(r"\s*(\d+\.\d+\.\d+)", out or "")
+                installed = match.group(1) if match else ""
+        except Exception:
+            installed = ""
+        _claude_code_version = max([_CLAUDE_CODE_VERSION_FLOOR, installed or _CLAUDE_CODE_VERSION_FLOOR],
+                                   key=_version_key)
+    return _claude_code_version
+
+
+def adopt_required_claude_code_version(detail: str) -> bool:
+    """Take the version a ``claude_code_version_too_old`` error names. True when it is newer."""
+    global _claude_code_version
+    match = _REQUIRED_VERSION_RE.search(detail or "")
+    if not match or _version_key(match.group(1)) <= _version_key(claude_code_version()):
+        return False
+    _claude_code_version = match.group(1)
+    return True
 
 
 def _openai_user_content_to_anthropic(content) -> list:
@@ -187,11 +234,40 @@ class AnthropicDriver(CacheRefreshDriver):
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
 
-    def _pool_rotate_on_http_error(self, code: int, detail: str) -> str | None:
+    def _uses_oauth(self) -> bool:
+        """True when the credential this driver sends is an OAuth token (no pool side effects)."""
+        try:
+            from harness.credential_pool import peek_token_for_env
+            from harness.oauth_anthropic import is_anthropic_oauth_token
+            key = peek_token_for_env(self.api_key_env) or os.environ.get(self.api_key_env, "")
+            return is_anthropic_oauth_token((key or "").strip())
+        except Exception:
+            return False
+
+    def _system_field(self, system: str | None):
+        """The body ``system`` value: cache-marked when eligible, and led by
+        the Claude Code identity block for an OAuth token."""
+        oauth = self._uses_oauth()
+        identity = {"type": "text", "text": _CLAUDE_CODE_IDENTITY}
+        if not system:
+            return [identity] if oauth else None
+        if self._prompt_cache_on() and _can_carry_marker({"content": system}):
+            block = {"type": "text", "text": system, "cache_control": _cache_control(stable=True)}
+        elif oauth:
+            block = {"type": "text", "text": system}
+        else:
+            return system
+        return [identity, block] if oauth else [block]
+
+    def _retry_after_http_error(self, code: int, detail: str) -> bool:
+        """True when one more attempt can succeed: a newer required Claude
+        Code version was taken, or the credential pool gave a usable token."""
+        if code == 400 and adopt_required_claude_code_version(detail):
+            return True
         if not self._pool_provider or not self._pool_entry_id:
-            return None
+            return False
         if code not in (401, 402, 429):
-            return None
+            return False
         try:
             from harness.credential_pool import report_failure
             nxt = report_failure(
@@ -202,10 +278,10 @@ class AnthropicDriver(CacheRefreshDriver):
             )
             if nxt:
                 self._key()
-                return nxt
+                return True
         except Exception:
             pass
-        return None
+        return False
 
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
         url = f"{self.base_url}/messages"
@@ -214,11 +290,9 @@ class AnthropicDriver(CacheRefreshDriver):
             "max_tokens": self.max_tokens,
             "messages": [{"role": "user", "content": task_prompt}],
         }
-        if self._prompt_cache_on() and _can_carry_marker({"content": system}):
-            body["system"] = [{"type": "text", "text": system,
-                               "cache_control": _cache_control(stable=True)}]
-        else:
-            body["system"] = system
+        system_field = self._system_field(system)
+        if system_field:
+            body["system"] = system_field
 
         # Some Anthropic models (Opus 4.x) reject an explicit temperature.
         if self.temperature is not None and self.send_temperature:
@@ -241,7 +315,7 @@ class AnthropicDriver(CacheRefreshDriver):
                 except urllib.error.HTTPError as e:
                     detail = e.read().decode("utf-8", "replace")[:500]
                     if attempt == 0:
-                        nxt = self._pool_rotate_on_http_error(e.code, detail)
+                        nxt = self._retry_after_http_error(e.code, detail)
                         if nxt:
                             headers = self._headers()
                             continue
@@ -384,15 +458,12 @@ class AnthropicDriver(CacheRefreshDriver):
             "messages": anthropic_msgs,
         }
 
-        if system:
-            # Shared eligibility with OpenAI-compat: whitespace/empty system text
-            # must not receive cache_control (provider rejects empty text breakpoints
-            # and it would burn one of the ≤4 slots).
-            if self._prompt_cache_on() and _can_carry_marker({"content": system}):
-                body["system"] = [{"type": "text", "text": system,
-                                   "cache_control": _cache_control(stable=True)}]
-            else:
-                body["system"] = system
+        # Shared eligibility with OpenAI-compat: whitespace/empty system text
+        # must not receive cache_control (provider rejects empty text breakpoints
+        # and it would burn one of the ≤4 slots).
+        system_field = self._system_field(system)
+        if system_field:
+            body["system"] = system_field
 
         if self.temperature is not None and self.send_temperature:
             body["temperature"] = self.temperature
@@ -481,7 +552,7 @@ class AnthropicDriver(CacheRefreshDriver):
         if oauth:
             headers["Authorization"] = f"Bearer {key}"
             headers["x-app"] = "cli"
-            headers["User-Agent"] = "claude-code/2.1.200"
+            headers["User-Agent"] = f"claude-code/{claude_code_version()}"
             betas = ["claude-code-20250219", "oauth-2025-04-20"]
             if self._prompt_cache_on():
                 betas.append("prompt-caching-2024-07-31")
@@ -533,7 +604,7 @@ class AnthropicDriver(CacheRefreshDriver):
                 except urllib.error.HTTPError as e:
                     detail = e.read().decode("utf-8", "replace")[:500]
                     if attempt == 0:
-                        nxt = self._pool_rotate_on_http_error(e.code, detail)
+                        nxt = self._retry_after_http_error(e.code, detail)
                         if nxt:
                             headers = self._headers(session_id=session_id)
                             continue
@@ -779,7 +850,7 @@ class AnthropicDriver(CacheRefreshDriver):
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
             if not full_text_pieces:
-                nxt = self._pool_rotate_on_http_error(e.code, detail)
+                nxt = self._retry_after_http_error(e.code, detail)
                 if nxt:
                     return self.chat_stream(
                         messages,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ComposerTodoPanel from "../components/conversation/ComposerTodoPanel";
 import { api, type Job } from "../lib/api";
@@ -28,6 +28,31 @@ describe("ComposerTodoPanel", () => {
 
     expect(screen.queryByText("TODO 0/1")).not.toBeInTheDocument();
     expect(screen.queryByText("old blocked step")).not.toBeInTheDocument();
+  });
+
+  it("keeps an earlier turn's checklist hidden when the user sends a new message", () => {
+    const finished = {
+      phases: [
+        { name: "Fix", tasks: [
+          { content: "patch the driver", status: "completed" as const },
+          { content: "ship the release", status: "pending" as const },
+        ] },
+      ],
+    };
+    publishSessionTodos(finished, "sess-turns");
+    const { rerender } = render(<ComposerTodoPanel sessionId="sess-turns" active />);
+    expect(screen.getByText("TODO 1/2")).toBeInTheDocument();
+
+    rerender(<ComposerTodoPanel sessionId="sess-turns" active={false} />);
+    rerender(<ComposerTodoPanel sessionId="sess-turns" active />);
+    expect(screen.queryByText("TODO 1/2")).not.toBeInTheDocument();
+
+    act(() => {
+      publishSessionTodos({
+        phases: [{ name: "Fix", tasks: [{ content: "new step", status: "in_progress" }] }],
+      }, "sess-turns");
+    });
+    expect(screen.getByText("TODO 0/1")).toBeInTheDocument();
   });
 
   it("keeps the checklist while an owned background job is live", () => {
