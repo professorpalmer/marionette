@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.43.3` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.630**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.631**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
