@@ -17,6 +17,7 @@ import queue
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import secrets as _secrets
+import socket
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 import tempfile
@@ -2785,7 +2786,42 @@ def _device_grants():
     return DeviceGrantStore(Path(_state_home()) / 'devices', _endpoint_identity().endpoint_id)
 
 
+def _linger_close(sock: Any, timeout: float = 2.0, cap: int = 64 << 20) -> None:
+    """Send FIN, then discard what the client still sends until it closes.
+
+    A handler can answer before it reads the request body (a 403, 413 or
+    guard reject). A close with unread bytes resets the socket, and the
+    client can lose the response (Windows: WinError 10053).
+    """
+    if not isinstance(sock, socket.socket):
+        return
+    try:
+        sock.shutdown(socket.SHUT_WR)
+    except OSError:
+        return
+    deadline = time.monotonic() + timeout
+    seen = 0
+    try:
+        while seen < cap:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            sock.settimeout(left)
+            chunk = sock.recv(65536)
+            if not chunk:
+                return
+            seen += len(chunk)
+    except OSError:
+        return
+
+
 class Handler(BaseHTTPRequestHandler):
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            _linger_close(self.connection)
+
     def handle_one_request(self):
         # A client (the Electron renderer) closing the socket mid-request --
         # navigating away, stopping a stream, swapping models -- or a handler
