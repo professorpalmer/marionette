@@ -1247,6 +1247,8 @@ class SendLoopMixin:
                     )
                 else:
                     self._history.append({"role": "user", "content": history_content})
+                # Compaction pins rows the human typed, not injected user rows.
+                self._history[-1]["_user_request"] = True
                 if input_id:
                     ids = self._history[-1].setdefault('input_ids', [])
                     if input_id not in ids:

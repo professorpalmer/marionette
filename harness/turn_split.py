@@ -1,18 +1,17 @@
-"""Split a long tool loop into shorter segments for local models.
+"""Optional split of a long tool loop into shorter segments for local models.
 
-A local model loses track of its task deep in one long turn: the serving
-rig's review found a 50-call turn decaying where 25-call turns stay strong.
-Every ``local_turn_split_steps`` provider steps, the loop compacts the turn's
-earlier tool rounds (the catalog residual keeps the user's request and the
-recent tail), so each segment starts inside the depth where the model is
-reliable. Cloud models keep one unbroken turn: a mid-turn rewrite busts
-their prompt cache, and they do not decay at this depth.
+Off by default. A fixed step count ignores the context window: a 1M-token
+local pilot was compacted at about 30k tokens, every 24 steps. Set
+``HARNESS_LOCAL_TURN_SPLIT_STEPS`` to N to compact a local pilot's turn every
+N provider steps. The residual keeps the user's requests verbatim
+(``harness.working_set``). Cloud models never split: a mid-turn rewrite busts
+their prompt cache.
 """
 from __future__ import annotations
 
 import os
 
-DEFAULT_LOCAL_SPLIT_STEPS = 24
+DEFAULT_LOCAL_SPLIT_STEPS = 0
 SPLIT_ENV = "HARNESS_LOCAL_TURN_SPLIT_STEPS"
 
 

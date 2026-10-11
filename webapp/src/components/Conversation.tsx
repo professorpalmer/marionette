@@ -1861,7 +1861,8 @@ export default function Conversation({
     return () => window.removeEventListener("harness-context-changed", h);
   }, [activeSessionId]);
 
-  usePolling(fetchContextUsage, 5000, { enabled: showContextPanel && !!activeSessionId });
+  // The composer chip follows a long turn live, not only at its end.
+  usePolling(fetchContextUsage, 5000, { enabled: (showContextPanel || turnOpen) && !!activeSessionId });
 
   useSessionSwitch({
     activeSessionId,

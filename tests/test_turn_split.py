@@ -1,4 +1,4 @@
-"""A local pilot's long tool loop is compacted every N steps; cloud pilots never are."""
+"""A local pilot's long tool loop is compacted every N steps only when asked; cloud pilots never are."""
 import json
 
 from harness.config import HarnessConfig
@@ -11,8 +11,11 @@ class LocalFakePilot(FakePilot):
     _spec = "local:loop/bonsai"
 
 
-def _run(tmp_path, monkeypatch, pilot_cls, steps):
-    monkeypatch.setenv("HARNESS_LOCAL_TURN_SPLIT_STEPS", "10")
+def _run(tmp_path, monkeypatch, pilot_cls, steps, every="10"):
+    if every is None:
+        monkeypatch.delenv("HARNESS_LOCAL_TURN_SPLIT_STEPS", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_LOCAL_TURN_SPLIT_STEPS", every)
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     cfg.repo = str(tmp_path)
     session = ConversationalSession(cfg)
@@ -33,6 +36,10 @@ def _run(tmp_path, monkeypatch, pilot_cls, steps):
 
 def test_local_pilot_compacts_every_n_steps(tmp_path, monkeypatch):
     assert _run(tmp_path, monkeypatch, LocalFakePilot, 25) == [(True, False), (True, False)]
+
+
+def test_local_pilot_keeps_one_turn_by_default(tmp_path, monkeypatch):
+    assert _run(tmp_path, monkeypatch, LocalFakePilot, 25, every=None) == []
 
 
 def test_cloud_pilot_keeps_one_turn(tmp_path, monkeypatch):
