@@ -352,16 +352,8 @@ class _OpenAIChatSseAccumulator:
         if not isinstance(delta, dict):
             delta = {}
 
-        content_delta = delta.get("content") or ""
-        if content_delta:
-            piece = absorb_stream_snapshot(self.full_text, content_delta)
-            self.stream_started = True
-            if piece:
-                self.full_text += piece
-                visible = self.think_scrubber.feed(piece)
-                if visible and self.on_delta is not None:
-                    self.on_delta(visible)
-
+        # A delta can carry the last reasoning token and the first answer
+        # token together (vLLM GLM). Reasoning came first in the model output.
         if "reasoning_content" in delta:
             self.reasoning_content_seen = True
             raw_reasoning_content = delta.get("reasoning_content")
@@ -385,6 +377,16 @@ class _OpenAIChatSseAccumulator:
                 self.reasoning_pieces.append(piece)
                 if self.on_reasoning_delta is not None:
                     self.on_reasoning_delta(piece)
+
+        content_delta = delta.get("content") or ""
+        if content_delta:
+            piece = absorb_stream_snapshot(self.full_text, content_delta)
+            self.stream_started = True
+            if piece:
+                self.full_text += piece
+                visible = self.think_scrubber.feed(piece)
+                if visible and self.on_delta is not None:
+                    self.on_delta(visible)
 
         delta_tool_calls = delta.get("tool_calls") or []
         if delta_tool_calls:
