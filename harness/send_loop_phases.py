@@ -1598,6 +1598,20 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
             if ev is not None:
                 yield ev
 
+    def _flush_others(own):
+        # A channel change is a barrier: text that arrived earlier on another
+        # channel leaves first, so the client paints frames in arrival order.
+        for bat, ek, ch in (
+            (progress_batch, "message_delta", "progress"),
+            (answer_batch, "message_delta", "answer"),
+            (reasoning_batch, "thinking", "reasoning"),
+        ):
+            if bat is own:
+                continue
+            ev = _emit_batched_delta(bat, event_kind=ek, default_channel=ch)
+            if ev is not None:
+                yield ev
+
     def _flush_overdue():
         now = time.monotonic()
         for bat, ek, ch in (
@@ -1673,6 +1687,8 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
                 data = {"text": text, "channel": "progress"}
                 yield ConvEvent("message_delta", data)
                 return
+            for ev in _flush_others(progress_batch):
+                yield ev
             flushed = progress_batch.push(
                 text, meta, default_channel="progress",
             )
@@ -1695,6 +1711,8 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         # ring in seconds. The payload carries no stream_id, so the renderer
         # keeps its legacy path; the first frame still goes out at once.
         sid = str(ans_meta.get("stream_id") or "").strip()
+        for ev in _flush_others(answer_batch):
+            yield ev
         flushed = answer_batch.push(clean, ans_meta, default_channel="answer")
         for ev in _emit_push_or_first_frame(
             answer_batch,
@@ -1715,6 +1733,8 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         r_meta = dict(meta)
         r_meta["channel"] = "reasoning"
         sid = str(r_meta.get("stream_id") or "").strip()
+        for ev in _flush_others(reasoning_batch):
+            yield ev
         flushed = reasoning_batch.push(
             text, r_meta, default_channel="reasoning",
         )

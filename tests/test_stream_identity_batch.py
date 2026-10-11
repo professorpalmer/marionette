@@ -509,13 +509,15 @@ def test_drain_answer_reasoning_interleave_preserves_order(monkeypatch):
     a2 = next(gen)
     assert a2.kind == "message_delta"
     assert a2.data["text"] == "A2"
-    # Later same-identity tails stay batched until ``done`` (5th get).
-    assert q.get_calls == 5
+    # The held A2 leaves when R2 arrives (4th get): a channel change is a
+    # barrier, so frames keep arrival order.
+    assert q.get_calls == 4
 
     r2 = next(gen)
     assert r2.kind == "thinking"
     assert r2.data["text"] == "R2"
     assert r2.data.get("delta") is True
+    # R2 is a later same-identity tail, so it stays batched until ``done``.
     assert q.get_calls == 5
 
     extras, (streamed, got) = _finish_gen(gen)
@@ -666,3 +668,58 @@ def test_identity_less_deltas_batch_too(kind, event_kind):
     assert frames[0].data["text"] == words[0]  # the first token still paints at once
     assert "".join(f.data["text"] for f in frames) == "".join(words)
     assert all("stream_id" not in f.data for f in frames)
+
+
+def _drain_all(q: queue.Queue) -> list:
+    events = []
+    gen = drain_stream_queue(q)
+    try:
+        while True:
+            events.append(next(gen))
+    except StopIteration:
+        pass
+    return events
+
+
+@pytest.mark.parametrize(
+    "reasoning_meta, answer_meta",
+    [
+        ({}, {}),
+        ({"stream_id": "r1"}, {"stream_id": "a1", "channel": "answer"}),
+        ({"stream_id": "r1"}, {"stream_id": "p1", "channel": "progress"}),
+    ],
+)
+def test_drain_flushes_pending_reasoning_before_prose_starts(reasoning_meta, answer_meta):
+    # A fast model starts prose within the 16 ms batch window. The reasoning
+    # tail must reach the client before the prose, or the client paints the
+    # tail as a new Thought row below the prose.
+    q: queue.Queue = queue.Queue()
+    for word in ["Let", " me", " get", " the", " tail", "."]:
+        q.put(("reasoning", {"text": word, **reasoning_meta}))
+    for word in ["The", " activity"]:
+        q.put(("delta", {"text": word, **answer_meta}))
+    q.put(("done", type("R", (), {"meta": {}})()))
+
+    events = [e for e in _drain_all(q) if e.kind in ("thinking", "message_delta")]
+
+    kinds = [e.kind for e in events]
+    first_prose = kinds.index("message_delta")
+    assert "thinking" not in kinds[first_prose:]
+    thought = "".join(e.data["text"] for e in events[:first_prose])
+    assert thought == "Let me get the tail."
+
+
+def test_drain_flushes_pending_prose_before_reasoning_starts():
+    q: queue.Queue = queue.Queue()
+    for word in ["Checking", " the", " log", "."]:
+        q.put(("delta", {"text": word, "stream_id": "p1", "channel": "progress"}))
+    for word in ["Now", " think"]:
+        q.put(("reasoning", {"text": word, "stream_id": "r1"}))
+    q.put(("done", type("R", (), {"meta": {}})()))
+
+    events = [e for e in _drain_all(q) if e.kind in ("thinking", "message_delta")]
+
+    kinds = [e.kind for e in events]
+    first_thought = kinds.index("thinking")
+    assert "message_delta" not in kinds[first_thought:]
+    assert "".join(e.data["text"] for e in events[:first_thought]) == "Checking the log."

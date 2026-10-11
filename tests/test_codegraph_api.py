@@ -97,3 +97,25 @@ def test_codegraph_reindex_indexing_state():
     finally:
         srv._cfg.repo = orig_repo
         httpd.shutdown()
+
+
+def test_rejected_post_reads_its_body_so_the_403_arrives():
+    # The server closes after each response. A close with unread request bytes
+    # resets the socket, and the client lost the 403 (Windows CI: WinError
+    # 10053 for a 2-byte body; any OS for a large one).
+    httpd, port, srv = _server()
+    try:
+        for _ in range(5):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/codegraph/reindex",
+                data=b"x" * 2_000_000,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                urllib.request.urlopen(req, timeout=10)
+                assert False, "should have been rejected with 403"
+            except urllib.error.HTTPError as e:
+                assert e.code == 403
+    finally:
+        httpd.shutdown()
