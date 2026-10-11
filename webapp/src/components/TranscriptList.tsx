@@ -853,8 +853,12 @@ function isUserRow(row: GroupedItem): boolean {
  * level and split the fold. A lone tool group is its own Worked for fold.
  */
 function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
+  // A terminal row (Stop, interrupt, failure) means the turn has no single
+  // answer: its last prose is often a "let me also..." line, so no prose folds
+  // and rows keep stream order.
+  const unfinished = span.some((row) => row.kind === "turn_terminal");
   let finalIdx = -1;
-  for (let k = span.length - 1; k >= 0; k--) {
+  for (let k = span.length - 1; k >= 0 && !unfinished; k--) {
     const row = span[k];
     if (row.kind === "msg" && row.msg.role === "assistant") {
       finalIdx = k;
@@ -883,7 +887,7 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
       run.push(row);
       return;
     }
-    if (row.kind === "msg" && row.msg.role === "assistant" && row.msg.channel !== "answer") {
+    if (row.kind === "msg" && row.msg.role === "assistant" && row.msg.channel !== "answer" && !unfinished) {
       run.push({ kind: "msg", msg: row.msg });
       return;
     }

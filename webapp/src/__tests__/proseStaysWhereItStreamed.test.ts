@@ -88,3 +88,30 @@ describe("prose stays where it streamed", () => {
     ]);
   });
 });
+
+describe("a stopped turn keeps its prose", () => {
+  // A turn that ends by Stop has no single answer. Its last prose is often a
+  // short "let me also..." line; the summary posted before it must not fold.
+  const summary: Item = { kind: "msg", msg: { role: "assistant", text: "Summary: all three fixes shipped." } };
+  const more: Item = { kind: "msg", msg: { role: "assistant", text: "Let me also check the logs." } };
+  const stopped: Item = { kind: "turn_terminal", id: "t1", cause: "cancelled", state: "interrupted", text: "Stopped." };
+
+  it("keeps every prose line outside the fold when the turn has a terminal row", () => {
+    expect(shape([user, card("a"), summary, more, card("b"), stopped], false)).toEqual([
+      "user:fix the parser",
+      "fold[a]",
+      "assistant:Summary: all three fixes shipped.",
+      "assistant:Let me also check the logs.",
+      "fold[b]",
+      "turn_terminal",
+    ]);
+  });
+
+  it("still folds a turn that ended by itself", () => {
+    expect(shape([user, card("a"), summary, card("b"), more], false)).toEqual([
+      "user:fix the parser",
+      "work[fold[a] assistant:Summary: all three fixes shipped. fold[b]]",
+      "assistant:Let me also check the logs.",
+    ]);
+  });
+});
