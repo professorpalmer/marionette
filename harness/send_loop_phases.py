@@ -2671,7 +2671,7 @@ def drain_idle_turn(
         else:
             reset_turn_goal_state(session)
             reset_fresh_turn_state(session)
-            row = {"role": "user", "content": content}
+            row = {"role": "user", "content": content, "_user_request": True}
             if queued.get('input_id'):
                 row['input_id'] = queued['input_id']
             session._history.append(row)

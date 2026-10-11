@@ -24,6 +24,7 @@ from typing import Any, Iterable
 
 from harness.api.redaction import redact_secret_text
 from harness.compaction_vault import select_story_lines, topic_last_wins_receipt
+from harness.working_set import LEGACY_NOTE_MARKER
 
 _SPILL_URI_RE = re.compile(r"spill://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
@@ -456,7 +457,8 @@ def extract_handle_index(middle_block: list[dict]) -> dict[str, Any]:
         if not isinstance(message, dict):
             continue
         role = str(message.get("role") or "")
-        if role == "user" and not message.get("_compressed_summary"):
+        if (role == "user" and not message.get("_compressed_summary")
+                and not str(message.get("content") or "").startswith(LEGACY_NOTE_MARKER)):
             raw_ask = str(message.get("content") or "").strip().split("\n", 1)[0]
             last_ask = redact_secret_text(raw_ask[:_LAST_ASK_CHARS])
         read_path = message.get("_read_path")

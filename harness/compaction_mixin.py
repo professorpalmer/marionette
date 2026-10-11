@@ -1720,6 +1720,13 @@ class CompactionContextMixin:
         except Exception:
             pass
 
+        # The user's own requests ride in the residual verbatim. The guard
+        # below measures the residual body only: the requests are kept, not
+        # compressed.
+        from .working_set import requests_block, requests_for_residual
+
+        pinned = requests_block(requests_for_residual(original_middle))
+
         summary_msg = {
             "role": "user",
             "content": self._injected_residual_content(summary),
@@ -1790,6 +1797,11 @@ class CompactionContextMixin:
                 "thrash_strikes": _strikes,
             })
             return
+
+        if pinned:
+            summary_msg = dict(
+                summary_msg, content=summary_msg["content"].rstrip() + "\n\n" + pinned,
+            )
 
         chars_before = sum(len(str(m.get("content") or "")) for m in middle_block)
         chars_after = len(summary_msg["content"])

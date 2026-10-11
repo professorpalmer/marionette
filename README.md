@@ -7,10 +7,10 @@ and both the chat **pilot** and agentic **workers** (swarm / implement) run on
 that credential. No Cursor, Claude, or Codex CLI install is required.
 
 Puppetmaster is the bundled kernel — not a second product to set up.
-stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.43.2` is the one
+stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.43.3` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.629**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.630**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -92,7 +92,7 @@ The cost thesis is measured, not asserted:
 |---|---|
 | **Provider-native pilot** | One driver, every OpenAI-compatible endpoint (OpenRouter or native). Frontier control models (Claude, GPT) and open-weights (GLM, DeepSeek, Kimi, Qwen, MiniMax) drive the same loop. |
 | **CodeGraph-first retrieval** | Per-turn structural context is auto-injected (symbols, defs, call sites) before the model acts, so it leans on the graph instead of dumping whole files. Self-healing: the index detects edits, additions, and deletions and refreshes in the background. |
-| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. `run_flow` hands Puppetmaster one graph for a multi-step pipeline (build, check, review, repair, or one task per item) and wakes the pilot only when the run is done, failed, stuck, stopped, interrupted or waiting at a gate; `flow_control` answers gates and resumes, restarts, cuts or stops a run. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.43.2`; the installer and self-update use the same version. |
+| **Puppetmaster delegation** | `run_swarm`, `run_implement`, and `run_parallel` run bounded workers as durable jobs. `run_flow` hands Puppetmaster one graph for a multi-step pipeline (build, check, review, repair, or one task per item) and wakes the pilot only when the run is done, failed, stuck, stopped, interrupted or waiting at a gate; `flow_control` answers gates and resumes, restarts, cuts or stops a run. Inspect recorded attempts, acceptance evidence, uncertain outcomes, and measured or estimated consumption. Marionette pins `puppetmaster-ai==1.43.3`; the installer and self-update use the same version. |
 | **Portable LLM Wiki** | Cross-session, cross-LLM durable memory. A local model structures a session digest into entity/concept/decision pages (the "backwards" orchestration) cheaply, then ingests them -- human-approved by default. |
 | **Durable memory graph** | Local durable facts/preferences (`MemoryStore`) plus optional relations via `MemoryGraph` (`GET /api/memory/graph`, shape `{nodes,edges}` like the wiki graph; sqlite + append-only jsonl). |
 | **Vision on any driver** | Paste or drop a screenshot and even a text-only driver "sees" it. A VLM sidecar transcribes the image, resolved in tiers: an explicit `HARNESS_VLM_REACH` override, then a dedicated Gemini/OpenRouter vision key, then -- with zero extra setup -- **any provider key you already have that exposes a vision model** (Anthropic, OpenAI, xAI, ...). No separate vision key required if your driver's provider can see. |
@@ -270,7 +270,7 @@ The driver and keys are set in the app (Settings pane) or via env. Key vars:
 | `FIRECRAWL_API_KEY` | Optional. Enables the Firecrawl MCP catalog entry (State > MCP); not used by native `web_fetch`. |
 | `HARNESS_JEV` | Opt-in Jev turn judgment. Default off. `1`/`true`/`on`/`yes` only. Never required; no OpenRouter key needed for the harness. |
 | `HARNESS_COMPACTION_RESIDUAL` | Compact residual. Default `catalog` (also the empty/invalid fallback). Settings cycle: catalog, hybrid, summary. `off` is env-only. |
-| `HARNESS_LOCAL_TURN_SPLIT_STEPS` | Local-model pilots compact a long tool loop every N steps (default 24; `0` = never), so each segment stays inside the depth where a local model holds its task. Cloud pilots keep one unbroken turn. |
+| `HARNESS_LOCAL_TURN_SPLIT_STEPS` | Local-model pilots compact a long tool loop every N steps (default `0` = never; context fill still compacts at 75% of the window). Cloud pilots keep one unbroken turn. |
 | `HARNESS_COMPACTION_VAULT` | SQLite FTS retrieve of compacted history (default on). Set `0` to disable inject. |
 | `HARNESS_AUTO_COMMAND_GUARD` | Full-auto danger guard; default on, off to disable. |
 | `HARNESS_BROWSER_REAL_PROFILE` | Consent-gated copy of last-used Chrome/Chromium login data into `~/.pmharness/browser-profile-real`. Default off. Settings > Safety: Use my Chrome login. |
