@@ -109,8 +109,9 @@ def test_copy_auth_db_times_out_when_source_is_locked(tmp_path):
     locker.execute("BEGIN EXCLUSIVE")
     try:
         started = time.monotonic()
-        assert rp._copy_auth_db(src, dst, timeout_s=0.25) is False
-        assert time.monotonic() - started < 1.5
+        assert rp._copy_auth_db(src, dst, timeout_s=0.25) == rp._PROFILE_LOCKED
+        # Bounded, not instant: a loaded Windows runner adds over a second.
+        assert time.monotonic() - started < 10
     finally:
         locker.rollback()
         locker.close()
@@ -123,7 +124,7 @@ def test_snapshot_reuses_complete_copy_when_auth_copy_fails(tmp_path, monkeypatc
     copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
     assert err is None
     assert _cookie_marker(Path(copy_dir) / "Default" / "Cookies") == "kept"
-    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: False)
+    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: rp._PROFILE_LOCKED)
     again, err2 = rp.snapshot_real_profile("chrome", src=src)
     assert err2 is None
     assert again == copy_dir
@@ -134,7 +135,7 @@ def test_snapshot_reports_locked_when_copy_fails_without_prior(tmp_path, monkeyp
     monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
     monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     src = _make_src(tmp_path / "real")
-    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: False)
+    monkeypatch.setattr(rp, "_copy_auth_db", lambda *a, **k: rp._PROFILE_LOCKED)
     copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
     assert copy_dir is None
     assert err is not None
@@ -298,3 +299,40 @@ def test_real_profile_data_dir_linux_first_existing(tmp_path, monkeypatch):
     snap.mkdir(parents=True)
     got = rp.real_profile_data_dir("chrome", system="Linux")
     assert got == snap
+
+
+def test_copy_failure_that_is_not_a_lock_reports_its_real_cause(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_BROWSER_REAL_PROFILE", "1")
+    monkeypatch.setattr(rp.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    src = _make_src(tmp_path / "real")
+    (src / "Default" / "Cookies").write_bytes(b"not a sqlite file" * 64)
+    copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
+    assert copy_dir is None
+    assert not err.startswith("profile locked:")
+    # The exception class differs across SQLite builds; the cause text does not.
+    assert err.startswith("could not copy Cookies from the browser profile: ")
+    assert "file is not a database" in err
+
+
+def test_sharing_violation_on_the_source_is_a_lock(tmp_path, monkeypatch):
+    src = tmp_path / "Cookies"
+    _write_cookie_db(src, "x")
+
+    def denied(*_a, **_k):
+        raise PermissionError(13, "The process cannot access the file")
+
+    monkeypatch.setattr(rp.sqlite3, "connect", denied)
+    assert rp._copy_auth_db(src, tmp_path / "out" / "Cookies") == rp._PROFILE_LOCKED
+
+
+def test_a_slow_copy_of_an_unlocked_db_is_not_reported_as_locked(tmp_path, monkeypatch):
+    """CI flake: a runner stall past the deadline made an unlocked copy fail as locked."""
+    src = tmp_path / "Cookies"
+    _write_cookie_db(src, "slow")
+    real = time.monotonic
+    start = real()
+    # Every clock read after the first is 5 s later: the copy "took" longer than its 2 s deadline.
+    reads = iter([0.0])
+    monkeypatch.setattr(rp.time, "monotonic", lambda: start + next(reads, 5.0))
+    assert rp._copy_auth_db(src, tmp_path / "out" / "Cookies") is None
+    assert _cookie_marker(tmp_path / "out" / "Cookies") == "slow"
