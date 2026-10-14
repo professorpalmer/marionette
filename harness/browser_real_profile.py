@@ -186,19 +186,28 @@ def _last_used_profile(src: Path) -> str:
     return last
 
 
+_SQLITE_LOCK_STATUS = (5, 6)  # SQLITE_BUSY, SQLITE_LOCKED
+
+
+class _CopyDeadline(Exception):
+    """The backup did not finish inside its deadline: a live browser holds the DB."""
+
+
 def _copy_auth_db(
     src_file: Path,
     dst_file: Path,
     timeout_s: Optional[float] = None,
-) -> bool:
+) -> Optional[str]:
     """Copy one SQLite auth DB via URI readonly + ``Connection.backup``.
 
     ``Connection.backup`` retries on BUSY/LOCKED with a sleep and has no
     deadline. Chrome's Network process holds Cookies that way, so a live
     browser must not stall this copy — abort after ``AUTH_DB_COPY_TIMEOUT_S``.
+
+    Returns None on success, ``_PROFILE_LOCKED`` when the source is held, and
+    the real cause for any other failure. Reporting every failure as locked
+    told the user to quit Chrome for errors Chrome did not cause.
     """
-    if not src_file.is_file():
-        return False
     dst_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         if dst_file.exists():
@@ -211,9 +220,11 @@ def _copy_auth_db(
     deadline = time.monotonic() + limit
     uri = "file:%s?mode=ro" % pathname2url(os.path.abspath(str(src_file)))
 
-    def _progress(_status: int, _remaining: int, _total: int) -> None:
-        if time.monotonic() >= deadline:
-            raise sqlite3.OperationalError(_PROFILE_LOCKED)
+    def _progress(status: int, _remaining: int, _total: int) -> None:
+        # Only a step that waited on a lock counts against the deadline. A slow
+        # runner (CPU load, a scan of a just-written file) is not a held DB.
+        if status in _SQLITE_LOCK_STATUS and time.monotonic() >= deadline:
+            raise _CopyDeadline()
 
     try:
         source = sqlite3.connect(uri, uri=True, timeout=min(1.0, limit))
@@ -225,9 +236,22 @@ def _copy_auth_db(
                 dest.close()
         finally:
             source.close()
-        return True
-    except Exception:
-        return False
+        return None
+    except (_CopyDeadline, PermissionError):
+        return _PROFILE_LOCKED
+    except sqlite3.OperationalError as exc:
+        text = str(exc).lower()
+        if "locked" in text or "busy" in text:
+            return _PROFILE_LOCKED
+        return _copy_failed(src_file, exc)
+    except (sqlite3.Error, OSError) as exc:
+        return _copy_failed(src_file, exc)
+
+
+def _copy_failed(src_file: Path, exc: BaseException) -> str:
+    return "could not copy %s from the browser profile: %s: %s" % (
+        src_file.name, type(exc).__name__, exc,
+    )
 
 
 def _cookie_db_path(src: Path, source_profile: str) -> Optional[Path]:
@@ -326,10 +350,11 @@ def snapshot_real_profile(
             src_file = src_path / last_used / rel
             if not src_file.is_file():
                 continue
-            if not _copy_auth_db(src_file, dst_default / rel):
+            copy_error = _copy_auth_db(src_file, dst_default / rel)
+            if copy_error is not None:
                 if marker.is_file() and dst_default.is_dir():
                     return str(copy_dir), None
-                return None, _PROFILE_LOCKED
+                return None, copy_error
         for rel in _AUTH_PLAIN_RELS:
             src_file = src_path / last_used / rel
             if not src_file.is_file():
