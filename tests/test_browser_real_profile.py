@@ -309,7 +309,9 @@ def test_copy_failure_that_is_not_a_lock_reports_its_real_cause(tmp_path, monkey
     copy_dir, err = rp.snapshot_real_profile("chrome", src=src)
     assert copy_dir is None
     assert not err.startswith("profile locked:")
-    assert err.startswith("could not copy Cookies from the browser profile: DatabaseError")
+    # The exception class differs across SQLite builds; the cause text does not.
+    assert err.startswith("could not copy Cookies from the browser profile: ")
+    assert "file is not a database" in err
 
 
 def test_sharing_violation_on_the_source_is_a_lock(tmp_path, monkeypatch):
