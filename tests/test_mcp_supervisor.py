@@ -131,3 +131,30 @@ def test_stdio_server_dies_when_harness_side_pipe_closes(link):
     finally:
         _cleanup(proc)
         client.stop()
+
+
+def test_dead_groups_are_pruned_before_eof(monkeypatch):
+    import threading
+    import time
+
+    live, dead = _sleeper(), _sleeper()
+    os.killpg(dead.pid, signal.SIGKILL)
+    dead.wait(timeout=5)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "rb", buffering=0))
+    terminated = []
+    monkeypatch.setattr(mcp_supervisor, "terminate_groups", lambda groups: terminated.append(set(groups)))
+
+    def feed():
+        os.write(write_fd, b'{"op":"add","pgid":%d}\n{"op":"add","pgid":%d}\n' % (live.pid, dead.pid))
+        time.sleep(0.4)
+        os.close(write_fd)
+
+    feeder = threading.Thread(target=feed)
+    feeder.start()
+    try:
+        assert mcp_supervisor.main(prune_interval_s=0.05) == 0
+        feeder.join(timeout=5)
+        assert terminated == [{live.pid}]
+    finally:
+        _cleanup(live)

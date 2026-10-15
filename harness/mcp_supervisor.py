@@ -26,6 +26,7 @@ from typing import Optional, Set
 _Popen = subprocess.Popen
 
 TERM_GRACE_S = 2.0
+PRUNE_INTERVAL_S = 30.0
 
 
 # ---- supervisor child -----------------------------------------------------
@@ -60,27 +61,44 @@ def terminate_groups(groups: Set[int], grace_s: float = TERM_GRACE_S) -> None:
         _signal_group(pgid, signal.SIGKILL)
 
 
-def main() -> int:
+def _apply(line: bytes, groups: Set[int], own: int) -> None:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(msg, dict):
+        return
+    pgid = msg.get("pgid")
+    if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1 or pgid == own:
+        return
+    if msg.get("op") == "add":
+        groups.add(pgid)
+    elif msg.get("op") == "del":
+        groups.discard(pgid)
+
+
+def main(prune_interval_s: float = PRUNE_INTERVAL_S) -> int:
+    import select
+
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     own = os.getpgrp()
     groups: Set[int] = set()
+    fd = sys.stdin.fileno()
+    pending = b""
     while True:
-        line = sys.stdin.readline()
-        if not line:
+        ready, _, _ = select.select([fd], [], [], prune_interval_s)
+        if not ready:
+            # A server that exited without stop() must not stay registered:
+            # its pgid can be reused by an unrelated process group.
+            groups = {g for g in groups if _group_exists(g)}
+            continue
+        chunk = os.read(fd, 65536)
+        if not chunk:
             break
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(msg, dict):
-            continue
-        pgid = msg.get("pgid")
-        if not isinstance(pgid, int) or isinstance(pgid, bool) or pgid <= 1 or pgid == own:
-            continue
-        if msg.get("op") == "add":
-            groups.add(pgid)
-        elif msg.get("op") == "del":
-            groups.discard(pgid)
+        pending += chunk
+        *lines, pending = pending.split(b"\n")
+        for line in lines:
+            _apply(line, groups, own)
     terminate_groups(groups)
     return 0
 
