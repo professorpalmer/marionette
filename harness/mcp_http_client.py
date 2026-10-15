@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 from .mcp_client import (
     McpTool,
     McpError,
+    McpRemoteError,
     PROTOCOL_VERSION,
     CLIENT_INFO,
     MCP_MAX_RESPONSE_BYTES,
@@ -361,6 +362,8 @@ class HttpMcpClient:
                 e.read()
             except Exception:
                 pass
+            if 400 <= e.code < 500:
+                raise McpRemoteError(f"MCP server '{self.name}' HTTP {e.code}")
             raise McpError(f"MCP server '{self.name}' HTTP {e.code}")
         except urllib.error.URLError as e:
             # Transport failure → not alive (do not keep sticky init).
@@ -387,7 +390,7 @@ class HttpMcpClient:
         if msg is None:
             raise McpError(f"MCP server '{self.name}': empty response to {method}")
         if "error" in msg:
-            raise McpError(f"{method} -> {msg['error']}")
+            raise McpRemoteError(f"{method} -> {msg['error']}")
         return msg.get("result", {})
 
     # ---- MCP methods --------------------------------------------------------

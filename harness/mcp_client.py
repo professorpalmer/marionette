@@ -90,6 +90,10 @@ class McpError(RuntimeError):
     pass
 
 
+class McpRemoteError(McpError):
+    """The server answered with an error; the transport itself is healthy."""
+
+
 class StdioMcpClient:
     """One spawned MCP server, spoken to over stdio JSON-RPC."""
 
@@ -358,7 +362,7 @@ class StdioMcpClient:
         if isinstance(msg, BaseException):
             raise msg if isinstance(msg, McpError) else McpError(str(msg))
         if "error" in msg:
-            raise McpError(f"{method} -> {msg['error']}")
+            raise McpRemoteError(f"{method} -> {msg['error']}")
         return msg.get("result", {})
 
     # ---- MCP methods --------------------------------------------------------
