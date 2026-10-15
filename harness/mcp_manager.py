@@ -753,8 +753,13 @@ class McpManager:
                 client = self._clients.get(server)
             if not client or not client.alive:
                 raise McpError(f"unknown MCP tool '{qualified}'")
+            from .tool_discovery import coerce_mcp_arguments
+            tool = cached or self._tools.get(f"{server}.{tool_name}")
+            send_args, coerced = coerce_mcp_arguments(
+                tool.input_schema if tool else None, arguments,
+            )
             try:
-                out = client.call_tool(tool_name, arguments)
+                out = client.call_tool(tool_name, send_args)
             except McpRemoteError:
                 self._breaker_success(server)
                 raise
@@ -767,6 +772,11 @@ class McpManager:
                     f"MCP server '{server}' answered and rejected this call "
                     "(isError). The server is up: check your arguments against "
                     "the tool schema before you call it again."
+                ))
+            if coerced and isinstance(out, dict):
+                out = _prepend_note(out, (
+                    "Note: Marionette converted arguments to match the tool "
+                    f"schema: {', '.join(coerced)}. Send that shape next time."
                 ))
             self._record_invocation(server, tool_name, ok=True)
             return out
