@@ -1095,6 +1095,10 @@ def dispatch_pilot_provider_call(
         sys_prompt += "\n\n" + history[-1]["content"]
     _clear_provider_dispatch_invoked(session)
     try:
+        session._last_provider_request_at = time.monotonic()
+    except Exception:
+        pass
+    try:
         apply_session_output_cap(session)
     except Exception:
         pass

@@ -2103,6 +2103,7 @@ class ConversationalSession(
             "job_ids": list(self._session_job_ids),
             "flow_runs": copy.deepcopy(getattr(self, "_flow_runs", None) or {}),
             "cache_preferences": {"retain_reasoning": getattr(self, "retain_reasoning", False)},
+            "tool_results_aged": sorted(getattr(self, "_tool_results_aged", None) or ()),
         }
 
     def load_history(self, messages: Any) -> None:
@@ -2115,6 +2116,8 @@ class ConversationalSession(
             self._session_job_ids = messages.get("job_ids", [])
             flow_runs = messages.get("flow_runs")
             self._flow_runs = copy.deepcopy(flow_runs) if isinstance(flow_runs, dict) else {}
+            aged = messages.get("tool_results_aged")
+            self._tool_results_aged = {str(x) for x in aged} if isinstance(aged, list) else set()
             if isinstance(self._display_transcript, list):
                 self._display_transcript = [
                     row for row in self._display_transcript
@@ -2126,6 +2129,7 @@ class ConversationalSession(
             self._display_transcript = []
             self._session_job_ids = []
             self._flow_runs = {}
+            self._tool_results_aged = set()
 
         if not self._history:
             self._history = [{"role": "system", "content": ""}]
