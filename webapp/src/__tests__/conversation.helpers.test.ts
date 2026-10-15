@@ -2196,6 +2196,15 @@ describe("streamApply module", () => {
     });
     expect(compactionSuccessLabel()).toBe("Context compacted");
     expect(compactionSuccessLabel()).not.toMatch(/Context summarized/i);
+    const aged = appendCompaction([], 9000, 7000, {
+      mode: "tool_result_aging",
+      aged_results: 3,
+    })[0];
+    expect(aged).toMatchObject({ kind: "compaction", mode: "tool_result_aging", aged_results: 3 });
+    expect(aged.kind === "compaction" && compactionSuccessLabel(aged)).toBe("Aged 3 old tool results");
+    expect(compactionSuccessLabel({ aged_results: 1 })).toBe("Aged 1 old tool result");
+    expect(appendCompaction([], 9000, 3000, { mode: "llm", aged_results: 3 })[0])
+      .not.toHaveProperty("aged_results");
     expect(appendCompaction([], 9000, 3000, {
       mode: "llm",
       kept: ["later policy"],

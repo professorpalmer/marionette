@@ -289,6 +289,22 @@ export type CommandApprovalItem = {
   error?: string;
 };
 
+export type CompactionItem = {
+  kind: "compaction";
+  before_tokens: number;
+  after_tokens: number;
+  aborted?: boolean;
+  reason?: string;
+  message?: string;
+  mode?: "extractive" | "llm" | "tool_result_aging";
+  /** Set only for mode "tool_result_aging". */
+  aged_results?: number;
+  kept?: string[];
+  dropped?: string[];
+  handles?: string[];
+  story?: string[];
+};
+
 export type Item =
   | { kind: "msg"; msg: Msg }
   | { kind: "card"; card: Card }
@@ -298,19 +314,7 @@ export type Item =
   | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
-  | {
-      kind: "compaction";
-      before_tokens: number;
-      after_tokens: number;
-      aborted?: boolean;
-      reason?: string;
-      message?: string;
-      mode?: "extractive" | "llm";
-      kept?: string[];
-      dropped?: string[];
-      handles?: string[];
-      story?: string[];
-    }
+  | CompactionItem
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
@@ -346,19 +350,7 @@ export type GroupedItem =
   | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
-  | {
-      kind: "compaction";
-      before_tokens: number;
-      after_tokens: number;
-      aborted?: boolean;
-      reason?: string;
-      message?: string;
-      mode?: "extractive" | "llm";
-      kept?: string[];
-      dropped?: string[];
-      handles?: string[];
-      story?: string[];
-    }
+  | CompactionItem
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
   | { kind: "command_blocked"; command: string; category: string; reason: string; matched: string }
@@ -453,7 +445,7 @@ function compactionRowChrome(it: Extract<Item, { kind: "compaction" }>): {
   }
   const counts = compactionKeptDroppedLine(it.kept, it.dropped);
   return {
-    label: compactionSuccessLabel(),
+    label: compactionSuccessLabel(it),
     title: counts ? `${tokens} · ${counts}` : tokens,
   };
 }
@@ -2973,7 +2965,7 @@ function ActivityGroup({
     if (telemetryItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
       const first = telemetryItems[0];
       if (first.kind === "compaction") {
-        return first.aborted ? "Compaction aborted" : compactionSuccessLabel();
+        return first.aborted ? "Compaction aborted" : compactionSuccessLabel(first);
       }
       if (first.kind === "quality_gate") return qualityGatePresentation(first).label;
       if (first.kind === "auto_halt") return autoHaltPresentation(first.reason, first.snapshot).label;

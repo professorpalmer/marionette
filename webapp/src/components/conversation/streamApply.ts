@@ -1,6 +1,7 @@
 import type {
   Card,
   CommandApprovalItem,
+  CompactionItem,
   Item,
   Msg,
   SwarmPendingItem,
@@ -974,7 +975,9 @@ export function compactionAbortLabel(message?: string | null, reason?: string | 
 }
 
 /** Operator-facing label for a successful compaction SSE. */
-export function compactionSuccessLabel(): string {
+export function compactionSuccessLabel(it?: Pick<CompactionItem, "aged_results">): string {
+  const aged = it?.aged_results ?? 0;
+  if (aged > 0) return `Aged ${aged} old tool result${aged === 1 ? "" : "s"}`;
   return "Context compacted";
 }
 
@@ -997,7 +1000,8 @@ export type CompactionAppendOpts = {
   aborted?: boolean;
   reason?: string | null;
   message?: string | null;
-  mode?: "extractive" | "llm" | string | null;
+  mode?: "extractive" | "llm" | "tool_result_aging" | string | null;
+  aged_results?: number | null;
   kept?: string[] | null;
   dropped?: string[] | null;
   handles?: string[] | null;
@@ -1012,7 +1016,11 @@ export function appendCompaction(
 ): Item[] {
   const aborted = Boolean(opts?.aborted);
   const modeRaw = String(opts?.mode || "").trim();
-  const mode = modeRaw === "extractive" || modeRaw === "llm" ? modeRaw : undefined;
+  const mode = modeRaw === "extractive" || modeRaw === "llm" || modeRaw === "tool_result_aging"
+    ? modeRaw
+    : undefined;
+  const agedRaw = Number(opts?.aged_results);
+  const agedResults = mode === "tool_result_aging" && agedRaw > 0 ? Math.floor(agedRaw) : undefined;
   const reason = String(opts?.reason || "").trim() || undefined;
   const message = aborted
     ? compactionAbortLabel(opts?.message, opts?.reason)
@@ -1031,6 +1039,7 @@ export function appendCompaction(
       ...(reason ? { reason } : {}),
       ...(message ? { message } : {}),
       ...(mode ? { mode } : {}),
+      ...(agedResults ? { aged_results: agedResults } : {}),
       ...(kept ? { kept } : {}),
       ...(dropped ? { dropped } : {}),
       ...(handles ? { handles } : {}),

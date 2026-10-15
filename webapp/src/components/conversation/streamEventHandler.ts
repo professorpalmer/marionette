@@ -279,6 +279,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         reason: d.reason,
         message: d.message,
         mode: d.mode,
+        aged_results: d.aged_results,
         kept: d.kept,
         dropped: d.dropped,
         handles: d.handles,
