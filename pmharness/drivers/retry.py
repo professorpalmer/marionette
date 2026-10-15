@@ -25,6 +25,9 @@ def extract_status(error_str: Optional[str]) -> Optional[int]:
     return None
 
 
+# Longest provider Retry-After that a retry waits for inside one request.
+MAX_RETRY_AFTER_SECONDS = 60.0
+
 _RETRY_LIMIT: ContextVar[Optional[int]] = ContextVar("provider_retry_limit", default=None)
 
 
@@ -44,6 +47,7 @@ def with_retry(
     max_attempts: int = 4,
     base_delay: float = 0.5,
     max_delay: float = 20.0,
+    max_retry_after: float = MAX_RETRY_AFTER_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     is_cancelled: Optional[Callable[[], bool]] = None,
 ) -> DriverResponse:
@@ -115,6 +119,13 @@ def with_retry(
         if err_class == error_classifier.ErrorClass.RATE_LIMIT:
             retry_after = error_classifier.parse_retry_after(resp.error)
             if retry_after is not None:
+                if retry_after > max_retry_after:
+                    # A long provider wait is a quota window, not a blip: settle
+                    # now instead of holding the turn silent for minutes.
+                    resp.meta["retry_attempts"] = attempts
+                    resp.meta["error_class"] = err_class.value
+                    resp.meta["retry_after_seconds"] = retry_after
+                    return resp
                 backoff = max(backoff, retry_after)
 
         if is_cancelled is None:

@@ -137,7 +137,7 @@ def test_cancel_interrupts_long_retry_after_sleep():
 
     resp = with_retry(
         lambda: calls.append(1) or DriverResponse(
-            text="", error="HTTP 429: retry after 120 seconds",
+            text="", error="HTTP 429: retry after 45 seconds",
         ),
         sleep=nap,
         is_cancelled=lambda: cancelled[0],
@@ -145,3 +145,29 @@ def test_cancel_interrupts_long_retry_after_sleep():
     assert calls == [1]
     assert sleeps == [0.1]
     assert resp.error
+
+
+def test_with_retry_settles_at_once_when_retry_after_exceeds_cap():
+    calls = []
+    sleeps = []
+
+    def fn():
+        calls.append(1)
+        return DriverResponse(text="", error="HTTP 429: usage limit reached, retry-after: 600")
+
+    resp = with_retry(fn, max_attempts=4, sleep=sleeps.append)
+    assert len(calls) == 1
+    assert sleeps == []
+    assert resp.meta["error_class"] == "rate_limit"
+    assert resp.meta["retry_after_seconds"] == 600.0
+
+
+def test_with_retry_waits_for_retry_after_at_the_cap():
+    sleeps = []
+    responses = iter([
+        DriverResponse(text="", error="HTTP 429: slow down, retry-after: 60"),
+        DriverResponse(text="ok"),
+    ])
+    resp = with_retry(lambda: next(responses), sleep=sleeps.append)
+    assert resp.text == "ok"
+    assert len(sleeps) == 1 and sleeps[0] >= 60.0
