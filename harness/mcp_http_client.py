@@ -392,8 +392,10 @@ class HttpMcpClient:
 
     # ---- MCP methods --------------------------------------------------------
     def list_tools(self) -> List[McpTool]:
-        result = self._request("tools/list", {})
-        from .tool_discovery import mcp_tools_from_list_result
+        from .tool_discovery import mcp_list_all_tools, mcp_tools_from_list_result
+        result = mcp_list_all_tools(
+            self.name, lambda params, timeout: self._request("tools/list", params, timeout=timeout),
+        )
         return mcp_tools_from_list_result(self.name, result)
 
     def call_tool(self, tool_name: str, arguments: dict, timeout: float = 120.0) -> dict:
