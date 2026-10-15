@@ -103,7 +103,7 @@ def test_spawn_failure_never_blocks_registration(link, monkeypatch):
     def boom(*a, **k):
         raise OSError("no python")
 
-    monkeypatch.setattr(mcp_supervisor, "_Popen", boom)
+    monkeypatch.setattr(mcp_supervisor.subprocess, "Popen", boom)
     mcp_supervisor.register(424242)
     mcp_supervisor.unregister(424242)
     assert link._proc is None

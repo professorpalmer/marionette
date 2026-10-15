@@ -21,10 +21,6 @@ import threading
 import time
 from typing import Optional, Set
 
-# Captured at import so a test that patches subprocess.Popen for an MCP
-# server does not also capture the supervisor spawn.
-_Popen = subprocess.Popen
-
 TERM_GRACE_S = 2.0
 PRUNE_INTERVAL_S = 30.0
 
@@ -144,7 +140,7 @@ class _Link:
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(p for p in (root, env.get("PYTHONPATH")) if p)
         try:
-            self._proc = _Popen(
+            self._proc = subprocess.Popen(
                 [sys.executable, "-m", "harness.mcp_supervisor"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
