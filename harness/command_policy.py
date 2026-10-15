@@ -522,17 +522,17 @@ def run_cancellable(
     start = _time.monotonic()
 
     from harness import os_sandbox
+    from harness.child_env import model_child_env
 
     spawn_command = command
     sandbox_cleanup = None
-    spawn_env = None
+    spawn_env = model_child_env()
     try:
         plan = os_sandbox.prepare_sandbox_spawn(command, cwd=cwd)
         if plan is not None:
             spawn_command = plan.command
             sandbox_cleanup = plan.cleanup
             if plan.child_env:
-                spawn_env = os.environ.copy()
                 spawn_env.update(plan.child_env)
     except os_sandbox.SandboxRequiredUnavailable as exc:
         return (exc.message, -1, "error")

@@ -314,6 +314,9 @@ os.environ.setdefault("HARNESS_IMPLEMENT_GIT_GUARD", "0")
 # Puppetmaster worker those DBs are often locked. Keep unit tests on the
 # fixture workspace only (tracker cross-project coverage has dedicated tests).
 os.environ.setdefault("HARNESS_CLI_CROSS_PROJECT", "0")
+# Tests that start fake stdio MCP servers do not each need a live death
+# supervisor; tests/test_mcp_supervisor.py turns it back on.
+os.environ["HARNESS_MCP_SUPERVISOR"] = "0"
 # Unit tests never need a live graph; the warm CodeGraph helper is a real node
 # process that outlives the call it served.
 os.environ.setdefault("PUPPETMASTER_CODEGRAPH_WARM", "0")

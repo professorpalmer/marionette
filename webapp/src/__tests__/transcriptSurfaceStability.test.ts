@@ -20,6 +20,7 @@ import {
   type Item,
 } from "../components/TranscriptList";
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
+import { compactionSuccessLabel } from "../components/conversation/streamApply";
 
 /** Compact kind fingerprint for order/stability assertions (ignores tool_prep chrome). */
 function surfaceKinds(items: Item[]): string[] {
@@ -1139,6 +1140,36 @@ describe("transcript surface stability (no mid-turn reclassification)", () => {
     expect(row.mode).toBe("extractive");
     expect(row.before_tokens).toBe(12000);
     expect(row.after_tokens).toBe(4000);
+  });
+
+  it("tool-result aging keeps its mode and count for its own label", () => {
+    const state = {
+      items: [{ kind: "msg", msg: { role: "user", text: "go" } }] as Item[],
+      itemsRef: { current: [] as Item[] },
+      typeBufRef: { current: "" },
+    };
+    state.itemsRef.current = state.items;
+    const apply = createApplyStreamEvent(makeApplyDeps(state));
+
+    // Payload shape from harness/tool_result_aging.py.
+    apply({
+      kind: "compaction",
+      data: {
+        mode: "tool_result_aging",
+        reason: "tool_results_aged",
+        summarized_messages: 0,
+        aged_results: 3,
+        chars_reclaimed: 48000,
+        before_tokens: 52000,
+        after_tokens: 40000,
+        message: "Aged 3 old tool result(s) on a cold cache (48000 chars)",
+      },
+    });
+    const row = state.items.find((it) => it.kind === "compaction");
+    if (row?.kind !== "compaction") throw new Error("expected compaction");
+    expect(row.mode).toBe("tool_result_aging");
+    expect(row.aged_results).toBe(3);
+    expect(compactionSuccessLabel(row)).toBe("Aged 3 old tool results");
   });
 
   it("successful compaction forwards kept/dropped/handles and is not Context summarized", () => {

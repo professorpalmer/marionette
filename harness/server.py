@@ -29,6 +29,7 @@ from .config import HarnessConfig
 from .session import Session
 from .conversation import ConversationalSession
 from .mcp_manager import McpManager
+from . import mcp_supervisor
 from .skill_store import SkillStore
 from .rule_store import RuleStore
 from .command_store import CommandStore
@@ -3824,6 +3825,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             pass
         try:
             _mcp.stop_all()
+            mcp_supervisor.close()
         finally:
             _cleanup_marker(marker_path, os.getpid())
             raise SystemExit(0)
@@ -3903,6 +3905,7 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             lifetime.close()
         srv.server_close()
         _mcp.stop_all()
+        mcp_supervisor.close()
         _cleanup_marker(marker_path, os.getpid())
 
 

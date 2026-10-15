@@ -178,7 +178,25 @@ def is_git_restricted_path(rel_posix: str) -> bool:
     Matches ``.git`` and ``.git/...`` only — not ``.gitignore`` or ``.github``.
     """
     parts = [p for p in rel_posix.replace("\\", "/").split("/") if p and p != "."]
-    return ".git" in parts
+    # Case-insensitive volumes (APFS, NTFS) open ``.GIT/hooks`` as ``.git/hooks``.
+    return any(p.casefold() == ".git" for p in parts)
+
+
+def targets_git_dir(path: str, parent: str) -> bool:
+    """True when ``path`` under ``parent`` is in a ``.git`` directory.
+
+    Checks the path as given and with symlinks resolved, so a link that
+    points into ``.git`` is caught. Fails closed when the path cannot be
+    resolved.
+    """
+    try:
+        candidates = (
+            os.path.relpath(os.path.abspath(path), os.path.abspath(parent)),
+            os.path.relpath(_resolve(path), _resolve(parent)),
+        )
+    except ValueError:
+        return True
+    return any(is_git_restricted_path(rel) for rel in candidates)
 
 
 def git_toplevel(repo: str) -> Optional[str]:

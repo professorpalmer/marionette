@@ -12,8 +12,9 @@ import json
 import math
 import os
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, TYPE_CHECKING
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .mcp_client import McpTool
@@ -200,6 +201,101 @@ def tool_schema_is_usable(schema: Any, name: str = "") -> bool:
     if isinstance(schema.get("properties"), list):
         return False
     return True
+
+
+MCP_LIST_MAX_PAGES = 100
+MCP_LIST_MAX_TOOLS = 2048
+MCP_LIST_MAX_CURSOR_BYTES = 64 * 1024
+MCP_LIST_DEADLINE_S = 60.0
+
+
+def mcp_list_all_tools(
+    server: str,
+    request: Callable[[dict, float], Any],
+    *,
+    deadline_s: float = MCP_LIST_DEADLINE_S,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict:
+    """Follow ``tools/list`` ``nextCursor`` pages into one ``{"tools": [...]}``.
+
+    ``request(params, timeout)`` sends one ``tools/list``. A server that never
+    sends ``nextCursor`` gets exactly one request with empty params. Guard
+    violations raise ``McpError`` naming the guard.
+    """
+    from .mcp_client import McpError
+
+    def guard(name: str, detail: str) -> McpError:
+        return McpError(f"MCP server '{server}': tools/list {name} guard: {detail}")
+
+    end = clock() + deadline_s
+    tools: list = []
+    seen: Set[str] = set()
+    params: dict = {}
+    for page in range(MCP_LIST_MAX_PAGES):
+        remaining = end - clock()
+        if remaining <= 0:
+            raise guard("deadline", f"listing exceeded {deadline_s:g}s after {page} pages")
+        result = request(params, remaining)
+        if not isinstance(result, dict):
+            return {"tools": tools}
+        page_tools = result.get("tools")
+        if isinstance(page_tools, list):
+            tools.extend(page_tools)
+        if len(tools) > MCP_LIST_MAX_TOOLS:
+            raise guard("max_tools", f"more than {MCP_LIST_MAX_TOOLS} tools")
+        cursor = result.get("nextCursor")
+        if not isinstance(cursor, str) or not cursor:
+            return {"tools": tools}
+        if len(cursor.encode("utf-8")) > MCP_LIST_MAX_CURSOR_BYTES:
+            raise guard("cursor_size", f"cursor longer than {MCP_LIST_MAX_CURSOR_BYTES} bytes")
+        if cursor in seen:
+            raise guard("repeated_cursor", f"cursor repeated after {page + 1} pages")
+        seen.add(cursor)
+        params = {"cursor": cursor}
+    raise guard("max_pages", f"more than {MCP_LIST_MAX_PAGES} pages")
+
+
+def _json_type_of(value: Any) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    return ""
+
+
+def coerce_mcp_arguments(schema: Any, arguments: Any) -> "tuple[Any, List[str]]":
+    """Fix top-level argument shapes the schema proves wrong.
+
+    A JSON string for an ``object``/``array`` property is parsed when it
+    decodes to exactly that type. An object or array for a ``string``
+    property is serialized. All or nothing: one unprovable property returns
+    the original arguments and no notes.
+    """
+    if not isinstance(schema, dict) or not isinstance(arguments, dict):
+        return arguments, []
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return arguments, []
+    fixed = dict(arguments)
+    notes: List[str] = []
+    for key, value in arguments.items():
+        prop = props.get(key)
+        want = prop.get("type") if isinstance(prop, dict) else None
+        if want in ("object", "array") and isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return arguments, []
+            if _json_type_of(parsed) != want:
+                return arguments, []
+            fixed[key] = parsed
+            notes.append(f"{key} (JSON string -> {want})")
+        elif want == "string" and isinstance(value, (dict, list)):
+            fixed[key] = json.dumps(value)
+            notes.append(f"{key} ({_json_type_of(value)} -> JSON string)")
+    if not notes:
+        return arguments, []
+    return fixed, notes
 
 
 def mcp_tools_from_list_result(server: str, result: Any) -> List["McpTool"]:

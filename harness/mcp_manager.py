@@ -12,11 +12,12 @@ arbitrary user-added entries.
 import json
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
-from .mcp_client import StdioMcpClient, McpTool, McpError
+from .mcp_client import StdioMcpClient, McpTool, McpError, McpRemoteError
 from .mcp_http_client import HttpMcpClient
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
@@ -56,6 +57,17 @@ CONFIG_PATH = CONFIG_DIR / "mcp.json"
 # harness state. Never store arguments/results/secrets — only tool, ok, error, at.
 _DEFAULT_INVOCATIONS_PATH = CONFIG_DIR / "state" / "mcp_invocations.json"
 _MAX_INVOCATION_ERROR_CHARS = 200
+
+BREAKER_THRESHOLD = 3
+BREAKER_WINDOW_S = 60.0
+BREAKER_OPEN_S = 60.0
+
+
+def _prepend_note(out: dict, note: str) -> dict:
+    """Copy of a tools/call result with *note* as its first text block."""
+    content = out.get("content")
+    blocks = list(content) if isinstance(content, list) else []
+    return {**out, "content": [{"type": "text", "text": note}, *blocks]}
 
 
 def _invocations_path() -> Path:
@@ -164,8 +176,12 @@ def redact_mcp_secrets(value):
 
 
 class McpManager:
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None,
+                 clock: Optional[Callable[[], float]] = None):
         self.config_path = Path(config_path) if config_path else CONFIG_PATH
+        self._clock = clock or time.time
+        # Per-server consecutive transport failures: count, first_at, open_until.
+        self._breakers: Dict[str, dict] = {}
         self._clients: Dict[str, StdioMcpClient] = {}
         self._tools: Dict[str, McpTool] = {}   # qualified name -> tool
         self._lock = threading.Lock()
@@ -450,6 +466,7 @@ class McpManager:
         with self._lock:
             self._lifecycle_gen[name] = self._lifecycle_gen.get(name, 0) + 1
             refresh_gen = self._lifecycle_gen[name]
+            self._breakers.pop(name, None)
             c = self._clients.pop(name, None)
             for q in [q for q, t in self._tools.items() if t.server == name]:
                 del self._tools[q]
@@ -666,6 +683,43 @@ class McpManager:
                 f"MCP tool '{server}.{tool_name}' is not on the server allowlist"
             )
 
+    # ---- circuit breaker ----------------------------------------------------
+    def _breaker_check(self, server: str) -> None:
+        with self._lock:
+            b = self._breakers.get(server)
+            if not b or b.get("open_until") is None:
+                return
+            if self._clock() < b["open_until"]:
+                until = datetime.fromtimestamp(b["open_until"], timezone.utc)
+                raise McpError(
+                    f"MCP server '{server}' failed {b['count']} times in a row; "
+                    f"calls to it pause until {until.strftime('%H:%M:%S')} UTC. "
+                    "Do not retry this server now."
+                )
+            # Half-open: let calls probe; the next failure reopens at once.
+            b["open_until"] = None
+            b["half_open"] = True
+
+    def _breaker_failure(self, server: str) -> None:
+        now = self._clock()
+        with self._lock:
+            b = self._breakers.setdefault(server, {"count": 0, "first_at": now})
+            if b.get("half_open"):
+                b["count"] += 1
+                b["half_open"] = False
+                b["open_until"] = now + BREAKER_OPEN_S
+                return
+            if b["count"] == 0 or now - b["first_at"] > BREAKER_WINDOW_S:
+                b["count"], b["first_at"] = 1, now
+            else:
+                b["count"] += 1
+            if b["count"] >= BREAKER_THRESHOLD:
+                b["open_until"] = now + BREAKER_OPEN_S
+
+    def _breaker_success(self, server: str) -> None:
+        with self._lock:
+            self._breakers.pop(server, None)
+
     def call(self, qualified: str, arguments: dict) -> dict:
         """Invoke a qualified MCP tool and record a per-server last_invocation.
 
@@ -681,30 +735,51 @@ class McpManager:
             server, tool_name = qualified.split(".", 1)
 
         try:
-            if cached is not None:
-                self._reject_if_disallowed(cached.server, cached.name)
-                client = self._clients.get(cached.server)
-                if not client or not client.alive:
-                    # Dead/missing client: reconnect on demand (unchanged).
-                    self.ensure_server(cached.server)
-                    client = self._clients.get(cached.server)
-                out = client.call_tool(cached.name, arguments)
-                self._record_invocation(cached.server, cached.name, ok=True)
-                return out
-
-            # Allow "server.tool" for configured servers that are idle or whose
-            # tools are not yet in the local cache (lazy boot / fresh ads).
-            if server and tool_name:
-                self._reject_if_disallowed(server, tool_name)
-                client = self._clients.get(server)
-                if (not client or not client.alive) and server in self.effective_config():
+            if not (server and tool_name):
+                raise McpError(f"unknown MCP tool '{qualified}'")
+            self._reject_if_disallowed(server, tool_name)
+            self._breaker_check(server)
+            client = self._clients.get(server)
+            # Reconnect a dead client, or lazily start a configured server
+            # whose tools are not yet cached.
+            if (not client or not client.alive) and (
+                cached is not None or server in self.effective_config()
+            ):
+                try:
                     self.ensure_server(server)
-                    client = self._clients.get(server)
-                if client and client.alive:
-                    out = client.call_tool(tool_name, arguments)
-                    self._record_invocation(server, tool_name, ok=True)
-                    return out
-            raise McpError(f"unknown MCP tool '{qualified}'")
+                except McpError:
+                    self._breaker_failure(server)
+                    raise
+                client = self._clients.get(server)
+            if not client or not client.alive:
+                raise McpError(f"unknown MCP tool '{qualified}'")
+            from .tool_discovery import coerce_mcp_arguments
+            tool = cached or self._tools.get(f"{server}.{tool_name}")
+            send_args, coerced = coerce_mcp_arguments(
+                tool.input_schema if tool else None, arguments,
+            )
+            try:
+                out = client.call_tool(tool_name, send_args)
+            except McpRemoteError:
+                self._breaker_success(server)
+                raise
+            except McpError:
+                self._breaker_failure(server)
+                raise
+            self._breaker_success(server)
+            if isinstance(out, dict) and out.get("isError") is True:
+                out = _prepend_note(out, (
+                    f"MCP server '{server}' answered and rejected this call "
+                    "(isError). The server is up: check your arguments against "
+                    "the tool schema before you call it again."
+                ))
+            if coerced and isinstance(out, dict):
+                out = _prepend_note(out, (
+                    "Note: Marionette converted arguments to match the tool "
+                    f"schema: {', '.join(coerced)}. Send that shape next time."
+                ))
+            self._record_invocation(server, tool_name, ok=True)
+            return out
         except Exception as e:
             if server and tool_name:
                 self._record_invocation(server, tool_name, ok=False, error=str(e))

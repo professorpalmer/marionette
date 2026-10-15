@@ -51,7 +51,7 @@ MAX_REDUCTION_RATIO = 0.8
 # (e.g. 154k -> 89k) because the expand-to-budget loop kept a fat live tail.
 DEFAULT_MAX_RETAINED_TAIL_TOKENS = 20000
 # Hermes ContextCompressor: tail budget is ``threshold_tokens * 0.20``.
-# Marionette's compaction trigger is ``budget * 0.75``, so the same ratio is
+# The compaction trigger is at most ``budget * 0.75`` (compaction_trigger_tokens), so the ratio is
 # applied to ``trigger`` (not raw window) then capped by the absolute above.
 DEFAULT_TAIL_OF_TRIGGER_RATIO = 0.20
 # Absolute ceiling on the injected summary. Large middles used to keep 20% of
@@ -311,6 +311,26 @@ def summary_token_budget_for_middle(middle_tokens: int) -> int:
         n = 0
     ratio = summary_ratio_for_middle(n)
     return max(500, min(_max_summary_tokens(), int(n * ratio)))
+
+
+def compaction_trigger_tokens(window_tokens: int, max_output_tokens: Optional[int] = None) -> int:
+    """Context size that starts automatic compaction: 75% of the window, or less.
+
+    The provider counts the request's output ceiling against the same window,
+    so the trigger also stays below ``window - max_output - headroom``. The
+    reserve is capped at half the window so input keeps at least half.
+    """
+    window = max(0, int(window_tokens))
+    trigger = int(window * 0.75)
+    try:
+        reserve = int(max_output_tokens or 0)
+    except (TypeError, ValueError):
+        reserve = 0
+    if reserve <= 0:
+        return trigger
+    reserve = min(reserve, window // 2)
+    headroom = max(2048, window // 50)
+    return max(1, min(trigger, window - reserve - headroom))
 
 
 def tail_budget_for_trigger(trigger_tokens: int) -> int:
@@ -1288,7 +1308,7 @@ class CompactionContextMixin:
             budget = int(self.active_context_limit())
         except Exception:
             budget = getattr(self.config, "max_context_tokens", 96000)
-        trigger = int(budget * 0.75)
+        trigger = compaction_trigger_tokens(budget, getattr(self.pilot, "max_tokens", None))
         # Advisor-driven auto compaction fires only at level "now". "soon" is a
         # warning / Needs-attention signal and must not bypass the 75% trigger
         # the same way "now" does (contract: soon != now for auto compact).

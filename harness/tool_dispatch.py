@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
-from .paths import is_safe_path
+from .paths import is_safe_path, targets_git_dir
 from .pilot import PilotAction
 
 # Re-export for callers that historically imported from tool_dispatch /
@@ -80,6 +80,20 @@ def _file_tool_path_denial(
         "For an explicitly authorized external destination, use run_command "
         "subject to its existing permissions and preserve the requested location."
     )
+
+
+def _file_tool_write_denial(requested_path: str, workspace: str, target_path: str) -> Optional[str]:
+    """Denial text for a native write target, or None when the write may go ahead."""
+    if not is_safe_path(target_path, workspace):
+        return _file_tool_path_denial(requested_path, workspace)
+    if targets_git_dir(target_path, workspace):
+        return (
+            f"Protected path: requested path {requested_path!r} is inside a .git "
+            "directory. Request rejected. Native write_file, edit_file, and "
+            "hash_edit never write git metadata (hooks, config, refs). Use git "
+            "commands through run_command for repository changes."
+        )
+    return None
 
 
 # Directories that never carry searchable source in the Python fallback.
@@ -1657,10 +1671,9 @@ class ToolDispatchMixin:
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", _file_tool_path_denial(
-                act.path, self.config.repo
-            )
+        denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
+        if denial is not None:
+            return False, "path_traversal", denial
         forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
         if forbidden is not None:
             return forbidden
@@ -1733,10 +1746,9 @@ class ToolDispatchMixin:
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", _file_tool_path_denial(
-                act.path, self.config.repo
-            )
+        denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
+        if denial is not None:
+            return False, "path_traversal", denial
         if not write:
             return True, "success", 0
         # Re-check immediately before the atomic write (TOCTOU with Stop).
@@ -1792,10 +1804,9 @@ class ToolDispatchMixin:
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(self.config.repo, target_path)
-        if not is_safe_path(target_path, self.config.repo):
-            return False, "path_traversal", _file_tool_path_denial(
-                act.path, self.config.repo
-            )
+        denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
+        if denial is not None:
+            return False, "path_traversal", denial
 
         try:
             if not os.path.exists(target_path):

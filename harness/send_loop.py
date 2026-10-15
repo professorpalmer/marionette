@@ -1368,6 +1368,13 @@ class SendLoopMixin:
         # in history), NOT at the start of every tool-loop step. Mid-turn
         # history rewrites bust prefix cache for all providers. CONTEXT_OVERFLOW
         # still force-compacts inside the step loop as a last resort.
+        # Tool-result aging runs first, and only on a cold prompt cache.
+        if not resume:
+            from .tool_result_aging import maybe_age_session_tool_results
+
+            aged_payload = maybe_age_session_tool_results(self)
+            if aged_payload is not None:
+                yield ConvEvent("compaction", aged_payload)
         yield from yield_timed_phase(
             timing, "advisory_compaction",
             self._maybe_compact_history(),

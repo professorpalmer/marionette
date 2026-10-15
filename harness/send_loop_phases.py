@@ -74,7 +74,7 @@ from .terminal_cause import (
     provider_tools_are_executable,
 )
 from .text_clean import clean_say
-from .tool_dispatch import _file_tool_path_denial
+from .tool_dispatch import _file_tool_write_denial
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
 from .providers import apply_session_output_cap
@@ -1094,6 +1094,10 @@ def dispatch_pilot_provider_call(
     if history and history[-1].get("source") == "goal_mode":
         sys_prompt += "\n\n" + history[-1]["content"]
     _clear_provider_dispatch_invoked(session)
+    try:
+        session._last_provider_request_at = time.monotonic()
+    except Exception:
+        pass
     try:
         apply_session_output_cap(session)
     except Exception:
@@ -3372,8 +3376,8 @@ def dispatch_local_action(
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
-        if not is_safe_path(target_path, session.config.repo):
-            error_msg = _file_tool_path_denial(act.path, session.config.repo)
+        error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
+        if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native, ok=False)
             return
@@ -3446,8 +3450,8 @@ def dispatch_local_action(
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
-        if not is_safe_path(target_path, session.config.repo):
-            error_msg = _file_tool_path_denial(act.path, session.config.repo)
+        error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
+        if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native, ok=False)
             return
@@ -3518,8 +3522,8 @@ def dispatch_local_action(
         target_path = act.path
         if not os.path.isabs(target_path):
             target_path = os.path.join(session.config.repo, target_path)
-        if not is_safe_path(target_path, session.config.repo):
-            error_msg = _file_tool_path_denial(act.path, session.config.repo)
+        error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
+        if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native, ok=False)
             return

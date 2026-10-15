@@ -31,6 +31,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 
+from . import mcp_supervisor
+
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_INFO = {"name": "pm-harness", "version": "0.1"}
 
@@ -90,6 +92,10 @@ class McpError(RuntimeError):
     pass
 
 
+class McpRemoteError(McpError):
+    """The server answered with an error; the transport itself is healthy."""
+
+
 class StdioMcpClient:
     """One spawned MCP server, spoken to over stdio JSON-RPC."""
 
@@ -110,6 +116,7 @@ class StdioMcpClient:
         self._pending: Dict[int, "queue.Queue[Union[dict, BaseException]]"] = {}
         self._reader_thread: Optional[threading.Thread] = None
         self._reader_error: Optional[BaseException] = None
+        self._supervised_pgid: Optional[int] = None
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
@@ -154,6 +161,11 @@ class StdioMcpClient:
             self._proc = subprocess.Popen([command, *self.args], **popen_kwargs)
         except FileNotFoundError as e:
             raise McpError(f"MCP server '{self.name}': command not found: {self.command} ({e})")
+        if not _is_windows():
+            # The session leader's pid is its pgid. The supervisor kills the
+            # group if the harness dies without stop().
+            self._supervised_pgid = self._proc.pid
+            mcp_supervisor.register(self._supervised_pgid)
         # Drain stderr on a background thread so a chatty server cannot fill the OS
         # pipe buffer and deadlock the child (stdout is read on _read_loop).
         self._stderr_tail: List[str] = []
@@ -228,6 +240,9 @@ class StdioMcpClient:
                         except Exception:
                             pass
         self._proc = None
+        pgid, self._supervised_pgid = getattr(self, "_supervised_pgid", None), None
+        if pgid is not None:
+            mcp_supervisor.unregister(pgid)
         self._fail_pending(McpError(f"MCP server '{self.name}' stopped"))
 
     def cancel(self) -> int:
@@ -358,13 +373,15 @@ class StdioMcpClient:
         if isinstance(msg, BaseException):
             raise msg if isinstance(msg, McpError) else McpError(str(msg))
         if "error" in msg:
-            raise McpError(f"{method} -> {msg['error']}")
+            raise McpRemoteError(f"{method} -> {msg['error']}")
         return msg.get("result", {})
 
     # ---- MCP methods --------------------------------------------------------
     def list_tools(self) -> List[McpTool]:
-        result = self._request("tools/list", {})
-        from .tool_discovery import mcp_tools_from_list_result
+        from .tool_discovery import mcp_list_all_tools, mcp_tools_from_list_result
+        result = mcp_list_all_tools(
+            self.name, lambda params, timeout: self._request("tools/list", params, timeout=timeout),
+        )
         return mcp_tools_from_list_result(self.name, result)
 
     def call_tool(self, tool_name: str, arguments: dict, timeout: float = 120.0) -> dict:
