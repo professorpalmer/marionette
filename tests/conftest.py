@@ -442,6 +442,28 @@ def _restore_environ(monkeypatch, _session_environ):
 
 
 @pytest.fixture(autouse=True)
+def _reset_credential_pools(_session_environ):
+    """Drop the process-wide credential pools after each test.
+
+    ``load_pool`` caches each provider once per process, whatever
+    ``HARNESS_STATE_DIR`` a later test sets. A ``set_api_key("anthropic",
+    "sk-ant-live-...")`` (OAuth-shaped) in test_auto_registry stayed in the
+    cache, and later Anthropic driver tests built Claude Max requests (macOS
+    CI on PR 632). The worker state file goes too, for tests that persist to it.
+    """
+    yield
+    from harness import credential_pool
+
+    credential_pool.clear_pools_for_tests()
+    shared = _session_environ.get("HARNESS_STATE_DIR")
+    if shared:
+        try:
+            os.remove(os.path.join(shared, "auth_pool.json"))
+        except OSError:
+            pass
+
+
+@pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
     # allow loopback (local harness server tests) but block outbound by patching
     # socket.socket.connect to refuse non-loopback addresses.
