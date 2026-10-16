@@ -2628,7 +2628,7 @@ def drain_idle_turn(
             pilot_model = str(getattr(pilot, "model", "") or "")
             try:
                 if pilot_supports_native_images(
-                    provider, model=pilot_model, pilot=pilot,
+                    provider, model=pilot_model, pilot=pilot, allow_network=True,
                 ):
                     yield ConvEvent("vision", {
                         "count": len(q_images), "status": "native",

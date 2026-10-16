@@ -39,7 +39,7 @@ def prepare_turn_images(
     )
     pilot_model = str(getattr(session.pilot, "model", "") or "")
     if pilot_supports_native_images(
-        provider, model=pilot_model, pilot=session.pilot,
+        provider, model=pilot_model, pilot=session.pilot, allow_network=True,
     ):
         yield ConvEvent("vision", {
             "count": len(images), "status": "native",

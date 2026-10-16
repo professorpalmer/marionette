@@ -1115,14 +1115,6 @@ class OpenAICompatDriver:
             system=system,
         )
         return headers
-        maybe_attach_opencode_session_header(
-            headers,
-            base_url=self.base_url,
-            session_id=session_id if session_id is not None else self.session_id,
-            messages=messages,
-            system=system,
-        )
-        return headers
 
     def _prepare_body(
         self,
