@@ -68,8 +68,11 @@ def test_marker_and_reuse_logic(tmp_path, monkeypatch, capsys):
     t2 = threading.Thread(target=serve, kwargs={"host": "127.0.0.1", "port": 0, "force": False}, daemon=True)
     t2.start()
 
-    # Wait for the marker to be updated (it should change from 59999 to the new ephemeral port)
-    for _ in range(50):
+    # Wait for the marker to be updated (it should change from 59999 to the new ephemeral port).
+    # The server first probes the stale port (2 s timeout) and then boots; a
+    # loaded Windows runner needed more than the old 5 s for both.
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
         if os.path.exists(marker_path):
             try:
                 with open(marker_path, "r", encoding="utf-8") as f:
