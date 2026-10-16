@@ -62,6 +62,31 @@ def _read_data_url(image_path: str) -> str:
     return f"data:{_media_type(image_path)};base64,{b64}"
 
 
+def _sidecar_key(api_key_env: str, *, api_key_only: bool = False) -> str:
+    """Credential pool first, then process env, as the pilot drivers do.
+
+    A key saved only in the pool (not yet mirrored to env) still reaches the
+    sidecar. ``api_key_only`` skips an Anthropic OAuth token: the sidecar
+    sends ``x-api-key``, which an OAuth token cannot authorize.
+    """
+    try:
+        from .credential_pool import resolve_entry_for_env
+        entry = resolve_entry_for_env(api_key_env)
+        token = (getattr(entry, "runtime_token", "") or "").strip()
+        if token and api_key_only:
+            from .oauth_anthropic import is_anthropic_oauth_token
+            if is_anthropic_oauth_token(token):
+                token = ""
+        if token:
+            return token
+    except Exception:
+        pass
+    k = os.environ.get(api_key_env, "").strip()
+    if not k:
+        raise RuntimeError(f"missing VLM key in {api_key_env}")
+    return k
+
+
 class OpenAICompatVisionSidecar:
     """VLM transcription via any OpenAI-compatible /chat/completions endpoint.
     One transport covers OpenRouter, OpenAI, Gemini (openai-compat), xAI, and
@@ -69,18 +94,25 @@ class OpenAICompatVisionSidecar:
     path in, a VisionResult (text) out."""
 
     def __init__(self, *, model: str, base_url: str, api_key_env: str,
-                 timeout: int = 60) -> None:
+                 timeout: int = 60, extra_headers: Optional[dict] = None) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
         self.timeout = timeout
+        self.extra_headers = dict(extra_headers or {})
         self.name = f"vlm:{model}"
 
     def _key(self) -> str:
-        k = os.environ.get(self.api_key_env, "").strip()
-        if not k:
-            raise RuntimeError(f"missing VLM key in {self.api_key_env}")
-        return k
+        return _sidecar_key(self.api_key_env)
+
+    def _headers(self, auth: str, body: dict) -> dict:
+        headers = {"Content-Type": "application/json",
+                   "Authorization": f"Bearer {auth}", **self.extra_headers}
+        # OpenCode Go/Zen refuse a request without x-opencode-session.
+        from pmharness.drivers.prompt_cache import maybe_attach_opencode_session_header
+        maybe_attach_opencode_session_header(headers, base_url=self.base_url,
+                                             messages=body["messages"])
+        return headers
 
     def transcribe(self, image_path: str) -> VisionResult:
         data_url = _read_data_url(image_path)
@@ -102,8 +134,7 @@ class OpenAICompatVisionSidecar:
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode(),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {_auth}"},
+            headers=self._headers(_auth, body),
             method="POST")
         t0 = time.time()
         try:
@@ -170,10 +201,7 @@ class AnthropicVisionSidecar:
         self.name = f"vlm:{model}"
 
     def _key(self) -> str:
-        k = os.environ.get(self.api_key_env, "").strip()
-        if not k:
-            raise RuntimeError(f"missing VLM key in {self.api_key_env}")
-        return k
+        return _sidecar_key(self.api_key_env, api_key_only=True)
 
     def transcribe(self, image_path: str) -> VisionResult:
         with open(image_path, "rb") as f:
@@ -278,6 +306,93 @@ def resolve_provider_for_spec(spec: str):
     return get_provider("openrouter")
 
 
+# Relays that pick the wire protocol per model, not per provider.
+_PER_MODEL_API_MODES = ("opencode_go", "opencode_zen")
+
+
+def wire_api_mode(provider, model_id: str) -> str:
+    """The protocol *model_id* travels on through *provider*.
+
+    OpenCode Go and Zen send each model on its own endpoint (chat
+    completions, Anthropic messages or Responses). Their provider-level
+    ``api_mode`` names the relay, not a protocol, and once made every Go and
+    Zen pilot text-only, image-capable models too.
+    """
+    api_mode = getattr(provider, "api_mode", "") or ""
+    if api_mode not in _PER_MODEL_API_MODES:
+        return api_mode
+    try:
+        if api_mode == "opencode_go":
+            from .opencode_go import api_mode_for_model, wire_model_id
+            mode = api_mode_for_model(wire_model_id(model_id))
+        else:
+            from .opencode_zen import api_mode_for_model
+            mode = api_mode_for_model(model_id)
+    except Exception:
+        return api_mode
+    return "responses" if mode == "openai_responses" else mode
+
+
+def _model_id_candidates(provider, model_id: str) -> list:
+    """Ids under which a metadata source can list *model_id*."""
+    ids = [model_id]
+    if ":" in model_id:
+        ids.append(model_id.split(":", 1)[1])
+    ids.append(ids[-1].rsplit("/", 1)[-1])
+    if getattr(provider, "name", "") == "opencode-go":
+        try:
+            from .opencode_go import flash_model_keys
+            ids.extend(sorted(flash_model_keys(ids[-1])))
+        except Exception:
+            pass
+    seen: list = []
+    for candidate in ids:
+        if candidate and candidate not in seen:
+            seen.append(candidate)
+    return seen
+
+
+def _record_image_input(record) -> Optional[bool]:
+    """Image input from a live provider catalog record, or None if it does not say."""
+    if not isinstance(record, dict):
+        return None
+    arch = record.get("architecture")
+    modalities = record.get("modalities")
+    for inputs in (
+        arch.get("input_modalities") if isinstance(arch, dict) else None,
+        modalities.get("input") if isinstance(modalities, dict) else modalities,
+    ):
+        if isinstance(inputs, list):
+            return "image" in inputs
+    return None
+
+
+def model_image_input(provider, model_id: str, *, allow_network: bool = False) -> Optional[bool]:
+    """Whether *model_id* on *provider* takes image input; None when no source knows.
+
+    One rule for every provider. Sources, first that knows wins: the
+    provider's own live catalog, models.dev, then the eval catalog.
+    """
+    from .model_fetch import model_metadata
+    from .models_dev import image_input
+
+    name = str(getattr(provider, "name", "") or "")
+    candidates = _model_id_candidates(provider, (model_id or "").strip())
+    if name:
+        for candidate in candidates:
+            try:
+                known = _record_image_input(model_metadata(name, candidate))
+            except Exception:
+                known = None
+            if known is not None:
+                return known
+        for candidate in candidates:
+            known = image_input(name, candidate, allow_network=allow_network)
+            if known is not None:
+                return known
+    return _catalog_has_vision(model_id)
+
+
 def _catalog_has_vision(model_id: str) -> Optional[bool]:
     """True/False when the eval catalog lists the model; None if unknown."""
     if not model_id:
@@ -330,7 +445,7 @@ def session_supports_native_images(session) -> bool:
     pilot = getattr(session, "pilot", None)
     provider = resolve_provider_for_spec(getattr(config, "driver", "") or "")
     model = str(getattr(pilot, "model", "") or "")
-    return pilot_supports_native_images(provider, model=model, pilot=pilot)
+    return pilot_supports_native_images(provider, model=model, pilot=pilot, allow_network=True)
 
 
 def pilot_supports_native_images(
@@ -338,6 +453,7 @@ def pilot_supports_native_images(
     *,
     model: str = "",
     pilot=None,
+    allow_network: bool = False,
 ) -> bool:
     """True when the active pilot can receive image pixels natively.
 
@@ -356,13 +472,13 @@ def pilot_supports_native_images(
             return False
 
     model_id = (model or getattr(real, "model", "") or "").strip()
-    api_mode = getattr(provider, "api_mode", "") or ""
+    api_mode = wire_api_mode(provider, model_id)
     if api_mode and api_mode not in _NATIVE_IMAGE_API_MODES:
         return False
 
-    catalog = _catalog_has_vision(model_id)
-    if catalog is not None:
-        return catalog
+    known = model_image_input(provider, model_id, allow_network=allow_network)
+    if known is not None:
+        return known
 
     if real is not None:
         mod = getattr(type(real), "__module__", "") or ""
@@ -380,7 +496,7 @@ def pilot_supports_native_images(
     # resolve_provider_for_spec fell through to openrouter.
     if api_mode in ("codex_responses", "responses"):
         return True
-    if api_mode in ("anthropic_messages", "gemini_generate") and model_id:
+    if api_mode in ("anthropic_messages", "gemini_native") and model_id:
         return True
     return False
 
@@ -416,42 +532,95 @@ def merge_user_contents(prev, new):
     return _as_parts(prev) + [{"type": "text", "text": "\n\n"}] + _as_parts(new)
 
 
-def provider_vision_sidecar():
-    """Build a sidecar from the first configured provider that has a vision model.
-    Reuses the key the user already set, so image input works with zero extra
-    setup. Returns None if no available provider declares a vision model.
+def provider_vision_sidecars() -> list:
+    """A sidecar for each configured provider with a vision model, in order.
 
-    Skips ``api_mode`` values that cannot serve chat/completions or Anthropic
-    messages (notably ``codex_responses``) — those pilots use native multimodal
-    instead of broken sidecar POSTs.
+    Reuses the keys the user already set, so image input works with zero
+    extra setup. Skips ``api_mode`` values that cannot serve chat/completions
+    or Anthropic messages (notably ``codex_responses``): those pilots use
+    native multimodal instead of broken sidecar POSTs. OpenCode Go serves a
+    vision model on chat/completions, so a Go-only setup has a sidecar too.
     """
     try:
         from .providers import available_providers
     except Exception:
-        return None
+        return []
+    out: list = []
     for p in available_providers():
-        model = getattr(p, "vision_model", "") or ""
-        if not model:
-            continue
-        api_mode = getattr(p, "api_mode", "") or "chat_completions"
-        if api_mode not in _SIDECAR_API_MODES:
-            continue
         key_env = p.key_env()
         if not key_env:
             continue
+        api_mode = getattr(p, "api_mode", "") or "chat_completions"
+        if api_mode == "opencode_go":
+            from . import opencode_go
+            out.append(OpenAICompatVisionSidecar(
+                model=opencode_go.VISION_SIDECAR_MODEL,
+                base_url=opencode_go.driver_base_url(p.base_url), api_key_env=key_env,
+                extra_headers={"User-Agent": opencode_go.USER_AGENT}))
+            continue
+        model = getattr(p, "vision_model", "") or ""
+        if not model or api_mode not in _SIDECAR_API_MODES:
+            continue
         if api_mode == "anthropic_messages":
-            return AnthropicVisionSidecar(model=model, base_url=p.base_url,
-                                          api_key_env=key_env)
-        return OpenAICompatVisionSidecar(model=model, base_url=p.base_url,
-                                         api_key_env=key_env)
-    return None
+            out.append(AnthropicVisionSidecar(model=model, base_url=p.base_url,
+                                              api_key_env=key_env))
+        else:
+            out.append(OpenAICompatVisionSidecar(model=model, base_url=p.base_url,
+                                                 api_key_env=key_env))
+    return out
+
+
+def provider_vision_sidecar():
+    """The first of ``provider_vision_sidecars``, or None."""
+    sidecars = provider_vision_sidecars()
+    return sidecars[0] if sidecars else None
+
+
+def sidecar_candidates() -> list:
+    """Every configured sidecar, in ``default_sidecar`` precedence order."""
+    reach = os.environ.get("HARNESS_VLM_REACH", "").lower()
+    if reach == "openrouter":
+        model = os.environ.get("HARNESS_VLM_MODEL", "qwen/qwen3-vl-30b-a3b-instruct")
+        return [OpenRouterVisionSidecar(model=model)]
+    if reach == "gemini":
+        return [GeminiVisionSidecar()]
+    out: list = []
+    if os.environ.get("GEMINI_API_KEY", "").strip():
+        out.append(GeminiVisionSidecar())
+    if os.environ.get("OPENROUTER_API_KEY", "").strip():
+        model = os.environ.get("HARNESS_VLM_MODEL", "qwen/qwen3-vl-30b-a3b-instruct")
+        out.append(OpenRouterVisionSidecar(model=model))
+    seen = {(sc.base_url, sc.model) for sc in out}
+    for sc in provider_vision_sidecars():
+        if (sc.base_url, sc.model) not in seen:
+            seen.add((sc.base_url, sc.model))
+            out.append(sc)
+    return out
 
 
 def transcribe_images(paths: list, sidecar=None) -> list:
-    """Transcribe a list of image paths into VisionResults. Picks the sidecar
-    from env / configured provider keys (see default_sidecar) if none provided."""
-    sc = sidecar or default_sidecar()
-    return [sc.transcribe(p) for p in paths]
+    """Transcribe a list of image paths into VisionResults.
+
+    With no ``sidecar``, each image tries every configured sidecar in order
+    (see ``sidecar_candidates``) until one answers. One failing VLM (a retired
+    model, a spent key) does not fail the whole image turn.
+    """
+    if sidecar is not None:
+        return [sidecar.transcribe(p) for p in paths]
+    candidates = sidecar_candidates() or [NullVisionSidecar()]
+    results = []
+    for path in paths:
+        failures = []
+        result = None
+        for sc in candidates:
+            result = sc.transcribe(path)
+            if not result.error:
+                break
+            failures.append(f"{sc.name}: {result.error}")
+        if result.error and len(failures) > 1:
+            result = VisionResult("", error="; ".join(failures)[:800], model=result.model)
+        results.append(result)
+    return results
 
 
 def default_sidecar():
@@ -462,23 +631,9 @@ def default_sidecar():
     2. Dedicated VLM keys, preferring Gemini then OpenRouter (back-compat: these
        are the historical vision keys and keep their default models).
     3. Any other configured provider that declares a vision model (Anthropic,
-       OpenAI, xAI, ...), reusing the key the user already has.
+       OpenAI, xAI, ...) or serves one (OpenCode Go), reusing the key the user
+       already has.
     4. Nothing configured -> NullVisionSidecar (actionable error, not a crash).
     """
-    reach = os.environ.get("HARNESS_VLM_REACH", "").lower()
-    if reach == "openrouter":
-        model = os.environ.get("HARNESS_VLM_MODEL", "qwen/qwen3-vl-30b-a3b-instruct")
-        return OpenRouterVisionSidecar(model=model)
-    if reach == "gemini":
-        return GeminiVisionSidecar()
-
-    if os.environ.get("GEMINI_API_KEY", "").strip():
-        return GeminiVisionSidecar()
-    if os.environ.get("OPENROUTER_API_KEY", "").strip():
-        model = os.environ.get("HARNESS_VLM_MODEL", "qwen/qwen3-vl-30b-a3b-instruct")
-        return OpenRouterVisionSidecar(model=model)
-
-    sidecar = provider_vision_sidecar()
-    if sidecar is not None:
-        return sidecar
-    return NullVisionSidecar()
+    candidates = sidecar_candidates()
+    return candidates[0] if candidates else NullVisionSidecar()

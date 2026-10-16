@@ -78,6 +78,10 @@ FLASH_MODEL_ALIASES = frozenset({
 })
 WIRE_FLASH_MODEL = "deepseek-flash"
 
+# Image transcription for text-only pilots when Go is the only key: a
+# chat/completions model with image input (models.dev), cheap and fast.
+VISION_SIDECAR_MODEL = "mimo-v2.6-flash"
+
 
 def flash_model_keys(model: Optional[str]) -> frozenset:
     """Bare ids that mean the same Go DeepSeek flash row as *model*."""

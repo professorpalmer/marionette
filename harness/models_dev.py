@@ -97,15 +97,29 @@ def _registry(*, allow_network: bool) -> dict[str, Any]:
     return cached
 
 
+# Capability lookups only. A model takes the same inputs whatever plan bills
+# it, so plan providers map to their vendor here. Cost lookups keep
+# PROVIDER_TO_MODELS_DEV: a plan is not billed at the vendor's API rates.
+_CAPABILITY_PROVIDER_IDS = {
+    **PROVIDER_TO_MODELS_DEV,
+    "openai-codex": "openai",
+    "claude-code": "anthropic",
+    "gemini": "google",
+    "bedrock": "amazon-bedrock",
+}
+
+
 def models_dev_provider_id(provider_name: str) -> str:
     key = (provider_name or "").strip().lower()
     return PROVIDER_TO_MODELS_DEV.get(key, key)
 
 
-def _raw_model(provider_name: str, model_id: str, *, allow_network: bool) -> Optional[dict[str, Any]]:
+def _raw_model(provider_name: str, model_id: str, *, allow_network: bool,
+               models_dev_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """The models.dev entry for one provider's model (exact, lower-case, or bare id)."""
     registry = _registry(allow_network=allow_network)
-    provider = registry.get(models_dev_provider_id(provider_name)) if registry else None
+    provider_id = models_dev_id or models_dev_provider_id(provider_name)
+    provider = registry.get(provider_id) if registry else None
     models = provider.get("models") if isinstance(provider, dict) else None
     if not isinstance(models, dict):
         return None
@@ -168,6 +182,33 @@ def lookup_model(
         return out
     except Exception as e:
         _diag("models_dev.lookup", e)
+        return None
+
+
+def image_input(
+    provider_name: str,
+    model_id: str,
+    *,
+    allow_network: bool = False,
+) -> Optional[bool]:
+    """True/False when models.dev lists the model's input modalities, else None.
+
+    Never raises.
+    """
+    try:
+        mid = (model_id or "").strip()
+        if not mid:
+            return None
+        key = (provider_name or "").strip().lower()
+        raw = _raw_model(key, mid, allow_network=allow_network,
+                         models_dev_id=_CAPABILITY_PROVIDER_IDS.get(key, key))
+        modalities = raw.get("modalities") if raw else None
+        inputs = modalities.get("input") if isinstance(modalities, dict) else None
+        if not isinstance(inputs, list):
+            return None
+        return "image" in inputs
+    except Exception as e:
+        _diag("models_dev.image_input", e)
         return None
 
 
