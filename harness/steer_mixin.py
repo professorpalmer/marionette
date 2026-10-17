@@ -182,14 +182,12 @@ class SteerMixin:
     def steer_with_images(self, text: str, images: Optional[list] = None, *, input_id=None, expected_turn_id=None) -> str:
         """Enqueue a steer with attached images.
 
-        Mid-turn steers are text-only user messages at a safe boundary, so they
-        cannot carry raw image blocks. Policy:
+        A steer is a role=user message at a safe boundary, so it can carry
+        image parts like a normal send. Policy:
 
-        - Vision-capable pilots (gpt-5.6-luna, etc.): NEVER run the vision
-          sidecar (weaker VLM paraphrase). Queue a follow-up turn via
-          ``enqueue_prompt`` so the next turn gets native multimodal pixels.
-          Do not enqueue a mid-turn steer notice — that would paint a second
-          chrome row (``steer:`` plus QUEUED TO SEND) for one Enter.
+        - Vision-capable pilots (gpt-5.6-luna, etc.): steer with the pixels
+          (``_publish_input_actions`` adds them). NEVER run the vision
+          sidecar (weaker VLM paraphrase).
         - Text-only pilots: transcribe via sidecar into the steer text (same
           path as view_image for non-vision models).
 
@@ -212,23 +210,8 @@ class SteerMixin:
             try:
                 from .vision import session_supports_native_images
                 if session_supports_native_images(self):
-                    # Preserve pixels; do not degrade to a weaker sidecar VLM.
-                    # Queue-only: enqueue_prompt carries text + paths. A steer
-                    # notice here would double-paint chrome on busy Enter.
-                    if hasattr(self, "enqueue_prompt"):
-                        self.enqueue_prompt(
-                            text or "(see attached image)",
-                            images=paths, upload_root=getattr(self, "_input_upload_root", None), input_id=input_id,
-                        )
-                        return DeliveryAction.ENQUEUE_PROMPT.value
-                    notice = (
-                        cleaned + "\n\n" if cleaned else ""
-                    ) + (
-                        f"[user attached {len(paths)} image(s); this pilot is "
-                        "vision-capable but mid-turn steers cannot carry "
-                        "pixels — send as a follow-up turn]"
-                    )
-                    self.enqueue_steer(notice, input_id=input_id, expected_turn_id=expected_turn_id)
+                    self.enqueue_steer(cleaned or "(see attached image)", images=paths,
+                                       input_id=input_id, expected_turn_id=expected_turn_id)
                     return DeliveryAction.ENQUEUE_STEER.value
                 if receipt_id is not None:
                     from .input_receipts import session_input_store
@@ -279,7 +262,8 @@ class SteerMixin:
             return True
 
     @input_projection
-    def enqueue_steer(self, text: str, *, expected_turn_id: Optional[str] = None, input_id=None):
+    def enqueue_steer(self, text: str, *, expected_turn_id: Optional[str] = None, input_id=None,
+                      images: Optional[list] = None):
         """Append a pending mid-turn user steer.
 
         Thin adapter: admits ``kind=steer`` with ``delivery=next_turn_boundary``.
@@ -312,6 +296,7 @@ class SteerMixin:
             return self._action_store().admit(
                 ActionKind.STEER,
                 text,
+                images=images,
                 delivery=DeliveryPolicy.NEXT_TURN_BOUNDARY,
                 expected_turn_id=expected_turn_id,
                 input_id=input_id,
@@ -359,6 +344,7 @@ class SteerMixin:
                 self._record_steer_drop_notice([a.text for a in actions])
                 return False
             for action, content in zip(actions, contents):
+                content = self._with_input_images(action, content, receipts)
                 self._history.append({'role': 'user', 'content': content, 'input_id': action.id})
                 transcript = getattr(self, '_display_transcript', None)
                 if display and transcript is not None:
@@ -371,6 +357,26 @@ class SteerMixin:
                 publish_session_injected(self, [a.id for a in actions])
             self._settle_input_actions(actions)
             return True
+
+    def _with_input_images(self, action, content, receipts):
+        """*content* plus the action's image parts when the pilot takes pixels.
+
+        Images live on the input receipt, or on the action for hosts without
+        receipts. A text-only pilot keeps *content* as is: its steer text
+        already carries the sidecar transcription.
+        """
+        images = list(getattr(action, "images", None) or [])
+        if receipts is not None and getattr(action, "id", None):
+            try:
+                _, images = receipts.delivery_content(action.id, "")
+            except Exception:
+                pass
+        if not images or not isinstance(content, str):
+            return content
+        from .vision import native_multimodal_user_content, session_supports_native_images
+        if not session_supports_native_images(self):
+            return content
+        return native_multimodal_user_content(content, images)
 
     def _settle_input_actions(self, actions) -> None:
         store = self._action_store()
