@@ -21,6 +21,7 @@ SHARED_DISPLAY_NAMES = {
 CHAT_COMPLETIONS = "chat_completions"
 ANTHROPIC_MESSAGES = "anthropic_messages"
 OPENAI_RESPONSES = "openai_responses"
+GEMINI_NATIVE = "gemini_native"
 REQUIRED_MAX_OUTPUT_TOKENS = 32000
 
 
@@ -135,6 +136,23 @@ def driver_base_url(base_url: Optional[str], *, default: str) -> str:
     return url
 
 
+def google_base_url(base_url: str, *, path: str) -> str:
+    """The Google ``v1beta`` root that serves Gemini on an OpenCode relay.
+
+    Go and Zen serve Gemini only on Google generateContent under
+    ``/inference/.../google/v1beta``, not under the ``/v1`` driver root.
+    A custom relay on another host is left as given.
+    """
+    try:
+        parts = urllib.parse.urlparse(base_url)
+    except ValueError:
+        return base_url
+    host = parts.netloc.lower()
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        return f"{parts.scheme}://{parts.netloc}{path}"
+    return base_url
+
+
 def build_opencode_driver(
     *,
     spec: str,
@@ -143,6 +161,7 @@ def build_opencode_driver(
     api_key_env: str,
     max_tokens: Optional[int],
     base_url: str,
+    gemini_base_url: str = "",
     temperature: Optional[float] = None,
     extra_body: Optional[dict] = None,
 ):
@@ -163,6 +182,14 @@ def build_opencode_driver(
         return AnthropicDriver(
             name=spec, model=bare, base_url=base_url,
             api_key_env=api_key_env, max_tokens=required_max_tokens,
+        )
+    if api_mode == GEMINI_NATIVE:
+        from pmharness.drivers.gemini import GeminiDriver
+
+        return GeminiDriver(
+            name=spec, model=bare, base_url=gemini_base_url or base_url,
+            api_key_env=api_key_env, max_tokens=max_tokens,
+            extra_headers={"User-Agent": USER_AGENT},
         )
     if api_mode == OPENAI_RESPONSES:
         from pmharness.drivers.codex_responses import CodexResponsesDriver

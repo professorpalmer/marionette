@@ -29,6 +29,7 @@ class GeminiDriver:
                  temperature: float = 0.0,
                  timeout: int = 90,
                  send_temperature: bool = False,
+                 extra_headers: Optional[dict] = None,
                  sleep=None) -> None:
         self.name = name
         self.model = model
@@ -38,13 +39,37 @@ class GeminiDriver:
         self.temperature = temperature
         self.timeout = timeout
         self.send_temperature = send_temperature
+        self.extra_headers = dict(extra_headers or {})
         self._sleep = sleep or time.sleep
 
     def _key(self) -> str:
+        """Resolve API key: credential pool first, then process env."""
+        try:
+            from harness.credential_pool import resolve_entry_for_env
+            entry = resolve_entry_for_env(self.api_key_env)
+            if entry is not None and entry.runtime_token:
+                return entry.runtime_token
+        except Exception:
+            pass
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
             raise RuntimeError(f"missing API key in env var {self.api_key_env}")
         return key
+
+    def _headers(self, *, session_id: str | None = None, messages: list | None = None,
+                 system: str | None = None) -> dict:
+        """The key goes in ``x-goog-api-key``, never the URL (logs, error text).
+
+        OpenCode Go/Zen relay Gemini too and refuse a request without
+        ``x-opencode-session``.
+        """
+        from .prompt_cache import maybe_attach_opencode_session_header
+        headers = {"Content-Type": "application/json", "x-goog-api-key": self._key(),
+                   **self.extra_headers}
+        maybe_attach_opencode_session_header(headers, base_url=self.base_url,
+                                             session_id=session_id, messages=messages,
+                                             system=system)
+        return headers
 
     def _sanitize_schema(self, schema: dict) -> dict:
         if not isinstance(schema, dict):
@@ -282,7 +307,7 @@ class GeminiDriver:
         return part_offset + len(parts)
 
     def complete(self, task_prompt: str, *, system: str = SYSTEM_PROMPT) -> DriverResponse:
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={self._key()}"
+        url = f"{self.base_url}/models/{self.model}:generateContent"
 
         gen_config = self._generation_config()
 
@@ -294,7 +319,7 @@ class GeminiDriver:
             body["systemInstruction"] = {"parts": [{"text": system}]}
 
         data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = self._headers(messages=body["contents"], system=system)
 
         def _call() -> DriverResponse:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -350,11 +375,12 @@ class GeminiDriver:
 
         return with_retry(_call, sleep=self._sleep)
 
-    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None) -> DriverResponse:
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={self._key()}"
+    def chat(self, messages: list, *, tools: list | None = None, system: str | None = None,
+             session_id: str | None = None) -> DriverResponse:
+        url = f"{self.base_url}/models/{self.model}:generateContent"
         body = self._chat_body(messages, tools, system)
         data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = self._headers(session_id=session_id, messages=messages, system=system)
 
         def _call() -> DriverResponse:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -432,6 +458,7 @@ class GeminiDriver:
         on_delta=None,
         on_reasoning_delta=None,
         on_tool_hint=None,
+        session_id: str | None = None,
     ) -> DriverResponse:
         """Streaming counterpart of chat() over Gemini's streamGenerateContent SSE.
 
@@ -441,12 +468,11 @@ class GeminiDriver:
         via on_tool_hint — matching ConversationalSession's stream thread contract.
         """
         url = (
-            f"{self.base_url}/models/{self.model}:streamGenerateContent"
-            f"?alt=sse&key={self._key()}"
+            f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
         )
         body = self._chat_body(messages, tools, system, include_thoughts=True)
         data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        headers = self._headers(session_id=session_id, messages=messages, system=system)
         if on_delta is None:
             on_delta = lambda _t: None
 
