@@ -123,9 +123,10 @@ def test_gemini_chat_tools_and_system(monkeypatch):
     assert len(captured_reqs) == 1
     req = captured_reqs[0]
 
-    # Verify url has :generateContent and the API key
+    # The key travels in a header, never the URL.
     assert ":generateContent" in req.full_url
-    assert "key=fake-gemini-key" in req.full_url
+    assert "key=" not in req.full_url
+    assert req.get_header("X-goog-api-key") == "fake-gemini-key"
 
     # Verify body
     body_data = json.loads(req.data.decode("utf-8"))

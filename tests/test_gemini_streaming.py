@@ -47,7 +47,8 @@ def test_chat_stream_hits_stream_endpoint(monkeypatch):
     url = captured[0].full_url
     assert ":streamGenerateContent" in url
     assert "alt=sse" in url
-    assert "key=fake-gemini-key" in url
+    assert "key=" not in url
+    assert captured[0].get_header("X-goog-api-key") == "fake-gemini-key"
     body = json.loads(captured[0].data.decode("utf-8"))
     assert body["generationConfig"]["thinkingConfig"] == {"includeThoughts": True}
 

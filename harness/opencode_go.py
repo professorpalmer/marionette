@@ -29,9 +29,11 @@ from typing import Any, Optional
 from .opencode_common import (
     ANTHROPIC_MESSAGES,
     CHAT_COMPLETIONS,
+    GEMINI_NATIVE,
     OPENAI_RESPONSES,
     USER_AGENT,
     build_opencode_driver,
+    google_base_url,
     display_name_for as _shared_display_name_for,
     driver_base_url as _shared_driver_base_url,
     normalize_model_id,
@@ -110,9 +112,12 @@ def wire_model_id(model: Optional[str]) -> str:
 # Endpoint table (https://opencode.ai/docs/go/). Prefix matching rather than an
 # exact allow-list so a newly added sibling (qwen3.8-plus, minimax-m4) routes
 # correctly before the curated list catches up. Grok and Muse Spark use
-# /responses; unknown ids stay on chat/completions.
-_ANTHROPIC_MESSAGES_PREFIXES = ("minimax-", "qwen")
+# /responses, Claude uses /messages, Gemini uses Google generateContent.
+# Unknown ids stay on chat/completions.
+_ANTHROPIC_MESSAGES_PREFIXES = ("claude-", "minimax-", "qwen")
 _OPENAI_RESPONSES_PREFIXES = ("gpt-", "grok-", "muse-spark-")
+_GEMINI_NATIVE_PREFIXES = ("gemini-",)
+GEMINI_PATH = "/inference/go/google/v1beta"
 
 # Per-model completion ceiling. The relay's default of 262144 exceeds what
 # Xiaomi actually serves for MiMo Pro (131072) and the request 400s, so the cap
@@ -142,6 +147,8 @@ def api_mode_for_model(model: Optional[str]) -> str:
         return ANTHROPIC_MESSAGES
     if bare.startswith(_OPENAI_RESPONSES_PREFIXES):
         return OPENAI_RESPONSES
+    if bare.startswith(_GEMINI_NATIVE_PREFIXES):
+        return GEMINI_NATIVE
     return CHAT_COMPLETIONS
 
 
@@ -295,6 +302,7 @@ def build_driver(
         api_key_env=api_key_env,
         max_tokens=max_tokens_for_model(bare, max_tokens),
         base_url=driver_base_url(base_url),
+        gemini_base_url=google_base_url(driver_base_url(base_url), path=GEMINI_PATH),
         temperature=temperature_for_model(bare),
         extra_body=reasoning_body_extras(bare, go_relay=True),
     )

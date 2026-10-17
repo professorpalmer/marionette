@@ -18,8 +18,10 @@ from typing import Any, Optional
 from .opencode_common import (
     ANTHROPIC_MESSAGES,
     CHAT_COMPLETIONS,
+    GEMINI_NATIVE,
     OPENAI_RESPONSES,
     build_opencode_driver,
+    google_base_url,
     display_name_for as _shared_display_name_for,
     driver_base_url as _shared_driver_base_url,
     normalize_model_id,
@@ -68,6 +70,8 @@ DISPLAY_NAMES = {
 # muse-spark-*-free). Free ids win over the paid-family prefix table.
 _ANTHROPIC_MESSAGES_PREFIXES = ("claude-", "qwen")
 _OPENAI_RESPONSES_PREFIXES = ("gpt-", "grok-", "muse-spark-")
+_GEMINI_NATIVE_PREFIXES = ("gemini-",)
+GEMINI_PATH = "/inference/google/v1beta"
 _CHAT_COMPLETIONS_SUFFIXES = ("-free",)
 
 
@@ -97,6 +101,8 @@ def api_mode_for_model(model: Optional[str]) -> str:
         return CHAT_COMPLETIONS
     if bare.startswith(_OPENAI_RESPONSES_PREFIXES):
         return OPENAI_RESPONSES
+    if bare.startswith(_GEMINI_NATIVE_PREFIXES):
+        return GEMINI_NATIVE
     return CHAT_COMPLETIONS
 
 
@@ -146,4 +152,5 @@ def build_driver(
         api_key_env=api_key_env,
         max_tokens=max_tokens,
         base_url=driver_base_url(base_url),
+        gemini_base_url=google_base_url(driver_base_url(base_url), path=GEMINI_PATH),
     )
