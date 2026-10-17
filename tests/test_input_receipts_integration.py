@@ -443,13 +443,10 @@ def test_normalized_steer_images_share_one_input_identity(session, monkeypatch, 
     assert code == 200, result
     rows = session.input_receipts()
     assert len(rows) == 1 and rows[0]['original_text'] == ' exact \n'
-    if native:
-        assert len(session._session_actions) == 0
-        assert session.list_prompts()[0]['input_id'] == rows[0]['id']
-    else:
-        assert session.list_prompts() == []
-        assert [a.id for a in session._session_actions] == [rows[0]['id']]
-        assert 'transcription' in list(session._session_actions)[0].text
+    assert session.list_prompts() == []
+    assert [a.id for a in session._session_actions] == [rows[0]['id']]
+    steer_text = list(session._session_actions)[0].text
+    assert ('transcription' in steer_text) is (not native)
 
 
 def test_document_steer_has_one_original_and_converted_delivery(session):

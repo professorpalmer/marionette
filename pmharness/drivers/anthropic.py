@@ -111,6 +111,17 @@ def _openai_user_content_to_anthropic(content) -> list:
     return [{"type": "text", "text": content or ""}]
 
 
+def _image_after_tool_result(prev_blocks: list, blocks: list) -> bool:
+    """True when *blocks* carry an image and would join a tool_result turn.
+
+    Such a turn stays a separate user message (the API combines consecutive
+    user turns). The Qwen relay on OpenCode Go drops an image that shares a
+    user turn with tool_result blocks, so a mid-turn image steer was lost.
+    """
+    return (any(b.get("type") == "image" for b in blocks)
+            and any(b.get("type") == "tool_result" for b in prev_blocks))
+
+
 def _anthropic_usage_fields(usage: dict | None) -> dict:
     """Normalize Anthropic usage into inclusive prompt totals + TTL write splits.
 
@@ -427,7 +438,8 @@ class AnthropicDriver(CacheRefreshDriver):
                 blocks.extend(_openai_user_content_to_anthropic(msg.get("content")))
                 anth_role = "user"
 
-            if anthropic_msgs and anthropic_msgs[-1]["role"] == anth_role:
+            if anthropic_msgs and anthropic_msgs[-1]["role"] == anth_role and not _image_after_tool_result(
+                    anthropic_msgs[-1]["content"], blocks):
                 anthropic_msgs[-1]["content"].extend(blocks)
             else:
                 if not blocks:

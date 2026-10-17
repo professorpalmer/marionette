@@ -1,8 +1,8 @@
 """Steering with an attached image must reach the model without dropping pixels.
 
-Mid-turn steers inject as TEXT, so text-only pilots get sidecar transcription.
-Vision-capable pilots must NEVER use a weaker sidecar VLM — they queue a
-follow-up turn with native multimodal images instead.
+Text-only pilots get sidecar transcription in the steer text. Vision-capable
+pilots must NEVER use a weaker sidecar VLM. They steer mid-turn with native
+image parts.
 
 Hermetic: monkeypatches vision helpers; no real model/vision call.
 """
@@ -106,47 +106,74 @@ def test_text_only_steer_still_works(image_session):
     assert s._history[-1]["input_id"] == receipt["id"]
 
 
-def test_steer_native_vision_queues_prompt_skips_sidecar(monkeypatch, image_session):
-    """gpt-5.6-luna-class pilots must not get a weaker sidecar paraphrase."""
+def _inject(s):
+    list(s._check_and_inject_steer())
+    return s._history[-1]
+
+
+def test_steer_native_vision_steers_with_pixels(monkeypatch, image_session):
+    """A vision pilot steers mid-turn with the real pixels, not a queued turn
+    and not a weaker sidecar paraphrase."""
     s, image = image_session
-    called = {"transcribe": 0, "steer": 0}
 
     def _boom(*_a, **_k):
-        called["transcribe"] += 1
         raise AssertionError("sidecar must not run for native vision steer")
-
-    def _steer(text):
-        called["steer"] += 1
-        raise AssertionError("vision busy Enter must not enqueue_steer a notice")
 
     monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
     monkeypatch.setattr("harness.vision.transcribe_images", _boom)
-    s.enqueue_steer = _steer
     action = s.steer_with_images("look at this", [str(image)])
-    assert action == "enqueue_prompt"
-    assert called["transcribe"] == 0
-    assert called["steer"] == 0
+    assert action == "enqueue_steer"
+    assert s.list_prompts() == []
     receipt = _retained(s, "look at this")
-    queued, = s.list_prompts()
-    assert queued["id"] == receipt["id"]
-    assert queued["text"] == "look at this"
-    assert queued["images"] == [receipt["attachments"][0]["ref"]]
-    assert s.drain_steer() == []
+    row = _inject(s)
+    assert row["role"] == "user" and row["input_id"] == receipt["id"]
+    text, image_part = row["content"]
+    assert text == {"type": "text", "text": "look at this"}
+    assert image_part["type"] == "image_url"
+    assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
 
 
-def test_steer_native_vision_images_only_is_queue_only(monkeypatch, image_session):
-    """Images-only on a vision pilot queues the placeholder; no steer chrome."""
+def test_steer_native_vision_images_only_steers_placeholder(monkeypatch, image_session):
+    """Images-only on a vision pilot steers the placeholder text plus pixels."""
     s, image = image_session
 
     monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: True)
     action = s.steer_with_images("", [str(image)])
-    assert action == "enqueue_prompt"
+    assert action == "enqueue_steer"
+    assert s.list_prompts() == []
     receipt = _retained(s, "")
-    queued, = s.list_prompts()
-    assert queued["id"] == receipt["id"]
-    assert queued["text"] == "(see attached image)"
-    assert queued["images"] == [receipt["attachments"][0]["ref"]]
-    text, paths = session_input_store(s).delivery_content(receipt["id"])
-    assert text == ""
+    _, paths = session_input_store(s).delivery_content(receipt["id"])
     _assert_materialized(paths, image)
-    assert s.drain_steer() == []
+    row = _inject(s)
+    assert row["content"][0] == {"type": "text", "text": "(see attached image)"}
+    assert row["content"][1]["type"] == "image_url"
+
+
+def test_text_only_steer_keeps_transcribed_text(monkeypatch, image_session):
+    """A text-only pilot steer stays a string: the sidecar text carries the image."""
+    s, image = image_session
+    monkeypatch.setattr("harness.vision.session_supports_native_images", lambda _s: False)
+    monkeypatch.setattr("harness.vision.transcribe_images", lambda _p: [_FakeResult("a red square")])
+    assert s.steer_with_images("look", [str(image)]) == "enqueue_steer"
+    row = _inject(s)
+    assert isinstance(row["content"], str) and "a red square" in row["content"]
+
+
+def test_anthropic_image_steer_is_its_own_user_turn():
+    """The Qwen relay on Go drops an image that shares a user turn with
+    tool_result blocks. Text steers still merge, as before."""
+    from pmharness.drivers.anthropic import AnthropicDriver
+
+    d = AnthropicDriver(name="opencode-go:qwen3.8-max", model="qwen3.8-max",
+                        base_url="https://opencode.ai/zen/go/v1", api_key_env="X", max_tokens=100)
+    tc = [{"id": "toolu_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]
+    head = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "", "tool_calls": tc},
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "done"}]
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    msgs = d._build_body(head + [{"role": "user", "content": [{"type": "text", "text": "look"}, image]}],
+                         None, None)["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "user"]
+    assert [b["type"] for b in msgs[2]["content"]] == ["tool_result"]
+    assert [b["type"] for b in msgs[3]["content"]] == ["text", "image"]
+    msgs = d._build_body(head + [{"role": "user", "content": "stop"}], None, None)["messages"]
+    assert [b["type"] for b in msgs[2]["content"]] == ["tool_result", "text"]
