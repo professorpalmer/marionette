@@ -14,6 +14,7 @@ States (lifted from Hermes's curator pattern, but with a hard human-in-loop gate
 Frontmatter is parsed without PyYAML (stdlib only): simple key: value lines.
 """
 
+import json
 import os
 import re
 import time
@@ -60,6 +61,10 @@ class Skill:
     admit_sessions: str = ""
     provenance_session: str = ""
     provenance_job: str = ""
+    # Why a distilled skill exists: the trigger situation and the run facts
+    # it rests on. Shown at approval time. Empty for older skills.
+    cue: str = ""
+    evidence: List[str] = field(default_factory=list)
 
     @property
     def slug(self) -> str:
@@ -93,11 +98,33 @@ class Skill:
             fm.append(f"provenance_session: {self.provenance_session}")
         if getattr(self, "provenance_job", ""):
             fm.append(f"provenance_job: {self.provenance_job}")
+        if getattr(self, "cue", ""):
+            fm.append(f"cue: {_one_line(self.cue)}")
+        if getattr(self, "evidence", None):
+            # JSON keeps the list on one frontmatter line.
+            fm.append("evidence: " + json.dumps([_one_line(e) for e in self.evidence]))
         fm.extend([
             "---",
             "",
         ])
         return "\n".join(fm) + self.body.strip() + "\n"
+
+
+def _one_line(text: str) -> str:
+    # The frontmatter parser reads one line per key.
+    return " ".join(str(text or "").split())
+
+
+def _parse_evidence(raw: str) -> List[str]:
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(val, list):
+        return []
+    return [str(v) for v in val if str(v).strip()]
 
 
 def _parse(text: str) -> Skill:
@@ -140,6 +167,8 @@ def _parse(text: str) -> Skill:
         admit_sessions=meta.get("admit_sessions", ""),
         provenance_session=meta.get("provenance_session", ""),
         provenance_job=meta.get("provenance_job", ""),
+        cue=meta.get("cue", ""),
+        evidence=_parse_evidence(meta.get("evidence", "")),
     )
 
 
@@ -371,7 +400,8 @@ class SkillStore:
             self.save(sk)
             return sk
 
-    def propose_update(self, slug: str, new_body: str, new_name: str = "", new_description: str = "", source: str = "") -> Skill:
+    def propose_update(self, slug: str, new_body: str, new_name: str = "", new_description: str = "", source: str = "",
+                       cue: str = "", evidence: Optional[List[str]] = None) -> Skill:
         with self._lock:
             existing = self.get(slug)
             if not existing:
@@ -386,7 +416,9 @@ class SkillStore:
                 body=new_body,
                 state="pending",
                 source=source or existing.source,
-                supersedes=root_slug
+                supersedes=root_slug,
+                cue=cue,
+                evidence=list(evidence or []),
             )
             # Stable slug ({root}-patch): re-proposing overwrites the same pending
             # patch rather than creating a new one each time.

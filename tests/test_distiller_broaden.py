@@ -62,7 +62,9 @@ def test_hard_task_trigger(tmp_path):
     ]
 
     # Pilot returns valid candidate JSON
-    session.pilot = FakePilot('{"name":"Clear dict leak","description":"When dictionaries grow unbounded","body":"1. inspect dict usage\\n2. clear dict reference"}')
+    session.pilot = FakePilot('{"name":"Clear dict leak","description":"When dictionaries grow unbounded",'
+                              '"cue":"memory grows without bound","evidence":["found a leaking dictionary"],'
+                              '"body":"1. inspect dict usage\\n2. clear dict reference"}')
 
     res = session.distill()
     assert res["skill"]["status"] == "proposed"
@@ -90,7 +92,8 @@ def test_duplicate_with_new_info_proposes_patch(tmp_path):
     # 2. Pilot classifies it as an "update" with a merged body
     pilot = FakePilot([
         # Response for distill_session's original complete call
-        '{"name":"SSE Fix","description":"Fixes SSE issues","body":"1. check flush\\n2. check content-type"}',
+        '{"name":"SSE Fix","description":"Fixes SSE issues","cue":"SSE stream stalls",'
+        '"evidence":["content-type must be set"],"body":"1. check flush\\n2. check content-type"}',
         # Response for _classify_candidate complete call
         '{"verdict":"update","slug":"sse-fix","merged_body":"1. check flush\\n2. check content-type"}'
     ])
@@ -150,7 +153,8 @@ def test_human_gate_holds_all(tmp_path):
     rule_store = RuleStore(path=str(tmp_path / "rules.json"))
     
     pilot = FakePilot([
-        '{"name":"New Procedure","description":"New description","body":"New body"}',
+        '{"name":"New Procedure","description":"New description","cue":"new task",'
+        '"evidence":["step one done"],"body":"New body"}',
         '{"rules": [{"text": "never edit without verifying", "scope": "global"}]}'
     ])
     
@@ -211,6 +215,7 @@ def test_distinct_skills_not_destructively_merged(tmp_path):
     # First skill: no shortlist exists yet, so no classify call
     p1 = FakePilot(json.dumps({"name": "Trace SSE websocket handshake",
                                "description": "trace the SSE websocket handshake",
+                               "cue": "handshake fails", "evidence": ["finding a"],
                                "body": "x"}))
     r1 = distill_session(p1, "o", f, store)
     assert r1["status"] == "proposed"
@@ -219,6 +224,7 @@ def test_distinct_skills_not_destructively_merged(tmp_path):
     p2 = FakePilot([
         json.dumps({"name": "Debug SSE websocket handshake",
                     "description": "debug the SSE websocket handshake",
+                    "cue": "handshake fails", "evidence": ["finding b"],
                     "body": "y"}),
         '{"verdict":"new"}'
     ])
@@ -238,7 +244,8 @@ def test_classify_fallback_proposes_new(tmp_path):
     store.save(Skill(name="Deploy flow", description="how to deploy", body="v1", state="active"))
     
     p = FakePilot([
-        '{"name":"Deploy flow","description":"how to deploy","body":"v2"}',
+        '{"name":"Deploy flow","description":"how to deploy","cue":"deploy task",'
+        '"evidence":["finding a"],"body":"v2"}',
         'this is garbage { unclosed'
     ])
     
