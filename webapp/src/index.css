@@ -257,7 +257,10 @@ body {
   flex: 0 0 auto;
 }
 
+/* Flex all the way down to the label: a block slot shrinks, but its
+   picker row keeps its width and paints under the Workers picker. */
 .pilot-picker-slot {
+  display: flex;
   min-width: 0;
   flex: 0 1 auto;
 }
@@ -304,6 +307,7 @@ body {
 }
 
 .pilot-model-slot {
+  display: flex;
   flex: 0 1 auto;
 }
 
