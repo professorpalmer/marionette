@@ -227,6 +227,13 @@ def test_background_session_applies_deferred_driver_without_switch(owned_server)
     assert srv._sessions.active == b_id
 
 
+def _thread_stack(thread) -> str:
+    import sys
+    import traceback
+    frame = sys._current_frames().get(thread.ident)
+    return "".join(traceback.format_stack(frame)) if frame else "no frame"
+
+
 def test_concurrent_turn_reasoning_reaches_streaming_provider_body(owned_server, monkeypatch):
     import threading
     from pmharness.drivers.codex_responses import CodexResponsesDriver
@@ -262,7 +269,8 @@ def test_concurrent_turn_reasoning_reaches_streaming_provider_body(owned_server,
         thread.start()
     for thread in threads:
         thread.join(10)
-        assert not thread.is_alive()
+        # Windows CI once left a send alive past 10 s with no trace: name where.
+        assert not thread.is_alive(), _thread_stack(thread)
     assert not errors
     assert bodies[a_id]["reasoning"]["effort"] == "high"
     assert bodies[b_id]["reasoning"]["effort"] == "low"
