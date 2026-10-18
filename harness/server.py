@@ -3834,6 +3834,11 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             signal.signal(_sig, _graceful)
         except (ValueError, OSError):
             pass  # not on the main thread (e.g. under tests) -- atexit still covers it
+    # A crashed or force-quit desktop app sends no signal: shut down the same
+    # way as Ctrl-C when the parent that spawned us exits.
+    import _thread
+    from .parent_watch import start_parent_watch
+    start_parent_watch(_thread.interrupt_main)
     try:
         # Re-run the keyed-provider health gate immediately before serving: it
         # syncs the agentic catalog from live keys, reconciles shared non-agentic

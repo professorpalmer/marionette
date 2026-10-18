@@ -921,6 +921,9 @@ async function _startBackendOnce() {
     // App source root (not the user's project). Backend excludes this path
     // from boot restore + PROJECTS recents so Marionette never auto-opens itself.
     MARIONETTE_APP_ROOT: repoRoot,
+    // harness/parent_watch.py: a crash or force-quit sends the detached
+    // backend no signal, so it shuts itself down when this pid is gone.
+    HARNESS_PARENT_PID: String(process.pid),
   }, {
     modelsPath: marionetteModels,
     ...(isInspectMode(process.env) ? { stateDir: harnessStateDir } : {}),
