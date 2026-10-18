@@ -83,7 +83,8 @@ class _Pilot:
 
 def test_distill_proposes_pending(tmp_path):
     s = SkillStore(root=str(tmp_path))
-    pilot = _Pilot('{"name":"Trace SSE bug","description":"when SSE hangs","body":"1. check headers\n2. flush"}')
+    pilot = _Pilot('{"name":"Trace SSE bug","description":"when SSE hangs","cue":"SSE stream hangs",'
+                   '"evidence":["SSE needs flush"],"body":"1. check headers\n2. flush"}')
     findings = [{"type": "finding", "headline": "SSE needs flush"},
                 {"type": "decision", "headline": "use text/event-stream"}]
     r = distill_session(pilot, "fix sse", findings, s)
@@ -111,7 +112,8 @@ def test_distill_dedup(tmp_path):
     s = SkillStore(root=str(tmp_path))
     s.save(Skill(name="Trace SSE streaming bug", description="when SSE hangs in browser", body="steps", state="active"))
     pilot = _Pilot([
-        '{"name":"Trace SSE bug","description":"when SSE hangs","body":"steps"}',
+        '{"name":"Trace SSE bug","description":"when SSE hangs","cue":"SSE hangs",'
+        '"evidence":["finding a"],"body":"steps"}',
         '{"verdict":"duplicate","slug":"trace-sse-streaming-bug"}'
     ])
     findings = [{"type": "finding", "headline": "a"}, {"type": "finding", "headline": "b"}]

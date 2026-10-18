@@ -8,15 +8,16 @@ Design discipline (stated in the roadmap): auto-generated skills that are wrong
 are WORSE than none. So:
   - candidates are always PENDING (never auto-active);
   - a dedup guard skips proposing when a near-duplicate skill already exists;
-  - distillation only fires when there's real signal (>= MIN_FINDINGS).
+  - distillation only fires when there's real signal (>= MIN_FINDINGS);
+  - a candidate must name its cue and cite evidence found in the run input.
 
-The distiller asks a model for a tight {name, description, body} envelope. Body
-is a numbered, reusable procedure -- not a transcript dump.
+The distiller asks a model for a tight {name, description, cue, evidence, body}
+envelope. Body is a numbered, reusable procedure -- not a transcript dump.
 """
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .skill_store import SkillStore, Skill, _slug
@@ -29,10 +30,20 @@ DISTILL_SYSTEM = (
     "future agent can follow for similar tasks. Output ONE JSON object only, no "
     "prose around it:\n"
     '{"name": "<short imperative title>", "description": "<one line: when to use '
-    'this>", "body": "<numbered, concrete steps; include exact commands/paths/'
-    'pitfalls discovered; no narrative, no transcript>"}\n'
+    'this>", "cue": "<one line: the situation that must trigger this skill>", '
+    '"evidence": ["<short concrete fact copied from the findings or decisions '
+    'above: a path, command, error text or finding id>"], "body": "<numbered, '
+    'concrete steps; include exact commands/paths/pitfalls discovered; no '
+    'narrative, no transcript>"}\n'
+    "Every evidence item must come from the findings or decisions given. "
     "If there is no durable, reusable lesson here, output {\"name\": \"\"} to skip."
 )
+
+# A candidate that cites nothing from the run is a guess. Cap the list so a
+# model cannot flood the frontmatter.
+MAX_EVIDENCE = 8
+MAX_EVIDENCE_CHARS = 200
+GROUNDED_TOKEN_SHARE = 0.6
 
 
 @dataclass
@@ -40,10 +51,50 @@ class Candidate:
     name: str
     description: str
     body: str
+    cue: str = ""
+    evidence: List[str] = field(default_factory=list)
 
 
 def _tokens(text: str) -> set:
     return set(re.findall(r"[a-z0-9]{3,}", (text or "").lower()))
+
+
+def _normalize(text: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9_./:-]+", (text or "").lower()))
+
+
+def _coerce_evidence(raw) -> List[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())[:MAX_EVIDENCE_CHARS]
+        if text:
+            out.append(text)
+    return out[:MAX_EVIDENCE]
+
+
+def _is_grounded(item: str, source: str, source_tokens: set) -> bool:
+    """True when an evidence item appears in the run input: as a normalized
+    substring, or when most of its words appear there."""
+    norm = _normalize(item)
+    # A very short string matches almost any text by chance.
+    if len(norm) >= 4 and norm in source:
+        return True
+    toks = _tokens(item)
+    if len(toks) < 2:
+        return False
+    return len(toks & source_tokens) / len(toks) >= GROUNDED_TOKEN_SHARE
+
+
+def _grounded_evidence(evidence: List[str], digest: str) -> List[str]:
+    source = _normalize(digest)
+    source_tokens = _tokens(digest)
+    return [e for e in evidence if _is_grounded(e, source, source_tokens)]
 
 
 PREFILTER_FLOOR = 0.25
@@ -198,6 +249,8 @@ def _parse_envelope(text: str) -> Optional[Candidate]:
         name=name,
         description=(obj.get("description") or "").strip(),
         body=(obj.get("body") or "").strip(),
+        cue=" ".join(str(obj.get("cue") or "").split()),
+        evidence=_coerce_evidence(obj.get("evidence")),
     )
 
 
@@ -245,13 +298,26 @@ def distill_session(pilot, objective: str, findings: List[dict],
     cand = _parse_envelope(getattr(resp, "text", "") or "")
     if not cand:
         return {"status": "skipped", "reason": "no reusable lesson"}
+    if not cand.cue:
+        return {"status": "skipped", "reason": "no cue"}
+    if not cand.evidence:
+        return {"status": "skipped", "reason": "no evidence"}
+    # Keep only the items the run input supports, so the approval surface
+    # shows real facts and not model guesses.
+    cand.evidence = _grounded_evidence(cand.evidence, digest)
+    if not cand.evidence:
+        return {"status": "skipped", "reason": "evidence not grounded in findings"}
+
+    def _propose_new() -> dict:
+        skill = Skill(name=cand.name, description=cand.description, body=cand.body,
+                      state="pending", source=source, cue=cand.cue,
+                      evidence=list(cand.evidence), **_provenance_fields())
+        store.save(skill)
+        return {"status": "proposed", "slug": skill.slug, "name": skill.name}
 
     shortlist = _build_shortlist(cand, store)
     if not shortlist:
-        skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                      state="pending", source=source, **_provenance_fields())
-        store.save(skill)
-        return {"status": "proposed", "slug": skill.slug, "name": skill.name}
+        return _propose_new()
 
     classification = _classify_candidate(pilot, cand, shortlist)
     verdict = classification.get("verdict", "new")
@@ -293,7 +359,9 @@ def distill_session(pilot, objective: str, findings: List[dict],
                     new_body=merged_body,
                     new_name=merged_name,
                     new_description=merged_desc,
-                    source=source
+                    source=source,
+                    cue=cand.cue,
+                    evidence=cand.evidence,
                 )
                 return {
                     "status": "patch_proposed",
@@ -304,16 +372,10 @@ def distill_session(pilot, objective: str, findings: List[dict],
             else:
                 return {"status": "duplicate", "slug": slug}
         else:
-            skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                          state="pending", source=source, **_provenance_fields())
-            store.save(skill)
-            return {"status": "proposed", "slug": skill.slug, "name": skill.name}
+            return _propose_new()
 
     else:
-        skill = Skill(name=cand.name, description=cand.description, body=cand.body,
-                      state="pending", source=source, **_provenance_fields())
-        store.save(skill)
-        return {"status": "proposed", "slug": skill.slug, "name": skill.name}
+        return _propose_new()
 
 
 # ---- Rules distillation -----------------------------------------------------

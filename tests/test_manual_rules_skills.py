@@ -168,7 +168,8 @@ class _Pilot:
 
 def test_distiller_pending_approve_active_roundtrip(tmp_path):
     store = SkillStore(root=str(tmp_path))
-    pilot = _Pilot('{"name":"Trace SSE bug","description":"when SSE hangs","body":"1. flush"}')
+    pilot = _Pilot('{"name":"Trace SSE bug","description":"when SSE hangs","cue":"SSE stream hangs",'
+                   '"evidence":["use text/event-stream"],"body":"1. flush"}')
     findings = [
         {"type": "finding", "headline": "SSE needs flush"},
         {"type": "decision", "headline": "use text/event-stream"},

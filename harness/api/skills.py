@@ -358,6 +358,8 @@ def get_skills(svc: SkillsServices) -> tuple[int, JsonPayload]:
             "admit_sessions": getattr(sk, "admit_sessions", ""),
             "provenance_session": getattr(sk, "provenance_session", ""),
             "provenance_job": getattr(sk, "provenance_job", ""),
+            "cue": getattr(sk, "cue", ""),
+            "evidence": list(getattr(sk, "evidence", []) or []),
         }
         for sk in svc.skills.list()
     ])

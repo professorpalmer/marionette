@@ -145,6 +145,14 @@ def test_stream_idle_stuck_offers_continue():
     assert "continue" in out.lower()
 
 
+def test_stream_repetition_offers_retry():
+    from harness.send_loop_phases import STREAM_REPETITION_MESSAGE
+
+    out = _s()._humanize_pilot_error(STREAM_REPETITION_MESSAGE)
+    assert "repeat" in out.lower()
+    assert "retry" in out.lower()
+
+
 def test_empty_error_has_message():
     s = _s()
     out = s._humanize_pilot_error("")

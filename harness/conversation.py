@@ -898,6 +898,8 @@ class ConversationalSession(
         self._tools_schema_activated: Optional[frozenset] = None
         self._checkpoints = CheckpointStore(config.repo)
         self._session_actions = SessionActionStore()
+        # tool_call_id -> started, for this turn only. Picks the stub wording.
+        self._tool_call_starts: dict = {}
         self._steer_queue = SteerQueueView(self._session_actions)
         self._loop_state = SessionLoop()
         self._steer_lock = threading.Lock()
@@ -2541,6 +2543,16 @@ class ConversationalSession(
             discovery_enabled,
         )
 
+        # This runs before each provider call, so it is the step boundary.
+        # A server that announced tools/list_changed gets one new list here.
+        mcp = getattr(self, "_mcp", None)
+        if mcp is not None:
+            try:
+                if mcp.refresh_changed_tools():
+                    self._invalidate_tools_schema()
+            except Exception as exc:
+                from .diag import note as _diag_note
+                _diag_note("mcp.list_changed_refresh", exc)
         enabled = discovery_enabled()
         delegation_available = self._worker_delegation_available()
         try:
@@ -3336,16 +3348,63 @@ class ConversationalSession(
         )
 
     @staticmethod
-    def _interruption_stub(tool_call_id: str, reason: str = "") -> dict:
+    def _interruption_stub(
+        tool_call_id: str, reason: str = "", started: Optional[bool] = None,
+    ) -> dict:
+        """Placeholder result for a tool call that got no answer.
+
+        ``started`` tells the model if a rerun is safe. False: the call never
+        ran. True: it ran and its result was lost, so side effects may exist.
+        None: no start record (old session, restart), so keep the plain text.
+        Every form starts with "(no result:" so a real result can replace it.
+        """
         why = reason or (
             "no recorded cause; the harness restarted or the turn was lost "
             "before the action returned"
         )
+        if started is False:
+            content = (
+                f"(no result: interrupted, not started — {why}. The tool did not run. "
+                "It is safe to call it again if it is still needed.)"
+            )
+        elif started is True:
+            content = (
+                f"(no result: interrupted, outcome unknown — {why}. The tool started but "
+                "its result was lost. Side effects may have happened. Check "
+                "the current state before you call it again.)"
+            )
+        else:
+            content = f"(no result: interrupted — {why})"
         return {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": f"(no result: interrupted — {why})",
+            "content": content,
         }
+
+    def _note_tool_calls_issued(self, tool_call_ids) -> None:
+        """Record this turn's tool calls as not started yet.
+
+        Only the current turn is kept. Earlier turns are already paired, and
+        providers can reuse ids across turns.
+        """
+        self._tool_call_starts = {
+            str(t).strip(): False for t in tool_call_ids or () if str(t or "").strip()
+        }
+
+    def _note_tool_call_started(self, tool_call_id) -> None:
+        tcid = str(tool_call_id or "").strip()
+        if not tcid:
+            return
+        starts = getattr(self, "_tool_call_starts", None)
+        if not isinstance(starts, dict):
+            starts = self._tool_call_starts = {}
+        starts[tcid] = True
+
+    def _tool_call_start_state(self, tool_call_id) -> Optional[bool]:
+        starts = getattr(self, "_tool_call_starts", None)
+        if not isinstance(starts, dict):
+            return None
+        return starts.get(str(tool_call_id or "").strip())
 
     def _replace_stub_tool_result(self, tool_call_id: str, msg: dict) -> bool:
         """Replace an interruption stub for ``tool_call_id`` with ``msg``.
@@ -3457,7 +3516,9 @@ class ConversationalSession(
                 for tc in m.get("tool_calls") or []:
                     tcid = tc.get("id")
                     if tcid and tcid not in run_ids:
-                        out.append(self._interruption_stub(tcid, reason))
+                        out.append(self._interruption_stub(
+                            tcid, reason, self._tool_call_start_state(tcid),
+                        ))
                         run_ids.add(tcid)
                 i = j
                 continue
@@ -3791,11 +3852,20 @@ class ConversationalSession(
         model = getattr(self, "config", None) and getattr(self.config, "driver", "") or ""
         # Bound + redacted: never echo raw provider JSON / token-ish fragments.
         tail = f" [provider said: {s[:160]}]"
-        from harness.send_loop_phases import STREAM_IDLE_STUCK_MESSAGE
+        from harness.send_loop_phases import (
+            STREAM_IDLE_STUCK_MESSAGE,
+            STREAM_REPETITION_MESSAGE,
+        )
         if STREAM_IDLE_STUCK_MESSAGE.lower() in low:
             return (
                 "pilot: the provider stream went silent. Press Continue to "
                 "pick up from tools already run, or Retry."
+            )
+        if STREAM_REPETITION_MESSAGE.lower() in low:
+            return (
+                "pilot: the model started to repeat itself, so the reply was "
+                "cut and not kept. Press Retry, or Continue from tools "
+                "already run."
             )
 
         # Pull an HTTP status out of the string when present ("HTTP 429: ...").

@@ -42,6 +42,11 @@ EXHAUSTED_TTL_401 = 5 * 60
 EXHAUSTED_TTL_429 = 60 * 60
 EXHAUSTED_TTL_DEFAULT = 60 * 60
 
+# A plain 429 is often a limit on one model, not on the key. The key then
+# cools only for that model: Retry-After when given, else this default.
+MODEL_COOLDOWN_429 = 60
+MODEL_COOLDOWNS = "model_cooldowns"
+
 # Providers that can hold OAuth (browser / device-code) entries.
 OAUTH_CAPABLE = frozenset({
     "anthropic",
@@ -165,6 +170,16 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     return EXHAUSTED_TTL_DEFAULT
 
 
+def _model_cooling(entry: PooledCredential, model: Optional[str], now: float) -> bool:
+    if not model:
+        return False
+    until = (entry.extra.get(MODEL_COOLDOWNS) or {}).get(model)
+    try:
+        return float(until) > now
+    except (TypeError, ValueError):
+        return False
+
+
 def is_plan_limit_message(message: str) -> bool:
     m = (message or "").lower()
     return any(s in m for s in _PLAN_LIMIT_MARKERS)
@@ -211,11 +226,13 @@ class CredentialPool:
             return True
         return False
 
-    def select(self) -> Optional[PooledCredential]:
+    def select(self, model: Optional[str] = None) -> Optional[PooledCredential]:
         with _lock:
             now = time.time()
             healthy = [
-                e for e in self._entries if e.runtime_token and self._healthy(e, now)
+                e for e in self._entries
+                if e.runtime_token and self._healthy(e, now)
+                and not _model_cooling(e, model, now)
             ]
             if not healthy:
                 return None
@@ -254,6 +271,29 @@ class CredentialPool:
                     break
             _persist_all()
             return self.select()
+
+    def mark_model_cooldown_and_rotate(
+        self,
+        entry_id: str,
+        model: str,
+        *,
+        seconds: float,
+    ) -> Optional[PooledCredential]:
+        """Cool ``entry_id`` for ``model`` only and return the next entry for it."""
+        with _lock:
+            now = time.time()
+            until = now + seconds
+            for e in self._entries:
+                if e.id == entry_id:
+                    cooling = {
+                        m: u for m, u in (e.extra.get(MODEL_COOLDOWNS) or {}).items()
+                        if _model_cooling(e, m, now)
+                    }
+                    cooling[model] = max(until, float(cooling.get(model) or 0))
+                    e.extra = {**e.extra, MODEL_COOLDOWNS: cooling}
+                    break
+            _persist_all()
+            return self.select(model)
 
     def reset_cooldowns(self) -> None:
         with _lock:
@@ -550,9 +590,9 @@ def _expires_soon(entry: PooledCredential) -> bool:
             and expires - int(time.time() * 1000) < _OAUTH_REFRESH_MARGIN_MS)
 
 
-def resolve_entry(provider: str) -> Optional[PooledCredential]:
+def resolve_entry(provider: str, model: Optional[str] = None) -> Optional[PooledCredential]:
     with _lock:
-        entry = load_pool(provider).select()
+        entry = load_pool(provider).select(model)
         if entry is not None and entry.auth_type == AUTH_TYPE_OAUTH and _expires_soon(entry):
             refresh_oauth_entry(entry)
         return entry
@@ -564,8 +604,13 @@ def report_failure(
     *,
     status_code: Optional[int] = None,
     message: str = "",
+    model: Optional[str] = None,
+    retry_after: Optional[float] = None,
 ) -> Optional[str]:
     """Mark failure and return next token if any.
+
+    A 429 that is not a plan limit cools the entry for ``model`` only, so
+    the key keeps serving other models.
 
     Upstream-vendor blocks (e.g. OpenCode Go 401 AuthError "Request blocked by
     upstream provider") leave the credential healthy — the local key is fine.
@@ -587,6 +632,14 @@ def report_failure(
         immediate = True
     if status_code == 429 and is_plan_limit_message(message):
         immediate = True
+    elif status_code == 429 and model:
+        seconds = MODEL_COOLDOWN_429 if retry_after is None else retry_after
+        seconds = min(max(float(seconds), 1.0), float(EXHAUSTED_TTL_429))
+        with _lock:
+            nxt = load_pool(provider).mark_model_cooldown_and_rotate(
+                entry_id, model, seconds=seconds,
+            )
+            return nxt.runtime_token if nxt else None
     with _lock:
         pool = load_pool(provider)
         nxt = pool.mark_exhausted_and_rotate(
@@ -750,10 +803,12 @@ def peek_token_for_env(env_name: str) -> Optional[str]:
     return None
 
 
-def resolve_entry_for_env(env_name: str) -> Optional[PooledCredential]:
+def resolve_entry_for_env(
+    env_name: str, model: Optional[str] = None,
+) -> Optional[PooledCredential]:
     """Select a healthy pool entry for a driver env (tries OAuth aliases)."""
     for prov in providers_for_env_var(env_name):
-        entry = resolve_entry(prov)
+        entry = resolve_entry(prov, model)
         if entry is not None and entry.runtime_token:
             return entry
     return None

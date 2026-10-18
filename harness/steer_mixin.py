@@ -317,6 +317,17 @@ class SteerMixin:
                     receipts.transition(action.id, 'delivering')
             return store.drain_ready(policy, kinds=kinds)
 
+    def has_pending_steer(self) -> bool:
+        """True when a user steer waits for the next boundary. Does not consume it.
+
+        Worker mail is not a user steer: it keeps the wait running.
+        """
+        with self._steer_lock:
+            return any(
+                a.kind is ActionKind.STEER and a.delivery is DeliveryPolicy.NEXT_TURN_BOUNDARY
+                for a in self._action_store()
+            )
+
     def _drain_steer_actions(self) -> List[SessionAction]:
         return self._drain_ready_input_actions(DeliveryPolicy.NEXT_TURN_BOUNDARY, injectable_kinds())
 

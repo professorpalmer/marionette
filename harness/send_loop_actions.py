@@ -153,6 +153,13 @@ def execute_turn_actions(
     if session_pending_swarm_active(session):
         guard_state.explicit_swarm = True
     session._turn_guard_state = guard_state
+    _note_issued = getattr(session, "_note_tool_calls_issued", None)
+    _note_started = getattr(session, "_note_tool_call_started", None)
+    if not callable(_note_started):
+        _note_started = None
+    if callable(_note_issued):
+        # A stub for a call that never ran can say a rerun is safe.
+        _note_issued(getattr(a, "tool_call_id", None) for a in turn.actions)
     guard_suppressed: dict[int, Any] = {}
     guard_recorded_indices: set[int] = set()
     prefetch = {}
@@ -186,6 +193,10 @@ def execute_turn_actions(
             prefetch_targets.append((idx, act))
 
     if len(prefetch_targets) >= 2 and not session._cancel.is_set():
+        if _note_started is not None:
+            # Prefetch runs these reads now, before the dispatch loop.
+            for _idx, _act in prefetch_targets:
+                _note_started(getattr(_act, "tool_call_id", None))
         prefetch = run_parallel_prefetch(session, prefetch_targets)
 
     # Advisor pass (round 6, opt-in): one read-only review of this
@@ -258,6 +269,10 @@ def execute_turn_actions(
         # turns, and call_id carries the provider's id separately.
         _tcid = str(getattr(act, "tool_call_id", None) or "").strip()
         aid = _session_action_id(session, _tcid or f"a{action_seq}")
+        if _note_started is not None:
+            # From here the call can have side effects. A lost result must
+            # tell the model to check state before a rerun.
+            _note_started(_tcid)
         # Malformed/truncated tool call: do NOT silently drop it. Surface the error
         # back to the model so it re-issues the call with all required arguments, and
         # count it as activity so the autonomous loop does not mistake it for "done".
@@ -293,6 +308,8 @@ def execute_turn_actions(
                 if translated_tcid and translated_tcid != _tcid:
                     _tcid = translated_tcid
                     aid = _session_action_id(session, _tcid)
+                    if _note_started is not None:
+                        _note_started(_tcid)
         act_goal = action_display_goal(act)
 
         # run_implement / run_parallel emit their own action_start after

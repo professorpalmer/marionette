@@ -1215,7 +1215,7 @@ class CodexResponsesDriver(CacheRefreshDriver):
         try:
             from harness.credential_pool import provider_for_env_var, resolve_entry
             prov = provider_for_env_var(self.api_key_env) or "openai-codex"
-            entry = resolve_entry(prov)
+            entry = resolve_entry(prov, self.model)
             if entry is not None and entry.runtime_token:
                 self._pool_provider = prov
                 self._pool_entry_id = entry.id
@@ -1238,11 +1238,14 @@ class CodexResponsesDriver(CacheRefreshDriver):
             return None
         try:
             from harness.credential_pool import report_failure
+            from .error_classifier import parse_retry_after
             nxt = report_failure(
                 self._pool_provider,
                 self._pool_entry_id,
                 status_code=code,
                 message=detail or "",
+                model=self.model,
+                retry_after=parse_retry_after(detail) if code == 429 else None,
             )
             if nxt:
                 self._key()
