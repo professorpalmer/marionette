@@ -38,6 +38,24 @@ from .metering import metered
 
 _SUCCESS_CHAT_FINISH = frozenset({"stop", "stop_sequence", "end_turn"})
 _TOOL_CHAT_FINISH = frozenset({"tool_calls", "function_call"})
+
+# llama-server sends one progress chunk per prompt batch while it reads a long
+# prompt and emits no tokens. The drain needs a sign of life well inside its
+# 9 s idle notice, and the UI needs no more than one status line per 2 s.
+PROMPT_PROGRESS_NOTICE_SEC = 2.0
+
+
+def prompt_progress_notice(progress: dict) -> str | None:
+    """Status text for one llama-server ``prompt_progress`` payload."""
+    try:
+        total = int(progress.get("total") or 0)
+        done = int(progress.get("processed") or 0)
+    except (TypeError, ValueError):
+        return None
+    if total <= 0:
+        return None
+    done = max(0, min(done, total))
+    return "Reading prompt: %d of %d tokens (%d%%)" % (done, total, done * 100 // total)
 _LENGTH_CHAT_FINISH = frozenset({"length", "max_tokens", "max_output_tokens"})
 _FILTER_CHAT_FINISH = frozenset({"content_filter"})
 _INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty", "error"})
@@ -257,11 +275,13 @@ class _OpenAIChatSseAccumulator:
         on_delta=None,
         on_reasoning_delta=None,
         on_tool_hint=None,
+        on_prompt_progress=None,
         end_on_finish: bool = False,
     ) -> None:
         self.on_delta = on_delta
         self.on_reasoning_delta = on_reasoning_delta
         self.on_tool_hint = on_tool_hint
+        self.on_prompt_progress = on_prompt_progress
         # llama.cpp may send finish_reason then keepalives without [DONE].
         self.end_on_finish = bool(end_on_finish)
         self.full_text = ""
@@ -317,6 +337,12 @@ class _OpenAIChatSseAccumulator:
         chunk_served = OpenAICompatDriver._served_model_from_payload(chunk)
         if chunk_served:
             self.served_model = chunk_served
+
+        # Prompt reading is not stream output: stream_started stays False, so
+        # a failure before the first token can still retry.
+        progress = chunk.get("prompt_progress")
+        if isinstance(progress, dict) and self.on_prompt_progress is not None:
+            self.on_prompt_progress(progress)
 
         chunk_usage = chunk.get("usage")
         if chunk_usage:
@@ -1394,6 +1420,8 @@ class OpenAICompatDriver:
             body['stream_options'] = {'include_usage': True}
         elif stream:
             body['stream'] = True
+        if stream and self._is_llama_cpp_host():
+            body['return_progress'] = True
         self._apply_temperature(body)
         if self.enable_reasoning and not (
             tools and self._uses_openai_gpt5_chat_parameters()
@@ -1632,8 +1660,21 @@ class OpenAICompatDriver:
         on_reasoning_delta: Callable[[str], None] | None = None,
         on_tool_hint: Callable[[str], None] | None = None,
         is_cancelled: Callable[[], bool] | None = None,
+        on_wait_notice: Callable[[str], None] | None = None,
     ) -> DriverResponse:
         url = f"{self.base_url}/chat/completions"
+        last_progress_notice: list = [None]
+
+        def _on_prompt_progress(progress: dict) -> None:
+            now = time.monotonic()
+            last = last_progress_notice[0]
+            if last is not None and now - last < PROMPT_PROGRESS_NOTICE_SEC:
+                return
+            notice = prompt_progress_notice(progress)
+            if notice and on_wait_notice is not None:
+                last_progress_notice[0] = now
+                on_wait_notice(notice)
+
         body: dict = {}
         data = b""
         stream_request_attempts = 0
@@ -1712,6 +1753,7 @@ class OpenAICompatDriver:
                 on_delta=on_delta,
                 on_reasoning_delta=on_reasoning_delta,
                 on_tool_hint=on_tool_hint,
+                on_prompt_progress=_on_prompt_progress if on_wait_notice is not None else None,
                 end_on_finish=self._is_llama_cpp_host(),
             )
 
