@@ -772,7 +772,7 @@ class OpenAICompatDriver:
         self._pool_entry_id = None
         try:
             from harness.credential_pool import resolve_entry_for_env
-            entry = resolve_entry_for_env(self.api_key_env)
+            entry = resolve_entry_for_env(self.api_key_env, self.model)
             if entry is not None and entry.runtime_token:
                 self._pool_provider = entry.provider
                 self._pool_entry_id = entry.id
@@ -1035,16 +1035,25 @@ class OpenAICompatDriver:
             return None
         try:
             from harness.credential_pool import report_failure
+            from .error_classifier import parse_retry_after
+            failed = self._pool_entry_id
             nxt = report_failure(
                 self._pool_provider,
-                self._pool_entry_id,
+                failed,
                 status_code=code,
                 message=detail or "",
+                model=self.model,
+                retry_after=parse_retry_after(detail) if code == 429 else None,
             )
             if nxt:
-                self._pool_rotate_backoff(code, detail, sleep=sleep)
                 # Re-select so _pool_entry_id tracks the new entry
                 self._key()
+                if self._pool_entry_id != failed:
+                    # Retry-After belongs to the failed key. Waiting it out
+                    # also lets a model cooldown of the same length expire.
+                    sleep(0.25)
+                else:
+                    self._pool_rotate_backoff(code, detail, sleep=sleep)
                 return nxt
         except Exception:
             pass

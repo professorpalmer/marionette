@@ -233,7 +233,7 @@ class AnthropicDriver(CacheRefreshDriver):
         self._pool_entry_id = None
         try:
             from harness.credential_pool import resolve_entry_for_env
-            entry = resolve_entry_for_env(self.api_key_env)
+            entry = resolve_entry_for_env(self.api_key_env, self.model)
             if entry is not None and entry.runtime_token:
                 self._pool_provider = entry.provider
                 self._pool_entry_id = entry.id
@@ -281,11 +281,14 @@ class AnthropicDriver(CacheRefreshDriver):
             return False
         try:
             from harness.credential_pool import report_failure
+            from .error_classifier import parse_retry_after
             nxt = report_failure(
                 self._pool_provider,
                 self._pool_entry_id,
                 status_code=code,
                 message=detail or "",
+                model=self.model,
+                retry_after=parse_retry_after(detail) if code == 429 else None,
             )
             if nxt:
                 self._key()
