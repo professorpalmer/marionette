@@ -40,6 +40,17 @@ def _cancel_requested(session: Any) -> bool:
         return False
 
 
+def _steer_requested(session: Any) -> bool:
+    # A queued user steer must not sit behind a long wait.
+    probe = getattr(session, "has_pending_steer", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe())
+    except Exception:
+        return False
+
+
 def _target_command_wait_state(session: Any, job_id: str) -> str:
     """Return pending, settled, unavailable, or empty for a non-command id."""
     job_id = str(job_id or "").strip()
@@ -197,6 +208,17 @@ def dispatch_wait_action(
                 "id": aid, "error": body,
             })
             session._append_action_result(act, aid, body, is_native, ok=False)
+            return
+        if _steer_requested(session):
+            # Leave the steer queued. The send loop injects it at the next boundary.
+            body = (
+                "(wait ended early) A new user message arrived. "
+                "Read it and respond before you wait again."
+            )
+            yield ConvEvent("action_result", {
+                "id": aid, "status": "ok", "message": body, "settled": False,
+            })
+            session._append_action_result(act, aid, body, is_native, ok=True)
             return
         for ev in apply_ready_swarm_results(session):
             yield ev
