@@ -36,6 +36,7 @@ from .terminal_empty_recovery import reset_terminal_empty_recovery
 from .tool_capabilities import plan_mode_blocks
 from .local_job_metadata import local_swarm_id
 from .log_reconstruction import check_outbound_reconstruction
+from .repetition_guard import RepetitionWatch
 from .request_snapshot import FrozenRequest
 from .pilot import PilotAction, StreamingSayExtractor
 from .pilot_guards import (
@@ -104,6 +105,19 @@ STREAM_IDLE_ESCALATE_MESSAGE = "Provider still idle after 1m — stream has not 
 STREAM_IDLE_STUCK_MESSAGE = (
     "Provider still idle after 5m — stream is stuck"
 )
+
+
+STREAM_REPETITION_MESSAGE = (
+    "Provider output turned into a repetition loop — stream cut"
+)
+
+
+class StreamRepetitionError(RuntimeError):
+    """Raised when a streamed answer or reasoning block loops on itself.
+
+    ``run_stream`` stops the provider call and drops the looped text, so it
+    does not enter history and start the loop again on the next turn.
+    """
 
 
 class StreamIdleStuckError(RuntimeError):
@@ -942,9 +956,23 @@ def run_stream(
                 pass
 
         visible_parts = []
+        watches: dict = {}
+        looped: list = []
+
+        def _loops(channel: str, text: str) -> bool:
+            if looped:
+                return True
+            watch = watches.setdefault(channel, RepetitionWatch())
+            if watch.feed(text):
+                looped.append(channel)
+                q.put(("error", StreamRepetitionError(STREAM_REPETITION_MESSAGE)))
+                return True
+            return False
 
         def _on_delta(delta: Any) -> None:
-            text, _ = normalize_delta_payload(delta)
+            text, meta = normalize_delta_payload(delta)
+            if _loops(str(meta.get("channel") or "answer"), text):
+                return
             visible_parts.append(text)
             if acc is not None:
                 try:
@@ -954,6 +982,8 @@ def run_stream(
             q.put(("delta", delta))
 
         def _on_reasoning(delta: Any) -> None:
+            if _loops("reasoning", normalize_delta_payload(delta)[0]):
+                return
             if acc is not None:
                 try:
                     acc.note("reasoning", delta)
@@ -976,8 +1006,9 @@ def run_stream(
             params = {}
         if "is_cancelled" in params:
             cancel = getattr(session, "_cancel", None)
-            if cancel is not None:
-                kwargs["is_cancelled"] = cancel.is_set
+            kwargs["is_cancelled"] = (
+                lambda: bool(looped) or (cancel is not None and cancel.is_set())
+            )
         if "on_wait_notice" in params:
             kwargs["on_wait_notice"] = (
                 lambda msg: q.put(("wait", msg))
@@ -1007,11 +1038,14 @@ def run_stream(
         finally:
             receipt.update(request.wire_receipt())
             session._last_log_reconstruction = dict(receipt)
+        if looped:
+            return
         _attach_request_receipt(r, receipt)
         _finish_and_attach_timing(acc, r)
         q.put(("done", r))
     except Exception as ex:
-        q.put(("error", ex))
+        if not looped:
+            q.put(("error", ex))
 
 
 SYNC_COMPLETE_WIRE_MODE = "sync_complete"

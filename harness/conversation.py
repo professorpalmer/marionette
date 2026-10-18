@@ -3852,11 +3852,20 @@ class ConversationalSession(
         model = getattr(self, "config", None) and getattr(self.config, "driver", "") or ""
         # Bound + redacted: never echo raw provider JSON / token-ish fragments.
         tail = f" [provider said: {s[:160]}]"
-        from harness.send_loop_phases import STREAM_IDLE_STUCK_MESSAGE
+        from harness.send_loop_phases import (
+            STREAM_IDLE_STUCK_MESSAGE,
+            STREAM_REPETITION_MESSAGE,
+        )
         if STREAM_IDLE_STUCK_MESSAGE.lower() in low:
             return (
                 "pilot: the provider stream went silent. Press Continue to "
                 "pick up from tools already run, or Retry."
+            )
+        if STREAM_REPETITION_MESSAGE.lower() in low:
+            return (
+                "pilot: the model started to repeat itself, so the reply was "
+                "cut and not kept. Press Retry, or Continue from tools "
+                "already run."
             )
 
         # Pull an HTTP status out of the string when present ("HTTP 429: ...").
