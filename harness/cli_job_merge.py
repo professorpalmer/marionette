@@ -271,6 +271,8 @@ def merge_running_cli_jobs_all_projects(
     listed. This helper is the bounded open/scan only — unstamped CLI and
     foreign harness jobs must not appear on Marionette surfaces.
 
+    ``seen_ids`` holds ``(state_id, job_id)`` pairs (``_store_job``).
+
     Tasks used for ownership/session stamps are loaded from the same open
     store that listed the row. Callers pass ``tasks_by_job`` to collect them;
     they stay off the live row.
@@ -328,10 +330,10 @@ def merge_running_cli_jobs_all_projects(
             row["cli_state_dir"] = state_dir
             row["cross_project"] = True
             key = job_read_key(row, store)
-            if key in seen_ids:
+            if _store_job(key) in seen_ids:
                 continue
             collected.append(row)
-            seen_ids.add(key)
+            seen_ids.add(_store_job(key))
         if tasks_by_job is not None and store is not None and collected:
             jids = [str(row.get("id") or "") for row in collected if row.get("id")]
             try:
@@ -390,7 +392,7 @@ def merge_scoped_cli_jobs(
         row.setdefault("source", "harness")
         merged.append(row)
 
-    seen_ids = {job_read_key(j, harness_store) for j in merged}
+    seen_ids = {_store_job(job_read_key(j, harness_store)) for j in merged}
     primary_state_dir = resolve_cli_state_dir(workspace_root) or ""
     cli_state = open_cli_durable_state(workspace_root)
     primary_store = None
@@ -417,10 +419,10 @@ def merge_scoped_cli_jobs(
                 if primary_state_dir:
                     row["cli_state_dir"] = primary_state_dir
                 key = job_read_key(row, cli_state.store)
-                if key in seen_ids:
+                if _store_job(key) in seen_ids:
                     continue
                 merged.append(row)
-                seen_ids.add(key)
+                seen_ids.add(_store_job(key))
                 cli_tasks_by_job[key] = primary_tasks.get(jid, [])
             primary_store = cli_state.store
         except Exception as exc:
@@ -462,6 +464,14 @@ def merge_scoped_cli_jobs(
             _log_merge_failure("cli_job_merge.merge_running_all", exc)
 
     return merged, primary_store, cli_tasks_by_job
+
+
+def _store_job(key: tuple) -> tuple:
+    """Dedup identity: one store and one job id, whichever source read it.
+
+    The harness store and the workspace CLI store can be one directory.
+    """
+    return (key[0], key[2])
 
 
 def job_read_key(job: dict, store=None) -> tuple:
