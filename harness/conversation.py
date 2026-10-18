@@ -2543,6 +2543,16 @@ class ConversationalSession(
             discovery_enabled,
         )
 
+        # This runs before each provider call, so it is the step boundary.
+        # A server that announced tools/list_changed gets one new list here.
+        mcp = getattr(self, "_mcp", None)
+        if mcp is not None:
+            try:
+                if mcp.refresh_changed_tools():
+                    self._invalidate_tools_schema()
+            except Exception as exc:
+                from .diag import note as _diag_note
+                _diag_note("mcp.list_changed_refresh", exc)
         enabled = discovery_enabled()
         delegation_available = self._worker_delegation_available()
         try:

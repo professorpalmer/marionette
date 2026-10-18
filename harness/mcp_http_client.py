@@ -28,6 +28,7 @@ from .mcp_client import (
     PROTOCOL_VERSION,
     CLIENT_INFO,
     MCP_MAX_RESPONSE_BYTES,
+    ToolsRevision,
 )
 # Reuse web_tools' mutable pin holder so 3xx hops update the shared IP the
 # transport handlers read (same DNS-rebinding / cross-host redirect fix).
@@ -237,6 +238,7 @@ class HttpMcpClient:
         self._session_id: Optional[str] = None
         self._initialized = False
         self._server_info: dict = {}
+        self.tools_revision = ToolsRevision()
         # Shared mutable pin so SafeRedirectHandler can update the IP on 3xx.
         self._pin = _PinnedIP(self._pinned_ip)
         # Always install SafeRedirectHandler so 3xx targets are re-validated,
@@ -375,6 +377,10 @@ class HttpMcpClient:
         if not raw.strip():
             return None  # notification -> empty 202
         if "text/event-stream" in ctype:
+            # Streamable HTTP sends server notifications as SSE frames before
+            # the response frame. This is the only place we see them.
+            for obj in _sse_json_objects(raw):
+                self.tools_revision.note(obj)
             return _sse_rpc_message(raw)
         try:
             return json.loads(raw)

@@ -88,6 +88,36 @@ class McpTool:
         return f"{self.server}.{self.name}"
 
 
+TOOLS_LIST_CHANGED = "notifications/tools/list_changed"
+
+
+class ToolsRevision:
+    """Counts tools/list_changed notifications from one server.
+
+    The reader thread bumps it. The manager compares it at a step boundary,
+    so many notifications collapse into one tools/list call.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._value = 0
+
+    @property
+    def value(self) -> int:
+        with self._lock:
+            return self._value
+
+    def note(self, msg: object) -> None:
+        """Bump on a list_changed notification. Other messages do nothing."""
+        if (
+            isinstance(msg, dict)
+            and msg.get("id") is None
+            and msg.get("method") == TOOLS_LIST_CHANGED
+        ):
+            with self._lock:
+                self._value += 1
+
+
 class McpError(RuntimeError):
     pass
 
@@ -117,6 +147,7 @@ class StdioMcpClient:
         self._reader_thread: Optional[threading.Thread] = None
         self._reader_error: Optional[BaseException] = None
         self._supervised_pgid: Optional[int] = None
+        self.tools_revision = ToolsRevision()
 
     # ---- lifecycle ----------------------------------------------------------
     def start(self) -> None:
@@ -326,9 +357,12 @@ class StdioMcpClient:
                 except json.JSONDecodeError:
                     # servers sometimes log to stdout; ignore non-JSON noise
                     continue
+                if not isinstance(msg, dict):
+                    continue
                 mid = msg.get("id")
                 if mid is None:
-                    continue  # notification
+                    self.tools_revision.note(msg)
+                    continue
                 with self._lock:
                     q = self._pending.get(mid)
                 if q is not None:

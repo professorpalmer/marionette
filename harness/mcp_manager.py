@@ -121,6 +121,13 @@ CATALOG = {
 }
 
 
+def _revision_of(client) -> Optional[int]:
+    """Tools revision of a client, or None when it does not count them."""
+    rev = getattr(client, "tools_revision", None)
+    value = getattr(rev, "value", None)
+    return value if isinstance(value, int) else None
+
+
 def _expand(server: dict) -> dict:
     out = dict(server)
     args = out.get("args") or []
@@ -192,6 +199,8 @@ class McpManager:
         # refresh that finishes after a concurrent stop does not resurrect
         # a client the operator just halted.
         self._lifecycle_gen: Dict[str, int] = {}
+        # Per-server tools revision seen before the last tools/list.
+        self._listed_revision: Dict[str, int] = {}
         # Per-server last actual tool invocation (separate from lifecycle health).
         self._last_invocations: Dict[str, dict] = {}
         self._load_invocations()
@@ -408,6 +417,8 @@ class McpManager:
             raise McpError(f"MCP server '{name}' needs a 'command' (stdio) or 'url' (http)")
         try:
             client.start()
+            # Read before the list so a change during it causes one more refresh.
+            listed_rev = _revision_of(client)
             tools = _filter_tools_by_allowlist(
                 client.list_tools(), _allowed_tool_names(cfg)
             )
@@ -431,6 +442,8 @@ class McpManager:
                     pass
                 raise McpError(f"MCP server '{name}' start superseded by stop/refresh")
             self._clients[name] = client
+            if listed_rev is not None:
+                self._listed_revision[name] = listed_rev
             self._errors.pop(name, None)
             self._operator_stopped.discard(name)
             for t in tools:
@@ -784,6 +797,63 @@ class McpManager:
             if server and tool_name:
                 self._record_invocation(server, tool_name, ok=False, error=str(e))
             raise
+
+    def refresh_changed_tools(self) -> bool:
+        """Re-list each server that sent tools/list_changed since its last list.
+
+        Call only at a step boundary, never during a provider call. Many
+        notifications give one tools/list. A failed list keeps the old tools.
+        Returns True when the cached tool set changed.
+        """
+        with self._lock:
+            due = []
+            for name, client in self._clients.items():
+                rev = _revision_of(client)
+                if rev is None or rev == self._listed_revision.get(name, rev):
+                    continue
+                if client.alive:
+                    due.append((name, client, rev, self._lifecycle_gen.get(name, 0)))
+        changed = False
+        for name, client, rev, gen in due:
+            try:
+                self._breaker_check(name)
+            except McpError:
+                continue  # Breaker is open. Try again at a later step.
+            try:
+                tools = _filter_tools_by_allowlist(
+                    client.list_tools(),
+                    _allowed_tool_names(self.effective_config().get(name, {})),
+                )
+            except McpRemoteError as e:
+                # The server answered with an error. Wait for its next notification.
+                _diag("mcp.list_changed_refresh", e)
+                with self._lock:
+                    if self._lifecycle_gen.get(name, 0) == gen:
+                        self._listed_revision[name] = rev
+                continue
+            except McpError as e:
+                # Transport failure counts toward the breaker. Retry next step.
+                _diag("mcp.list_changed_refresh", e)
+                self._breaker_failure(name)
+                continue
+            self._breaker_success(name)
+            with self._lock:
+                # A stop or refresh during the list owns this server now.
+                if (
+                    self._lifecycle_gen.get(name, 0) != gen
+                    or self._clients.get(name) is not client
+                ):
+                    continue
+                self._listed_revision[name] = rev
+                old = [q for q, t in self._tools.items() if t.server == name]
+                before = [self._tools[q] for q in old]
+                for q in old:
+                    del self._tools[q]
+                for t in tools:
+                    self._tools[t.qualified] = t
+                if before != list(tools):
+                    changed = True
+        return changed
 
     def discovered_tools(self) -> List[McpTool]:
         """Return tools for currently connected (alive) servers."""
