@@ -8,12 +8,13 @@ const TEMP_PROFILE_PREFIX = "pm-cdp-";
 
 // Profile roots under this instance's HOME. Exact paths, not substrings:
 // a sibling install (other HOME) has its own `.pmharness/browser-profile`.
-function ownProfileRoots(home = os.homedir()) {
+function ownProfileRoots(home = os.homedir(), platform = process.platform) {
+  const { join } = platform === "win32" ? path.win32 : path.posix;
   return [
-    path.join(home, ".pmharness", "browser-profile"),
-    path.join(home, ".pmharness", "browser-profile-real"),
-    path.join(home, ".puppetmaster", "browser-profile"),
-    path.join(home, ".puppetmaster", "browser-profiles"),
+    join(home, ".pmharness", "browser-profile"),
+    join(home, ".pmharness", "browser-profile-real"),
+    join(home, ".puppetmaster", "browser-profile"),
+    join(home, ".puppetmaster", "browser-profiles"),
   ];
 }
 
@@ -48,7 +49,7 @@ function profileOwnership(cmdline, { home = os.homedir(), platform = process.pla
   if (!isBrowser(cmdline)) return null;
   const dir = normalizeDir(userDataDir(cmdline), platform);
   if (!dir) return null;
-  for (const root of ownProfileRoots(home)) {
+  for (const root of ownProfileRoots(home, platform)) {
     const r = normalizeDir(root, platform);
     if (dir === r || dir.startsWith(`${r}/`)) return "home";
   }

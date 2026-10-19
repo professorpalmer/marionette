@@ -6,7 +6,9 @@ the leftover window holds Cookies open for the next boot.
 """
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
 import re
 import signal
 import subprocess
@@ -18,18 +20,19 @@ _BROWSER_HINTS = ("chrome", "chromium", "msedge", "brave", "google chrome")
 _TEMP_PROFILE_PREFIX = "pm-cdp-"
 
 
-def own_profile_roots(home: Optional[str] = None) -> List[str]:
+def own_profile_roots(home: Optional[str] = None, platform: Optional[str] = None) -> List[str]:
     """Profile roots under this instance's HOME.
 
     Exact paths, not substrings: a sibling install (another HOME) has its own
     ``.pmharness/browser-profile`` and its Chrome is not ours to kill.
     """
     base = home if home is not None else os.path.expanduser("~")
+    join = ntpath.join if (platform or sys.platform) == "win32" else posixpath.join
     return [
-        os.path.join(base, ".pmharness", "browser-profile"),
-        os.path.join(base, ".pmharness", "browser-profile-real"),
-        os.path.join(base, ".puppetmaster", "browser-profile"),
-        os.path.join(base, ".puppetmaster", "browser-profiles"),
+        join(base, ".pmharness", "browser-profile"),
+        join(base, ".pmharness", "browser-profile-real"),
+        join(base, ".puppetmaster", "browser-profile"),
+        join(base, ".puppetmaster", "browser-profiles"),
     ]
 
 
@@ -69,7 +72,7 @@ def profile_ownership(
     found = _normalize_dir(user_data_dir(cmdline), plat)
     if not found:
         return None
-    for root in own_profile_roots(home):
+    for root in own_profile_roots(home, plat):
         norm = _normalize_dir(root, plat)
         if found == norm or found.startswith(norm + "/"):
             return "home"
