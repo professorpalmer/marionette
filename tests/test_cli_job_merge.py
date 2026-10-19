@@ -128,6 +128,47 @@ def test_merge_preserves_colliding_ids_and_sets_source(tmp_path, monkeypatch):
     assert len(merged) == 3
 
 
+def test_one_store_seen_as_harness_and_cli_lists_each_job_once(tmp_path, monkeypatch):
+    """Harness and workspace CLI state can be one directory: one job, one row.
+
+    Economics summed this job twice (2 jobs, 6 tasks, double savings).
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shared_dir = tmp_path / "shared-state"
+    harness_store = create_store("sqlite", str(shared_dir))
+    job = harness_store.create_job("one swarm")
+    _save_task(harness_store, job.id, str(repo))
+
+    class _SameDirCliState:
+        store = create_store("sqlite", str(shared_dir))
+
+        def list_jobs(self):
+            return [{"id": job.id, "goal": "one swarm", "status": "complete", "adapter": "agentic"}]
+
+    monkeypatch.setattr(
+        "harness.cli_job_merge.open_cli_durable_state",
+        lambda workspace_root="": _SameDirCliState(),
+    )
+    monkeypatch.setattr(
+        "harness.job_scoping.filter_store_jobs_with_tasks",
+        lambda rows, store, **kwargs: (rows, {}),
+    )
+    monkeypatch.setattr(
+        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+        lambda **kwargs: [],
+    )
+
+    merged, _, _ = merge_scoped_cli_jobs(
+        [{"id": job.id, "goal": "one swarm", "status": "complete", "adapter": "agentic"}],
+        harness_store=harness_store,
+        active_session_id="sess-x",
+        repo_root=str(repo),
+        workspace_root=str(repo),
+    )
+    assert [(row["id"], row["source"]) for row in merged] == [(job.id, "harness")]
+
+
 def test_unreadable_cli_store_contributes_nothing(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -187,7 +228,7 @@ def test_merge_running_cli_jobs_all_projects_scans_foreign_live(tmp_path, monkey
     assert rows[0]["source"] == "cli"
     assert rows[0]["cli_state_dir"]
     assert rows[0]["cross_project"] is True
-    assert job_read_key(rows[0]) in seen
+    assert (job_read_key(rows[0])[0], job.id) in seen
 
 
 def test_merge_scoped_cli_jobs_drops_unstamped_foreign_running(tmp_path, monkeypatch):

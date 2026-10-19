@@ -58,7 +58,12 @@ def test_timed_out_indexer_takes_its_grandchild_with_it(tmp_path, monkeypatch):
         time.sleep(0.05)
     time.sleep(0.3)
     try:
-        assert "timed out" in str(cgi.codegraph_status_reason)
+        # macOS CI once saw the child exit 1 before the timeout with no
+        # output; keep the whole log for the next occurrence.
+        log = tmp_path / "index.log"
+        assert "timed out" in str(cgi.codegraph_status_reason), (
+            log.read_text() if log.exists() else "no index log"
+        )
         assert not _alive(grandchild)
     finally:
         try:

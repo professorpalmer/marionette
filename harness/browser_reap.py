@@ -6,35 +6,108 @@ the leftover window holds Cookies open for the next boot.
 """
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
+import re
 import signal
 import subprocess
+import sys
 import time
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
-_PROFILE_MARKERS = (
-    "/.pmharness/browser-profile",
-    "\\.pmharness\\browser-profile",
-    "/.puppetmaster/browser-profile",
-    "\\.puppetmaster\\browser-profile",
-    "/pm-cdp-",
-    "\\pm-cdp-",
-)
 _BROWSER_HINTS = ("chrome", "chromium", "msedge", "brave", "google chrome")
+_TEMP_PROFILE_PREFIX = "pm-cdp-"
 
 
-def cmdline_is_marionette_browser(cmdline: str) -> bool:
-    """True when argv is a browser we spawned, not the user's Chrome."""
+def own_profile_roots(home: Optional[str] = None, platform: Optional[str] = None) -> List[str]:
+    """Profile roots under this instance's HOME.
+
+    Exact paths, not substrings: a sibling install (another HOME) has its own
+    ``.pmharness/browser-profile`` and its Chrome is not ours to kill.
+    """
+    base = home if home is not None else os.path.expanduser("~")
+    join = ntpath.join if (platform or sys.platform) == "win32" else posixpath.join
+    return [
+        join(base, ".pmharness", "browser-profile"),
+        join(base, ".pmharness", "browser-profile-real"),
+        join(base, ".puppetmaster", "browser-profile"),
+        join(base, ".puppetmaster", "browser-profiles"),
+    ]
+
+
+def _normalize_dir(path: str, platform: str) -> str:
+    out = (path or "").strip().strip("\"'")
+    if platform == "win32":
+        out = out.replace("\\", "/")
+    out = out.rstrip("/")
+    # Windows and default macOS volumes ignore case.
+    return out.lower() if platform in ("win32", "darwin") else out
+
+
+def user_data_dir(cmdline: str) -> str:
+    """Value of --user-data-dir. It can hold spaces, so it ends at the next flag."""
+    raw = cmdline or ""
+    flag = "--user-data-dir="
+    start = raw.find(flag)
+    if start < 0:
+        return ""
+    rest = raw[start + len(flag):]
+    match = re.search(r"\s--[a-zA-Z]", rest)
+    return (rest[: match.start()] if match else rest).strip()
+
+
+def profile_ownership(
+    cmdline: str, home: Optional[str] = None, platform: Optional[str] = None
+) -> Optional[str]:
+    """``"home"`` for this HOME's profiles, ``"temp"`` for a pm-cdp-* profile.
+
+    Every install shares the pm-cdp-* name, so the caller reaps a temp profile
+    only when the owner chain allows (see ``_temp_profile_reapable``).
+    """
     low = (cmdline or "").lower()
     if not any(name in low for name in _BROWSER_HINTS):
-        return False
-    if "--user-data-dir=" not in low:
-        return False
-    return any(marker.lower() in low for marker in _PROFILE_MARKERS)
+        return None
+    plat = platform or sys.platform
+    found = _normalize_dir(user_data_dir(cmdline), plat)
+    if not found:
+        return None
+    for root in own_profile_roots(home, plat):
+        norm = _normalize_dir(root, plat)
+        if found == norm or found.startswith(norm + "/"):
+            return "home"
+    if found.rsplit("/", 1)[-1].startswith(_TEMP_PROFILE_PREFIX):
+        return "temp"
+    return None
 
 
-def _list_process_cmdlines() -> List[Tuple[int, str]]:
-    rows: List[Tuple[int, str]] = []
+def cmdline_is_marionette_browser(
+    cmdline: str, home: Optional[str] = None, platform: Optional[str] = None
+) -> bool:
+    """True when argv is a browser on this HOME's profile, not the user's Chrome."""
+    return profile_ownership(cmdline, home, platform) == "home"
+
+
+def _temp_profile_reapable(pid: int, parents: Dict[int, int], self_pid: int) -> bool:
+    """Ours when this process is an ancestor; orphaned when the parent is gone.
+
+    A live foreign parent means another Marionette instance still drives it.
+    """
+    parent = parents.get(pid, 0)
+    if parent <= 1 or parent not in parents:
+        return True
+    seen = set()
+    cur = parent
+    while cur > 1 and cur not in seen:
+        if cur == self_pid:
+            return True
+        seen.add(cur)
+        cur = parents.get(cur, 0)
+    return False
+
+
+def _list_processes() -> List[Tuple[int, int, str]]:
+    rows: List[Tuple[int, int, str]] = []
     if os.name == "nt":
         try:
             out = subprocess.check_output(
@@ -42,7 +115,7 @@ def _list_process_cmdlines() -> List[Tuple[int, str]]:
                     "wmic",
                     "process",
                     "get",
-                    "ProcessId,CommandLine",
+                    "ProcessId,ParentProcessId,CommandLine",
                     "/FORMAT:LIST",
                 ],
                 stderr=subprocess.DEVNULL,
@@ -50,48 +123,75 @@ def _list_process_cmdlines() -> List[Tuple[int, str]]:
             )
         except Exception:
             return rows
-        text = out.decode("utf-8", "replace")
-        pid = 0
-        cmd = ""
-        for line in text.splitlines():
-            raw = line.strip()
-            if not raw:
-                if pid > 1 and cmd:
-                    rows.append((pid, cmd))
-                pid = 0
-                cmd = ""
-                continue
-            if raw.lower().startswith("commandline="):
-                cmd = raw.split("=", 1)[1]
-            elif raw.lower().startswith("processid="):
-                try:
-                    pid = int(raw.split("=", 1)[1].strip())
-                except ValueError:
-                    pid = 0
-        if pid > 1 and cmd:
-            rows.append((pid, cmd))
-        return rows
+        return parse_wmic_list(out.decode("utf-8", "replace"))
     try:
         out = subprocess.check_output(
-            ["ps", "-axww", "-o", "pid=,args="],
+            ["ps", "-axww", "-o", "pid=,ppid=,args="],
             stderr=subprocess.DEVNULL,
             timeout=8,
         )
     except Exception:
         return rows
-    for line in out.decode("utf-8", "replace").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        parts = stripped.split(None, 1)
-        if len(parts) != 2:
+    return parse_posix_ps(out.decode("utf-8", "replace"))
+
+
+def parse_posix_ps(text: str) -> List[Tuple[int, int, str]]:
+    rows: List[Tuple[int, int, str]] = []
+    for line in text.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
             continue
         try:
-            pid = int(parts[0])
+            pid, ppid = int(parts[0]), int(parts[1])
         except ValueError:
             continue
-        rows.append((pid, parts[1]))
+        if pid > 1:
+            rows.append((pid, ppid, parts[2]))
     return rows
+
+
+def parse_wmic_list(text: str) -> List[Tuple[int, int, str]]:
+    rows: List[Tuple[int, int, str]] = []
+    pid = ppid = 0
+    cmd = ""
+    for line in text.splitlines() + [""]:
+        raw = line.strip()
+        if not raw:
+            if pid > 1:
+                rows.append((pid, ppid, cmd))
+            pid = ppid = 0
+            cmd = ""
+            continue
+        key, _, value = raw.partition("=")
+        key = key.lower()
+        if key == "commandline":
+            cmd = value
+        elif key in ("processid", "parentprocessid"):
+            try:
+                num = int(value.strip())
+            except ValueError:
+                num = 0
+            if key == "processid":
+                pid = num
+            else:
+                ppid = num
+    return rows
+
+
+def reap_targets(
+    rows: List[Tuple[int, int, str]],
+    home: Optional[str] = None,
+    platform: Optional[str] = None,
+    self_pid: Optional[int] = None,
+) -> List[int]:
+    parents = {pid: ppid for pid, ppid, _ in rows}
+    me = os.getpid() if self_pid is None else self_pid
+    targets: List[int] = []
+    for pid, _, cmd in rows:
+        kind = profile_ownership(cmd, home, platform)
+        if kind == "home" or (kind == "temp" and _temp_profile_reapable(pid, parents, me)):
+            targets.append(pid)
+    return targets
 
 
 def _signal_pid(pid: int, sig: int) -> bool:
@@ -106,11 +206,7 @@ def _signal_pid(pid: int, sig: int) -> bool:
 
 def reap_marionette_browsers(timeout_s: float = 2.0) -> List[int]:
     """SIGTERM then SIGKILL matching browsers. Returns signaled pids."""
-    targets = [
-        pid
-        for pid, cmd in _list_process_cmdlines()
-        if cmdline_is_marionette_browser(cmd)
-    ]
+    targets = reap_targets(_list_processes())
     signaled: List[int] = []
     for pid in targets:
         if os.name == "nt":
