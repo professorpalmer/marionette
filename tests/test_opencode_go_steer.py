@@ -27,6 +27,11 @@ from harness.sessions import (
 )
 from pmharness.drivers.codex_responses import _messages_to_responses_input
 
+# A deadlock guard, not a speed limit. A 2 s budget failed once on a Windows
+# runner (run 39596554873) where 120 probe loops and two full shards passed:
+# fresh-file I/O there can stall for seconds.
+_HANG_GUARD_SECONDS = 30
+
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
@@ -177,12 +182,12 @@ def test_persist_live_transcript_exports_after_busy_meta(session):
     def compact_under_lock():
         with session._busy_meta:
             holding.set()
-            assert done.wait(2)
+            assert done.wait(_HANG_GUARD_SECONDS)
             _compact_runner(session)
 
     worker = threading.Thread(target=compact_under_lock)
     worker.start()
-    assert holding.wait(2)
+    assert holding.wait(_HANG_GUARD_SECONDS)
     persist = threading.Thread(
         target=persist_live_transcript,
         args=(session, session.state_dir, session.harness_session_id),
@@ -191,8 +196,8 @@ def test_persist_live_transcript_exports_after_busy_meta(session):
     time.sleep(0.05)
     assert persist.is_alive()
     done.set()
-    worker.join(2)
-    persist.join(2)
+    worker.join(_HANG_GUARD_SECONDS)
+    persist.join(_HANG_GUARD_SECONDS)
     assert not persist.is_alive()
     disk = load_transcript(session.state_dir, session.harness_session_id)
     assert disk["history"][0].get("_compressed_summary") is True
