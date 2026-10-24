@@ -268,6 +268,7 @@ def test_checkpoint_hunks_of_a_sealed_session_are_sealed(sealed, tmp_path, monke
     state, _ = sealed
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
