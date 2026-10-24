@@ -73,8 +73,14 @@ class Backend:
                 if self.proc.poll() is not None:
                     break
                 time.sleep(0.5)
+        code = self.proc.poll()
         self.stop()
-        raise AssertionError("backend did not start: " + (root / "backend.log").read_text(errors="replace")[-2000:])
+        raise AssertionError(f"backend did not start (exit {code}):\n{self.log_tail()}")
+
+    def log_tail(self) -> str:
+        if not self.log.closed:
+            self.log.flush()
+        return (self.root / "backend.log").read_text(errors="replace")[-6000:]
 
     def _request(self, path, data=None, timeout=60):
         req = urllib.request.Request(
@@ -114,9 +120,14 @@ class Backend:
                 if e.code not in (409, 503):
                     raise
                 time.sleep(1)
+            except OSError as e:
+                raise AssertionError(f"chat failed ({e!r}); stream so far:\n{''.join(out)[-3000:]}\n"
+                                     f"backend log:\n{self.log_tail()}") from e
         raise AssertionError("chat never accepted")
 
     def stop(self):
+        if self.log.closed:
+            return
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
