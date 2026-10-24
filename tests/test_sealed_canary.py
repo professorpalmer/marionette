@@ -212,7 +212,7 @@ def _canary_files(root: Path, tag: str) -> list:
         if path.is_file() and not path.is_relative_to(root / "proj"):
             try:
                 if needle in path.read_bytes():
-                    hits.append(str(path.relative_to(root)))
+                    hits.append(path.relative_to(root).as_posix())
             except OSError:
                 pass
     return sorted(hits)

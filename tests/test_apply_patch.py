@@ -203,3 +203,32 @@ def test_apply_worker_patch_no_patch_artifact(temp_git_repo):
     assert applied is False
     assert files == []
     assert msg == "no patch to apply"
+
+def test_apply_worker_patch_leaves_no_diff_in_temp(temp_git_repo, tmp_path, monkeypatch):
+    """A temp file a locked delete cannot remove (Windows) would keep the diff."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = temp_git_repo
+    session = ConversationalSession(cfg)
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp_root))
+    real_remove = os.remove
+
+    def locked_remove(path, *a, **k):
+        if str(path).startswith(str(temp_root)):
+            raise PermissionError("locked")
+        return real_remove(path, *a, **k)
+
+    monkeypatch.setattr(os, "remove", locked_remove)
+    canary = "worker canary 7f3c"
+    artifacts = [{"type": "patch", "payload": {
+        "files": ["base.txt"],
+        "unified_diff": "diff --git a/base.txt b/base.txt\n--- a/base.txt\n+++ b/base.txt\n"
+                        f"@@ -1,3 +1,4 @@\n Line 1\n+{canary}\n Line 2\n Line 3\n",
+    }}]
+
+    applied, _files, msg = session._apply_worker_patch(artifacts)
+
+    assert applied is True, msg
+    left = [p for p in temp_root.rglob("*") if p.is_file() and canary.encode() in p.read_bytes()]
+    assert left == []
