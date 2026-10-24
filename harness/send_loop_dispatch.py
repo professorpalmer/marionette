@@ -687,7 +687,7 @@ store goes when the swarm thread ends: the result is then in the transcript.
     if not sealed_workers.is_sealed(sid):
         return (yield from _dispatch_swarm_action(
             session, act, aid, is_native, counters=counters, turn_findings=turn_findings,
-            store_dir=session.state_dir, sealed=False, owner={},
+            store_dir="", sealed=False, owner={},
         ))
     store_dir = sealed_workers.new_job_store(sid, 'swarm-')
     owner: dict = {}
@@ -1010,7 +1010,7 @@ def _dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findi
     from contextvars import copy_context
     _delta_q: '_queue.Queue' = _queue.Queue()
     _explicit_wm = _explicit_swarm_worker_mode(act) or None
-    _swarm_kwargs = {"state_dir": store_dir, "sealed": sealed}
+    _swarm_kwargs = {"state_dir": store_dir, "sealed": True} if sealed else {}
     if _explicit_wm:
         _swarm_kwargs["worker_mode"] = _explicit_wm
     _swarm_thread = _threading.Thread(
@@ -1034,6 +1034,9 @@ def _dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findi
         try:
             msg_kind, msg_val = _delta_q.get(timeout=2.0)
         except _queue.Empty:
+            if not _swarm_thread.is_alive() and _delta_q.empty():
+                swarm_error = "the swarm thread ended without a result"
+                break
             yield ConvEvent("notice", {
                 "kind": "wait",
                 "message": "Waiting for swarm workers…",
