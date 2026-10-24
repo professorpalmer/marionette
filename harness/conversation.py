@@ -55,6 +55,7 @@ APPROVAL_SWEEP_SECONDS = 30
 
 from pmharness import registry as reg
 from . import providers as prov
+from . import sealed_workers
 from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
 from .pilot import (
@@ -2575,9 +2576,11 @@ class ConversationalSession(
         # cache behind it, only changes when the toolset does: a MICRO first
         # turn used to freeze an 11-tool set without run_swarm for the rest
         # of the conversation.
+        sealed = sealed_workers.is_sealed(getattr(self, "harness_session_id", "") or "")
         shape = (
             frozenset(core_visible_names(getattr(self.config, "no_delegation", False), profile)),
             _profile_compacts_descriptions(profile),
+            sealed,
         )
         snap = getattr(self, "_tools_schema_snapshot", None)
         if snap is not None:
@@ -2598,8 +2601,12 @@ class ConversationalSession(
             browser_enabled=self._browser_tools_enabled(),
             profile=profile,
         )
-        if schema and not delegation_available:
-            from .pilot_guards import DELEGATION_KINDS as delegation_names
+        hidden: frozenset = frozenset()
+        if not delegation_available:
+            from .pilot_guards import DELEGATION_KINDS as hidden
+        elif sealed:
+            hidden = sealed_workers.FLOW_TOOLS
+        if schema and hidden:
 
             def _schema_name(item: Any) -> str:
                 if not isinstance(item, dict):
@@ -2609,10 +2616,7 @@ class ConversationalSession(
                     return str(function.get("name") or "")
                 return str(item.get("name") or "")
 
-            schema = [
-                item for item in schema
-                if _schema_name(item) not in delegation_names
-            ]
+            schema = [item for item in schema if _schema_name(item) not in hidden]
         if schema:
             self._tools_schema_snapshot = schema
             self._tools_schema_discovery = enabled
@@ -2950,12 +2954,6 @@ class ConversationalSession(
         ``no_delegation`` remains the leaf-worker recursion boundary.
         """
         if getattr(self.config, "no_delegation", False):
-            return False
-        from . import seal
-
-        if seal.is_sealed(getattr(self, "harness_session_id", "") or ""):
-            # Worker jobs keep goals and results in the plain Puppetmaster
-            # store. Encrypted sessions work without workers until it seals.
             return False
         try:
             from .edit_engines import workers_ready
@@ -4262,7 +4260,6 @@ class ConversationalSession(
         Read-only local-job roles (analysis/QA) are refused before ``git apply``.
         """
         import os
-        import tempfile
         import subprocess
 
         from .repo_resolve import resolve_effective_repo
@@ -4341,21 +4338,24 @@ class ConversationalSession(
             except Exception:
                 pass
 
-        # Write diff to a temporary file. Binary mode: Windows text mode would
-        # rewrite \n as \r\n, corrupting the unified diff before git apply sees it.
-        fd, temp_path = tempfile.mkstemp(suffix=".patch")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                f.write(diff_text.encode("utf-8"))
-            
-            # a. First check if already applied (idempotent): git apply --reverse --check on the diff
-            rev_p = subprocess.run(
-                ["git", "apply", "--reverse", "--check", temp_path],
+        # The diff goes to git on stdin as bytes: no temp file can outlive the
+        # apply, and Windows text mode would rewrite \n as \r\n.
+        diff_bytes = diff_text.encode("utf-8")
+
+        def _git_apply(*flags: str) -> subprocess.CompletedProcess:
+            done = subprocess.run(
+                ["git", "apply", *flags],
                 cwd=repo_root,
+                input=diff_bytes,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
             )
+            done.stderr = done.stderr.decode("utf-8", "replace")
+            return done
+
+        try:
+            # a. First check if already applied (idempotent): git apply --reverse --check on the diff
+            rev_p = _git_apply("--reverse", "--check")
             if rev_p.returncode == 0:
                 self._last_checkpoint_id = None
                 return True, files, "already applied"
@@ -4403,22 +4403,10 @@ class ConversationalSession(
                     pass
 
             # b. Else git apply --check to verify it applies cleanly
-            check_p = subprocess.run(
-                ["git", "apply", "--check", temp_path],
-                cwd=repo_root,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+            check_p = _git_apply("--check")
             if check_p.returncode == 0:
                 # It applies cleanly, so apply it!
-                apply_p = subprocess.run(
-                    ["git", "apply", temp_path],
-                    cwd=repo_root,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
+                apply_p = _git_apply()
                 if apply_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
                     _record_patch_agent_writes()
@@ -4444,13 +4432,7 @@ class ConversationalSession(
                     except OSError:
                         pre_apply_bytes[rel_path] = None  # absent pre-apply
 
-                three_way_p = subprocess.run(
-                    ["git", "apply", "--3way", temp_path],
-                    cwd=repo_root,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
+                three_way_p = _git_apply("--3way")
                 if three_way_p.returncode == 0:
                     self._last_checkpoint_id = checkpoint_id
                     _record_patch_agent_writes()
@@ -4500,11 +4482,6 @@ class ConversationalSession(
         except Exception as e:
             self._last_checkpoint_id = None
             return False, files, f"error during patch application: {e}"
-        finally:
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
 
     def _answer_remaining_tool_calls(self, actions, current_idx, is_native, action_seq):
         """Answer sibling tool_calls abandoned by a pause-point dispatch.

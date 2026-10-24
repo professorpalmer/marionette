@@ -982,10 +982,20 @@ def run_edit_worker(
     """Run the selected in-process edit engine and return a normalized result.
 
     Falls back from agentic/cursor to native only when those could not run.
+    An encrypted session runs only the agentic engine, with no fallback.
     """
     from harness.worker import WorkerResult
+    from harness import sealed_workers
 
     requested = (requested_adapter or "").strip().lower()
+    if sealed_workers.is_sealed(session_id):
+        adapter = agentic_pin.adapter if agentic_pin is not None else (requested or "agentic")
+        if adapter != "agentic":
+            return _stamp_agentic(WorkerResult(
+                ok=False, error=AGENTIC_ROUTE_FAILED,
+                summary=sealed_workers.adapter_refused(adapter),
+            ), execution_pin=agentic_pin)
+        strict_adapter = True
     if agentic_pin is not None and agentic_pin.adapter == "codex":
         from harness.swarm_worker_allowlist import native_codex_available
         if requested not in ("", "codex") or not native_codex_available():
@@ -1286,6 +1296,7 @@ def run_agentic_edit(
         coerce_unlabeled_analysis_prose,
         parse_analysis_signal_rows,
     )
+    from harness import sealed_workers
     from harness.cli_job_merge import mark_marionette_host_scratch
     from harness.job_scoping import job_label_for_session, stamp_task_payload
 
@@ -1470,7 +1481,10 @@ def run_agentic_edit(
             # Map any structured tool/action events BEFORE deleting the store;
             # never parse prose/stdout. Without the rmtree every agentic
             # implement worker leaked a pmh-edit-* dir (audit finding #3).
-            tmp = tempfile.mkdtemp(prefix="pmh-edit-")
+            if sealed_workers.is_sealed(session_id):
+                tmp = sealed_workers.new_job_store(session_id, "pmh-edit-")
+            else:
+                tmp = tempfile.mkdtemp(prefix="pmh-edit-")
             mark_marionette_host_scratch(tmp)
             mapped_events: list = []
             result = None

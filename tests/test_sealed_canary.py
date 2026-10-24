@@ -212,7 +212,7 @@ def _canary_files(root: Path, tag: str) -> list:
         if path.is_file() and not path.is_relative_to(root / "proj"):
             try:
                 if needle in path.read_bytes():
-                    hits.append(str(path.relative_to(root)))
+                    hits.append(path.relative_to(root).as_posix())
             except OSError:
                 pass
     return sorted(hits)
@@ -263,3 +263,65 @@ def test_sealed_session_writes_no_plaintext_and_fails_closed(tmp_path, model):
         backend.stop()
     assert transcript.read_bytes() == before
     assert _canary_files(root, tag) == []
+
+
+def _worker_scenario(backend: Backend, tag: str) -> str:
+    """run_swarm, run_implement and run_parallel on the agentic adapter."""
+    def c(step):
+        return f"CNRY{step}x{tag}"
+
+    backend.post("/api/workspace/open", {"path": str(backend.root / "proj")})
+    sid = json.loads(backend.post("/api/sessions/create", {}))["id"]
+    findings = {"artifacts": [{"type": "finding", "claim": c("find"), "evidence": ["README"]}]}
+    out = backend.chat("TOOL run_swarm " + json.dumps(
+        {"goal": f"Audit {c('swarm')}\nTOOL submit_findings " + json.dumps(findings)}))
+    assert c("find") in out
+
+    def edit(name):
+        report = {"summary": c("sum"), "files_changed": [f"{name}.txt"], "verification": "none"}
+        return (f"Edit {c('impl')} {name}\nTOOL write_file "
+                + json.dumps({"path": f"{name}.txt", "content": c("edit") + "\n"})
+                + "\nTOOL submit_report " + json.dumps(report))
+
+    backend.chat("TOOL run_implement " + json.dumps({"goal": edit("b")}))
+    backend.chat("TOOL run_parallel " + json.dumps({"goals": [edit("c"), edit("d")]}))
+    edits = [backend.root / "proj" / f"{name}.txt" for name in "bcd"]
+    deadline = time.time() + 240
+    while time.time() < deadline and not all(p.exists() for p in edits):
+        time.sleep(1)
+    assert all(p.read_text().strip() == c("edit") for p in edits), backend.log_tail()
+    return sid
+
+
+def _wait_for_empty_job_stores(backend: Backend, sid: str) -> None:
+    jobs = backend.state / "sealed" / sid / "jobs"
+    deadline = time.time() + 120
+    while time.time() < deadline and jobs.exists() and any(jobs.iterdir()):
+        time.sleep(1)
+    assert not jobs.exists() or not any(jobs.iterdir()), sorted(p.name for p in jobs.iterdir())
+
+
+def test_plain_session_workers_write_canaries(tmp_path, model):
+    """Power check: plain swarm findings land in the shared Puppetmaster store."""
+    root = _root(tmp_path)
+    tag = secrets.token_hex(4)
+    backend = Backend(root, model)
+    try:
+        _worker_scenario(backend, tag)
+    finally:
+        backend.stop()
+    assert "home/.pmharness/state/state.sqlite3" in _canary_files(root, tag)
+
+
+def test_sealed_session_workers_write_no_plaintext(tmp_path, model):
+    root = _root(tmp_path)
+    tag = secrets.token_hex(4)
+    master = _configure_seal(root / "home" / ".pmharness" / "state")
+    backend = Backend(root, model, master, seal_line=True)
+    try:
+        sid = _worker_scenario(backend, tag)
+        _wait_for_empty_job_stores(backend, sid)
+    finally:
+        backend.stop()
+    assert _canary_files(root, tag) == []
+    assert not (backend.state / "state.sqlite3").exists()

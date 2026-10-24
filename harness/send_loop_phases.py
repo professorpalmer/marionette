@@ -1296,6 +1296,8 @@ def stream_swarm(
     delta_q: Any,
     dispatch_id: str = "",
     worker_mode: Any = None,
+    state_dir: str = "",
+    sealed: bool = False,
 ) -> None:
     """Background target: execute_intent with on_delta → delta_q (delta/done/error).
 
@@ -1305,6 +1307,10 @@ def stream_swarm(
 
     ``worker_mode`` is the explicit tool-call override (subprocess/inline/daemon).
     Omit it so execute_intent keeps the product inline default for LLM adapters.
+
+    ``state_dir`` is the PM store (default: the session state dir). A sealed
+    swarm passes its own store and gets no tracker association: readers
+    resolve an association against the session store only.
     """
     try:
         from .repo_resolve import resolve_effective_repo
@@ -1315,13 +1321,14 @@ def stream_swarm(
         _cwd = resolve_effective_repo(_raw_repo) if _raw_repo else None
         r = execute_intent(
             intent,
-            state_dir=session.state_dir,
+            state_dir=state_dir or session.state_dir,
             session_id=session.harness_session_id or "",
             dispatch_id=dispatch_id,
             cwd=_cwd,
             repo=_cwd,
             worker_mode=worker_mode,
-            on_job_created=lambda association: session._associate_local_job_with_pm(
+            sealed=sealed,
+            on_job_created=None if sealed else lambda association: session._associate_local_job_with_pm(
                 local_swarm_id(dispatch_id), association,
             ),
             on_delta=lambda wid, kind, text: delta_q.put(

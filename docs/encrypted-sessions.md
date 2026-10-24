@@ -59,12 +59,28 @@ cannot start while the switch is on.
 
 Marionette then stores the key in this system's key store again.
 
+## Workers
+
+`run_swarm`, `run_implement`, and `run_parallel` work in an encrypted session,
+with these limits:
+
+- Workers run only on the agentic adapter. It calls the model provider over
+  HTTP and keeps all job data in one job store. Marionette refuses a CLI
+  adapter (Codex, Claude Code, Cursor), because the CLI keeps its own plain
+  history.
+- Each job gets its own store in the session's encrypted folder, not the
+  shared Puppetmaster store. While the job runs, its store is plain text on
+  disk. When the job ends, its result goes into the encrypted transcript and
+  Marionette deletes the store.
+- If Marionette stops during a job, the next start deletes the store. Delete
+  the session to delete it at once.
+- Workers get no browser tools.
+
 ## Limits
 
 These features are off in an encrypted session:
 
-- Workers (`run_swarm`, `run_implement`, `run_parallel`, `run_flow`). Worker
-  jobs keep their goals in the plain Puppetmaster store.
+- Flows (`run_flow`). A flow run keeps its state on disk after the run.
 - The browser tool. Every session shares one browser profile.
 - CLI pilots (Claude Code, Cursor CLI). These CLIs keep their own plain history.
 - Wiki capture, skill and rule distill, and refine proposals.
@@ -72,5 +88,6 @@ These features are off in an encrypted session:
 Hooks get only the session id and `"sealed": true`, not the prompt or title.
 
 Encryption protects data at rest: a copy of `~/.pmharness`, a backup, a sync
-folder, or another user account. It does not protect against software that
-runs as you while Marionette is unlocked.
+folder, or another user account. A copy made while a worker job runs also
+holds that job's plain store. Encryption does not protect against software
+that runs as you while Marionette is unlocked.
