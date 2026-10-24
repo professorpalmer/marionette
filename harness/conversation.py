@@ -55,6 +55,7 @@ APPROVAL_SWEEP_SECONDS = 30
 
 from pmharness import registry as reg
 from . import providers as prov
+from . import sealed_workers
 from pmharness.intent import DriverIntent
 from pmharness.bridge import execute_intent, BridgeResult
 from .pilot import (
@@ -2575,9 +2576,11 @@ class ConversationalSession(
         # cache behind it, only changes when the toolset does: a MICRO first
         # turn used to freeze an 11-tool set without run_swarm for the rest
         # of the conversation.
+        sealed = sealed_workers.is_sealed(getattr(self, "harness_session_id", "") or "")
         shape = (
             frozenset(core_visible_names(getattr(self.config, "no_delegation", False), profile)),
             _profile_compacts_descriptions(profile),
+            sealed,
         )
         snap = getattr(self, "_tools_schema_snapshot", None)
         if snap is not None:
@@ -2598,8 +2601,12 @@ class ConversationalSession(
             browser_enabled=self._browser_tools_enabled(),
             profile=profile,
         )
-        if schema and not delegation_available:
-            from .pilot_guards import DELEGATION_KINDS as delegation_names
+        hidden: frozenset = frozenset()
+        if not delegation_available:
+            from .pilot_guards import DELEGATION_KINDS as hidden
+        elif sealed:
+            hidden = sealed_workers.FLOW_TOOLS
+        if schema and hidden:
 
             def _schema_name(item: Any) -> str:
                 if not isinstance(item, dict):
@@ -2609,10 +2616,7 @@ class ConversationalSession(
                     return str(function.get("name") or "")
                 return str(item.get("name") or "")
 
-            schema = [
-                item for item in schema
-                if _schema_name(item) not in delegation_names
-            ]
+            schema = [item for item in schema if _schema_name(item) not in hidden]
         if schema:
             self._tools_schema_snapshot = schema
             self._tools_schema_discovery = enabled
@@ -2950,12 +2954,6 @@ class ConversationalSession(
         ``no_delegation`` remains the leaf-worker recursion boundary.
         """
         if getattr(self.config, "no_delegation", False):
-            return False
-        from . import seal
-
-        if seal.is_sealed(getattr(self, "harness_session_id", "") or ""):
-            # Worker jobs keep goals and results in the plain Puppetmaster
-            # store. Encrypted sessions work without workers until it seals.
             return False
         try:
             from .edit_engines import workers_ready

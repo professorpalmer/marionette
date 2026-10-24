@@ -148,7 +148,8 @@ export default function EncryptedSessions() {
       <ul className="list-disc pl-4 text-ui-10 text-muted space-y-1">
         <li>Encrypted: transcripts, titles, attachments, tool output, search index, todos, goal, scratch, and memory that encrypted sessions save.</li>
         <li>Not encrypted: your workspace files, and what providers and MCP servers receive.</li>
-        <li>Encrypted sessions do not use workers, the browser tool, or CLI pilots yet.</li>
+        <li>Workers run only on the agentic adapter. A job's files are plain text on disk while the job runs. Then Marionette deletes them.</li>
+        <li>Flows, the browser tool, and CLI pilots are off in encrypted sessions.</li>
         <li>Deleting an encrypted session destroys its key.</li>
       </ul>
     </div>

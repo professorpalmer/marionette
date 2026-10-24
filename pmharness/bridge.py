@@ -1575,6 +1575,7 @@ def execute_intent(
     on_job_created: Optional[Callable[[dict], None]] = None,
     cwd: Optional[str] = None,
     repo: Optional[str] = None,
+    sealed: bool = False,
 ) -> Optional[BridgeResult]:
     """Run a dispatch intent against Puppetmaster.
 
@@ -1597,11 +1598,19 @@ def execute_intent(
     per dispatch let a second concurrent swarm on a different subject observe
     (and restore) the wrong pointer. The env is read only as the fallback for
     callers that supply no explicit repo at all.
+
+    ``sealed``: the dispatch is for an encrypted session. Only an inline or
+    subprocess agentic swarm runs, with no browser tools (see
+    ``harness.sealed_workers``). Pass a store in that session's sealed folder.
     """
     if intent.action not in ("run_swarm", "run_prewalk"):
         return None
     if not intent.goal:
         raise ValueError(f"cannot execute {intent.action} intent without a goal")
+    if sealed and intent.action != "run_swarm":
+        raise ValueError(f"Encrypted sessions do not run {intent.action}.")
+    if sealed and worker_mode not in (None, "", "inline", "subprocess"):
+        raise ValueError(f"Encrypted sessions do not run {worker_mode!r} workers.")
 
     import os as _os
     from puppetmaster.store_factory import create_store
@@ -1683,6 +1692,10 @@ def execute_intent(
         # generic placeholder findings that read as a successful audit.
         from harness.swarm_worker_route import resolve_product_worker_adapter
         swarm_adapter = resolve_product_worker_adapter()
+        if sealed and (swarm_adapter != "agentic" or not repo_cwd):
+            from harness.sealed_workers import adapter_refused
+
+            raise ValueError(adapter_refused(swarm_adapter or "none"))
 
         if swarm_adapter == "cursor" and repo_cwd:
             # Platform Cursor SDK workers (CURSOR_API_KEY). Used when no agentic
@@ -1744,6 +1757,8 @@ def execute_intent(
                     "allowed_model_ids": [],
                 }
             allowed_adapters = list(_allow.get("allowed_adapters") or [])
+            if sealed:
+                allowed_adapters = [a for a in allowed_adapters if a == "agentic"]
             prefer_plan_billed = bool(_allow.get("prefer_plan_billed"))
             primary_adapter = str(
                 _allow.get("primary_adapter") or "agentic"
@@ -1754,7 +1769,8 @@ def execute_intent(
                 if str(item).strip()
             ]
             roles = intent.roles or infer_roles(intent.goal)
-            _browser = _browser_swarm_enabled(intent.goal)
+            # The browser profile is shared by every session.
+            _browser = not sealed and _browser_swarm_enabled(intent.goal)
             pinned_model = (getattr(intent, "model", None) or "").strip()
             pin_fields: dict = {}
             pin_adapter = primary_adapter
@@ -1783,6 +1799,10 @@ def execute_intent(
                         .strip().lower()
                         or primary_adapter
                     )
+            if sealed and pin_adapter != "agentic":
+                from harness.sealed_workers import adapter_refused
+
+                raise ValueError(adapter_refused(pin_adapter))
             specs = []
             for r in roles:
                 base_payload = {

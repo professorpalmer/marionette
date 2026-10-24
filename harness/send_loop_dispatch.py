@@ -141,6 +141,12 @@ def _bind_parallel_wave(session, aid, job_ids, objective: str) -> None:
         pass
 
 
+def _store_durable(store_dir: str):
+    from .state import DurableState
+
+    return DurableState(store_dir)
+
+
 def _session_durable(session):
     """Resolve the DurableState-like ledger used for PM artifact listing.
 
@@ -210,6 +216,7 @@ def _swarm_artifact_delivery(
     result_rows: list[dict],
     *,
     require_store: bool = True,
+    durable=None,
 ) -> tuple[list[dict], dict]:
     """Reconcile the PM store with the result projection; never model-pull evidence.
 
@@ -223,7 +230,8 @@ def _swarm_artifact_delivery(
     canonical_rows: list[dict] = []
     store_ok = False
     try:
-        durable = _session_durable(session)
+        if durable is None:
+            durable = _session_durable(session)
         raw_rows = _rows_for_job(list(durable.store.list_artifacts(job_id)), job_id)
         store_ok = True
         if raw_rows:
@@ -522,6 +530,17 @@ def _explicit_swarm_worker_mode(act) -> str:
     return ""
 
 
+def _sealed_adapter_refusal(session, act, agentic_pin) -> Optional[str]:
+    """None for a plain session. For an encrypted one: the refusal text when
+    the call names a non-agentic adapter or pin, else "" (run agentic)."""
+    from . import sealed_workers
+
+    if not sealed_workers.is_sealed(getattr(session, 'harness_session_id', '') or ''):
+        return None
+    named = (agentic_pin.adapter if agentic_pin is not None else (getattr(act, 'adapter', '') or '')).strip().lower()
+    return sealed_workers.adapter_refused(named) if named not in ('', 'agentic') else ''
+
+
 def _intent_worker_kwargs(act) -> dict:
     out = {}
     wm = _explicit_swarm_worker_mode(act)
@@ -658,7 +677,31 @@ def dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findin
 
 Yields the same ConvEvent stream. Generator return value is ``None``
 (continue the action loop) or ``"return"`` (close the turn / exit send).
+
+An encrypted session's swarm uses its own store in the sealed folder. The
+store goes when the swarm thread ends: the result is then in the transcript.
 """
+    from . import sealed_workers
+
+    sid = getattr(session, 'harness_session_id', '') or ''
+    if not sealed_workers.is_sealed(sid):
+        return (yield from _dispatch_swarm_action(
+            session, act, aid, is_native, counters=counters, turn_findings=turn_findings,
+            store_dir=session.state_dir, sealed=False, owner={},
+        ))
+    store_dir = sealed_workers.new_job_store(sid, 'swarm-')
+    owner: dict = {}
+    try:
+        return (yield from _dispatch_swarm_action(
+            session, act, aid, is_native, counters=counters, turn_findings=turn_findings,
+            store_dir=store_dir, sealed=True, owner=owner,
+        ))
+    finally:
+        sealed_workers.remove_job_store_after(owner.get('thread'), store_dir)
+
+
+def _dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findings,
+                           store_dir, sealed, owner) -> Iterator[Any]:
     from .conversation import ConvEvent
     from harness.environment_fingerprint import (
         format_prior_findings_block,
@@ -967,12 +1010,16 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     from contextvars import copy_context
     _delta_q: '_queue.Queue' = _queue.Queue()
     _explicit_wm = _explicit_swarm_worker_mode(act) or None
+    _swarm_kwargs = {"state_dir": store_dir, "sealed": sealed}
+    if _explicit_wm:
+        _swarm_kwargs["worker_mode"] = _explicit_wm
     _swarm_thread = _threading.Thread(
         target=copy_context().run,
         args=(stream_swarm, session, intent, _delta_q, aid),
-        kwargs={"worker_mode": _explicit_wm} if _explicit_wm else {},
+        kwargs=_swarm_kwargs,
         daemon=True,
     )
+    owner['thread'] = _swarm_thread
     _swarm_thread.start()
     result = None
     swarm_error = None
@@ -1098,6 +1145,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     else:
         delivered_arts, artifact_delivery = _swarm_artifact_delivery(
             session, _job_id_text, ordered,
+            durable=_store_durable(store_dir) if sealed else None,
         )
     _pm_receipt = None
     _store_jid_early = str(getattr(result, "job_id", "") or "").strip()
@@ -1464,6 +1512,15 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if strict_adapter:
         requested_adapter = agentic_pin.adapter if agentic_pin is not None else 'agentic'
         adapter_remap_note = ''
+    sealed_refusal = _sealed_adapter_refusal(session, act, agentic_pin)
+    if sealed_refusal:
+        session._release_objective(act.goal)
+        yield ConvEvent('action_start', {'id': aid, 'kind': 'run_implement', 'goal': act.goal, 'cwd': effective_repo})
+        yield ConvEvent('action_result', {'id': aid, 'error': sealed_refusal})
+        session._append_action_result(act, aid, f'(run_implement {aid} refused: {sealed_refusal})', is_native)
+        return None
+    if sealed_refusal is not None:
+        requested_adapter, strict_adapter, adapter_remap_note = 'agentic', True, ''
     use_external = not strict_adapter and requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
     if not strict_adapter and requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:
@@ -1733,6 +1790,14 @@ Yields the same ConvEvent stream. Generator return value is ``None``
     if strict_adapter:
         requested_adapter = agentic_pin.adapter if agentic_pin is not None else 'agentic'
         adapter_remap_note = ''
+    sealed_refusal = _sealed_adapter_refusal(session, act, agentic_pin)
+    if sealed_refusal:
+        yield ConvEvent('action_start', {'id': aid, 'kind': 'run_parallel', 'goals': goals, 'cwd': effective_repo})
+        yield ConvEvent('action_result', {'id': aid, 'error': sealed_refusal})
+        session._append_action_result(act, aid, f'(run_parallel {aid} refused: {sealed_refusal})', is_native)
+        return None
+    if sealed_refusal is not None:
+        requested_adapter, strict_adapter, adapter_remap_note = 'agentic', True, ''
     use_external = not strict_adapter and requested_adapter in external_adapters and _puppetmaster_available() and session._external_adapter_available(requested_adapter)
     if not strict_adapter and requested_adapter in external_adapters and (not use_external):
         if not adapter_remap_note:

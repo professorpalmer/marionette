@@ -407,6 +407,10 @@ def launch(
     repo: str,
 ) -> tuple:
     """Start a run in the background; returns ``(run_id, summary, objective)``."""
+    from . import sealed_workers
+
+    if sealed_workers.is_sealed(str(getattr(session, "harness_session_id", "") or "")):
+        raise FlowCallError(sealed_workers.FLOW_REFUSED)
     runs = _runs(session)
     cap = max_active_flows()
     if len(active_flow_ids(session)) >= cap:

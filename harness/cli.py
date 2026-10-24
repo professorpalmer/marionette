@@ -85,6 +85,11 @@ def _run_gui(argv) -> int:
             seal_state = unlock_from_stdin()
             if seal_state in ("timeout", "rejected"):
                 print(f"encrypted sessions stay locked: master key {seal_state}", file=sys.stderr)
+            # The startup lease means no job of this state dir runs now. A job
+            # store a crash left in a sealed folder goes before any job starts.
+            from .sealed_workers import sweep_job_stores
+
+            sweep_job_stores()
             from .server import serve
             serve(host=args.host, port=args.port, force=args.force, lifetime_receipt=args.lifetime_receipt)
     except RuntimeError as exc:
