@@ -178,3 +178,36 @@ def test_sealed_swarm_refusals(case, sealed, tmp_path, monkeypatch):
     with pytest.raises(ValueError, match=expected):
         bridge.execute_intent(intent, state_dir=str(tmp_path / "store"), sealed=True, **kwargs)
     assert specs == []
+
+
+def test_sealed_swarm_cost_receipt_comes_from_the_sealed_store(sealed, monkeypatch):
+    import harness.financial_receipt as receipts
+    import harness.send_loop_dispatch as dispatch
+    from unittest.mock import MagicMock
+
+    from harness.pilot import PilotAction
+
+    result = SimpleNamespace(
+        job_id="job_ok", adapter="agentic", mode="swarm", num_artifacts=0, artifact_types=[],
+        auth_failure="", summary="", artifacts=[],
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(repo="/repo/wiki"), harness_session_id=sealed, _session_job_ids=[],
+        _register_local_job=MagicMock(), _finish_local_job=MagicMock(), _append_action_result=MagicMock(),
+        _display_transcript=[], durable=None,
+    )
+    loaded = []
+    monkeypatch.setattr(receipts, "load_pm_cost_report", lambda store, job_id: loaded.append(store.db_path) or {
+        "job_id": job_id, "actual_cost": {"measured_cost_usd": 0.5, "measured_runs": 1, "priced_tasks": 1}})
+    monkeypatch.setattr(dispatch, "_non_git_workspace_error", lambda *_a, **_k: None)
+    monkeypatch.setattr(dispatch, "stream_swarm", lambda session, intent, q, *_a, **_k: q.put(("done", result)))
+
+    events = list(dispatch.dispatch_swarm_action(
+        session, PilotAction(kind="run_swarm", goal="audit keys", roles=["explore"]), "a-1", True,
+        counters={"swarms": 0, "demo_swarms": 0}, turn_findings=[],
+    ))
+
+    jobs = os.path.join(seal.sealed_data_dir(sealed), sealed_workers.JOBS_DIR)
+    assert len(loaded) == 1 and str(loaded[0]).startswith(jobs)
+    receipt = next(e for e in events if e.kind == "action_result").data["financial_receipt"]
+    assert receipt["job_id"] == "job_ok" and receipt["spend_usd"] == 0.5

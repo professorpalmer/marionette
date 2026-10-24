@@ -1158,7 +1158,7 @@ def _dispatch_swarm_action(session, act, aid, is_native, *, counters, turn_findi
                 load_pm_cost_report,
                 persistable_pm_receipt,
             )
-            durable = _session_durable(session)
+            durable = _store_durable(store_dir) if sealed else _session_durable(session)
             store = getattr(durable, "store", None)
             if store is not None:
                 _pm_receipt = persistable_pm_receipt(
