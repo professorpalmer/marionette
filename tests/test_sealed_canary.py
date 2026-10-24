@@ -104,18 +104,27 @@ class Backend:
             return e.code, e.read().decode("utf-8", "replace")
 
     def chat(self, message):
+        """Send one turn and read its stream to the final ``done`` frame.
+
+        The runner is free only after ``done``. A turn that starts while the
+        previous one still finishes gets "session busy" and is sent again.
+        """
         q = urllib.parse.quote(message)
         for _ in range(60):
+            out = []
             try:
                 req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/chat?message={q}",
                                              headers={"X-Harness-Token": TOKEN})
-                out = []
                 with urllib.request.urlopen(req, timeout=180) as r:
                     for raw in r:
                         out.append(raw.decode("utf-8", "replace"))
-                        if '"assistant_done"' in out[-1] or '"turn_terminal"' in out[-1]:
+                        if out[-1].startswith('data: {"kind": "done"'):
                             break
-                return "".join(out)
+                text = "".join(out)
+                if "session busy or replaced" in text:
+                    time.sleep(1)
+                    continue
+                return text
             except urllib.error.HTTPError as e:
                 if e.code not in (409, 503):
                     raise
@@ -136,6 +145,14 @@ class Backend:
                 self.proc.kill()
                 self.proc.wait(10)
         self.log.close()
+        # Windows terminate is a hard kill, and the startup lease cannot prove a
+        # dead owner there. The test owns this process and saw it exit.
+        marker = self.state / "backend.json"
+        try:
+            if json.loads(marker.read_text()).get("pid") == self.proc.pid:
+                marker.unlink()
+        except (OSError, ValueError):
+            pass
 
 
 @pytest.fixture
