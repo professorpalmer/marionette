@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+from . import session_files
 from .checkpoints import CHECKPOINT_GIT_TIMEOUT, CheckpointStore, _within
 from .diffreview import parse_unified_diff
 
@@ -19,6 +20,7 @@ logger = logging.getLogger("pmharness.checkpoint_hunks")
 SourceKind = Literal["agent", "external"]
 HunkKind = Literal["added", "removed", "modified"]
 DecisionKind = Literal["pending", "accepted", "reverted"]
+_SEALED_PURPOSE = "checkpoint-hunks"
 
 
 def _parse_hunk_header(header: str) -> Optional[dict[str, int]]:
@@ -205,10 +207,15 @@ class CheckpointHunkTracker:
         self._repo = store.repo
         self._enabled = bool(store._enabled and self._repo)
         self._meta_file: Optional[Path] = None
+        # An encrypted session's hunks (diff lines) go sealed into its folder.
+        self._sealed = bool(session_files.sealed_owner(self._session_id or ""))
         if self._enabled and store._repo_hash:
             sid = self._session_id or "default"
-            meta_dir = Path.home() / ".pmharness" / "checkpoints"
-            self._meta_file = meta_dir / f"{store._repo_hash}_{sid}_hunks.json"
+            if self._sealed:
+                self._meta_file = Path(session_files.sealed_data_path(sid, f"{store._repo_hash}_hunks.json"))
+            else:
+                meta_dir = Path.home() / ".pmharness" / "checkpoints"
+                self._meta_file = meta_dir / f"{store._repo_hash}_{sid}_hunks.json"
 
     def _default_state(self) -> dict[str, Any]:
         return {
@@ -224,8 +231,11 @@ class CheckpointHunkTracker:
         if not self._meta_file or not self._meta_file.exists():
             return self._default_state()
         try:
-            with open(self._meta_file, "r", encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
+            if self._sealed:
+                data = session_files.read_json(str(self._meta_file), self._session_id or "", _SEALED_PURPOSE)
+            else:
+                with open(self._meta_file, "r", encoding="utf-8", errors="replace") as f:
+                    data = json.load(f)
             if isinstance(data, dict):
                 base = self._default_state()
                 base.update(data)
@@ -240,6 +250,9 @@ class CheckpointHunkTracker:
         try:
             self._meta_file.parent.mkdir(parents=True, exist_ok=True)
             state["updated_at"] = int(time.time())
+            if self._sealed:
+                session_files.write_json(str(self._meta_file), state, self._session_id or "", _SEALED_PURPOSE)
+                return
             temp = str(self._meta_file) + ".tmp"
             with open(temp, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(state, f, indent=2)

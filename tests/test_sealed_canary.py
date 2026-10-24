@@ -151,6 +151,10 @@ def _root(tmp_path: Path) -> Path:
     for sub in ("home", "proj", "tmp"):
         (tmp_path / sub).mkdir()
     subprocess.run(["git", "init", "-q", str(tmp_path / "proj")], check=True)
+    (tmp_path / "proj" / "README").write_text("canary workspace\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path / "proj", check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+                   cwd=tmp_path / "proj", check=True)
     return tmp_path
 
 
@@ -173,6 +177,9 @@ def _scenario(backend: Backend, tag: str) -> str:
     assert "TOOLRESULT" in backend.chat("TOOL run_command " + json.dumps({"command": command}))
     backend.chat("TOOL todo " + json.dumps({"op": "init", "list": [{"phase": "p", "items": [c("todo")]}]}))
     backend.chat("TOOL store_scratch " + json.dumps({"key": "k", "value": c("scratch")}))
+    # A pilot edit makes undo checkpoints; their diff lines are session data.
+    backend.chat("TOOL write_file " + json.dumps({"path": "notes.txt", "content": c("edit") + "\n"}))
+    assert (backend.root / "proj" / "notes.txt").read_text().strip() == c("edit")
     for _ in range(4):
         backend.chat(f"long {c('long')} " + "lorem ipsum dolor sit amet " * 300)
     backend.post("/api/sessions/rename", {"session": sid, "title": c("title")})

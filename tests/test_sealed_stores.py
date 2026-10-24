@@ -257,3 +257,33 @@ def test_model_reachable_reads_never_open_another_sessions_file(sealed, tmp_path
     seal.write_file(seal.upload_codec(), str(upload), b"pixels")
     assert seal.read_file(str(upload), owner="") == b"pixels"
     assert seal.read_file(str(upload), owner="plainsid") == b"pixels"
+
+
+def test_checkpoint_hunks_of_a_sealed_session_are_sealed(sealed, tmp_path, monkeypatch):
+    import subprocess
+
+    from harness.checkpoint_hunks import CheckpointHunkTracker
+    from harness.checkpoints import CheckpointStore
+
+    state, _ = sealed
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    hunks = {"a.txt": [{"header": "@@ -0,0 +1 @@", "lines": ["+" + CANARY]}]}
+
+    tracker = CheckpointHunkTracker(CheckpointStore(str(repo), session_id="sealedsid"))
+    tracker._save_state({**tracker._default_state(), "snapshots": hunks})
+    assert tracker._load_state()["snapshots"] == hunks
+    assert str(tracker._meta_file).startswith(seal.sealed_data_dir("sealedsid"))
+    assert tracker._meta_file.read_bytes().startswith(seal.MAGIC)
+
+    plain = CheckpointHunkTracker(CheckpointStore(str(repo), session_id="plainsid"))
+    plain._save_state({**plain._default_state(), "snapshots": {"b.txt": []}})
+    assert str(plain._meta_file).startswith(str(home / ".pmharness" / "checkpoints"))
+    assert json.loads(plain._meta_file.read_text())["snapshots"] == {"b.txt": []}
+    assert _canary_files(state) == [] and _canary_files(str(home)) == []
+
+    seal.erase_session("sealedsid")
+    assert not tracker._meta_file.exists()

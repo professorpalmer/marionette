@@ -21,12 +21,15 @@ These items are encrypted for each encrypted session:
 - Attachments, uploads, and spilled tool output.
 - Session search index (it is kept in memory only).
 - Todos, goal, scratch, and prompt queue.
+- The diff lines that undo checkpoints record for each edit.
 - Memory that an encrypted session saves. Only encrypted sessions see it.
 - The continuity note of a scheduled run, when encryption is on.
 
 These items are not encrypted:
 
 - Your workspace files.
+- Undo snapshots. Marionette keeps them as objects in the workspace's own git
+  folder, and each label names the file path.
 - What model providers and MCP servers receive. The model still gets the
   full conversation.
 - Session metadata: the session id, workspace path, dates, and token counts.
