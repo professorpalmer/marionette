@@ -245,6 +245,8 @@ class ClaudeCliDriver:
     """Pilot driver backed by the Claude Code CLI subprocess."""
 
     supports_streaming = True
+    # The CLI writes its own plain-text session history (refused for sealed sessions).
+    keeps_own_history = True
     requires_explicit_terminal = True
 
     def __init__(

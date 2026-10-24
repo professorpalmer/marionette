@@ -23,7 +23,9 @@ import {
 import {
   clearRecoveredSessionFailNotice,
   emptyTranscriptAfterRetryDecision,
+  isSealedLockedError,
   runnerBusySwitchDecision,
+  SESSION_SEALED_LOCKED_NOTICE,
   sessionStateFailureSwitchDecision,
   shouldPreserveBusyStatus,
   busySeedOnSwitch,
@@ -502,7 +504,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         // Definitive runners map recovered — drop sticky SESSION_* fail banner.
         setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
         // Idle until useRunnersBusyPoll re-arms; never leave A's chrome stuck.
         const failure = sessionStateFailureSwitchDecision();
@@ -511,7 +513,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setTurnOpen(false);
         setStatus("idle");
         setCompactingStatus(null);
-        setEditNotice(failure.notice);
+        setEditNotice(isSealedLockedError(err) ? SESSION_SEALED_LOCKED_NOTICE : failure.notice);
       });
 
     // Long chats / deferred cold attach can return empty or flake once on boot.
@@ -608,7 +610,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         });
 
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (loadGen !== transcriptLoadGenRef.current) return;
         if (cachedSessionIdRef.current !== activeSessionId) return;
         // Cache hit: keep warm rows. Cache miss: clear relics but mark stale
@@ -616,7 +618,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         if (!readStillCurrent()) return;
         const failure = transcriptRefreshFailureDecision(hadCache);
         setTranscriptStale(failure.stale);
-        setEditNotice(failure.notice);
+        setEditNotice(isSealedLockedError(err) ? SESSION_SEALED_LOCKED_NOTICE : failure.notice);
         if (!cancelled && recoveryAttempts < 2) {
           recoveryAttempts += 1;
           recoveryTimer = window.setTimeout(() => {

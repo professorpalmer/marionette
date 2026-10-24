@@ -131,6 +131,14 @@ export function sessionStateFailureSwitchDecision(): {
 export const SESSION_TRANSCRIPT_FAIL_NOTICE =
   "Couldn't refresh this session's messages — showing what we have until the next check.";
 
+/** The backend answered 423 sealed_locked: the session key is not in this process. */
+export const SESSION_SEALED_LOCKED_NOTICE =
+  "This session is encrypted and locked. Unlock it in Settings > Safety > Encrypted sessions.";
+
+export function isSealedLockedError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "sealed_locked";
+}
+
 /**
  * Drop sticky SESSION_* fail banners after successful transcript hydrate or
  * getSessionState / runners recovery. Leaves unrelated edit/rewind notices alone.
@@ -141,6 +149,7 @@ export function clearRecoveredSessionFailNotice(
   if (
     notice === SESSION_STATE_FAIL_NOTICE
     || notice === SESSION_TRANSCRIPT_FAIL_NOTICE
+    || notice === SESSION_SEALED_LOCKED_NOTICE
   ) {
     return null;
   }

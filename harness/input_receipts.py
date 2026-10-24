@@ -14,7 +14,9 @@ import threading
 import time
 import uuid
 
+from . import seal
 from .prompt_queue import ORIGINAL_TEXT_UNSET, PromptQueueError
+from .session_files import decode_json, read_json, write_json
 
 
 class InputReceiptError(PromptQueueError):
@@ -36,6 +38,8 @@ _LOCKS_GUARD = threading.Lock()
 _INPUT_LOCAL = threading.local()
 # Admission limits match the upload default and eight-image composer cap.
 _MAX_FILE_BYTES = 10 * 1024 * 1024
+# A sealed copy of a full-size attachment is a little larger than the cap.
+_MAX_STORED_BYTES = _MAX_FILE_BYTES + seal.ENVELOPE_OVERHEAD
 _MAX_INPUT_BYTES = 80 * 1024 * 1024
 _MAX_ATTACHMENTS = 32
 _MAX_IMAGES = 8
@@ -146,7 +150,7 @@ class InputReceiptStore:
     def _read(self):
         try:
             before = _file_signature(self.path)
-            data = json.loads(self.path.read_text(encoding='utf-8'))
+            data = read_json(str(self.path), self.session_id, 'inputs')
             unchanged = before is not None and before == _file_signature(self.path)
         except FileNotFoundError:
             # A missing manifest can be rebuilt from the verified
@@ -196,10 +200,9 @@ class InputReceiptStore:
         return data
 
     def _write(self, data):
-        from .compaction_archive import _atomic_write_json
         self.validate(data)
         try:
-            _atomic_write_json(str(self.path), data)
+            write_json(str(self.path), data, self.session_id, 'inputs')
             _VALIDATED[str(self.path)] = _file_signature(self.path)
             # The persistent lock inode also records that disappearance is not
             # a new empty session. It contains no original or runnable data.
@@ -252,24 +255,32 @@ class InputReceiptStore:
         return {key: value for key, value in document.items() if key != 'blobs'}
 
     @staticmethod
-    def _bounded_read(handle):
+    def _bounded_read(handle, limit=_MAX_FILE_BYTES):
         chunks = []
         size = 0
         while True:
-            chunk = handle.read(min(_CHUNK_BYTES, _MAX_FILE_BYTES + 1 - size))
+            chunk = handle.read(min(_CHUNK_BYTES, limit + 1 - size))
             if not chunk:
                 return b''.join(chunks)
             size += len(chunk)
-            if size > _MAX_FILE_BYTES:
+            if size > limit:
                 raise InputReceiptError('input_attachment_limit', 'Attachments are limited to 10 MiB each; keep your draft.')
             chunks.append(chunk)
 
+    def _blob_path(self, item):
+        # A sealed session names originals by a keyed tag: a plain digest would
+        # let anyone confirm that the user attached a known file.
+        codec = seal.codec_for(self.session_id)
+        return self.blob_dir / (codec.name_tag(item['sha256']) if codec else item['sha256']), codec
+
     def _blob_bytes(self, item):
         try:
-            path = self.blob_dir / item['sha256']
+            path, codec = self._blob_path(item)
             if self.blob_dir.is_symlink() or path.is_symlink():
                 raise ValueError('linked original')
             raw = self._read_upload(str(path), str(self.blob_dir))
+            if codec is not None:
+                raw = codec.open('input-original', raw)
             if len(raw) != item['byte_length'] or hashlib.sha256(raw).hexdigest() != item['sha256']:
                 raise ValueError('original digest mismatch')
             return raw
@@ -283,14 +294,15 @@ class InputReceiptStore:
             if self.blob_dir.is_symlink():
                 raise InputReceiptError('input_attachment_corrupt', 'Original storage cannot be a symbolic link.')
             self.blob_dir.mkdir(parents=True, exist_ok=True)
-            path = self.blob_dir / item['sha256']
+            path, codec = self._blob_path(item)
             if path.exists() or path.is_symlink():
                 self._blob_bytes(item)
                 return
+            stored = codec.seal('input-original', raw) if codec is not None else raw
             fd, temporary = tempfile.mkstemp(dir=str(self.blob_dir))
             try:
                 with os.fdopen(fd, 'wb') as handle:
-                    handle.write(raw)
+                    handle.write(stored)
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(temporary, path)
@@ -328,7 +340,7 @@ class InputReceiptStore:
             if row['payload_digest'] != self._digest(row['original_text'], hydrated, row['model'], row.get('delivery_text')):
                 raise InputReceiptError('input_corrupt', 'Archive input identity does not match its originals.')
         for item, encoded in payloads.values():
-            path = self.blob_dir / item['sha256']
+            path, _codec = self._blob_path(item)
             if path.exists() or path.is_symlink():
                 self._blob_bytes(item)
         for item, encoded in payloads.values():
@@ -374,9 +386,9 @@ class InputReceiptStore:
             info = os.fstat(handle.fileno())
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError('not a regular file')
-            if info.st_size > _MAX_FILE_BYTES:
+            if info.st_size > _MAX_STORED_BYTES:
                 raise InputReceiptError('input_attachment_limit', 'Attachments are limited to 10 MiB each; keep your draft.')
-            return InputReceiptStore._bounded_read(handle)
+            return InputReceiptStore._bounded_read(handle, _MAX_STORED_BYTES)
 
     @staticmethod
     def _check_budget(budget):
@@ -409,9 +421,11 @@ class InputReceiptStore:
                     result.append(item)
                 continue
             try:
-                raw = self._read_upload(path, root)
+                raw = seal.open_file_bytes(self._read_upload(path, root), self.session_id)
             except (OSError, ValueError, TypeError) as exc:
                 raise InputReceiptError('input_attachment_unavailable', 'An original attachment is missing or outside upload storage; keep your draft.') from exc
+            if len(raw) > _MAX_FILE_BYTES:
+                raise InputReceiptError('input_attachment_limit', 'Attachments are limited to 10 MiB each; keep your draft.')
             budget[1] += len(raw)
             self._check_budget(budget)
             digest = hashlib.sha256(raw).hexdigest()
@@ -508,7 +522,16 @@ class InputReceiptStore:
         suffix = Path(item['name']).suffix.lower()
         if not suffix or not suffix[1:].isalnum() or len(suffix) > 16:
             suffix = '.bin'
-        target = self.path.parent / (self.session_id + '.input-materialized') / (item['sha256'] + suffix)
+        codec = seal.codec_for(self.session_id)
+        name = codec.name_tag(item['sha256']) if codec is not None else item['sha256']
+        target = self.path.parent / (self.session_id + '.input-materialized') / (name + suffix)
+        if codec is not None:
+            # Readers open it with seal.read_file; no plaintext copy on disk.
+            try:
+                seal.write_file(codec, str(target), raw)
+            except OSError as exc:
+                raise InputReceiptError('input_attachment_unavailable', 'Retained attachment could not be prepared for delivery; keep your draft.') from exc
+            return str(target)
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             fd, temporary = tempfile.mkstemp(dir=str(target.parent))
@@ -527,6 +550,13 @@ class InputReceiptStore:
         path = self.path.with_name(self.session_id + '.json')
         try:
             raw = path.read_bytes()
+            if seal.is_envelope(raw):
+                # Each sealed write has a fresh nonce: digest the plaintext.
+                data = decode_json(raw, self.session_id, 'transcript')
+                if not isinstance(data, (dict, list)):
+                    raise ValueError('invalid transcript')
+                from .compaction_archive import json_digest
+                return json_digest(data)
             data = json.loads(raw)
             if not isinstance(data, (dict, list)):
                 raise ValueError('invalid transcript')
@@ -542,7 +572,7 @@ class InputReceiptStore:
         rows = []
         try:
             if path.exists():
-                raw = json.loads(path.read_text(encoding='utf-8'))
+                raw = read_json(str(path), self.session_id, 'transcript')
                 rows.extend(raw.get('history', []) if isinstance(raw, dict) else raw)
             if os.path.exists(compaction_archive_path(self.root, self.session_id)):
                 offset = 0
@@ -654,7 +684,7 @@ class InputReceiptStore:
                 else:
                     path = self.path.with_name(self.session_id + '.json')
                     if path.exists():
-                        current = json.loads(path.read_text(encoding='utf-8'))
+                        current = read_json(str(path), self.session_id, 'transcript')
                         if isinstance(current, dict) and current.get('pruned'):
                             raise InputReceiptError('input_restore_required', 'Explicitly restore the archived session before submitting a turn.')
                         history = current.get('history', []) if isinstance(current, dict) else current
@@ -734,12 +764,15 @@ class InputReceiptStore:
         images = []
         documents = []
         total = 0
+        sealed = seal.codec_for(self.session_id) is not None
         for attachment in row['attachments']:
             path = self.materialize(attachment['ref'])
             if attachment['kind'] == 'image':
                 images.append(path)
             else:
-                block, added = read_file_mention(path, attachment['name'], total_size=total)
+                # The sealed copy on disk is ciphertext: hand the model the original.
+                data = self.attachment(attachment['ref']) if sealed else None
+                block, added = read_file_mention(path, attachment['name'], total_size=total, data=data)
                 total += added
                 documents.append(block)
         return ('\n\n'.join(documents) + '\n\n' + text if documents else text), images

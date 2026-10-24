@@ -246,6 +246,11 @@ class HarnessRefineController:
             return None
         if bool(getattr(self.session, "_auto_mode", False)):
             return None
+        from . import seal
+
+        if seal.is_sealed(str(getattr(self.session, "harness_session_id", "") or "")):
+            # Rules, skills and refine history are plain files every session reads.
+            return None
         prop = RefineProposal(
             id="refine_" + uuid.uuid4().hex[:12],
             kind=kind_n,

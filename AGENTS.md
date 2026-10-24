@@ -20,8 +20,9 @@ Ownership rule: new pilot tools -> `pilot.py` schema + `tool_dispatch` /
 - No emojis or decorative pictographs anywhere (code, docs, commits, output).
   Plain words only.
 - stdlib-only for the harness/rig itself (urllib, sqlite, dataclasses).
-  Puppetmaster is the single real dependency, installed editable from the local
-  checkout.
+  Puppetmaster is the main dependency, installed editable from the local
+  checkout. The one other dependency is `cryptography` (AES-GCM for encrypted
+  sessions, `harness/seal.py`), imported only when a session is encrypted.
 - The `pmharness/intent.py` layer must stay PM-free and pure so it unit-tests
   fast and hermetically. Execution coupling lives only in `bridge.py`.
 - Scoring is deterministic -- no LLM-as-judge. Every metric must be a function

@@ -14,7 +14,7 @@ the store is empty (which would let the next save clobber recoverable data).
 import json
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SCRATCH_FILENAME = "session_scratch.json"
 
@@ -34,20 +34,43 @@ class ScratchStoreCorrupt(ScratchStoreError):
 class SessionScratchStore:
     """Load/save session scratch JSON under a session state_dir."""
 
-    def __init__(self, state_dir: str) -> None:
+    def __init__(self, state_dir: str, session_id_fn: Optional[Callable[[], str]] = None) -> None:
         self.state_dir = state_dir or ""
-        self.path = (
+        self._shared_path = (
             os.path.join(self.state_dir, SCRATCH_FILENAME) if self.state_dir else ""
         )
+        # Plain sessions share one file per state dir. A sealed owner gets its
+        # own sealed file, so its values never reach another session.
+        self._session_id_fn = session_id_fn
         self.last_quarantine_path: str = ""
+
+    def _owner(self) -> str:
+        from .session_files import sealed_owner
+
+        return sealed_owner(self._session_id_fn() if self._session_id_fn else "")
+
+    @property
+    def path(self) -> str:
+        owner = self._owner()
+        if owner and self.state_dir:
+            from .session_files import sealed_data_path
+
+            return sealed_data_path(owner, SCRATCH_FILENAME)
+        return self._shared_path
 
     def _load_raw(self) -> Dict[str, str]:
         if not self.path or not os.path.isfile(self.path):
             return {}
+        owner = self._owner()
         try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                raw = fh.read()
-        except OSError as exc:
+            if owner:
+                from .session_files import read_json
+
+                raw = json.dumps(read_json(self.path, owner, "scratch"))
+            else:
+                with open(self.path, "r", encoding="utf-8") as fh:
+                    raw = fh.read()
+        except (OSError, ValueError) as exc:
             raise ScratchStoreCorrupt(
                 f"scratch store unreadable at {self.path}: {exc}"
             ) from exc
@@ -92,6 +115,12 @@ class SessionScratchStore:
         if not self.path or not self.state_dir:
             raise ScratchStoreError("scratch store has no state_dir")
         try:
+            owner = self._owner()
+            if owner:
+                from .session_files import write_json
+
+                write_json(self.path, data, owner, "scratch")
+                return
             os.makedirs(self.state_dir, exist_ok=True)
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8", newline="\n") as fh:

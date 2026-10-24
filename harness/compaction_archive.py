@@ -182,8 +182,9 @@ def _load_archive_document(state_dir: str, session_id: str) -> Optional[dict]:
     if size > ARCHIVE_LOAD_MAX_BYTES:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        from .session_files import read_json
+
+        data = read_json(path, safe_session_id(session_id), "archive")
     except Exception:
         return None
     if not isinstance(data, dict):
@@ -279,16 +280,26 @@ def append_compaction_archive(
             "digest": json_digest(retained),
             "truncated": any(item.get(ARCHIVE_TRUNCATION_FLAG) for item in retained),
         }
-        _atomic_write_json(compaction_archive_path(state_dir, safe_sid), payload)
+        _write_archive_json(compaction_archive_path(state_dir, safe_sid), payload, safe_sid, "archive")
         return _load_archive_document(state_dir, safe_sid) == payload
     except Exception:
         return False
 
 
+def _write_archive_json(path: str, data: Any, session_id: str, purpose: str) -> None:
+    from .session_files import write_json
+
+    write_json(path, data, session_id, purpose)
+
+
 def _segment_path(state_dir: str, session_id: str, digest: str) -> str:
     if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
         raise OSError("Invalid archive segment reference")
-    return compaction_archive_path(state_dir, session_id) + ".segments/" + digest + ".json"
+    from .seal import codec_for
+
+    codec = codec_for(session_id)
+    name = codec.name_tag(digest) if codec is not None else digest
+    return compaction_archive_path(state_dir, session_id) + ".segments/" + name + ".json"
 
 
 def _archive_batches(state_dir: str, session_id: str, document: dict, *, ancestor: str = ""):
@@ -320,7 +331,9 @@ def _archive_batches(state_dir: str, session_id: str, document: dict, *, ancesto
             raw = handle.read(ARCHIVE_LOAD_MAX_BYTES + 1)
         if len(raw) > ARCHIVE_LOAD_MAX_BYTES:
             raise OSError("Oversized archive segment")
-        segment = json.loads(raw)
+        from .session_files import decode_json
+
+        segment = decode_json(raw, sid, "archive-segment")
         if not isinstance(segment, dict) or json_digest(segment) != head:
             raise OSError("Archive segment digest mismatch")
         rows = segment.get("messages")
@@ -401,7 +414,7 @@ def _append_complete(state_dir: str, sid: str, incoming: list[dict],
         digest = json_digest(segment)
         path = _segment_path(state_dir, sid, digest)
         if not os.path.exists(path):
-            _atomic_write_json(path, segment)
+            _write_archive_json(path, segment, sid, "archive-segment")
         return digest, count + len(rows)
 
     def publish_batches(rows, parent, count):
@@ -431,7 +444,7 @@ def _append_complete(state_dir: str, sid: str, incoming: list[dict],
     manifest = {"version": 2, "session_id": sid, "head": head,
                 "total": total, "commit_id": commit_id}
     verified_archive_digest(state_dir, sid, manifest)
-    _atomic_write_json(compaction_archive_path(state_dir, sid), manifest)
+    _write_archive_json(compaction_archive_path(state_dir, sid), manifest, sid, "archive")
     return _load_archive_document(state_dir, sid) == manifest
 
 
@@ -448,7 +461,7 @@ def restore_archive_generation(state_dir: str, session_id: str, document: Option
                 finally:
                     os.close(directory)
         return
-    _atomic_write_json(path, document)
+    _write_archive_json(path, document, safe_session_id(session_id), "archive")
 
 
 def remove_compaction_archive(state_dir: str, session_id: str) -> None:

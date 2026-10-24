@@ -931,10 +931,10 @@ class CompactionContextMixin:
         except Exception:
             return None
         try:
-            from harness.context_budget import content_hash, spill_to_disk
+            from harness.context_budget import _index_hash, content_hash, spill_to_disk
             from harness.spill_registry import register_spill, spill_uri
 
-            path = spill_to_disk(content, result_id, state_dir, dedupe=True)
+            path = spill_to_disk(content, result_id, state_dir, dedupe=True, session_id=session_id)
             uri = spill_uri(session_id, result_id)
             if uri is None:
                 return None
@@ -944,7 +944,7 @@ class CompactionContextMixin:
                 tool_call_id=result_id,
                 path=path,
                 chars=len(content),
-                content_hash=content_hash(content),
+                content_hash=_index_hash(content_hash(content), session_id),
             )
             return uri if registered else None
         except Exception:

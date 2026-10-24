@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import seal
+
 
 @dataclass
 class FileServices:
@@ -491,8 +493,13 @@ def save_upload(body: bytes, content_type: str, upload_dir: str) -> tuple[int, d
             skipped.append(filename or "unnamed")
             continue
         path = os.path.join(upload_dir, f"{uuid.uuid4().hex}{ext}")
-        with open(path, "wb") as out:
-            out.write(data)
+        codec = seal.upload_codec()
+        if codec is not None:
+            # Sealing is on: the next session is sealed, so its upload is too.
+            seal.write_file(codec, path, data)
+        else:
+            with open(path, "wb") as out:
+                out.write(data)
         saved.append({"path": path, "name": filename})
     if saved:
         return 200, {"saved": saved}
@@ -801,10 +808,12 @@ def get_image(req_path: str, upload_dir: str, *, session=None) -> tuple[int, byt
     try:
         size = os.path.getsize(file_real)
         max_bytes = int(os.environ.get("HARNESS_UPLOAD_MAX_BYTES", str(10 * 1024 * 1024)))
-        if size > max_bytes:
+        if size > max_bytes + seal.ENVELOPE_OVERHEAD:
             return 413, {"error": "Image too large"}, "application/json"
-        with open(file_real, "rb") as f:
-            data = f.read()
+        # Upload storage holds uploads only: no session key opens a file here.
+        data = seal.read_file(file_real, owner="")
+    except seal.SealLocked as e:
+        return 423, {"ok": False, "code": "sealed_locked", "error": str(e)}, "application/json"
     except Exception as e:
         return 500, {"error": f"Failed to read image: {e}"}, "application/json"
     return 200, data, image_ctypes[ext]

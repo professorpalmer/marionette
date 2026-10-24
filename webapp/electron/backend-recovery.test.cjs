@@ -34,6 +34,7 @@ function fixture(t, error, sha = 'old', pidError = 'ESRCH') {
     readLiveUpdateMarker:()=>null,freePort:async()=>23456,loginShellEnv:()=>({}),
     buildPuppetmasterBackendEnv,secretVault:{injectEnv(){}},require:()=>({safeStorage:{}}),
     venvPython:()=>'/fixture/python',refreshAllowedLoopbackAliases(){},
+    sealKeys:{spawnLine:()=>null},unlockAdoptedBackend(){},
     waitForBackend:async()=>{},shouldUnlinkBackendMarker:owned=>owned,
     spawn(py,args,opts){
       spawns.push({py,args,opts});

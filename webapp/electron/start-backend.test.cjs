@@ -57,6 +57,8 @@ function startBackendOnceContext(overrides) {
     currentBackendIdentity: () => ({}),
     resolveRepoRoot: () => '/repo',
     app: { getVersion: () => '0.0.0' },
+    sealKeys: { spawnLine: () => null },
+    unlockAdoptedBackend() {},
     ...overrides,
   });
   vm.runInContext(source.slice(source.indexOf('async function _startBackendOnce()'), source.indexOf('function authToken()')), ctx);

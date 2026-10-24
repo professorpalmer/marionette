@@ -20,8 +20,11 @@ import json
 import os
 import re
 import sqlite3
+import threading
+from contextlib import contextmanager
 from typing import Any, Iterable, List, Optional, Tuple
 
+from harness import seal
 from harness.api.redaction import redact_api_secrets
 
 DB_FILENAME = "session_fts.sqlite"
@@ -104,6 +107,78 @@ def _connect(state_dir: str) -> sqlite3.Connection:
         ("schema_version", _SCHEMA_VERSION),
     )
     return conn
+
+
+# Sealed sessions are never indexed on disk. Their rows live in one in-memory
+# FTS database per state dir, filled from the sealed transcripts on the first
+# search after unlock and dropped on lock.
+_MEMORY: dict = {}
+_MEMORY_FILLED: set = set()
+_MEMORY_LOCK = threading.RLock()
+
+
+def _drop_memory() -> None:
+    with _MEMORY_LOCK:
+        for conn in _MEMORY.values():
+            conn.close()
+        _MEMORY.clear()
+        _MEMORY_FILLED.clear()
+
+
+seal.on_lock(_drop_memory)
+
+
+def _memory_conn(state_dir: str) -> sqlite3.Connection:
+    key = _db_path(state_dir)
+    conn = _MEMORY.get(key)
+    if conn is None:
+        conn = sqlite3.connect(":memory:", check_same_thread=False)
+        conn.executescript(_SCHEMA)
+        _MEMORY[key] = conn
+    return conn
+
+
+@contextmanager
+def _index_conn(state_dir: str, sid: str):
+    """The index a session's rows belong to: memory for sealed, disk otherwise.
+
+    A sealed session with no key raises SealLocked, so nothing is indexed.
+    """
+    if sid and seal.is_sealed(sid):
+        seal.codec_for(sid)
+        with _MEMORY_LOCK:
+            yield _memory_conn(state_dir)
+        return
+    conn = _connect(state_dir)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _fill_memory(state_dir: str) -> None:
+    """Index every sealed transcript once per unlock. Locked: nothing to add."""
+    key = _db_path(state_dir)
+    if not seal.unlocked() or key in _MEMORY_FILLED:
+        return
+    from .session_files import is_sealed_file, read_json
+
+    trans_dir = os.path.join(os.path.abspath(state_dir), "transcripts")
+    try:
+        names = sorted(os.listdir(trans_dir))
+    except OSError:
+        names = []
+    with _MEMORY_LOCK:
+        _MEMORY_FILLED.add(key)
+        for name in names:
+            sid = name[:-5] if name.endswith(".json") else ""
+            path = os.path.join(trans_dir, name)
+            if not _safe_session_id(sid) or not is_sealed_file(path):
+                continue
+            try:
+                index_session_transcript(state_dir, sid, read_json(path, sid, "transcript"))
+            except Exception:
+                continue
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -300,12 +375,9 @@ def index_session_preview(
     else:
         preview = _preview_from_messages(preview_or_messages, _MAX_PREVIEW_CHARS)
     try:
-        conn = _connect(state_dir)
-        try:
+        with _index_conn(state_dir, sid) as conn:
             _replace_session_preview(conn, sid, preview)
             conn.commit()
-        finally:
-            conn.close()
         return True
     except Exception:
         return False
@@ -357,8 +429,7 @@ def index_session_artifacts(
         seen.add(key)
         rows.append((aid, headline))
     try:
-        conn = _connect(state_dir)
-        try:
+        with _index_conn(state_dir, sid) as conn:
             if not _table_exists(conn, "artifact_headlines"):
                 return False
             if jid:
@@ -378,8 +449,6 @@ def index_session_artifacts(
                     (sid, jid, aid, headline),
                 )
             conn.commit()
-        finally:
-            conn.close()
         return True
     except Exception:
         return False
@@ -443,8 +512,7 @@ def index_session_transcript(
     try:
         chunks = extract_chunks(transcript_or_messages)
         preview = _preview_from_messages(transcript_or_messages, _MAX_PREVIEW_CHARS)
-        conn = _connect(state_dir)
-        try:
+        with _index_conn(state_dir, sid) as conn:
             conn.execute(
                 "DELETE FROM session_chunks WHERE session_id = ?",
                 (sid,),
@@ -457,8 +525,6 @@ def index_session_transcript(
             _replace_session_preview(conn, sid, preview)
             _replace_session_display_artifacts(conn, sid, transcript_or_messages)
             conn.commit()
-        finally:
-            conn.close()
         return True
     except Exception:
         return False
@@ -526,30 +592,37 @@ def search_sessions(
     match = _fts_match_query(q)
     if not match:
         return []
-    if not os.path.exists(_db_path(state_dir)):
-        return []
     try:
         cap = max(1, min(int(limit or _DEFAULT_LIMIT), _MAX_LIMIT))
     except (TypeError, ValueError):
         cap = _DEFAULT_LIMIT
-    try:
-        conn = _connect(state_dir)
+    fetch_limit = cap * 8
+
+    def search(conn: sqlite3.Connection) -> List[Tuple[str, str, float, str]]:
+        return (
+            _search_table(conn, "session_chunks", "transcript", match, fetch_limit)
+            + _search_table(conn, "session_previews", "preview", match, fetch_limit)
+            + _search_table(conn, "artifact_headlines", "artifact", match, fetch_limit)
+        )
+
+    merged_rows: List[Tuple[str, str, float, str]] = []
+    if os.path.exists(_db_path(state_dir)):
         try:
-            fetch_limit = cap * 8
-            merged_rows: List[Tuple[str, str, float, str]] = []
-            merged_rows.extend(
-                _search_table(conn, "session_chunks", "transcript", match, fetch_limit)
-            )
-            merged_rows.extend(
-                _search_table(conn, "session_previews", "preview", match, fetch_limit)
-            )
-            merged_rows.extend(
-                _search_table(conn, "artifact_headlines", "artifact", match, fetch_limit)
-            )
-        finally:
-            conn.close()
+            conn = _connect(state_dir)
+            try:
+                merged_rows.extend(search(conn))
+            finally:
+                conn.close()
+        except Exception:
+            return []
+    try:
+        _fill_memory(state_dir)
+        with _MEMORY_LOCK:
+            memory = _MEMORY.get(_db_path(state_dir))
+            if memory is not None:
+                merged_rows.extend(search(memory))
     except Exception:
-        return []
+        pass  # Plain hits stand on their own.
 
     merged_rows.sort(key=lambda row: row[2])
     best: dict[str, dict] = {}
@@ -595,8 +668,9 @@ def reindex_transcripts(state_dir: str) -> dict:
             continue
         path = os.path.join(trans_dir, name)
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                payload = json.load(f)
+            from .session_files import read_json
+
+            payload = read_json(path, sid, "transcript")
         except Exception:
             stats["skipped"] += 1
             continue
@@ -722,7 +796,15 @@ def remove_session_from_index(state_dir: str, session_id: str) -> bool:
     if not state_dir:
         return False
     sid = _safe_session_id(session_id)
-    if not sid or not os.path.exists(_db_path(state_dir)):
+    if not sid:
+        return False
+    with _MEMORY_LOCK:
+        memory = _MEMORY.get(_db_path(state_dir))
+        if memory is not None:
+            for table in ("session_chunks", "session_previews", "artifact_headlines"):
+                memory.execute(f"DELETE FROM {table} WHERE session_id = ?", (sid,))
+            memory.commit()
+    if not os.path.exists(_db_path(state_dir)):
         return False
     try:
         conn = _connect(state_dir)

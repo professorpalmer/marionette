@@ -1026,6 +1026,8 @@ class CursorAcpDriver:
     """Warm ACP pilot with automatic --print fallback."""
 
     supports_streaming = True
+    # The CLI writes its own plain-text session history (refused for sealed sessions).
+    keeps_own_history = True
     # Production Cursor path: fail closed without an explicit provider terminal.
     requires_explicit_terminal = True
 

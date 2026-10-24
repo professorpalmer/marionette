@@ -80,6 +80,11 @@ def _run_gui(argv) -> int:
     ownership = exclusive_startup(Path(state), Path(args.lifetime_receipt) if args.lifetime_receipt else None)
     try:
         with ownership:
+            from .seal import unlock_from_stdin
+
+            seal_state = unlock_from_stdin()
+            if seal_state in ("timeout", "rejected"):
+                print(f"encrypted sessions stay locked: master key {seal_state}", file=sys.stderr)
             from .server import serve
             serve(host=args.host, port=args.port, force=args.force, lifetime_receipt=args.lifetime_receipt)
     except RuntimeError as exc:

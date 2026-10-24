@@ -393,6 +393,9 @@ def record_history_compaction(
     )
     preview = (summary_preview or "")[:400]
     sid = session_id or "default"
+    from .seal import is_sealed
+    if is_sealed(sid):
+        preview = ""
     cost = None
     if estimated_cost_usd is not None:
         try:
@@ -740,6 +743,26 @@ def _commit_connection(state_dir: str):
     return conn
 
 
+def _seal_undo(session_id: str, text: str, purpose: str) -> str:
+    """Undo records hold the whole pre-compaction history: sealed sessions store
+    them sealed, since SQLite keeps freed pages after ``source_json=NULL``."""
+    from .seal import codec_for
+
+    codec = codec_for(session_id)
+    return codec.seal_text(purpose, text) if codec is not None else text
+
+
+def _open_undo(session_id: str, text, purpose: str):
+    from .seal import codec_for, is_sealed_text
+
+    if not is_sealed_text(text):
+        return text
+    codec = codec_for(session_id)
+    if codec is None:
+        raise ValueError("sealed undo record for a session with no seal")
+    return codec.open_text(purpose, text)
+
+
 def recover_compaction_commit(state_dir: str, session_id: str) -> str:
     from .native_publication import native_publication
     with native_publication(state_dir):
@@ -768,10 +791,14 @@ def _recover_compaction_commit(state_dir: str, session_id: str) -> str:
         if not row or row[3] != "pending":
             return "none"
         original, target_digest, archive_digest, _, before_json, generation_json = row
+        original = _open_undo(session_id, original, "compaction-undo")
+        before_json = _open_undo(session_id, before_json, "compaction-undo-archive")
         path = Path(state_dir) / "transcripts" / f"{session_id}.json"
         valid = False
         try:
-            current = json.loads(path.read_text(encoding="utf-8"))
+            from .session_files import read_json
+
+            current = read_json(str(path), session_id, "transcript")
             valid = (
                 json_digest(current) == target_digest
                 and verified_archive_digest(
@@ -877,7 +904,8 @@ def _commit_compacted_transcript(
             "INSERT OR REPLACE INTO compaction_commit "
             "(session_id, source_json, target_digest, archive_digest, status, archive_before_json) "
             "VALUES (?, ?, ?, '', 'pending', ?)",
-            (sid, json.dumps(source), json_digest(target), json.dumps(before)),
+            (sid, _seal_undo(sid, json.dumps(source), "compaction-undo"), json_digest(target),
+             _seal_undo(sid, json.dumps(before), "compaction-undo-archive")),
         )
         conn.commit()
         try:

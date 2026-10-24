@@ -762,13 +762,12 @@ def _resolve_spill(parsed: ParsedInternalUri, ctx: InternalUriContext) -> Intern
         raise InternalUriError(f"spill file no longer exists: {tool_call_id}")
 
     if parsed.json_pointer is not None:
-        text = _read_spill_text(file_path, for_json_query=True)
+        text = _read_spill_text(file_path, for_json_query=True, owner=str(ctx.session_id or ""))
         return _resolve_spill_json_query(url, text, parsed.json_pointer)
 
-    with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
-
-    return _text_resource(url, text)
+    return _text_resource(
+        url, _read_spill_text(file_path, for_json_query=False, owner=str(ctx.session_id or "")),
+    )
 
 
 def _resolve_conflict(parsed: ParsedInternalUri, ctx: InternalUriContext) -> InternalResource:
@@ -1113,7 +1112,7 @@ def _format_json_query_result(value: Any) -> str:
     return rendered
 
 
-def _read_spill_text(file_path: str, *, for_json_query: bool) -> str:
+def _read_spill_text(file_path: str, *, for_json_query: bool, owner: str = "") -> str:
     """Read spill content for JSON queries with a hard size cap before full load."""
     try:
         size = os.path.getsize(file_path)
@@ -1121,6 +1120,16 @@ def _read_spill_text(file_path: str, *, for_json_query: bool) -> str:
         raise InternalUriError(f"spill file is not readable: {file_path}") from exc
     if for_json_query and size > _MAX_JSON_PARSE_CHARS:
         raise InternalUriError("spill content exceeds maximum size for json query")
+    from .seal import is_envelope, read_file
+
+    with open(file_path, "rb") as fh:
+        sealed = is_envelope(fh.read(4))
+    if sealed:
+        # A sealed spill opens whole; the size cap applies to its plaintext.
+        chunk = read_file(file_path, owner=owner)
+        if for_json_query and len(chunk) > _MAX_JSON_PARSE_CHARS:
+            raise InternalUriError("spill content exceeds maximum size for json query")
+        return chunk.decode("utf-8", errors="replace")
     if for_json_query:
         with open(file_path, "rb") as fh:
             chunk = fh.read(_MAX_JSON_PARSE_CHARS + 1)

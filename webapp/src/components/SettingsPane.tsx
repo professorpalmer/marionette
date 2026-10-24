@@ -14,6 +14,7 @@ import {
 } from "../lib/api";
 import SkillsPane from "./SkillsPane";
 import DeviceAccess from "./DeviceAccess";
+import EncryptedSessions from "./EncryptedSessions";
 import MemoryPane from "./MemoryPane";
 import SchedulesPane from "./SchedulesPane";
 import { takePendingExpandMemory } from "../lib/memoryDeepLink";
@@ -1435,6 +1436,16 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </div>
 
         </>)}
+        {gate("safety", "encrypted sessions encryption at rest privacy recovery code") && (
+          <SettingsCollapse
+            id="encrypted-sessions"
+            title="Encrypted sessions"
+            defaultOpen={false}
+            className="space-y-2 border-t border-edge pt-3"
+          >
+            <EncryptedSessions />
+          </SettingsCollapse>
+        )}
         {gate("safety", "device access read only grants enrollment revoke sessions") && (
           <SettingsCollapse
             id="device-access"

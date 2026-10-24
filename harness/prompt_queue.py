@@ -18,6 +18,9 @@ import threading
 import uuid
 from typing import Optional
 
+from . import seal
+from .session_files import read_json, write_json
+
 
 ORIGINAL_TEXT_UNSET = object()
 
@@ -97,14 +100,13 @@ class PromptQueueMixin:
                 lock_file.close()
 
     def _read_queue(self) -> list:
+        owner = self._prompt_queue_owner
         try:
-            with open(self._prompt_queue_path, encoding='utf-8') as f:
-                data = json.load(f)
+            data = read_json(self._prompt_queue_path, owner[1], 'prompt-queue')
         except FileNotFoundError:
             return []
         except (OSError, ValueError) as exc:
             raise PromptQueueError('queue_read_failed', 'Prompt queue cannot be read. Original file retained for recovery.') from exc
-        owner = self._prompt_queue_owner
         if (not isinstance(data, dict) or data.get('version') != 1
                 or data.get('session_id') != owner[1] or not isinstance(data.get('queue'), list)):
             raise PromptQueueError('queue_read_failed', 'Invalid prompt queue. Original file retained for recovery.')
@@ -123,13 +125,18 @@ class PromptQueueMixin:
     def _commit_queue(self, items: list) -> None:
         """Caller holds owner lock across read, snapshot, write, and publication."""
         tmp = None
+        payload = {'version': 1, 'session_id': self._prompt_queue_owner[1], 'queue': items}
         try:
+            if seal.is_sealed(payload['session_id']):
+                write_json(self._prompt_queue_path, payload, payload['session_id'], 'prompt-queue')
+                self._prompt_queue = copy.deepcopy(items)
+                return
             parent = os.path.dirname(self._prompt_queue_path)
             os.makedirs(parent, exist_ok=True)
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n',
                     dir=parent, prefix='.queue-', suffix='.tmp', delete=False) as f:
                 tmp = f.name
-                json.dump({'version': 1, 'session_id': self._prompt_queue_owner[1], 'queue': items}, f)
+                json.dump(payload, f)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp, self._prompt_queue_path)

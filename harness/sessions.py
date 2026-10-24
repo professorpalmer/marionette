@@ -26,6 +26,7 @@ import weakref
 from dataclasses import dataclass, asdict
 from typing import Optional, Any, List
 
+from . import seal
 from .job_scoping import cwd_under_repo, _norm_path
 from .paths import same_workspace_path
 
@@ -137,6 +138,36 @@ def _invalidate_preview_cache(path: str) -> None:
             del _preview_cache[key]
 
 
+
+SEALED_TITLE = "Encrypted session"
+
+
+def _seal_title(row: dict) -> None:
+    """Keep ``title_sealed`` current for a sealed row. Plain rows are untouched."""
+    if not row.get("sealed"):
+        return
+    codec = seal.codec_for(row["id"])
+    if codec is None:
+        raise seal.SealError("sealed row without a session seal")
+    row["title_sealed"] = codec.seal_text("title", str(row.get("title") or ""))
+
+
+def _open_title(row: dict) -> str:
+    try:
+        codec = seal.codec_for(row["id"])
+        if codec is not None and row.get("title_sealed"):
+            return codec.open_text("title", row["title_sealed"])
+    except (seal.SealLocked, seal.SealError):
+        pass
+    return SEALED_TITLE
+
+
+def _disk_row(row: dict) -> dict:
+    """The registry row as written: a sealed row keeps only its sealed title."""
+    if not row.get("sealed"):
+        return row
+    return {**row, "title": SEALED_TITLE}
+
 @dataclass
 class SessionMeta:
     id: str
@@ -173,7 +204,18 @@ class SessionStore:
                 self._active = data.get("active")
             except Exception:
                 self._sessions, self._active = [], None
+            for row in self._sessions:
+                if row.get("sealed"):
+                    seal.mark_sealed(row["id"])
+                    row["title"] = _open_title(row)
             self._prune_ephemeral_rows()
+
+    def reopen_sealed_titles(self) -> None:
+        """After unlock: show the real titles of sealed sessions."""
+        with self._lock:
+            for row in self._sessions:
+                if row.get("sealed"):
+                    row["title"] = _open_title(row)
 
     def _prune_ephemeral_rows(self) -> None:
         """Drop non-active sessions rooted in temp dirs (worker worktrees,
@@ -225,7 +267,7 @@ class SessionStore:
         # sees a truncated session file -- matches memory_store/rule_store/keys.
         target_dir = os.path.dirname(self.path) or "."
         os.makedirs(target_dir, exist_ok=True)
-        payload = {"sessions": self._sessions, "active": self._active}
+        payload = {"sessions": [_disk_row(row) for row in self._sessions], "active": self._active}
         tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".sessions_")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as f:
@@ -347,7 +389,16 @@ class SessionStore:
         repo: str = "",
         branch: str = "",
         workspace_root: str = "",
+        *,
+        sealed: Optional[bool] = None,
     ) -> dict:
+        """New session. ``sealed`` defaults to the switch (``seal.enabled()``).
+
+        A sealed create needs the master key and raises ``SealLocked`` before
+        any row exists.
+        """
+        if sealed is None:
+            sealed = seal.enabled()
         with self._lock:
             sid = uuid.uuid4().hex[:12]
             ws_root = (workspace_root or repo or "").strip()
@@ -359,6 +410,10 @@ class SessionStore:
                 branch=branch,
                 workspace_root=ws_root,
             ))
+            if sealed:
+                seal.create_session(sid)
+                meta["sealed"] = True
+                _seal_title(meta)
             self._sessions.append(meta)
             self._active = sid
             self._save()
@@ -410,6 +465,11 @@ class SessionStore:
             if request_id:
                 origin["request_id"] = request_id
             child["forked_from"] = origin
+            if parent.get("sealed") or seal.is_sealed(parent_id):
+                # Sealed text never flows into a plain session.
+                seal.create_session(child_id)
+                child["sealed"] = True
+                _seal_title(child)
             if parent.get("pilot_preferences"):
                 child["pilot_preferences"] = dict(parent["pilot_preferences"])
             payload = {"history": messages[:cutoff]} if isinstance(raw, dict) else messages[:cutoff]
@@ -425,6 +485,8 @@ class SessionStore:
                 self._save(immediate=True)
             except OSError:
                 self._sessions.remove(child)
+                if child.get("sealed"):
+                    seal.erase_session(child_id)
                 if previous_link is None:
                     parent.pop("forked_to", None)
                 else:
@@ -451,6 +513,11 @@ class SessionStore:
                 self._active = None
             self._save(immediate=True)
             return self._active
+
+    def clear_active(self) -> None:
+        with self._lock:
+            self._active = None
+            self._save()
 
     def rows(self) -> list[dict]:
         """Snapshot of the raw session rows (copies; safe to inspect freely)."""
@@ -572,6 +639,7 @@ class SessionStore:
                     current = s.get("title", "")
                     if not current or current == "New session":
                         s["title"] = cleaned
+                        _seal_title(s)
                         self._save()
                     break
 
@@ -584,7 +652,13 @@ class SessionStore:
         with self._lock:
             for s in self._sessions:
                 if s["id"] == sid:
+                    previous = s.get("title")
                     s["title"] = cleaned
+                    try:
+                        _seal_title(s)
+                    except seal.SealLocked:
+                        s["title"] = previous
+                        raise
                     s["title_user"] = True
                     self._save()
                     return True
@@ -908,12 +982,12 @@ def rematerialize_driver_messages(transcript: Any) -> list:
 
 
 def _write_transcript(state_dir: str, safe_sid: str, messages: Any) -> None:
-    from .compaction_archive import _atomic_write_json
+    from .native_publication import native_publication
+    from .session_files import write_json
 
     path = os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
-    from .native_publication import native_publication
     with native_publication(state_dir):
-        _atomic_write_json(path, messages)
+        write_json(path, messages, safe_sid, "transcript")
         _invalidate_preview_cache(path)
 
 
@@ -1019,14 +1093,18 @@ def load_transcript(state_dir: str, session_id: str) -> Any:
     recover_compaction_commit(state_dir, safe_sid)
     if not os.path.exists(p):
         return []
+    from .seal import SealLocked
+    from .session_files import read_json
+
     try:
-        with open(p, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict) and data.get("pruned") is True:
-            return []
-        return data
+        data = read_json(p, safe_sid, "transcript")
+    except SealLocked:
+        raise
     except Exception:
         return []
+    if isinstance(data, dict) and data.get("pruned") is True:
+        return []
+    return data
 
 
 def _unescape_json_string(raw: str) -> str:
@@ -1114,7 +1192,12 @@ def transcript_preview(
         if hit is not None and hit[0] == mtime:
             return hit[1]
     try:
-        if size <= _PREVIEW_READ_BYTES:
+        from .session_files import is_sealed_file, read_json
+
+        if is_sealed_file(path):
+            # No prefix scan of ciphertext: open the whole file (cached by mtime).
+            text = _preview_from_messages(read_json(path, safe_sid, "transcript"), cap)
+        elif size <= _PREVIEW_READ_BYTES:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             text = _preview_from_messages(data, cap)

@@ -4163,6 +4163,13 @@ def dispatch_local_action(
                     "browser_type", "browser_scroll", "browser_back",
                     "browser_get_text", "browser_screenshot",
                     "browser_auth_handoff", "browser_tabs", "browser_tab_activate", "computer_use", "browser_input"):
+        from . import seal
+        if seal.is_sealed(str(getattr(session, "harness_session_id", "") or "")):
+            err = (f"{act.kind} is not available in an encrypted session: the browser "
+                   "keeps one plain-text profile for every session")
+            yield ConvEvent("action_result", {"id": aid, "error": err})
+            session._append_action_result(act, aid, f"({act.kind} failed: {err})", is_native)
+            return
         try:
             from . import browser as _browser
             bargs = act.arguments or {}

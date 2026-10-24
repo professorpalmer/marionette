@@ -28,6 +28,7 @@ Start here, then follow the map:
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
 | [Extractive Residuals After Compaction](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
+| [docs/encrypted-sessions.md](docs/encrypted-sessions.md) | Opt-in encryption at rest for new sessions: what is encrypted, keys, recovery code, limits. |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 
 ## What it is

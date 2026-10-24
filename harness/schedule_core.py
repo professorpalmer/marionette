@@ -133,12 +133,24 @@ def should_prepend_continuity(schedule: "Schedule") -> bool:
     return bool(digest or notepad)
 
 
+CONTINUITY_PURPOSE = "schedule-continuity"
+
+
+def _open_digest(value: str) -> str:
+    """A digest stored while encryption was on is sealed text. Raises when locked."""
+    from . import seal
+
+    if not seal.is_sealed_text(value):
+        return value
+    return seal.memory_codec().open_text(CONTINUITY_PURPOSE, value)
+
+
 def continuity_block(schedule: "Schedule") -> str:
     """Context block prepended to the next fire's prompt, or empty."""
     if not should_prepend_continuity(schedule):
         return ""
     parts = ["[schedule continuity]"]
-    digest = str(getattr(schedule, "continuity_digest", "") or "").strip()
+    digest = _open_digest(str(getattr(schedule, "continuity_digest", "") or "").strip())
     if digest:
         parts.append("last_digest: %s" % digest)
     note = clip_notepad(getattr(schedule, "notepad", "")).strip()

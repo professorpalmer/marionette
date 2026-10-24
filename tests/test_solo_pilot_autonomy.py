@@ -18,6 +18,7 @@ class _Catalog:
 def _schema_session(worker_available):
     return SimpleNamespace(
         _worker_delegation_available=lambda: worker_available,
+        _browser_tools_enabled=lambda: True,
         _tool_catalog=_Catalog(),
         _mcp=None,
         _tools_schema_snapshot=None,

@@ -324,7 +324,13 @@ from .skill_retrieve import (
 from .jev.retrieve import select_turn_skills
 from .jev.judge import suggestion_block
 from .rule_store import RuleStore
-from .memory_store import MemoryStore
+from .memory_store import MemoryStore, SessionMemory
+
+SEALED_MEMORY_HEADER = (
+    "# Encrypted durable memory (CONTEXT ONLY -- facts and preferences saved "
+    "by encrypted sessions). It is never current execution evidence or a "
+    "current finding. Re-verify claims with this session's tools."
+)
 
 
 def _mcp_result_text(out: dict) -> str:
@@ -831,7 +837,9 @@ class ConversationalSession(
             rules_block = "\n".join(f"- {r.text}" for r in active_rules)
             system = (system + "\n\n# Standing rules (ALWAYS honor)\n" + rules_block)
         # durable memory (persistent across sessions -- user facts and preferences)
-        self._memory = MemoryStore()
+        self._memory = SessionMemory(
+            MemoryStore(), lambda: getattr(self, "harness_session_id", "") or ""
+        )
         mem_block = self._memory.render_block()
         if mem_block:
             system = (
@@ -1067,7 +1075,9 @@ class ConversationalSession(
         # Session scratch bindings (L1 durable key/value; survives compact).
         from .session_scratch import SessionScratchStore
 
-        self._scratch_store = SessionScratchStore(self.state_dir)
+        self._scratch_store = SessionScratchStore(
+            self.state_dir, lambda: self.harness_session_id or ""
+        )
         from .todo import SessionTodoStore
 
         self._todo_store = SessionTodoStore(self.state_dir)
@@ -2585,7 +2595,7 @@ class ConversationalSession(
         schema = self._tool_catalog.visible_schema(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
-            browser_enabled=getattr(self.config, "browser_enabled", True),
+            browser_enabled=self._browser_tools_enabled(),
             profile=profile,
         )
         if schema and not delegation_available:
@@ -2651,7 +2661,7 @@ class ConversationalSession(
             self._mcp,
             self._tool_catalog,
             no_delegation=getattr(self.config, "no_delegation", False),
-            browser_enabled=getattr(self.config, "browser_enabled", True),
+            browser_enabled=self._browser_tools_enabled(),
         )
         if mcp_section:
             mcp_tokens = len("\n\n" + mcp_section) // 4
@@ -2904,12 +2914,33 @@ class ConversationalSession(
             self._tool_catalog.refresh(
                 mcp_tools=self._mcp.discovered_tools() if self._mcp else None,
                 no_delegation=getattr(self.config, "no_delegation", False),
-                browser_enabled=getattr(self.config, "browser_enabled", True),
+                browser_enabled=self._browser_tools_enabled(),
                 profile=profile,
             )
         except Exception:
             pass
         return profile
+
+    def _bind_sealed_memory_block(self) -> None:
+        """Add the encrypted memory section to a sealed session's system prompt."""
+        from . import seal
+
+        if not seal.is_sealed(getattr(self, "harness_session_id", "") or ""):
+            return
+        system = self._history[0].get("content")
+        if not isinstance(system, str) or SEALED_MEMORY_HEADER in system:
+            return
+        block = self._memory.sealed_block()
+        if block:
+            self._history[0]["content"] = system + "\n\n" + SEALED_MEMORY_HEADER + "\n" + block
+
+    def _browser_tools_enabled(self) -> bool:
+        if not getattr(self.config, "browser_enabled", True):
+            return False
+        from . import seal
+
+        # Every session shares one persistent browser profile (history, cache).
+        return not seal.is_sealed(getattr(self, "harness_session_id", "") or "")
 
     def _worker_delegation_available(self) -> bool:
         """Whether this session currently has a runnable worker route.
@@ -2919,6 +2950,12 @@ class ConversationalSession(
         ``no_delegation`` remains the leaf-worker recursion boundary.
         """
         if getattr(self.config, "no_delegation", False):
+            return False
+        from . import seal
+
+        if seal.is_sealed(getattr(self, "harness_session_id", "") or ""):
+            # Worker jobs keep goals and results in the plain Puppetmaster
+            # store. Encrypted sessions work without workers until it seals.
             return False
         try:
             from .edit_engines import workers_ready
@@ -2967,7 +3004,7 @@ class ConversationalSession(
                 self._tool_catalog.refresh(
                     mcp_tools=self._mcp.discovered_tools() if self._mcp else None,
                     no_delegation=getattr(self.config, "no_delegation", False),
-                    browser_enabled=getattr(self.config, "browser_enabled", True),
+                    browser_enabled=self._browser_tools_enabled(),
                     profile=nxt,
                 )
             except Exception:
@@ -3285,7 +3322,7 @@ class ConversationalSession(
                 self._mcp,
                 self._tool_catalog,
                 no_delegation=getattr(self.config, "no_delegation", False),
-                browser_enabled=getattr(self.config, "browser_enabled", True),
+                browser_enabled=self._browser_tools_enabled(),
             )
             if mcp_section:
                 sys_prompt += "\n\n" + mcp_section

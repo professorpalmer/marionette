@@ -926,6 +926,8 @@ class CursorCliDriver:
     """Pilot driver backed by the Cursor Agent CLI subprocess."""
 
     supports_streaming = True
+    # The CLI writes its own plain-text session history (refused for sealed sessions).
+    keeps_own_history = True
     # Local subprocess, but still a production chat path: never accept an
     # implicit JSON-envelope natural. Stamp finish/stream_terminal on success.
     requires_explicit_terminal = True

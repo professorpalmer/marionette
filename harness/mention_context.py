@@ -252,12 +252,14 @@ def read_file_mention(
     per_file_cap: int = FILE_PER_MENTION_CAP,
     total_budget: int = MENTION_TOTAL_BUDGET,
     state_dir: Optional[str] = None,
+    data: Optional[bytes] = None,
 ) -> tuple[str, int]:
     """Read a mentioned file into an honest context block.
 
     Returns (block, added_bytes). Confinement is the caller's job; this only
     handles IO / caps / budget honesty. ``added_bytes`` is 0 for skip/failure
-    notes so later mentions still get a chance at remaining budget.
+    notes so later mentions still get a chance at remaining budget. ``data``
+    gives the file bytes when the file on disk is sealed.
     """
     budget_left = total_budget - total_size
     if budget_left <= 0:
@@ -267,14 +269,18 @@ def read_file_mention(
         ), 0
     from .privacy_paths import refuse_path
 
-    denied = refuse_path(file_path, state_dir=state_dir)
+    denied = None if data is not None else refuse_path(file_path, state_dir=state_dir)
     if denied:
         return format_file_mention_skip(token, reason=denied), 0
     try:
-        file_size = os.path.getsize(file_path)
         read_cap = min(per_file_cap, budget_left)
-        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
-            content = fh.read(read_cap)
+        if data is not None:
+            file_size = len(data)
+            content = data.decode("utf-8", errors="replace")[:read_cap]
+        else:
+            file_size = os.path.getsize(file_path)
+            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(read_cap)
         bytes_read = len(content.encode("utf-8"))
         truncated = file_size > read_cap
         if not truncated:

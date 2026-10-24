@@ -57,8 +57,9 @@ def _media_type(path: str) -> str:
 
 
 def _read_data_url(image_path: str) -> str:
-    with open(image_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+    from .seal import read_file
+
+    b64 = base64.b64encode(read_file(image_path)).decode()
     return f"data:{_media_type(image_path)};base64,{b64}"
 
 
@@ -204,8 +205,9 @@ class AnthropicVisionSidecar:
         return _sidecar_key(self.api_key_env, api_key_only=True)
 
     def transcribe(self, image_path: str) -> VisionResult:
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
+        from .seal import read_file
+
+        b64 = base64.b64encode(read_file(image_path)).decode()
         body = {
             "model": self.model,
             "max_tokens": 800,
