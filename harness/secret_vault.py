@@ -1,25 +1,29 @@
-"""Host-held connector secrets. Values never return to the model or renderer.
+"""Connector secret presence. Secret values are never stored here.
 
-Storage is per-profile (HARNESS_STATE_DIR / ~/.pmharness), encrypted at rest
-with a machine-local key file (owner-only). Presence is present|missing.
-Subprocess injection happens in this process (or Electron main) via env.
+The value of a submitted secret goes to two places only: the Electron main
+vault (OS key storage through ``safeStorage``), which injects it at backend
+start, and this backend's environment, which applies it at once. This module
+records only that a secret is present, per profile (HARNESS_STATE_DIR /
+~/.pmharness). Version 1 stored the value with a key file next to it; reading
+a version 1 store removes the values and the key file.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import secrets
 import tempfile
 import threading
-from typing import Any, Optional
+import time
+from typing import Any, MutableMapping, Optional
 
 from .secure_files import restrict_to_owner
 
 _LOCK = threading.Lock()
 _CONNECTOR_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _FIELD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+STORE_VERSION = 2
 
 _ENV_BINDINGS: dict[tuple[str, str], list[tuple[str, Optional[str]]]] = {
     ("pypi", "token"): [
@@ -55,64 +59,8 @@ def vault_path() -> str:
     return os.path.join(_state_dir(), "secret-vault.json")
 
 
-def _key_path() -> str:
+def legacy_key_path() -> str:
     return os.path.join(_state_dir(), "secret-vault.key")
-
-
-def _load_key() -> bytes:
-    path = _key_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if os.path.exists(path):
-        with open(path, "rb") as fh:
-            data = fh.read()
-        if len(data) >= 32:
-            return data[:32]
-    key = secrets.token_bytes(32)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="svk_")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(key)
-        os.replace(tmp, path)
-        restrict_to_owner(path)
-    except Exception:
-        if os.path.exists(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        raise
-    return key
-
-
-def _crypt(data: bytes, key: bytes, nonce: bytes) -> bytes:
-    out = bytearray(len(data))
-    block = b""
-    for i, byte in enumerate(data):
-        if i % 32 == 0:
-            block = hashlib.sha256(key + nonce + i.to_bytes(8, "big")).digest()
-        out[i] = byte ^ block[i % 32]
-    return bytes(out)
-
-
-def _seal(plain: str) -> dict[str, str]:
-    key = _load_key()
-    nonce = secrets.token_bytes(16)
-    raw = _crypt(plain.encode("utf-8"), key, nonce)
-    return {"n": nonce.hex(), "c": raw.hex()}
-
-
-def _unseal(blob: Any) -> str:
-    if not isinstance(blob, dict):
-        return ""
-    try:
-        nonce = bytes.fromhex(blob.get("n") or "")
-        raw = bytes.fromhex(blob.get("c") or "")
-    except ValueError:
-        return ""
-    try:
-        return _crypt(raw, _load_key(), nonce).decode("utf-8")
-    except Exception:
-        return ""
 
 
 def normalize_connector(value: str) -> str:
@@ -137,21 +85,73 @@ def validate_secret_ref(connector: str, field: str) -> Optional[str]:
 
 
 def _empty_store() -> dict:
-    return {"v": 1, "agents": {}}
+    return {"v": STORE_VERSION, "agents": {}}
+
+
+def _presence_only(store: dict) -> tuple[dict, bool]:
+    """Return the store with every field reduced to a presence row.
+
+    The flag is True when the input held anything other than presence rows
+    (a version 1 value blob), so the caller must rewrite the file.
+    """
+    changed = store.get("v") != STORE_VERSION
+    agents: dict = {}
+    for agent_id, by_agent in (store.get("agents") or {}).items():
+        if not isinstance(by_agent, dict):
+            changed = True
+            continue
+        for connector, fields in by_agent.items():
+            if not isinstance(fields, dict):
+                changed = True
+                continue
+            for field, row in fields.items():
+                if not row:
+                    changed = True
+                    continue
+                kept = {"present": True, "at": row.get("at") if isinstance(row, dict) else None}
+                if row != kept:
+                    changed = True
+                agents.setdefault(agent_id, {}).setdefault(connector, {})[field] = kept
+    return {"v": STORE_VERSION, "agents": agents}, changed
+
+
+def _destroy_legacy_key() -> None:
+    path = legacy_key_path()
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return
+    try:
+        with open(path, "r+b") as fh:
+            fh.write(secrets.token_bytes(max(size, 32)))
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError:
+        pass  # Unlink still removes the name; the overwrite only shortens its life on disk.
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _read_store() -> dict:
+    """Presence store. A version 1 store is converted and its key removed."""
     path = vault_path()
     if not os.path.exists(path):
+        _destroy_legacy_key()
         return _empty_store()
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        if isinstance(data, dict) and isinstance(data.get("agents"), dict):
-            return data
-    except Exception:
-        pass
-    return _empty_store()
+    except (OSError, ValueError):
+        return _empty_store()
+    if not isinstance(data, dict) or not isinstance(data.get("agents"), dict):
+        return _empty_store()
+    store, changed = _presence_only(data)
+    if changed:
+        _write_store(store)
+    _destroy_legacy_key()
+    return store
 
 
 def _write_store(store: dict) -> None:
@@ -172,7 +172,14 @@ def _write_store(store: dict) -> None:
         raise
 
 
-def put_secret(agent_id: str, connector: str, field: str, value: str) -> dict[str, Any]:
+def put_secret(
+    agent_id: str,
+    connector: str,
+    field: str,
+    value: str,
+    environ: Optional[MutableMapping[str, str]] = None,
+) -> dict[str, Any]:
+    """Record presence and apply the value to ``environ`` (default: this process)."""
     agent_id = normalize_agent_id(agent_id)
     connector = normalize_connector(connector)
     field = normalize_field(field)
@@ -184,12 +191,12 @@ def put_secret(agent_id: str, connector: str, field: str, value: str) -> dict[st
         raise ValueError("secret value is required")
     with _LOCK:
         store = _read_store()
-        agents = store.setdefault("agents", {})
-        by_agent = agents.setdefault(agent_id, {})
-        by_conn = by_agent.setdefault(connector, {})
-        by_conn[field] = _seal(secret)
+        by_conn = store["agents"].setdefault(agent_id, {}).setdefault(connector, {})
+        by_conn[field] = {"present": True, "at": time.time()}
         _write_store(store)
-    apply_to_environ(agent_id)
+    target = os.environ if environ is None else environ
+    for env_name, env_val in env_bindings(connector, field, secret).items():
+        target[env_name] = env_val
     return presence(agent_id, connector, field)
 
 
@@ -199,28 +206,16 @@ def delete_secret(agent_id: str, connector: str, field: str) -> dict[str, Any]:
     field = normalize_field(field)
     with _LOCK:
         store = _read_store()
-        by_agent = store.get("agents", {}).get(agent_id) or {}
+        agents = store["agents"]
+        by_agent = agents.get(agent_id) or {}
         by_conn = by_agent.get(connector) or {}
         by_conn.pop(field, None)
-        if isinstance(by_agent.get(connector), dict) and not by_conn:
+        if connector in by_agent and not by_conn:
             by_agent.pop(connector, None)
-        if not by_agent:
-            store.get("agents", {}).pop(agent_id, None)
+        if agent_id in agents and not by_agent:
+            agents.pop(agent_id, None)
         _write_store(store)
     return presence(agent_id, connector, field)
-
-
-def get_secret(agent_id: str, connector: str, field: str) -> str:
-    agent_id = normalize_agent_id(agent_id)
-    connector = normalize_connector(connector)
-    field = normalize_field(field)
-    with _LOCK:
-        store = _read_store()
-        blob = (
-            ((store.get("agents") or {}).get(agent_id) or {})
-            .get(connector) or {}
-        ).get(field)
-    return _unseal(blob) if blob else ""
 
 
 def presence(agent_id: str, connector: str = "", field: str = "") -> dict[str, Any]:
@@ -228,10 +223,9 @@ def presence(agent_id: str, connector: str = "", field: str = "") -> dict[str, A
     connector = normalize_connector(connector)
     field = normalize_field(field)
     with _LOCK:
-        store = _read_store()
-        by_agent = (store.get("agents") or {}).get(agent_id) or {}
+        by_agent = _read_store()["agents"].get(agent_id) or {}
     if connector and field:
-        present = bool(((by_agent.get(connector) or {}).get(field)))
+        present = bool((by_agent.get(connector) or {}).get(field))
         return {
             "agent_id": agent_id,
             "connector": connector,
@@ -241,8 +235,6 @@ def presence(agent_id: str, connector: str = "", field: str = "") -> dict[str, A
         }
     connectors: dict[str, dict[str, str]] = {}
     for conn, fields in by_agent.items():
-        if not isinstance(fields, dict):
-            continue
         if connector and conn != connector:
             continue
         row = {name: "present" for name in fields}
@@ -260,29 +252,6 @@ def env_bindings(connector: str, field: str, value: str) -> dict[str, str]:
     generic = f"{connector.upper().replace('-', '_')}_{field.upper()}"
     out.setdefault(generic, value)
     return out
-
-
-def apply_to_environ(agent_id: str, environ: Optional[dict] = None) -> dict[str, str]:
-    target = environ if environ is not None else os.environ
-    agent_id = normalize_agent_id(agent_id)
-    injected: dict[str, str] = {}
-    with _LOCK:
-        store = _read_store()
-        by_agent = (store.get("agents") or {}).get(agent_id) or {}
-        items = []
-        for conn, fields in by_agent.items():
-            if not isinstance(fields, dict):
-                continue
-            for name, blob in fields.items():
-                items.append((conn, name, blob))
-    for conn, name, blob in items:
-        value = _unseal(blob)
-        if not value:
-            continue
-        for env_name, env_val in env_bindings(conn, name, value).items():
-            target[env_name] = env_val
-            injected[env_name] = env_val
-    return injected
 
 
 def presence_payload(connector: str, field: str, provided: bool) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Host vault: encrypt at rest, presence only, env inject, no model echo."""
+"""Secret presence registry: no stored values, env inject, no model echo."""
 from __future__ import annotations
 
 import json
@@ -7,9 +7,9 @@ import subprocess
 import sys
 
 from harness.secret_vault import (
-    apply_to_environ,
     extract_secret_request_message,
-    get_secret,
+    delete_secret,
+    legacy_key_path,
     parse_secret_request_payload,
     presence,
     presence_payload,
@@ -19,20 +19,52 @@ from harness.secret_vault import (
 )
 
 
-def test_put_is_encrypted_and_presence_only(tmp_path, monkeypatch):
+def test_put_stores_presence_only_and_applies_env(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
-    row = put_secret("sess-a", "pypi", "token", "pypi-secret-value-xyz")
+    env = {}
+    row = put_secret("sess-a", "pypi", "token", "pypi-secret-value-xyz", environ=env)
     assert row["present"] is True
     assert row["state"] == "present"
-    raw = json.loads((tmp_path / "secret-vault.json").read_text())
-    blob = raw["agents"]["sess-a"]["pypi"]["token"]
-    dumped = json.dumps(raw)
-    assert "pypi-secret-value-xyz" not in dumped
-    assert blob["n"] and blob["c"]
-    assert get_secret("sess-a", "pypi", "token") == "pypi-secret-value-xyz"
+    assert env["TWINE_PASSWORD"] == "pypi-secret-value-xyz"
+    raw = (tmp_path / "secret-vault.json").read_text()
+    assert "pypi-secret-value-xyz" not in raw
+    stored = json.loads(raw)
+    assert stored["v"] == 2
+    assert set(stored["agents"]["sess-a"]["pypi"]["token"]) == {"present", "at"}
+    assert not (tmp_path / "secret-vault.key").exists()
     listed = presence("sess-a")
     assert listed["connectors"]["pypi"]["token"] == "present"
     assert "pypi-secret-value-xyz" not in json.dumps(listed)
+
+
+def test_version_1_store_loses_values_and_key_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    blob = {"n": "00" * 16, "c": "ab" * 24}
+    (tmp_path / "secret-vault.json").write_text(json.dumps(
+        {"v": 1, "agents": {"default": {"pypi": {"token": blob}}, "sess-b": {"slack": {"token": blob}}}}))
+    (tmp_path / "secret-vault.key").write_bytes(b"k" * 32)
+    assert presence("default", "pypi", "token")["present"] is True
+    assert presence("sess-b", "slack", "token")["present"] is True
+    stored = json.loads((tmp_path / "secret-vault.json").read_text())
+    assert stored["v"] == 2
+    assert "ab" * 24 not in json.dumps(stored)
+    assert not os.path.exists(legacy_key_path())
+
+
+def test_unreadable_store_keeps_legacy_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    (tmp_path / "secret-vault.json").write_text("{not json")
+    (tmp_path / "secret-vault.key").write_bytes(b"k" * 32)
+    assert presence("default", "pypi", "token")["present"] is False
+    assert (tmp_path / "secret-vault.key").exists()
+
+
+def test_delete_removes_presence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    put_secret("sess-a", "pypi", "token", "pypi-secret-value-xyz", environ={})
+    delete_secret("sess-a", "pypi", "token")
+    assert presence("sess-a", "pypi", "token")["present"] is False
+    assert json.loads((tmp_path / "secret-vault.json").read_text())["agents"] == {}
 
 
 def test_extract_structured_message_ends_clean():
@@ -56,13 +88,12 @@ def test_extract_structured_message_ends_clean():
 def test_subprocess_twine_fixture_never_returns_token(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     token = "pypi-fixture-token-ABCDEF"
-    put_secret("sess-a", "pypi", "token", token)
     base = {"PATH": os.environ.get("PATH", "")}
     for key in ("SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT"):
         if key in os.environ:
             base[key] = os.environ[key]
     env = dict(base)
-    apply_to_environ("sess-a", env)
+    put_secret("sess-a", "pypi", "token", token, environ=env)
     assert env["TWINE_USERNAME"] == "__token__"
     assert env["TWINE_PASSWORD"] == token
     script = (
