@@ -1,7 +1,9 @@
 /**
  * Electron main-process connector vault.
- * Values are encrypted with safeStorage when available and never returned
- * to the renderer except as present|missing.
+ * Values are encrypted with safeStorage and never returned to the renderer
+ * except as present|missing. Each value records its protection: "os" when an
+ * OS key store holds the key (Keychain, DPAPI, libsecret, KWallet), "none"
+ * when it does not (no key store, or Linux basic_text with its fixed key).
  */
 const fs = require("node:fs");
 const os = require("node:os");
@@ -59,12 +61,28 @@ function writeStore(file, store) {
   }
 }
 
-function encryptValue(safeStorage, plain) {
-  if (safeStorage && typeof safeStorage.isEncryptionAvailable === "function" && safeStorage.isEncryptionAvailable()) {
+function encryptionAvailable(safeStorage) {
+  return Boolean(
+    safeStorage && typeof safeStorage.isEncryptionAvailable === "function" && safeStorage.isEncryptionAvailable(),
+  );
+}
+
+function protectionOf(safeStorage, platform = process.platform) {
+  if (!encryptionAvailable(safeStorage)) return "none";
+  if (platform !== "linux") return "os";
+  const backend = typeof safeStorage.getSelectedStorageBackend === "function"
+    ? safeStorage.getSelectedStorageBackend()
+    : "unknown";
+  return backend === "basic_text" || backend === "unknown" ? "none" : "os";
+}
+
+function encryptValue(safeStorage, plain, platform = process.platform) {
+  const protection = protectionOf(safeStorage, platform);
+  if (encryptionAvailable(safeStorage)) {
     const buf = safeStorage.encryptString(plain);
-    return { alg: "safeStorage", data: buf.toString("base64") };
+    return { alg: "safeStorage", protection, data: buf.toString("base64") };
   }
-  return { alg: "b64", data: Buffer.from(plain, "utf8").toString("base64") };
+  return { alg: "unprotected", protection, data: Buffer.from(plain, "utf8").toString("base64") };
 }
 
 function decryptValue(safeStorage, blob) {
@@ -73,7 +91,7 @@ function decryptValue(safeStorage, blob) {
     if (blob.alg === "safeStorage" && safeStorage && typeof safeStorage.decryptString === "function") {
       return safeStorage.decryptString(Buffer.from(blob.data, "base64"));
     }
-    if (blob.alg === "b64") {
+    if (blob.alg === "unprotected" || blob.alg === "b64") {
       return Buffer.from(blob.data, "base64").toString("utf8");
     }
   } catch (_) {
@@ -107,9 +125,10 @@ function putSecret(opts) {
   const store = readStore(file);
   store.agents[agentId] = store.agents[agentId] || {};
   store.agents[agentId][connector] = store.agents[agentId][connector] || {};
-  store.agents[agentId][connector][field] = encryptValue(opts.safeStorage, value);
+  const blob = encryptValue(opts.safeStorage, value, opts.platform);
+  store.agents[agentId][connector][field] = blob;
   writeStore(file, store);
-  return { ok: true, present: true, connector, field, state: "present" };
+  return { ok: true, present: true, connector, field, state: "present", protection: blob.protection };
 }
 
 function presenceOf(opts) {
@@ -121,14 +140,17 @@ function presenceOf(opts) {
   const store = readStore(file);
   const byAgent = store.agents[agentId] || {};
   if (connector && field) {
-    const present = Boolean((byAgent[connector] || {})[field]);
-    return {
+    const blob = (byAgent[connector] || {})[field];
+    const present = Boolean(blob);
+    const row = {
       agent_id: agentId,
       connector,
       field,
       present,
       state: present ? "present" : "missing",
     };
+    if (present) row.protection = blob.protection || (blob.alg === "safeStorage" ? "unknown" : "none");
+    return row;
   }
   const connectors = {};
   for (const [conn, fields] of Object.entries(byAgent)) {
@@ -187,4 +209,5 @@ module.exports = {
   redactText,
   encryptValue,
   decryptValue,
+  protectionOf,
 };

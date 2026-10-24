@@ -6,7 +6,6 @@ import json
 from typing import Any, Optional
 
 from .secret_vault import (
-    get_secret,
     parse_secret_request_payload,
     presence,
     presence_payload,
@@ -119,6 +118,4 @@ def declined_this_breath(session: Any, connector: str, field: str) -> bool:
 
 def already_present(session: Any, connector: str, field: str) -> bool:
     agent_id = str(getattr(session, "harness_session_id", "") or "").strip() or "default"
-    if presence(agent_id, connector, field).get("present"):
-        return True
-    return bool(get_secret(agent_id, connector, field))
+    return bool(presence(agent_id, connector, field).get("present"))

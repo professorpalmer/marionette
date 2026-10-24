@@ -2859,7 +2859,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_response(self, code, message=None):
         self._response_started = True
+        self._cache_control_sent = False
         super().send_response(code, message)
+
+    def send_header(self, keyword, value):
+        # Replies carry chats, images and files: none may enter the renderer's
+        # disk cache, so every reply is no-store whatever the route asked for.
+        if keyword.lower() == "cache-control":
+            if getattr(self, "_cache_control_sent", False):
+                return
+            self._cache_control_sent = True
+            value = "no-store"
+        super().send_header(keyword, value)
+
+    def end_headers(self):
+        if getattr(self, "_cache_control_sent", True) is False:
+            self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def log_message(self, fmt, *args):  # quiet but correlated
         try:
