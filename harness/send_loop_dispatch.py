@@ -1107,7 +1107,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
                 load_pm_cost_report,
                 persistable_pm_receipt,
             )
-            durable = session.state()
+            durable = _session_durable(session)
             store = getattr(durable, "store", None)
             if store is not None:
                 _pm_receipt = persistable_pm_receipt(
