@@ -590,9 +590,26 @@ class SessionTodoStore:
                 pass
             raise
 
+    def _sealed_path(self, sid: str) -> str:
+        from .session_files import sealed_data_path, sealed_owner
+
+        if not sid or not self.state_dir or not sealed_owner(sid):
+            return ""
+        return sealed_data_path(sid, TODO_FILENAME)
+
     def load(self, session_id: str = "") -> List[TodoPhase]:
-        raw = self._read_raw()
         sid = (session_id or "").strip()
+        sealed_path = self._sealed_path(sid)
+        if sealed_path:
+            # A sealed session keeps its list in its own sealed file. A locked
+            # seal raises here; an unreadable file is an empty list, as for plain.
+            from .session_files import read_json
+
+            try:
+                return phases_from_raw(read_json(sealed_path, sid, "todos"))
+            except (OSError, ValueError):
+                return []
+        raw = self._read_raw()
         sessions = raw.get("sessions")
         if sid:
             if not isinstance(sessions, dict):
@@ -607,6 +624,12 @@ class SessionTodoStore:
 
     def save(self, phases: Sequence[TodoPhase], session_id: str = "") -> None:
         sid = (session_id or "").strip()
+        sealed_path = self._sealed_path(sid)
+        if sealed_path:
+            from .session_files import write_json
+
+            write_json(sealed_path, phases_to_dicts(phases), sid, "todos")
+            return
         if sid:
             raw = self._read_raw()
             sessions = raw.get("sessions") if isinstance(raw.get("sessions"), dict) else {}

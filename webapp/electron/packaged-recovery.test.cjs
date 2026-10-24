@@ -49,6 +49,7 @@ test('startup awaits selected checkout before parity, backend spawn and renderer
     resolveHarnessStateDir: () => path.join(home, 'state'), buildPuppetmasterBackendEnv: x => x,
     isInspectMode: () => false, harnessToken: 'fixture', harnessAppRunId: 'fixture',
     secretVault: { injectEnv: noop }, waitForBackend: async () => {}, refreshAllowedLoopbackAliases: noop,
+    sealKeys: { spawnLine: () => null }, unlockAdoptedBackend: noop,
     markerPath: () => path.join(home, 'marker'), buildBackendMarkerPayload: x => x,
     _dbg2: noop,
     spawn: (python, args, options) => {

@@ -236,6 +236,12 @@ class SessionGoalStore:
             key = hashlib.sha256(self.session_id.encode("utf-8")).hexdigest()
             filename = os.path.join("session_goals", key + ".json")
         self.path = os.path.join(self.state_dir, filename) if self.state_dir else ""
+        from .session_files import sealed_data_path, sealed_owner
+
+        # A sealed session keeps its goal text in its own sealed file.
+        self.sealed = bool(self.state_dir and sealed_owner(self.session_id))
+        if self.sealed:
+            self.path = sealed_data_path(self.session_id, GOAL_FILENAME)
 
     @classmethod
     def migrate_legacy(cls, state_dir: str, sessions: Any) -> None:
@@ -293,6 +299,14 @@ class SessionGoalStore:
     def load(self) -> SessionGoal:
         if not self.path:
             return SessionGoal()
+        if self.sealed:
+            from .session_files import read_json
+
+            try:
+                data = read_json(self.path, self.session_id, "goal")
+            except (OSError, ValueError):
+                return SessionGoal()
+            return SessionGoal.from_dict(data) if isinstance(data, dict) else SessionGoal()
         path = self.path
         migrate = self.session_id and not os.path.isfile(path)
         if migrate:
@@ -324,6 +338,11 @@ class SessionGoalStore:
                 payload["session_id"] = self.session_id
             # Persist active_since so elapsed can resume across process restarts.
             payload["_active_since"] = float(getattr(goal, "_active_since", 0.0) or 0.0)
+            if self.sealed:
+                from .session_files import write_json
+
+                write_json(self.path, payload, self.session_id, "goal")
+                return
             self._write_payload(self.path, payload)
         except Exception:
             pass

@@ -192,3 +192,16 @@ def test_get_diagnostics_bundle_api(tmp_path, monkeypatch):
     packed = json.dumps(payload)
     assert PLANTED_SK not in packed
     assert PLANTED_GHP not in packed
+
+
+def test_collect_session_rows_omits_encrypted_session_titles(tmp_path, monkeypatch):
+    from harness.sessions import SessionStore
+
+    state = _seed_state(tmp_path)
+    rows = [
+        {"id": "plain", "title": "Plain title", "created": 2.0},
+        {"id": "sealed", "title": "Unlocked secret title", "created": 1.0, "sealed": True},
+    ]
+    monkeypatch.setattr(SessionStore, "list", lambda self, **kw: [dict(r) for r in rows])
+    out = collect_session_rows(10, state_dir=str(state))
+    assert [(r["id"], r["title"]) for r in out] == [("plain", "Plain title"), ("sealed", "")]

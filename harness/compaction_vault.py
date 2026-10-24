@@ -11,9 +11,11 @@ import hashlib
 import os
 import re
 import sqlite3
+import threading
 import time
 from typing import Any, List
 
+from harness import seal
 from harness.api.redaction import redact_secret_text
 from harness.session_fts import extract_chunks
 
@@ -84,6 +86,77 @@ CREATE TABLE IF NOT EXISTS vault_meta (
 """
 
 
+_SEALED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sealed_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sealed_chunks_session ON sealed_chunks(session_id);
+"""
+_CHUNK_PURPOSE = "vault-chunk"
+# Sealed sessions: chunks are sealed on disk and searched in an in-memory FTS
+# index built per session on first use. Dropped on lock and session erase.
+_SEALED_MEMORY: dict = {}
+_SEALED_MEMORY_LOCK = threading.RLock()
+
+
+def _drop_sealed_memory() -> None:
+    with _SEALED_MEMORY_LOCK:
+        for conn in _SEALED_MEMORY.values():
+            conn.close()
+        _SEALED_MEMORY.clear()
+
+
+seal.on_lock(_drop_sealed_memory)
+
+
+def _sealed_memory(state_dir: str, sid: str, codec: Any) -> sqlite3.Connection:
+    """In-memory FTS rows for one sealed session. Caller holds the lock."""
+    key = (_db_path(state_dir), sid)
+    conn = _SEALED_MEMORY.get(key)
+    if conn is not None:
+        return conn
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.executescript(_SCHEMA)
+    disk = _connect(state_dir)
+    try:
+        for row_id, body in disk.execute(
+            "SELECT id, body FROM sealed_chunks WHERE session_id = ? ORDER BY id", (sid,)
+        ):
+            conn.execute(
+                "INSERT INTO vault_chunks(rowid, session_id, body) VALUES (?, ?, ?)",
+                (row_id, sid, codec.open_text(_CHUNK_PURPOSE, body)),
+            )
+    finally:
+        disk.close()
+    _SEALED_MEMORY[key] = conn
+    return conn
+
+
+def _index_sealed(state_dir: str, sid: str, codec: Any, chunks: List[str]) -> int:
+    with _SEALED_MEMORY_LOCK:
+        memory = _sealed_memory(state_dir, sid, codec)
+        disk = _connect(state_dir)
+        try:
+            for body in chunks:
+                cur = disk.execute(
+                    "INSERT INTO sealed_chunks(session_id, body) VALUES (?, ?)",
+                    (sid, codec.seal_text(_CHUNK_PURPOSE, body)),
+                )
+                memory.execute(
+                    "INSERT INTO vault_chunks(rowid, session_id, body) VALUES (?, ?, ?)",
+                    (cur.lastrowid, sid, body),
+                )
+            for row_id in _evict_over_cap(memory, sid):
+                disk.execute("DELETE FROM sealed_chunks WHERE id = ?", (row_id,))
+            disk.commit()
+            memory.commit()
+        finally:
+            disk.close()
+    return len(chunks)
+
+
 def vault_enabled() -> bool:
     raw = (os.environ.get("HARNESS_COMPACTION_VAULT") or "1").strip().lower()
     return raw not in ("0", "false", "off", "no")
@@ -104,6 +177,7 @@ def _connect(state_dir: str) -> sqlite3.Connection:
     os.makedirs(os.path.abspath(state_dir), exist_ok=True)
     conn = sqlite3.connect(_db_path(state_dir), timeout=5.0)
     conn.executescript(_SCHEMA)
+    conn.executescript(_SEALED_SCHEMA)
     conn.execute(
         "INSERT OR REPLACE INTO vault_meta(key, value) VALUES (?, ?)",
         ("schema_version", _SCHEMA_VERSION),
@@ -289,6 +363,9 @@ def index_elided_messages(
     if not chunks:
         return 0
     try:
+        codec = seal.codec_for(sid)
+        if codec is not None:
+            return _index_sealed(state_dir, sid, codec, chunks)
         conn = _connect(state_dir)
         try:
             written = 0
@@ -307,7 +384,7 @@ def index_elided_messages(
         return 0
 
 
-def _evict_over_cap(conn: sqlite3.Connection, sid: str) -> None:
+def _evict_over_cap(conn: sqlite3.Connection, sid: str) -> List[int]:
     rows = conn.execute(
         "SELECT rowid, length(body) FROM vault_chunks WHERE session_id = ? "
         "ORDER BY rowid ASC",
@@ -325,6 +402,7 @@ def _evict_over_cap(conn: sqlite3.Connection, sid: str) -> None:
         total_chars -= int(length or 0)
     for rowid in drop:
         conn.execute("DELETE FROM vault_chunks WHERE rowid = ?", (rowid,))
+    return drop
 
 
 def _fts_bodies(
@@ -411,12 +489,19 @@ def retrieve_vault_result(
     cap = max(1, min(int(limit or _DEFAULT_HIT_LIMIT), 16))
     budget = max(240, int(char_budget or _DEFAULT_CHAR_BUDGET))
     try:
-        conn = _connect(state_dir)
-        try:
-            fts_hits = _fts_bodies(conn, sid, match, cap)
-            plan_hits = _fts_bodies(conn, sid, _PLAN_MATCH, 2)
-        finally:
-            conn.close()
+        codec = seal.codec_for(sid)
+        if codec is not None:
+            with _SEALED_MEMORY_LOCK:
+                memory = _sealed_memory(state_dir, sid, codec)
+                fts_hits = _fts_bodies(memory, sid, match, cap)
+                plan_hits = _fts_bodies(memory, sid, _PLAN_MATCH, 2)
+        else:
+            conn = _connect(state_dir)
+            try:
+                fts_hits = _fts_bodies(conn, sid, match, cap)
+                plan_hits = _fts_bodies(conn, sid, _PLAN_MATCH, 2)
+            finally:
+                conn.close()
     except Exception:
         return empty
     recap = is_recap_ask(query)

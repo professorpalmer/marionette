@@ -243,27 +243,45 @@ def _looks_like_command_result(result_id: str) -> bool:
     return any(tok in rid for tok in ("command", "cmd", "shell", "bash", "exec", "run"))
 
 
+def _index_hash(digest: str, session_id: str) -> str:
+    """Spill index hash: keyed for a sealed session, ``digest`` unchanged otherwise."""
+    from harness import seal
+
+    codec = seal.codec_for(session_id) if session_id else None
+    return codec.name_tag(digest) if codec is not None else digest
+
+
 def spill_to_disk(
     content: str,
     result_id: str,
     state_dir: str,
     dedupe: bool = False,
+    session_id: str = "",
 ) -> str:
     """Write FULL content to {state_dir}/pmharness-results/{result_id}.txt.
 
     When dedupe is True a stable content-hash suffix is appended to the file
-    name so identical large outputs collapse onto a single file on disk.
+    name so identical large outputs collapse onto a single file on disk. A
+    sealed session writes a sealed file (read back with ``seal.read_file``)
+    and names it with a keyed tag instead of the plaintext hash.
     """
+    from harness import seal
+
+    codec = seal.codec_for(session_id) if session_id else None
     abs_state_dir = os.path.abspath(state_dir)
     target_dir = os.path.join(abs_state_dir, "pmharness-results")
     os.makedirs(target_dir, exist_ok=True)
     if dedupe:
-        file_name = f"{result_id}-{content_hash(content)}.txt"
+        digest = content_hash(content)
+        file_name = f"{result_id}-{codec.name_tag(digest) if codec else digest}.txt"
     else:
         file_name = f"{result_id}.txt"
     file_path = os.path.join(target_dir, file_name)
-    with open(file_path, "w", encoding="utf-8", errors="replace") as f:
-        f.write(content)
+    if codec is not None:
+        seal.write_file(codec, file_path, content.encode("utf-8", errors="replace"))
+    else:
+        with open(file_path, "w", encoding="utf-8", errors="replace") as f:
+            f.write(content)
     # Forward slashes everywhere: the path is echoed to the model (which reads
     # it back via read_file), and Windows accepts both separators anyway.
     return file_path.replace(os.sep, "/")
@@ -427,7 +445,8 @@ def maybe_persist_result(
         return content
 
     try:
-        file_path = spill_to_disk(content, result_id, state_dir, dedupe=dedupe)
+        file_path = spill_to_disk(content, result_id, state_dir, dedupe=dedupe,
+                                  session_id=spill_session_id or "")
         uri = None
         if spill_session_id:
             from harness.spill_registry import register_spill, spill_uri
@@ -440,7 +459,7 @@ def maybe_persist_result(
                     tool_call_id=result_id,
                     path=file_path,
                     chars=original_len,
-                    content_hash=content_hash(content) if dedupe else "",
+                    content_hash=_index_hash(content_hash(content), spill_session_id) if dedupe else "",
                 )
                 if not registered:
                     uri = None

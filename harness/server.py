@@ -425,6 +425,7 @@ def _get_platform_adapters() -> dict:
 
 
 from . import http_routes as _http_routes  # noqa: E402
+from .seal import SealLocked  # noqa: E402
 # One shared session per server process (single-user local app).
 _state_dir = os.environ.get("HARNESS_STATE_DIR", "")
 _cfg = HarnessConfig.from_env()
@@ -1765,6 +1766,11 @@ def _commands_services():
     return CommandsServices(commands=_commands, cfg=_cfg)
 
 
+def _seal_services():
+    from .api.seal import SealServices
+    return SealServices(get_sessions=lambda: _sessions)
+
+
 def _command_approval_services():
     """Build command approval services from the session runner registry."""
     from .api.command_approvals import CommandApprovalServices
@@ -2364,7 +2370,10 @@ def _session_row_is_empty(row: dict) -> bool:
             pass
     if tokens:
         return False
-    transcript = load_transcript(_sessions_state_dir(), row.get("id") or "")
+    try:
+        transcript = load_transcript(_sessions_state_dir(), row.get("id") or "")
+    except SealLocked:
+        return False
     if isinstance(transcript, dict):
         return not (transcript.get("history") or transcript.get("display"))
     return not transcript
@@ -2440,7 +2449,13 @@ _migrate_orphan_sessions_to_home()
 # Startup: Restore the active/most-recent session's transcript into _pilot
 # and register it as the active view in the runner registry.
 if _sessions.active:
-    _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
+    try:
+        _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
+    except SealLocked:
+        # A locked encrypted session must not attach with an empty history: a
+        # later save would replace its real transcript. Start blank instead.
+        _sessions.clear_active()
+if _sessions.active:
     _runners.get_or_create(_sessions.active, lambda: _pilot)
     _runners.set_active_view(_sessions.active, repo=_cfg.repo or "")
     # Session ownership before hydrate so pending DANGER approval restore
@@ -2736,6 +2751,7 @@ def _route_services():
         codegraph_services=_codegraph_services,
         commands_services=_commands_services,
         command_approval_services=_command_approval_services,
+        seal_services=_seal_services,
         file_services=_file_services,
         workspace_services=_workspace_services,
         mcp_services=_mcp_services,
@@ -2843,6 +2859,14 @@ class Handler(BaseHTTPRequestHandler):
                 msg=f"{type(_transport_exc).__name__}: {_transport_exc}",
             )
             self.close_connection = True
+        except SealLocked as _locked_exc:
+            self.close_connection = True
+            if not self._response_started:
+                try:
+                    status, payload = _http_routes.sealed_locked_reply(_locked_exc)
+                    self._send(status, json.dumps(payload))
+                except Exception:
+                    pass
         except Exception as _handler_exc:
             # A handler bug must answer, not reset the socket: the desktop app
             # reads a reset as a possible backend change and asks to Reconnect.

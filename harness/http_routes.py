@@ -14,6 +14,8 @@ import time
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
+from .seal import SealLocked
+
 # (handler, body) -> response side-effect via handler._send
 PostHandler = Callable[[Any, dict], Any]
 # (handler, parsed_url, query_dict) -> response side-effect via handler._send
@@ -22,6 +24,11 @@ GetHandler = Callable[[Any, Any, dict], Any]
 
 def send_json(handler: Any, status: int, payload: Any) -> Any:
     return handler._send(status, json.dumps(payload))
+
+
+def sealed_locked_reply(exc: Exception) -> tuple[int, dict]:
+    """423: an encrypted session needs the master key, which this process lacks."""
+    return 423, {"ok": False, "code": "sealed_locked", "error": str(exc)}
 
 
 def post_json(
@@ -33,14 +40,17 @@ def post_json(
     """Wrap an api.* function that returns ``(status, payload)``."""
 
     def handle(handler: Any, body: dict) -> Any:
-        if needs_body and services is not None:
-            status, payload = api_fn(body, services())
-        elif services is not None:
-            status, payload = api_fn(services())
-        elif needs_body:
-            status, payload = api_fn(body)
-        else:
-            status, payload = api_fn()
+        try:
+            if needs_body and services is not None:
+                status, payload = api_fn(body, services())
+            elif services is not None:
+                status, payload = api_fn(services())
+            elif needs_body:
+                status, payload = api_fn(body)
+            else:
+                status, payload = api_fn()
+        except SealLocked as exc:
+            status, payload = sealed_locked_reply(exc)
         return send_json(handler, status, payload)
 
     return handle
@@ -73,10 +83,13 @@ def get_json(
             if empty_as_none:
                 val = val or None
             args.append(val)
-        if services is not None:
-            status, payload = api_fn(*args, services())
-        else:
-            status, payload = api_fn(*args)
+        try:
+            if services is not None:
+                status, payload = api_fn(*args, services())
+            else:
+                status, payload = api_fn(*args)
+        except SealLocked as exc:
+            status, payload = sealed_locked_reply(exc)
         return send_json(handler, status, payload)
 
     return handle
@@ -91,6 +104,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import codegraph as _cg_api
     from .api import command_approvals as _command_approval_api
     from .api import secrets as _secrets_api
+    from .api import seal as _seal_api
     from .api import commands as _cmd_api
     from .api import files as _files_api
     from .api import git as _git_api
@@ -179,6 +193,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/commands/approve-amendment": post_json(
             _command_approval_api.post_command_approval_amendment,
             services=svc.command_approval_services),
+        "/api/seal/unlock": post_json(
+            _seal_api.post_seal_unlock, services=svc.seal_services),
         "/api/secrets/submit": post_json(
             _secrets_api.post_secrets_submit,
             services=svc.command_approval_services),
@@ -531,6 +547,7 @@ def _post_restart(handler: Any, body: dict, svc: Any, mcp_factory: Any) -> Any:
 def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     """Build path → GET handler map. Auth is applied once in ``do_GET``."""
     from .api import secrets as _secrets_api
+    from .api import seal as _seal_api
     from .api import auth as _auth_api
     from .api import checkpoints as _ckpt_api
     from .api import codegraph as _cg_api
@@ -945,6 +962,8 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _jobs_api.get_cancellation_receipt, services=svc.job_services, pass_qs=True, keep_blank_values=True),
         "/api/swarm/live": _get_swarm_live,
         "/api/providers": get_json(_prov_api.get_providers),
+        "/api/seal/status": get_json(
+            _seal_api.get_seal_status, services=svc.seal_services),
         "/api/secrets/presence": get_json(
             _secrets_api.get_secrets_presence,
             services=svc.command_approval_services, pass_qs=True),

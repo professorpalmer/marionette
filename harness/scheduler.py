@@ -43,6 +43,7 @@ from datetime import datetime
 from typing import Callable, List, Optional
 
 from .schedule_core import (
+    CONTINUITY_PURPOSE,
     CronExpr,
     MissedFireOutcome,
     Schedule,
@@ -190,6 +191,11 @@ def _continuity_digest_for_ok(schedule: Schedule, status: str, result_text: str)
         return None
     digest = fire_continuity_digest(result_text)
     schedule.continuity_digest = digest
+    from . import seal
+
+    if seal.enabled():
+        # The digest is model output: the plain schedule store keeps it sealed.
+        return seal.memory_codec().seal_text(CONTINUITY_PURPOSE, digest)
     return digest
 
 
@@ -248,7 +254,15 @@ def _default_session_factory(schedule: Schedule):
     except Exception:
         pass
     session = ConversationalSession(cfg)
-    session.harness_session_id = "routine-" + uuid.uuid4().hex
+    session_id = "routine-" + uuid.uuid4().hex
+    from . import seal
+
+    if seal.enabled():
+        # Encryption is on: the run is a sealed session. Without the key
+        # (a locked process) this raises and the fire fails closed.
+        seal.create_session(session_id)
+        seal.mark_sealed(session_id)
+    session.harness_session_id = session_id
     return session
 
 

@@ -191,6 +191,11 @@ def remove_session_transcript(
         remove_session_performance_receipts(state_dir, safe_sid)
     except Exception as e:
         diag("server.session_delete_stream_performance", e, msg=f"sid={safe_sid}")
+    # Last: with the key gone, every sealed copy left anywhere (inputs, spills,
+    # SQLite pages, backups) is unreadable. A late writer then fails closed.
+    from .. import seal
+    if seal.is_sealed(safe_sid):
+        seal.erase_session(safe_sid)
 
 
 def _drop_runner(sid: str, svc: SessionServices, diag_key: str) -> None:

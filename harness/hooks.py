@@ -142,6 +142,12 @@ def run_hooks(event: str, context: dict) -> list[dict[str, str]]:
     """Run persisted hooks safely; return one non-sensitive outcome per record."""
     if event not in ALLOWED_EVENTS:
         return []
+    from . import seal
+
+    sid = context.get("session_id") if isinstance(context, dict) else ""
+    if isinstance(sid, str) and sid and seal.is_sealed(sid):
+        # A hook command can log anything it gets: no prompt or title text.
+        context = {"session_id": sid, "sealed": True}
     context_json = _safe_context(context)
     env = _environment(event, context_json)
     outcomes = []

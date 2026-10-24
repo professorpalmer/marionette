@@ -30,6 +30,7 @@ import os
 import threading
 from typing import Dict, List, Optional, Tuple
 
+from . import seal
 from .provenance_sanitize import artifact_worker_provenance, bound_live_dirty_provenance
 
 _COMMAND_KINDS = ("run_command", "run_command_batch")
@@ -99,6 +100,19 @@ def migrate_row(row: dict) -> bool:
     return changed
 
 
+_SEALED_FIELD = "sealed_partition"
+_SEALED_PURPOSE = "local-jobs"
+
+
+def _disk_text(session_id: str, text: str) -> str:
+    """A sealed session's partition is written as one sealed wrapper row."""
+    codec = seal.codec_for(session_id) if session_id else None
+    if codec is None:
+        return text
+    return json.dumps({"id": "sealed:" + session_id, "session_id": session_id,
+                       _SEALED_FIELD: codec.seal_text(_SEALED_PURPOSE, text)})
+
+
 def _serialize(rows: List[dict]) -> str:
     # Rows joined without the surrounding brackets so partitions concatenate.
     return json.dumps(rows)[1:-1]
@@ -120,6 +134,8 @@ class LocalJobsStore:
         self.lock = threading.Lock()
         self._signature: Optional[Tuple[int, int, int]] = None
         self._parts: Dict[str, _Partition] = {}
+        # Sealed partitions this process cannot open (locked): kept verbatim.
+        self._locked: Dict[str, dict] = {}
         self._version = 0
         self._dirty = False
         self.status = "missing"  # missing | ok | corrupt
@@ -142,6 +158,7 @@ class LocalJobsStore:
             return
         self._signature = signature
         self._parts = {}
+        self._locked = {}
         self._dirty = False
         self.malformed = False
         if signature is None:
@@ -160,6 +177,21 @@ class LocalJobsStore:
         self.status = "ok"
         grouped: Dict[str, List[dict]] = {}
         for row in jobs:
+            if isinstance(row, dict) and _SEALED_FIELD in row:
+                sid = str(row.get("session_id") or "")
+                try:
+                    codec = seal.codec_for(sid)
+                    if codec is None:
+                        raise seal.SealError("sealed partition for a session with no seal")
+                    opened = json.loads("[" + codec.open_text(_SEALED_PURPOSE, row[_SEALED_FIELD]) + "]")
+                except (seal.SealLocked, seal.SealError, ValueError):
+                    self._locked[sid] = row
+                    continue
+                for job in opened:
+                    if migrate_row(job):
+                        self._dirty = True
+                grouped.setdefault(sid, []).extend(opened)
+                continue
             if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
                 self.malformed = True
                 self._dirty = True
@@ -248,14 +280,20 @@ class LocalJobsStore:
         """Remove a deleted session's partition from the file and the cache."""
         with self.lock:
             self._sync_locked()
-            if session_id not in self._parts:
+            if not self._has_session(session_id):
                 return
+            self._locked.pop(session_id, None)
             parts = dict(self._parts)
-            del parts[session_id]
+            parts.pop(session_id, None)
             self._commit_locked(parts)
 
+    def _has_session(self, session_id: str) -> bool:
+        return session_id in self._parts or session_id in self._locked
+
     def _commit_locked(self, parts: Dict[str, "_Partition"]) -> None:
-        body = ", ".join(p.text for p in parts.values() if p.text)
+        texts = [_disk_text(sid, p.text) for sid, p in parts.items() if p.text]
+        texts += [json.dumps(row) for sid, row in self._locked.items() if sid not in parts]
+        body = ", ".join(texts)
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             f.write('{"jobs": [' + body + "]}")

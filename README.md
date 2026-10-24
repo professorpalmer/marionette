@@ -10,7 +10,7 @@ Puppetmaster is the bundled kernel — not a second product to set up.
 stdlib-only backend (urllib + sqlite); `puppetmaster-ai==1.47.0` is the one
 real dependency the installer puts in the venv.
 
-Current release: **v0.9.648**. Marionette remains deliberately pre-1.0.
+Current release: **v0.9.649**. Marionette remains deliberately pre-1.0.
 
 ## Documentation
 
@@ -28,6 +28,7 @@ Start here, then follow the map:
 | [FINDINGS.md](FINDINGS.md) | Research-rig findings: which models can drive the harness. |
 | [NOTICE.md](NOTICE.md) | Third-party attributions. |
 | [Extractive Residuals After Compaction](https://professorpalmer.github.io/catalog-residual/) | Compaction residual lab and paper (separate repo). |
+| [docs/encrypted-sessions.md](docs/encrypted-sessions.md) | Opt-in encryption at rest for new sessions: what is encrypted, keys, recovery code, limits. |
 | [docs/discord-mcp.md](docs/discord-mcp.md) | Optional recipe: wire a MIT Discord MCP (Docker + `manage_mcp`), not a first-party Discord product. |
 
 ## What it is

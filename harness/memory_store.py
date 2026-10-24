@@ -11,7 +11,7 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 MEMORY_PATH = Path(os.path.expanduser("~/.pmharness/memory.json"))
 MEMORY_CHAR_LIMIT = 4000
@@ -216,3 +216,112 @@ class MemoryStore:
                 continue
             hits.append(entry)
         return hits
+
+
+class SealedMemoryStore(MemoryStore):
+    """Memory that only sealed sessions see, sealed under the master key."""
+
+    PURPOSE = "memory"
+
+    def __init__(self, path: Optional[str] = None):
+        from . import seal
+
+        super().__init__(path or os.path.join(seal.seal_dir(), "memory.json"))
+
+    def _load(self) -> List[dict]:
+        # No silent empty list: a locked or damaged file must not be overwritten.
+        from . import seal
+
+        if not self.path.exists():
+            return []
+        val = seal.memory_codec().open_json(self.PURPOSE, self.path.read_bytes())
+        return val if isinstance(val, list) else []
+
+    def _save(self, entries: List[dict]) -> None:
+        from . import seal
+        from .session_files import write_bytes_atomic
+
+        write_bytes_atomic(str(self.path), seal.memory_codec().seal_json(self.PURPOSE, entries))
+
+
+class SessionMemory(MemoryStore):
+    """Plain memory, plus sealed memory while the owning session is sealed.
+
+    A sealed session reads both layers and writes new entries only to the
+    sealed layer. It never writes text into the plain layer.
+    """
+
+    def __init__(
+        self,
+        plain: MemoryStore,
+        session_id_fn: Callable[[], str],
+        sealed: Optional[MemoryStore] = None,
+    ):
+        self._plain = plain
+        self._sealed_store = sealed
+        self._session_id_fn = session_id_fn
+        self._lock = threading.Lock()
+
+    def _sealed(self) -> Optional[MemoryStore]:
+        from . import seal
+
+        if not seal.is_sealed(self._session_id_fn() or ""):
+            return None
+        if self._sealed_store is None:
+            self._sealed_store = SealedMemoryStore()
+        return self._sealed_store
+
+    # Raw snapshot and rollback (harness_refine) act on plain memory only:
+    # refine is off in sealed sessions.
+    def _load(self) -> List[dict]:
+        return self._plain._load()
+
+    def _save(self, entries: List[dict]) -> None:
+        self._plain._save(entries)
+
+    def render_block(self) -> str:
+        # The system prompt block is plain memory. Sealed memory gets its own
+        # section (ConversationalSession._bind_sealed_memory_block).
+        return self._plain.render_block()
+
+    def sealed_block(self) -> str:
+        sealed = self._sealed()
+        return sealed.render_block() if sealed is not None else ""
+
+    def list(self) -> List[MemoryEntry]:
+        sealed = self._sealed()
+        return self._plain.list() + (sealed.list() if sealed is not None else [])
+
+    def add(self, text: str, category: str = "general", source: str = "agent",
+            origin: str = "", workspace: str = "") -> MemoryEntry:
+        sealed = self._sealed()
+        if sealed is None:
+            return self._plain.add(text, category, source, origin, workspace)
+        normalized = text.strip().lower()
+        for entry in self._plain.list():
+            if entry.text.strip().lower() == normalized:
+                return entry
+        return sealed.add(text, category, source, origin, workspace)
+
+    def remove(self, entry_id: str) -> bool:
+        sealed = self._sealed()
+        if sealed is not None and sealed.remove(entry_id):
+            return True
+        return self._plain.remove(entry_id)
+
+    def update(self, entry_id: str, text: str) -> bool:
+        sealed = self._sealed()
+        if sealed is None:
+            return self._plain.update(entry_id, text)
+        if sealed.update(entry_id, text):
+            return True
+        if any(entry.id == entry_id for entry in self._plain.list()):
+            raise ValueError(
+                "this memory is shared with plain sessions; an encrypted session "
+                "cannot change its text (remove it and add a new one)"
+            )
+        return False
+
+    def clear(self) -> int:
+        sealed = self._sealed()
+        return self._plain.clear() + (sealed.clear() if sealed is not None else 0)

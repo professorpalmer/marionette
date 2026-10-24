@@ -629,6 +629,7 @@ class SendLoopMixin:
             pass
         if not resume and self._is_correction(user_message):
             self._corrections.append(user_message)
+        self._bind_sealed_memory_block()
         original_sys = self._history[0]["content"]
         # Plan mode must NOT mutate the system prefix (busts prompt cache for
         # every provider under append-only). PLAN_SYSTEM_SUFFIX rides on the
@@ -1007,6 +1008,15 @@ class SendLoopMixin:
         try:
             if not resume and (user_message or "").strip().lower() == "/reload-mcp":
                 yield from self._dispatch_reload_mcp()
+                return
+            from . import seal
+            if (getattr(self.pilot, "keeps_own_history", False)
+                    and seal.is_sealed(getattr(self, "harness_session_id", "") or "")):
+                yield ConvEvent("error", {
+                    "code": "sealed_pilot_unsupported",
+                    "error": ("This pilot keeps its own plain-text history on disk. "
+                              "Choose an API pilot for an encrypted session."),
+                })
                 return
             yield from self._send_locked_inner(user_message, images=images, plan=plan, resume=resume, **({"input_id": input_id, "handoff_token": handoff_token} if input_id else {}))
         except PromptQueueError as exc:
@@ -1519,7 +1529,7 @@ class SendLoopMixin:
                             self._mcp,
                             self._tool_catalog,
                             no_delegation=getattr(self.config, "no_delegation", False),
-                            browser_enabled=getattr(self.config, "browser_enabled", True),
+                            browser_enabled=self._browser_tools_enabled(),
                         )
                         if mcp_section:
                             sys_prompt += "\n\n" + mcp_section

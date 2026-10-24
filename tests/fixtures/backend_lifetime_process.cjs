@@ -68,7 +68,7 @@ if (process.argv[2] === 'host') {
   const ctx = vm.createContext({process:{env:{MARIONETTE_BACKEND_RECEIPT:receiptPath}},
     attachBackend:moduleContext.module.exports.attachBackend, resolveRepoRoot:()=>root,
     backend:null, backendOwned:false, backendPort:0, harnessToken:'',
-    refreshAllowedLoopbackAliases(){}, unlinkMarkerIfOwned(){if(ctx.backendOwned) throw Error('unlink attempted');},
+    refreshAllowedLoopbackAliases(){}, unlockAdoptedBackend(){}, unlinkMarkerIfOwned(){if(ctx.backendOwned) throw Error('unlink attempted');},
     killBackendTree(){throw Error('borrowed process kill attempted');}});
   vm.runInContext(main.slice(main.indexOf('async function _startBackendOnce()'),main.indexOf('// ---- transport seam')),ctx);
   vm.runInContext(main.slice(main.indexOf('async function cleanupBackend()'),main.indexOf('app.on("window-all-closed"')),ctx);

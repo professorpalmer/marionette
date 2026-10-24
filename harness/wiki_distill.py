@@ -171,6 +171,12 @@ class WikiDistillMixin:
                 "wiki_estimated_savings_usd": 0.0,
             }
 
+    def _sealed_session(self) -> bool:
+        """An encrypted session never writes its content to the wiki, skills or rules."""
+        from . import seal
+
+        return seal.is_sealed(str(getattr(self, "harness_session_id", "") or ""))
+
     def _after_wiki_ingest(self) -> None:
         """Notify server after a successful wiki write so graph/status cache refreshes."""
         cb = getattr(self, "_on_wiki_ingest", None)
@@ -190,6 +196,8 @@ class WikiDistillMixin:
             if not self._first_objective:
                 self._first_objective = user_message
         if not (self._wiki_auto and self._wiki.configured and findings):
+            return
+        if self._sealed_session():
             return
         try:
             digest = session_digest(user_message, prose, findings)
@@ -214,6 +222,8 @@ class WikiDistillMixin:
         """
         if not self._wiki.configured:
             return {"status": "not_configured", "pages": []}
+        if self._sealed_session():
+            return {"status": "no_signal", "pages": [], "reason": "encrypted session"}
         # Only act when there is genuinely new durable signal this session.
         if len(self._session_findings) <= self._wiki_prepared_hwm or not self._session_findings:
             return {"status": "no_signal", "pages": []}
@@ -240,7 +250,7 @@ class WikiDistillMixin:
         """File approved structured pages into the wiki, one source each, with
         run_orchestrator=False (the local model already did the structuring).
         Returns the count successfully ingested. Best-effort."""
-        if not self._wiki.configured or not pages:
+        if not self._wiki.configured or not pages or self._sealed_session():
             return 0
         count = 0
         for p in pages:
@@ -287,7 +297,7 @@ class WikiDistillMixin:
     def _maybe_auto_distill(self):
         """If auto-distill is enabled and there is new signal, propose
         PENDING candidates and yield a 'distilled' event. Best-effort."""
-        if not self._auto_distill:
+        if not self._auto_distill or self._sealed_session():
             return None
 
         has_new_findings = len(self._session_findings) > self._distilled_findings_hwm
@@ -315,6 +325,8 @@ class WikiDistillMixin:
         """Propose PENDING candidate skill(s) AND rule(s) from this session's
         accumulated findings. Human approval required before either loads into
         context. Returns a combined status dict."""
+        if self._sealed_session():
+            return {"status": "skipped", "reason": "encrypted session"}
         out = {}
         extra_context = ""
         non_verification_findings = [f for f in self._session_findings if f.get("type") != "verification"]

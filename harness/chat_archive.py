@@ -387,6 +387,10 @@ def ingest_marionette_session(
     backups = str(backup_dir(state_dir))
     if not sid:
         return IngestReport(errors=1, backup_dir=backups)
+    from .seal import is_sealed
+    if is_sealed(sid):
+        # The archive vault, its markdown and its raw backup are plaintext.
+        return IngestReport(skipped_unchanged=1, backup_dir=backups)
     try:
         raw = _raw_transcript(state_dir, sid)
         if _is_pruned_stub(raw):
@@ -480,6 +484,10 @@ def prune_ingested_transcripts(state_dir: str, sessions=None) -> Dict[str, Any]:
     for row in sessions or ():
         sid = str(row.get("id") or "")
         if not row.get("archived") or not sid:
+            continue
+        from .seal import is_sealed
+        if is_sealed(sid):
+            skipped += 1
             continue
         try:
             raw = _raw_transcript(state_dir, sid)

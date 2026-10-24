@@ -22,7 +22,7 @@ function mainSeam(overrides = {}) {
   const ctx = vm.createContext({ process: {env:{MARIONETTE_BACKEND_RECEIPT:'/receipt'}},
     require: name => require(path.resolve(__dirname, name)), backendOwned:false,
     backend:null, backendPort:0, harnessToken:'', attachBackend,
-    resolveRepoRoot:()=>'/repo', refreshAllowedLoopbackAliases(){},
+    resolveRepoRoot:()=>'/repo', refreshAllowedLoopbackAliases(){}, unlockAdoptedBackend(){},
     unlinkMarkerIfOwned(){ assert.equal(ctx.backendOwned, false); },
     killBackendTree(){ throw Error('borrowed backend killed'); }, ...overrides });
   vm.runInContext(source.slice(source.indexOf('async function _startBackendOnce()'), source.indexOf('// ---- transport seam')), ctx);

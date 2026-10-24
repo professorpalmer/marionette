@@ -107,6 +107,13 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     save: (payload) => ipcRenderer.invoke("secrets:save", payload),
     presence: (payload) => ipcRenderer.invoke("secrets:presence", payload),
   },
+  // Encrypted sessions. The master key and recovery record stay in main.
+  seal: {
+    status: () => ipcRenderer.invoke("seal:status"),
+    enable: () => ipcRenderer.invoke("seal:enable"),
+    disable: () => ipcRenderer.invoke("seal:disable"),
+    recover: (code) => ipcRenderer.invoke("seal:recover", { code }),
+  },
 
   // stream(path, onEvent, onDone, onError) -> cancel()
   stream: (path, onEvent, onDone, onError, identityHeaders) => {

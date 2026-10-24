@@ -758,16 +758,18 @@ def spill_oversized_command_output(
         from harness.context_budget import spill_to_disk
         from harness.spill_registry import register_spill, spill_uri
 
-        path = spill_to_disk(persisted, result_id, state_dir, dedupe=False)
+        path = spill_to_disk(persisted, result_id, state_dir, dedupe=False, session_id=session_id)
         uri = spill_uri(session_id, result_id) if session_id else None
         if uri and path:
+            from harness.context_budget import _index_hash
+
             register_spill(
                 state_dir=state_dir,
                 session_id=session_id,
                 tool_call_id=result_id,
                 path=path,
                 chars=len(text),
-                content_hash=hashlib.sha256(persisted.encode("utf-8")).hexdigest(),
+                content_hash=_index_hash(hashlib.sha256(persisted.encode("utf-8")).hexdigest(), session_id),
             )
         meta["spill_uri"] = uri or ""
         meta["spill_path"] = path or ""

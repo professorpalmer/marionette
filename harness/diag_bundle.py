@@ -192,7 +192,8 @@ def collect_session_rows(
         out.append(
             {
                 "id": str(row.get("id") or ""),
-                "title": str(row.get("title") or ""),
+                # The export is a plain file: an encrypted session's title stays out.
+                "title": "" if row.get("sealed") else str(row.get("title") or ""),
                 "mtime": mtime,
             }
         )

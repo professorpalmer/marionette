@@ -45,6 +45,7 @@ const {
 const { createTranslucencyController } = require("./translucency.cjs");
 const { isAllowedBrowserUrl, isAllowedExternalUrl, hardenWebPreferences } = require("./browser-url.cjs");
 const secretVault = require("./secret-vault.cjs");
+const sealKeys = require("./seal-keys.cjs");
 const {
   buildPuppetmasterBackendEnv,
   isInspectMode,
@@ -782,6 +783,7 @@ async function _startBackendOnce() {
     backend = null;
     backendOwned = false;
     void refreshAllowedLoopbackAliases();
+    void unlockAdoptedBackend();
     return;
   }
   // Reuse requires authentication and matching source identity. A marker is
@@ -822,6 +824,7 @@ async function _startBackendOnce() {
       if (candidateToken) harnessToken = candidateToken;
       console.log(`[backend] reusing existing backend on ${backendPort} (identity match)`);
       void refreshAllowedLoopbackAliases();
+      void unlockAdoptedBackend();
       return;
     }
     if (verdict.action === "replace" && verdict.marker) {
@@ -961,12 +964,23 @@ async function _startBackendOnce() {
   // installed Puppetmaster (the installer ensures both). No bundled-node shim is
   // needed in the source-run model.
 
+  // Encrypted sessions: the master key goes to the backend on stdin, never in
+  // env or argv. "{}" tells it encryption is set up but the key is not here.
+  let sealLine = null;
+  try {
+    const { safeStorage } = require("electron");
+    sealLine = sealKeys.spawnLine({ stateDir: customEnv.HARNESS_STATE_DIR, safeStorage });
+  } catch (e) {
+    logMain(`[seal] key read failed: ${e && e.message ? e.message : e}`);
+  }
+  if (sealLine) customEnv.HARNESS_SEAL_STDIN = "1";
+
   const py = process.env.PMHARNESS_PYTHON || venvPython(repoRoot);
   _dbg(`spawning python backend: ${py} cwd=${repoRoot} port=${backendPort}`);
   backend = spawn(py, ["-m", "harness.cli", "gui", "--port", String(backendPort)], {
     cwd: repoRoot,
     env: customEnv,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [sealLine ? "pipe" : "ignore", "pipe", "pipe"],
     windowsHide: true,
     // POSIX: own process group so quit can signal the WHOLE tree (backend +
     // workers + codegraph node + wiki). Signalling just the backend pid orphans
@@ -977,6 +991,10 @@ async function _startBackendOnce() {
   backendOwned = true;
   const spawnedBackend = backend;
   const spawnedPid = backend.pid;
+  if (sealLine && backend.stdin) {
+    backend.stdin.on("error", (e) => logMain(`[seal] stdin write failed: ${e.message}`));
+    backend.stdin.end(sealLine);
+  }
 
   backend.on("error", (e) => _dbg(`spawn error: ${e.message}`));
   // Unexpected death keeps the window and respawns Python. POST /api/restart
@@ -1164,6 +1182,65 @@ ipcMain.handle("secrets:presence", (_e, payload) => {
     field: payload && payload.field,
   });
 });
+
+function sealStateDir() {
+  return process.env.HARNESS_STATE_DIR || resolveHarnessStateDir();
+}
+
+/** A backend this app did not spawn got no key on stdin: send it now. */
+async function unlockAdoptedBackend() {
+  try {
+    const { safeStorage } = require("electron");
+    const masterKey = sealKeys.loadMasterKey({ stateDir: sealStateDir(), safeStorage });
+    if (masterKey) await sendSealKey(masterKey);
+  } catch (e) {
+    logMain(`[seal] unlock of adopted backend failed: ${e && e.message ? e.message : e}`);
+  }
+}
+
+function sendSealKey(masterKey) {
+  return backendRequest("POST", "/api/seal/unlock", { master_key: masterKey.toString("base64") });
+}
+
+function sealReply(fn) {
+  return async (_e, payload) => {
+    try {
+      return { ok: true, ...(await fn(payload || {})) };
+    } catch (e) {
+      return { ok: false, code: String((e && e.code) || "SEAL_FAILED"), error: String((e && e.message) || e) };
+    }
+  };
+}
+
+ipcMain.handle("seal:status", sealReply(() => {
+  const { safeStorage } = require("electron");
+  return sealKeys.status({ stateDir: sealStateDir(), safeStorage });
+}));
+ipcMain.handle("seal:enable", sealReply(async () => {
+  const { safeStorage } = require("electron");
+  const stateDir = sealStateDir();
+  const { masterKey, recoveryCode } = sealKeys.enable({ stateDir, safeStorage });
+  try {
+    await sendSealKey(masterKey);
+  } catch (e) {
+    // A switch that is on while the backend has no key blocks every new
+    // session. Undo it. A key nobody received yet sealed nothing: remove it.
+    if (recoveryCode) sealKeys.forget({ stateDir });
+    else sealKeys.disable({ stateDir });
+    throw e;
+  }
+  return { recoveryCode };
+}));
+ipcMain.handle("seal:disable", sealReply(() => {
+  sealKeys.disable({ stateDir: sealStateDir() });
+  return {};
+}));
+ipcMain.handle("seal:recover", sealReply(async (payload) => {
+  const { safeStorage } = require("electron");
+  const masterKey = sealKeys.recover({ stateDir: sealStateDir(), safeStorage, code: payload.code });
+  await sendSealKey(masterKey);
+  return {};
+}));
 
 // Guards against overlapping relaunches (double-click / rapid toggle).
 let restarting = false;

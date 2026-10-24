@@ -17,6 +17,7 @@ callers keep working.
 """
 
 import hashlib
+import io
 import os
 import re
 import subprocess
@@ -320,6 +321,19 @@ class ToolDispatchMixin:
             registered_job_ids=list(getattr(self, "_session_job_ids", []) or []),
         )
 
+    def _read_text_lines(self, target_path: str) -> list:
+        """Text-mode lines; a sealed spill under the results root is opened first."""
+        from .seal import is_envelope, read_file
+
+        with open(target_path, "rb") as f:
+            head = f.read(4)
+        spill_root = os.path.join(os.path.abspath(self._state_dir_or_tempdir), "pmharness-results")
+        if is_envelope(head) and is_safe_path(target_path, spill_root):
+            raw = io.BytesIO(read_file(target_path, owner=getattr(self, "harness_session_id", "") or ""))
+            return io.TextIOWrapper(raw, encoding="utf-8", errors="replace").readlines()
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.readlines()
+
     def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:
         if is_internal_uri(act.path):
             try:
@@ -372,8 +386,7 @@ class ToolDispatchMixin:
                     + result_text
                 )
 
-            with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            lines = self._read_text_lines(target_path)
             
             total_lines = len(lines)
             raw_text = "".join(lines)
@@ -464,6 +477,14 @@ class ToolDispatchMixin:
             ext = os.path.splitext(target_path)[1].lower()
             if ext not in (".png", ".jpg", ".jpeg", ".webp"):
                 return False, "error", f"view_image: not an image file or not found: {act.path}"
+            from . import seal
+
+            with open(target_path, "rb") as fh:
+                sealed_image = seal.is_envelope(fh.read(len(seal.MAGIC)))
+            if sealed_image:
+                # Later readers open any key this process holds: refuse here an
+                # image that another encrypted session owns.
+                seal.read_file(target_path, owner=getattr(self, "harness_session_id", "") or "")
 
             from .vision import session_supports_native_images, transcribe_images
             # Vision pilots get pixels on the next generate — never a weaker
@@ -960,7 +981,7 @@ class ToolDispatchMixin:
         from .session_scratch import SessionScratchStore
 
         state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", "") or ""
-        store = SessionScratchStore(state_dir)
+        store = SessionScratchStore(state_dir, lambda: getattr(self, "harness_session_id", "") or "")
         self._scratch_store = store
         return store
 
@@ -1622,7 +1643,7 @@ class ToolDispatchMixin:
         catalog.refresh(
             mcp_tools=mcp_tools,
             no_delegation=getattr(self.config, "no_delegation", False),
-            browser_enabled=getattr(self.config, "browser_enabled", True),
+            browser_enabled=self._browser_tools_enabled(),
         )
         args = act.arguments or {}
         query = (act.query or args.get("query") or "").strip()
