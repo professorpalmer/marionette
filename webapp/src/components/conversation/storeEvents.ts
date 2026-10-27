@@ -78,13 +78,38 @@ export function shouldApplyStoreEvent(opts: {
 /**
  * Skip store stream frames the live watch already accepted.
  * Missing ring cursor cannot prove a duplicate, so those frames still apply.
+ * Ring cursors restart at every generation, so the position is the pair
+ * (generation, cursor): a newer generation is new at any cursor.
  */
 export function shouldApplyStoreStreamAfterLive(opts: {
   ringCursor: number | undefined;
+  ringGeneration?: number;
   lastAppliedRingCursor: number;
+  lastAppliedGeneration?: number;
 }): boolean {
   if (typeof opts.ringCursor !== "number") return true;
+  const gen = positiveGeneration(opts.ringGeneration);
+  const lastGen = positiveGeneration(opts.lastAppliedGeneration);
+  if (gen != null && lastGen != null && gen !== lastGen) return gen > lastGen;
   return opts.ringCursor > opts.lastAppliedRingCursor;
+}
+
+export function positiveGeneration(value: unknown): number | undefined {
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
+/**
+ * Oldest generation a replay from the store start may apply. The hydrated
+ * transcript already holds every settled turn before the newest one.
+ */
+export function replayGenerationFloor(events: readonly StoreEvent[]): number | undefined {
+  let newest: number | undefined;
+  for (const ev of events) {
+    if (ev.kind !== "stream" || typeof ev.data !== "object" || ev.data === null) continue;
+    const gen = positiveGeneration((ev.data as { generation?: unknown }).generation);
+    if (gen != null && (newest == null || gen > newest)) newest = gen;
+  }
+  return newest;
 }
 
 /** Map a store ``stream`` event payload to the live stream-event shape. */

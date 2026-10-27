@@ -254,13 +254,21 @@ export function recordPrimaryStreamFrame(opts: {
   cursor?: number;
   generation?: number;
 }): void {
+  // Cursors restart at every generation: a newer generation takes its own
+  // cursor, and a frame from an older one moves nothing.
+  const gen = typeof frame.generation === "number" && frame.generation > 0 ? frame.generation : undefined;
+  const lastGen = opts.ringGenerationRef.current;
+  if (gen != null && lastGen != null && gen < lastGen) return;
+  if (gen != null && lastGen != null && gen > lastGen) {
+    opts.ringGenerationRef.current = gen;
+    opts.lastAppliedRingCursorRef.current = typeof frame.cursor === "number" ? frame.cursor : 0;
+    return;
+  }
   opts.lastAppliedRingCursorRef.current = ringCursorAfterLiveFrame(
     opts.lastAppliedRingCursorRef.current,
     frame.cursor,
   );
-  if (typeof frame.generation === "number" && frame.generation > 0) {
-    opts.ringGenerationRef.current = frame.generation;
-  }
+  if (gen != null) opts.ringGenerationRef.current = gen;
 }
 
 /** Start a stream generation with its fresh server ring. */

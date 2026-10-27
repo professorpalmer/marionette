@@ -14,7 +14,7 @@ import {
   isChatEventsReattachArmed,
   isTerminalStreamKind,
   liveWatchCloseDecision,
-  ringCursorAfterLiveFrame,
+  recordPrimaryStreamFrame,
   ringGenerationAfterReplayMiss,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
@@ -23,6 +23,8 @@ import {
 } from "./chatEvents";
 import {
   isStoreRingMissEvent,
+  positiveGeneration,
+  replayGenerationFloor,
   storePollDelayMs,
   storeCursorAfterBatch,
   shouldApplyStoreEvent,
@@ -498,9 +500,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
     }
     try {
+      const since = lastAppliedCursorRef.current;
       const batch = await api.readEventsSince({
         session: reattachSid,
-        since: lastAppliedCursorRef.current,
+        since,
         ...(ringGenerationRef.current != null
           ? { generation: ringGenerationRef.current }
           : {}),
@@ -517,6 +520,11 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         ringGenerationRef.current = undefined;
       }
       const events = Array.isArray(batch.events) ? batch.events : [];
+      // A replay from the store start carries every turn of the session. The
+      // hydrated transcript holds the settled ones, so apply only the newest.
+      const generationFloor = since === 0 || batch.replay_reset
+        ? replayGenerationFloor(events)
+        : undefined;
       let sawTerminal = false;
       let wantRetry = false;
 
@@ -553,15 +561,22 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             continue;
           }
           const ringCursor = typeof frame.cursor === "number" ? frame.cursor : undefined;
+          const ringGeneration = positiveGeneration(frame.generation);
+          if (generationFloor != null && ringGeneration != null && ringGeneration < generationFloor) {
+            continue;
+          }
           if (!shouldApplyStoreStreamAfterLive({
             ringCursor,
+            ringGeneration,
             lastAppliedRingCursor: lastAppliedRingCursorRef.current,
+            lastAppliedGeneration: ringGenerationRef.current,
           })) {
             continue;
           }
-          if (typeof frame.generation === "number" && frame.generation > 0) {
-            ringGenerationRef.current = frame.generation;
-          }
+          recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, {
+            cursor: ringCursor,
+            generation: ringGeneration,
+          });
           applyStreamEventRef.current(storeStreamToStreamEvent(frame));
           if (terminal) sawTerminal = true;
         }
@@ -792,10 +807,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           return;
         }
         applyStreamEventRef.current(chatFrameToStreamEvent(ev));
-        lastAppliedRingCursorRef.current = ringCursorAfterLiveFrame(
-          lastAppliedRingCursorRef.current,
-          typeof ev.cursor === "number" ? ev.cursor : undefined,
-        );
+        recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, ev);
         if (isTerminalStreamKind(kind)) {
           sawTerminal = true;
           settled = true;
