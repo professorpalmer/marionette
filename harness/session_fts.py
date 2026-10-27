@@ -317,6 +317,9 @@ def extract_chunks(transcript_or_messages: Any) -> List[str]:
     chunks: List[str] = []
     seen: set[str] = set()
     for msg in messages:
+        # Reasoning rows stay out of search, as they did before display kept them.
+        if isinstance(msg, dict) and msg.get("type") == "thinking":
+            continue
         text = _message_text(msg)
         if not text:
             continue

@@ -576,6 +576,14 @@ export function transcriptResponseToItems(res: {
       } else if (m.type === "checkpoint") {
         return [{ kind: "checkpoint", id: String(m.id || ""),
           label: String(m.label || ""), trigger: String(m.trigger || "") }];
+      } else if (m.type === "thinking") {
+        const text = String(m.text || "");
+        if (!text.trim()) return [];
+        return [{
+          kind: "thinking" as const,
+          text,
+          duration_ms: typeof m.duration_ms === "number" ? m.duration_ms : null,
+        }];
       } else if (m.type === "turn_terminal") {
         const text = String(m.text || "").trim();
         if (!text) return [];

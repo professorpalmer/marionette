@@ -1,5 +1,6 @@
 """Unit and integration tests for OpenAI streaming feature."""
 import tempfile
+from types import SimpleNamespace
 import json
 import pytest
 
@@ -597,3 +598,44 @@ def test_live_reasoning_and_tool_prep_events():
 
     deltas = [e for e in events if e.kind == "message_delta"]
     assert deltas and deltas[0].data["text"] == "Here is the summary."
+
+
+def test_streamed_reasoning_is_a_display_thought_row():
+    """Hydrate rebuilds from display; a Thought row lost there vanished on switch."""
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    s = ConversationalSession(cfg)
+    s.pilot = _LiveReasoningPilot()
+
+    list(s.send("Summarize Kotoba"))
+
+    display = s.export_transcript_data()["display"]
+    rows = [(r.get("type") or "message", r.get("role")) for r in display]
+    assert rows == [("message", "user"), ("thinking", None), ("message", "assistant")]
+    thought = display[1]
+    assert thought["text"] == "Let me pull the latest from GitHub and check the wiki."
+    assert isinstance(thought["duration_ms"], int) and thought["duration_ms"] >= 0
+
+
+def test_step_reasoning_row_goes_before_rows_the_step_wrote_mid_stream():
+    from harness.send_loop_phases import record_step_reasoning
+
+    s = SimpleNamespace(_display_transcript=[
+        {"type": "message", "role": "user", "text": "go"},
+        {"type": "card", "id": "call-1", "call_id": "call-1", "result": None},
+    ])
+    resp = DriverResponse(text="", meta={"streamed_reasoning": "plan", "reasoning_duration_ms": 5})
+    record_step_reasoning(s, resp, step_display_start=1)
+    assert [r["type"] for r in s._display_transcript] == ["message", "thinking", "card"]
+
+    record_step_reasoning(s, DriverResponse(text="", meta={"streamed_reasoning": "  "}), 1)
+    assert len(s._display_transcript) == 3
+
+
+def test_reasoning_rows_stay_out_of_session_search():
+    from harness.session_fts import extract_chunks
+
+    chunks = extract_chunks({"history": [], "display": [
+        {"type": "message", "role": "user", "text": "find the bug"},
+        {"type": "thinking", "text": "private chain of thought"},
+    ]})
+    assert chunks == ["user: find the bug"]

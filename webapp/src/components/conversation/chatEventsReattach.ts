@@ -24,6 +24,7 @@ import {
 import {
   isStoreRingMissEvent,
   positiveGeneration,
+  ReplayThoughtRun,
   replayGenerationFloor,
   storePollDelayMs,
   storeCursorAfterBatch,
@@ -33,6 +34,7 @@ import {
   storeRingMissFields,
   storeStreamToStreamEvent,
 } from "./storeEvents";
+import { HeldThoughts } from "./thinkingToolPrep";
 import {
   mergeTranscriptItems,
   transcriptFingerprint,
@@ -527,9 +529,17 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         : undefined;
       let sawTerminal = false;
       let wantRetry = false;
+      // A run of reasoning deltas paints as one chunk. On a replay from the
+      // start, a chunk that a sealed Thought of the hydrated turn holds is skipped.
+      const held = generationFloor != null ? new HeldThoughts(itemsRef.current) : null;
+      const thoughtRun = new ReplayThoughtRun((chunk) => {
+        if (held?.take(String(chunk.data?.text ?? ""))) return;
+        applyStreamEventRef.current(chunk);
+      });
 
       for (const ev of events) {
         if (!fenceOk()) return false;
+        if (ev.kind !== "stream") thoughtRun.flush();
         if (ev.kind === "ring_miss" && isStoreRingMissEvent(ev)) {
           const decision = await handleRingMiss(ev, missRetried);
           if (decision === "retry") wantRetry = true;
@@ -577,10 +587,14 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             cursor: ringCursor,
             generation: ringGeneration,
           });
-          applyStreamEventRef.current(storeStreamToStreamEvent(frame));
+          const streamEvent = storeStreamToStreamEvent(frame);
+          if (thoughtRun.add(streamEvent, ringGeneration)) continue;
+          thoughtRun.flush();
+          applyStreamEventRef.current(streamEvent);
           if (terminal) sawTerminal = true;
         }
       }
+      thoughtRun.flush();
 
       lastAppliedCursorRef.current = storeCursorAfterBatch({
         lastApplied: lastAppliedCursorRef.current,

@@ -112,6 +112,41 @@ export function replayGenerationFloor(events: readonly StoreEvent[]): number | u
   return newest;
 }
 
+type StreamEvent = { kind: string; data?: any };
+
+/** Join consecutive reasoning deltas of one stream into one chunk. */
+export class ReplayThoughtRun {
+  private pending: StreamEvent | null = null;
+  private key = "";
+  private readonly apply: (ev: StreamEvent) => void;
+
+  constructor(apply: (ev: StreamEvent) => void) {
+    this.apply = apply;
+  }
+
+  /** Hold a reasoning delta. False when ``ev`` is not one. */
+  add(ev: StreamEvent, generation: number | undefined): boolean {
+    const d = ev.data;
+    if (ev.kind !== "thinking" || !d || !d.delta || typeof d.text !== "string") return false;
+    const key = `${generation ?? ""}\0${d.stream_id ?? ""}`;
+    if (this.pending && key === this.key) {
+      this.pending = { ...this.pending, data: { ...this.pending.data, text: this.pending.data.text + d.text } };
+      return true;
+    }
+    this.flush();
+    this.pending = ev;
+    this.key = key;
+    return true;
+  }
+
+  flush(): void {
+    if (!this.pending) return;
+    const ev = this.pending;
+    this.pending = null;
+    this.apply(ev);
+  }
+}
+
 /** Map a store ``stream`` event payload to the live stream-event shape. */
 export function storeStreamToStreamEvent(data: {
   kind?: string;
