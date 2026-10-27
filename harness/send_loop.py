@@ -72,6 +72,7 @@ from .send_loop_phases import (
     finalize_assistant_turn,
     native_tools_blocked,
     record_provider_dispatch_error_receipt,
+    record_step_reasoning,
     resolve_emit_say_texts,
     run_auto_verify,
     yield_session_interrupted,
@@ -1504,6 +1505,7 @@ class SendLoopMixin:
 
             resp = None
             self._streamed_prose = ""  # reset per step; set if this step streams
+            step_display_start = len(self._display_transcript)
             for attempt in range(OVERFLOW_RETRY_MAX_ATTEMPTS):
                 # Sanitize BEFORE rendering/dispatch so both chat() and
                 # complete() see healed tool_use/tool_result pairs. (A prior
@@ -1616,6 +1618,7 @@ class SendLoopMixin:
                     return
                 break
 
+            record_step_reasoning(self, resp, step_display_start)
             last_classified, blocked = yield from settle_provider_step_terminal(
                 self,
                 resp,

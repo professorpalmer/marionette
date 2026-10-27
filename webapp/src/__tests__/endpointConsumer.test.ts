@@ -21,7 +21,8 @@ it('clears old consumer cursors before applying a new endpoint replay', async()=
   await createChatEventsReattach(d).pullChatEvents();
   expect(d.applyStreamEventRef.current).toHaveBeenCalledWith({kind:'token',data:'new'});
   expect(d.lastAppliedCursorRef.current).toBe(1);
-  expect(d.lastAppliedRingCursorRef.current).toBe(0);
+  // The applied frame is the new ring position, so a live watch starts after it.
+  expect(d.lastAppliedRingCursorRef.current).toBe(1);
   expect(d.ringGenerationRef.current).toBe(2);
 });
 it('a late replay cannot clear or paint the newly selected session',async()=>{

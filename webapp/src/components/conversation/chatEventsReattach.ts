@@ -14,7 +14,7 @@ import {
   isChatEventsReattachArmed,
   isTerminalStreamKind,
   liveWatchCloseDecision,
-  ringCursorAfterLiveFrame,
+  recordPrimaryStreamFrame,
   ringGenerationAfterReplayMiss,
   shouldHydrateTranscriptOnReplayMiss,
   shouldPollChatEvents,
@@ -23,6 +23,9 @@ import {
 } from "./chatEvents";
 import {
   isStoreRingMissEvent,
+  positiveGeneration,
+  ReplayThoughtRun,
+  replayGenerationFloor,
   storePollDelayMs,
   storeCursorAfterBatch,
   shouldApplyStoreEvent,
@@ -31,6 +34,7 @@ import {
   storeRingMissFields,
   storeStreamToStreamEvent,
 } from "./storeEvents";
+import { HeldThoughts } from "./thinkingToolPrep";
 import {
   mergeTranscriptItems,
   transcriptFingerprint,
@@ -498,9 +502,10 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       chatEventsPollTimerRef.current = CHAT_EVENTS_POLL_IN_FLIGHT;
     }
     try {
+      const since = lastAppliedCursorRef.current;
       const batch = await api.readEventsSince({
         session: reattachSid,
-        since: lastAppliedCursorRef.current,
+        since,
         ...(ringGenerationRef.current != null
           ? { generation: ringGenerationRef.current }
           : {}),
@@ -517,11 +522,24 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
         ringGenerationRef.current = undefined;
       }
       const events = Array.isArray(batch.events) ? batch.events : [];
+      // A replay from the store start carries every turn of the session. The
+      // hydrated transcript holds the settled ones, so apply only the newest.
+      const generationFloor = since === 0 || batch.replay_reset
+        ? replayGenerationFloor(events)
+        : undefined;
       let sawTerminal = false;
       let wantRetry = false;
+      // A run of reasoning deltas paints as one chunk. On a replay from the
+      // start, a chunk that a sealed Thought of the hydrated turn holds is skipped.
+      const held = generationFloor != null ? new HeldThoughts(itemsRef.current) : null;
+      const thoughtRun = new ReplayThoughtRun((chunk) => {
+        if (held?.take(String(chunk.data?.text ?? ""))) return;
+        applyStreamEventRef.current(chunk);
+      });
 
       for (const ev of events) {
         if (!fenceOk()) return false;
+        if (ev.kind !== "stream") thoughtRun.flush();
         if (ev.kind === "ring_miss" && isStoreRingMissEvent(ev)) {
           const decision = await handleRingMiss(ev, missRetried);
           if (decision === "retry") wantRetry = true;
@@ -553,19 +571,30 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             continue;
           }
           const ringCursor = typeof frame.cursor === "number" ? frame.cursor : undefined;
+          const ringGeneration = positiveGeneration(frame.generation);
+          if (generationFloor != null && ringGeneration != null && ringGeneration < generationFloor) {
+            continue;
+          }
           if (!shouldApplyStoreStreamAfterLive({
             ringCursor,
+            ringGeneration,
             lastAppliedRingCursor: lastAppliedRingCursorRef.current,
+            lastAppliedGeneration: ringGenerationRef.current,
           })) {
             continue;
           }
-          if (typeof frame.generation === "number" && frame.generation > 0) {
-            ringGenerationRef.current = frame.generation;
-          }
-          applyStreamEventRef.current(storeStreamToStreamEvent(frame));
+          recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, {
+            cursor: ringCursor,
+            generation: ringGeneration,
+          });
+          const streamEvent = storeStreamToStreamEvent(frame);
+          if (thoughtRun.add(streamEvent, ringGeneration)) continue;
+          thoughtRun.flush();
+          applyStreamEventRef.current(streamEvent);
           if (terminal) sawTerminal = true;
         }
       }
+      thoughtRun.flush();
 
       lastAppliedCursorRef.current = storeCursorAfterBatch({
         lastApplied: lastAppliedCursorRef.current,
@@ -792,10 +821,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           return;
         }
         applyStreamEventRef.current(chatFrameToStreamEvent(ev));
-        lastAppliedRingCursorRef.current = ringCursorAfterLiveFrame(
-          lastAppliedRingCursorRef.current,
-          typeof ev.cursor === "number" ? ev.cursor : undefined,
-        );
+        recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, ev);
         if (isTerminalStreamKind(kind)) {
           sawTerminal = true;
           settled = true;

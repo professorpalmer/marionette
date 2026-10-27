@@ -78,13 +78,73 @@ export function shouldApplyStoreEvent(opts: {
 /**
  * Skip store stream frames the live watch already accepted.
  * Missing ring cursor cannot prove a duplicate, so those frames still apply.
+ * Ring cursors restart at every generation, so the position is the pair
+ * (generation, cursor): a newer generation is new at any cursor.
  */
 export function shouldApplyStoreStreamAfterLive(opts: {
   ringCursor: number | undefined;
+  ringGeneration?: number;
   lastAppliedRingCursor: number;
+  lastAppliedGeneration?: number;
 }): boolean {
   if (typeof opts.ringCursor !== "number") return true;
+  const gen = positiveGeneration(opts.ringGeneration);
+  const lastGen = positiveGeneration(opts.lastAppliedGeneration);
+  if (gen != null && lastGen != null && gen !== lastGen) return gen > lastGen;
   return opts.ringCursor > opts.lastAppliedRingCursor;
+}
+
+export function positiveGeneration(value: unknown): number | undefined {
+  return typeof value === "number" && value > 0 ? value : undefined;
+}
+
+/**
+ * Oldest generation a replay from the store start may apply. The hydrated
+ * transcript already holds every settled turn before the newest one.
+ */
+export function replayGenerationFloor(events: readonly StoreEvent[]): number | undefined {
+  let newest: number | undefined;
+  for (const ev of events) {
+    if (ev.kind !== "stream" || typeof ev.data !== "object" || ev.data === null) continue;
+    const gen = positiveGeneration((ev.data as { generation?: unknown }).generation);
+    if (gen != null && (newest == null || gen > newest)) newest = gen;
+  }
+  return newest;
+}
+
+type StreamEvent = { kind: string; data?: any };
+
+/** Join consecutive reasoning deltas of one stream into one chunk. */
+export class ReplayThoughtRun {
+  private pending: StreamEvent | null = null;
+  private key = "";
+  private readonly apply: (ev: StreamEvent) => void;
+
+  constructor(apply: (ev: StreamEvent) => void) {
+    this.apply = apply;
+  }
+
+  /** Hold a reasoning delta. False when ``ev`` is not one. */
+  add(ev: StreamEvent, generation: number | undefined): boolean {
+    const d = ev.data;
+    if (ev.kind !== "thinking" || !d || !d.delta || typeof d.text !== "string") return false;
+    const key = `${generation ?? ""}\0${d.stream_id ?? ""}`;
+    if (this.pending && key === this.key) {
+      this.pending = { ...this.pending, data: { ...this.pending.data, text: this.pending.data.text + d.text } };
+      return true;
+    }
+    this.flush();
+    this.pending = ev;
+    this.key = key;
+    return true;
+  }
+
+  flush(): void {
+    if (!this.pending) return;
+    const ev = this.pending;
+    this.pending = null;
+    this.apply(ev);
+  }
 }
 
 /** Map a store ``stream`` event payload to the live stream-event shape. */

@@ -247,6 +247,42 @@ function thinkingStartedAt(it: { started_at_ms?: number } | undefined): number {
  * reasoning segment at the end (append-only). Seal only via explicit
  * lifecycle helpers (item done / tool start / terminal).
  */
+/** Shorter chunks are never proof that a Thought is a replay. */
+const THOUGHT_COVER_MIN_CHARS = 12;
+
+function thoughtKey(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Sealed Thought texts of the last turn. A store replay from the start paints
+ * a turn the hydrate already holds; each held Thought covers one replayed
+ * chunk with the same text (a model can repeat a Thought after a tool).
+ */
+export class HeldThoughts {
+  private readonly keys: string[];
+
+  constructor(items: Item[]) {
+    const keys: string[] = [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "msg" && it.msg.role === "user") break;
+      if (it.kind === "thinking" && !it.streaming) keys.push(thoughtKey(it.text));
+    }
+    this.keys = keys;
+  }
+
+  /** True once per held Thought that holds ``chunk`` whole. */
+  take(chunk: string): boolean {
+    const key = thoughtKey(chunk);
+    if (key.length < THOUGHT_COVER_MIN_CHARS) return false;
+    const i = this.keys.indexOf(key);
+    if (i < 0) return false;
+    this.keys.splice(i, 1);
+    return true;
+  }
+}
+
 export function upsertStreamingThinking(
   items: Item[],
   chunk: string,

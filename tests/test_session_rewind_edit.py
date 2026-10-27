@@ -310,3 +310,81 @@ def test_find_rewind_checkpoint_prefers_exact_then_later_ordinal(tmp_path):
     assert exact is not None
     assert exact["id"] == earlier
     assert store.find_rewind_checkpoint(3, session_id="sess-find") is None
+
+
+def test_rewind_ordinal_skips_steer_rows(tmp_path):
+    # The UI shows a steer as its own row, not a user message, so its ordinal
+    # for "two" is 1. Counting the steer picked the message after it.
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user", "text": "one"},
+        {"type": "message", "role": "user", "text": "nudge", "steer": True},
+        {"type": "message", "role": "assistant", "text": "a1"},
+        {"type": "message", "role": "user", "text": "two"},
+        {"type": "message", "role": "assistant", "text": "a2"},
+        {"type": "message", "role": "user", "text": "three"},
+    ]
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "one"},
+        {"role": "user", "content": "nudge"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "two"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "three"},
+    ]
+    res = s.rewind_to_user_ordinal(1, text_hint="two")
+    assert res["prefill"] == "two"
+    assert [r["text"] for r in s._display_transcript] == ["one", "nudge", "a1"]
+    assert [m["content"] for m in s._history[1:]] == ["one", "nudge", "a1"]
+
+
+def test_rewind_input_id_cuts_history_past_injected_user_rows(tmp_path):
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user", "text": "one", "input_id": "in-1"},
+        {"type": "message", "role": "assistant", "text": "a1"},
+        {"type": "message", "role": "user", "text": "two", "input_id": "in-2"},
+        {"type": "message", "role": "assistant", "text": "a2"},
+    ]
+    s._history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "one", "input_ids": ["in-1"]},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "worker mail"},
+        {"role": "assistant", "content": "ack"},
+        {"role": "user", "content": "two", "input_ids": ["in-2"]},
+        {"role": "assistant", "content": "a2"},
+    ]
+    res = s.rewind_to_user_ordinal(0, text_hint="one", input_id="in-2")
+    assert res["prefill"] == "two"
+    assert res["user_ordinal"] == 1
+    assert [m["content"] for m in s._history[1:]] == ["one", "a1", "worker mail", "ack"]
+
+
+def test_rewind_prefill_drops_turn_context_trailer(tmp_path):
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user",
+         "text": "fix the parser\n\n[context for this turn]\nCODEGRAPH: parse() -> lexer.py:12"},
+    ]
+    s._history = [{"role": "system", "content": "sys"}, {"role": "user", "content": "fix the parser"}]
+    res = s.rewind_to_user_ordinal(0, text_hint="fix the parser")
+    assert res["prefill"] == "fix the parser"
+
+
+def test_rewind_hint_mismatch_picks_nearest_matching_row(tmp_path):
+    s = _sess(tmp_path)
+    s._display_transcript = [
+        {"type": "message", "role": "user", "text": "same"},
+        {"type": "message", "role": "user", "text": "other"},
+        {"type": "message", "role": "user", "text": "x"},
+        {"type": "message", "role": "user", "text": "same"},
+    ]
+    s._history = [{"role": "system", "content": "sys"}]
+    res = s.rewind_to_user_ordinal(2, text_hint="same")
+    assert res["user_ordinal"] == 3
+    assert res["ordinal_clamped"] is False
+    # A hint no row shows keeps the ordinal row.
+    s.restore_rewind_stash()
+    assert s.rewind_to_user_ordinal(1, text_hint="edited elsewhere")["prefill"] == "other"

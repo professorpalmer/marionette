@@ -1930,7 +1930,7 @@ export const api = {
       "/api/session/interrupt",
       sessionId ? { session_id: sessionId } : {},
     ),
-  rewindSession: (userOrdinal: number, opts?: { text?: string }) =>
+  rewindSession: (userOrdinal: number, opts?: { text?: string; input_id?: string }) =>
     postJSON<{
       ok: boolean;
       prefill?: string;
@@ -1944,6 +1944,7 @@ export const api = {
     }>("/api/session/rewind", {
       user_ordinal: userOrdinal,
       ...(opts?.text ? { text: opts.text } : {}),
+      ...(opts?.input_id ? { input_id: opts.input_id } : {}),
     }),
   restoreRewind: () =>
     postJSON<{

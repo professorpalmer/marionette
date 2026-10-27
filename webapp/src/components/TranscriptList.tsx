@@ -1611,7 +1611,7 @@ export type TranscriptListProps = {
   /** Cmd/Ctrl+F: searchable row text and reveal-by-row for the find bar. */
   findApiRef?: React.MutableRefObject<TranscriptFindApi | null>;
   viewportRef?: React.MutableRefObject<TranscriptViewportHandle | null>;
-  onEditMessage: (idx: number, originalText: string) => void;
+  onEditMessage: (idx: number, originalText: string, messageId?: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;
@@ -1919,7 +1919,7 @@ export const TranscriptList = memo(function TranscriptList({
       const isFirstInRun = !prevMsg || prevMsg.role !== "assistant";
       const isIntermediate = intermediateItems.has(it as Item);
 
-      const onEdit = it.msg.role === "user" ? () => onEditMessage(rawIdx, it.msg.text) : undefined;
+      const onEdit = it.msg.role === "user" ? () => onEditMessage(rawIdx, it.msg.text, it.msg.id) : undefined;
       const isEditing = editingIndex === rawIdx;
 
       const isLastAssistant = rawIdx === lastAssistantRawIdx;

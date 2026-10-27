@@ -759,10 +759,13 @@ def post_session_rewind(body: dict, svc: SessionControlServices) -> tuple[int, J
         except (TypeError, ValueError):
             return 400, {"ok": False, "error": "user_ordinal must be an int"}
         hint = body.get("text") or body.get("text_hint")
+        input_id = body.get("input_id")
+        target = {}
         if isinstance(hint, str) and hint.strip():
-            result = pilot.rewind_to_user_ordinal(user_ordinal, text_hint=hint)
-        else:
-            result = pilot.rewind_to_user_ordinal(user_ordinal)
+            target["text_hint"] = hint
+        if isinstance(input_id, str) and input_id.strip():
+            target["input_id"] = input_id.strip()
+        result = pilot.rewind_to_user_ordinal(user_ordinal, **target)
     elif body.get("display_index") is not None:
         try:
             display_index = int(body.get("display_index"))

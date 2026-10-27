@@ -326,11 +326,13 @@ export async function runEditMessageFlow(opts: {
   idx: number;
   userOrdinal: number;
   originalText: string;
+  /** The clicked row's id; the harness finds the turn by it before the ordinal. */
+  messageId?: string;
   stopLocal: () => void;
   interruptSession: () => Promise<InterruptSessionResponse>;
   rewindSession: (
     userOrdinal: number,
-    extra?: { text?: string },
+    target: { text?: string; input_id?: string },
   ) => Promise<RewindSessionResponse>;
 }): Promise<EditMessageFlowResult> {
   if (opts.composerBusy) {
@@ -346,6 +348,7 @@ export async function runEditMessageFlow(opts: {
   try {
     const res = await opts.rewindSession(opts.userOrdinal, {
       text: opts.originalText,
+      ...(opts.messageId ? { input_id: opts.messageId } : {}),
     });
     if (!res?.ok) {
       return {

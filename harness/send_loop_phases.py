@@ -1435,6 +1435,27 @@ def action_display_goal(act: PilotAction) -> Any:
     return act_goal
 
 
+def record_step_reasoning(session: Any, resp: Any, step_display_start: int) -> None:
+    """Keep a step's streamed reasoning as a Thought row in the display.
+
+    The row goes where the step started, ahead of its prose and of tool rows
+    that Cursor-native tools persist mid-stream. Hydrate then shows the same
+    Thought rows the live stream painted.
+    """
+    meta = getattr(resp, "meta", None)
+    if not isinstance(meta, dict):
+        return
+    text = str(meta.get("streamed_reasoning") or "")
+    if not text.strip():
+        return
+    row: Dict[str, Any] = {"type": "thinking", "text": text}
+    duration_ms = meta.get("reasoning_duration_ms")
+    if isinstance(duration_ms, int) and duration_ms >= 0:
+        row["duration_ms"] = duration_ms
+    display = session._display_transcript
+    display.insert(min(max(step_display_start, 0), len(display)), row)
+
+
 def promote_trailing_reasoning_to_say(
     *,
     say_text: str,
@@ -1596,6 +1617,7 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
     say_extractor = StreamingSayExtractor()
     streamed_prose: list[str] = []
     streamed_reasoning: list[str] = []
+    reasoning_clock: dict[str, float] = {}
     last_content_kind = ""  # "prose" | "reasoning"
     answer_batch = StreamDeltaBatch()
     progress_batch = StreamDeltaBatch()
@@ -1774,6 +1796,9 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
         if not text:
             return
         streamed_reasoning.append(text)
+        now = time.monotonic()
+        reasoning_clock.setdefault("start", now)
+        reasoning_clock["end"] = now
         last_content_kind = "reasoning"
         r_meta = dict(meta)
         r_meta["channel"] = "reasoning"
@@ -1895,6 +1920,9 @@ def drain_stream_queue(q: Any, accumulator: Any = None) -> Iterator[Any]:
                         meta = None
                 if isinstance(meta, dict):
                     meta["streamed_reasoning"] = reasoning
+                    meta["reasoning_duration_ms"] = int(
+                        (reasoning_clock["end"] - reasoning_clock["start"]) * 1000
+                    )
                     meta["stream_ended_on_reasoning"] = (
                         last_content_kind == "reasoning"
                     )

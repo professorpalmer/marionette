@@ -2266,7 +2266,10 @@ class ConversationalSession(
         }
 
     def _display_user_rows(self):
-        """(index, ordinal, text) for each display user message."""
+        """Each display user row as (index, turn ordinal, text, input_id, steer).
+
+        The turn ordinal counts every user row, steers too: checkpoints stamp it.
+        """
         rows = []
         seen = 0
         for i, row in enumerate(self._display_transcript or []):
@@ -2280,11 +2283,38 @@ class ConversationalSession(
             text = row.get("text") or row.get("content") or ""
             if not isinstance(text, str):
                 text = str(text or "")
-            rows.append((i, seen, text))
+            input_id = str(row.get("input_id") or row.get("id") or "")
+            rows.append((i, seen, text, input_id, row.get("steer") is True))
             seen += 1
         return rows
 
-    def rewind_to_user_ordinal(self, user_ordinal: int, text_hint: Optional[str] = None) -> dict:
+    def _history_cut_for_rewind(self, input_id: str, turn_ordinal: int) -> Optional[int]:
+        """History index of the user row for the rewound turn.
+
+        Steers, worker mail and injected context are user rows in history too,
+        so match the turn's input id first. Rows without an id count user rows.
+        """
+        if input_id:
+            for hi, m in enumerate(self._history):
+                if hi == 0 or (m.get("role") or "") != "user":
+                    continue
+                if m.get("input_id") == input_id or input_id in (m.get("input_ids") or ()):
+                    return hi
+        seen = 0
+        for hi, m in enumerate(self._history):
+            if hi == 0 or (m.get("role") or "") != "user":
+                continue
+            if seen == turn_ordinal:
+                return hi
+            seen += 1
+        return None
+
+    def rewind_to_user_ordinal(
+        self,
+        user_ordinal: int,
+        text_hint: Optional[str] = None,
+        input_id: Optional[str] = None,
+    ) -> dict:
         """Hermes-style undo for message edit: truncate at the Nth user turn (0-based).
 
         Soft-stashes the discarded tail on ``_rewind_stash`` so the UI can offer
@@ -2296,9 +2326,11 @@ class ConversationalSession(
         that snapshot. If none exists, transcript rewind still succeeds with an
         honest notice that disk was not restored.
 
-        After a mid-turn model swap the UI can count one extra optimistic user
-        row. A past-end ordinal clamps to the latest user turn; ``text_hint``
-        matches the last display user with that text.
+        ``input_id`` names the clicked row. Without it, ``user_ordinal`` counts
+        the user rows the UI shows (steers show as their own rows, so they do
+        not count). When ``text_hint`` does not match that row, or the ordinal
+        is past the end, the row with the hint text nearest the ordinal wins,
+        else the latest user turn.
         """
         if self.is_turn_busy():
             return {
@@ -2310,40 +2342,35 @@ class ConversationalSession(
             return {"ok": False, "error": "user_ordinal out of range"}
 
         display = list(self._display_transcript or [])
-        users = self._display_user_rows()
-        display_index = None
-        prefill = ""
-        resolved_ordinal = user_ordinal
-        ordinal_clamped = False
-        for i, seen, text in users:
-            if seen == user_ordinal:
-                display_index = i
-                prefill = text
-                break
-        if display_index is None:
-            hint = (text_hint or "").strip()
-            if hint:
-                for i, seen, text in users:
-                    if text.strip() == hint:
-                        display_index = i
-                        prefill = text
-                        resolved_ordinal = seen
-            if display_index is None and users:
-                display_index, resolved_ordinal, prefill = users[-1]
-                ordinal_clamped = True
-        if display_index is None:
-            return {"ok": False, "error": "user_ordinal out of range"}
+        visible = [
+            (i, turn, text, row_id)
+            for i, turn, text, row_id, steer in self._display_user_rows()
+            if not steer
+        ]
+        hint = strip_turn_context_trailer(text_hint or "").strip()
 
-        cut_hist = None
-        seen_h = 0
-        for hi, m in enumerate(self._history):
-            if hi == 0:
-                continue
-            if (m.get("role") or "") == "user":
-                if seen_h == resolved_ordinal:
-                    cut_hist = hi
-                    break
-                seen_h += 1
+        def shows(k: int) -> bool:
+            return not hint or strip_turn_context_trailer(visible[k][2]).strip() == hint
+
+        candidates = [k for k, row in enumerate(visible) if input_id and row[3] == input_id]
+        if not candidates and user_ordinal < len(visible) and shows(user_ordinal):
+            candidates = [user_ordinal]
+        if not candidates:
+            candidates = sorted(
+                (k for k in range(len(visible)) if hint and shows(k)),
+                key=lambda k: abs(k - user_ordinal),
+            )
+        ordinal_clamped = False
+        if not candidates and visible:
+            ordinal_clamped = user_ordinal >= len(visible)
+            candidates = [min(user_ordinal, len(visible) - 1)]
+        if not candidates:
+            return {"ok": False, "error": "user_ordinal out of range"}
+        visible_ordinal = candidates[0]
+        display_index, resolved_ordinal, raw_text, row_id = visible[visible_ordinal]
+        prefill = strip_turn_context_trailer(raw_text)
+
+        cut_hist = self._history_cut_for_rewind(row_id, resolved_ordinal)
 
         workspace = self._restore_workspace_for_rewind(resolved_ordinal)
 
@@ -2395,7 +2422,7 @@ class ConversationalSession(
             "removed_count": removed,
             "kept_display": len(self._display_transcript),
             "display_index": display_index,
-            "user_ordinal": resolved_ordinal,
+            "user_ordinal": visible_ordinal,
             "ordinal_clamped": ordinal_clamped,
             "workspace_restored": bool(workspace.get("workspace_restored")),
             "checkpoint_id": workspace.get("checkpoint_id"),
