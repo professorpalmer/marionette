@@ -97,7 +97,7 @@ export default function ConversationChatColumn({
   feedSettled?: boolean;
   scrollToEndRef?: MutableRefObject<(() => void) | null>;
   viewportRef?: MutableRefObject<TranscriptViewportHandle | null>;
-  onEditMessage: (idx: number, text: string) => void;
+  onEditMessage: (idx: number, text: string, messageId?: string) => void;
   onExecuteSend: (msg: string, useAuto: boolean, usePlan?: boolean) => void;
   onImageClick: (url: string) => void;
   onSetCard: (id: string, patch: Partial<Card>) => void;

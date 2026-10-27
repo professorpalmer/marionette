@@ -2511,7 +2511,7 @@ export default function Conversation({
     }
   };
 
-  const handleEditMessage = (idx: number, originalText: string) => {
+  const handleEditMessage = (idx: number, originalText: string, messageId?: string) => {
     if (editBusy) return;
     const userOrdinal = userOrdinalBeforeIndex(items, idx);
     const busyEdit = composerBusy;
@@ -2524,9 +2524,10 @@ export default function Conversation({
       idx,
       userOrdinal,
       originalText,
+      messageId,
       stopLocal,
       interruptSession: () => api.interruptSession(),
-      rewindSession: (ordinal) => api.rewindSession(ordinal),
+      rewindSession: (ordinal, target) => api.rewindSession(ordinal, target),
     })
       .then((result) => {
         if (result.kind === "interrupt_failed" || result.kind === "rewind_failed") {
@@ -4174,7 +4175,8 @@ export default function Conversation({
   setCardRef.current = setCard;
 
   const stableEditMessage = useCallback(
-    (idx: number, originalText: string) => handleEditMessageRef.current(idx, originalText),
+    (idx: number, originalText: string, messageId?: string) =>
+      handleEditMessageRef.current(idx, originalText, messageId),
     []
   );
   const stableExecuteSend = useCallback(

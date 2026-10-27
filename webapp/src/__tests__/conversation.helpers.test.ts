@@ -2923,6 +2923,21 @@ describe("composerSend module", () => {
     }
   });
 
+  it("runEditMessageFlow names the clicked row by its id", async () => {
+    const rewindSession = vi.fn(async () => ({ ok: true, prefill: "two" }));
+    await runEditMessageFlow({
+      composerBusy: false,
+      idx: 5,
+      userOrdinal: 1,
+      originalText: "two",
+      messageId: "in-2",
+      stopLocal: vi.fn(),
+      interruptSession: vi.fn(),
+      rewindSession,
+    });
+    expect(rewindSession).toHaveBeenCalledWith(1, { text: "two", input_id: "in-2" });
+  });
+
   it("runEditMessageFlow surfaces workspace_restored from rewind", async () => {
     const result = await runEditMessageFlow({
       composerBusy: false,
