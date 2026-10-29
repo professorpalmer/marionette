@@ -2028,6 +2028,26 @@ class CompactionContextMixin:
             pass
         yield ConvEvent("compaction", _compaction_payload)
 
+    def _wire_history(self, messages: list) -> list:
+        """History as sent: stale-read elision only when append-only is off.
+
+        Eliding an earlier read rewrites a message deep in the prompt, so the
+        provider's prefix cache is lost from there on. Cloud caches bill the
+        rest of the prompt again; a local host with recurrent layers (Qwen3.5
+        family GDN: Bonsai, Mirai) cannot reuse a partial prefix and reads the
+        whole conversation again (measured 75-320 s per re-read at 67-182k
+        tokens). Under append-only the earlier reads stay; compaction still
+        trims history when it grows.
+        """
+        resolve = getattr(self, "_resolve_append_only", None)
+        try:
+            keep = bool(resolve()) if callable(resolve) else False
+        except Exception:
+            keep = False
+        if keep:
+            return messages
+        return self._elide_stale_reads(messages)
+
     def _elide_stale_reads(self, messages: list) -> list:
         """Return a COPY of messages where superseded whole-file reads are elided.
 
