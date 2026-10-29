@@ -50,9 +50,12 @@ def run_eval(argv) -> int:
         traj = runner(driver, ep)
         s = scorer(ep, traj)
         scores.append(s)
+        # an execute error (a refused or failed swarm) scores like a premature stop: show it
+        err = getattr(traj, "error", "") or ""
         print(f"  {ep.id:22s} {s.score*100:5.1f}%  "
               f"term={s.terminated} act={s.got_terminal}/{s.expect_terminal} "
-              f"swarms={s.swarms_run} prem={s.premature}")
+              f"swarms={s.swarms_run} prem={s.premature}"
+              + (f"  error: {err[:160]}" if err else ""))
     mean = sum(s.score for s in scores) / len(scores) * 100 if scores else 0.0
     print(f"\nmean: {mean:.1f}%")
     return 0
