@@ -9,6 +9,7 @@ from typing import Optional
 
 from .intent import validate_intent, parse_intent_text, IntentError, DriverIntent
 from .bridge import execute_intent, BridgeResult
+from .eval_substrate import eval_intent, local_substrate
 from .drivers.base import Driver, SYSTEM_PROMPT
 from .episode_v2 import EpisodeV2
 
@@ -108,7 +109,8 @@ def run_episode_v2(driver: Driver, ep: EpisodeV2) -> TrajectoryV2:
             turns.append(turn); break
         # run_swarm
         try:
-            result = execute_intent(intent)
+            with local_substrate():
+                result = execute_intent(eval_intent(intent))
         except Exception as e:
             turn.error = f"execute: {e}"; turns.append(turn); err = turn.error; break
         turn.executed = result
