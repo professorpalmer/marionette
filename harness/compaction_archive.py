@@ -400,7 +400,10 @@ def _append_complete(state_dir: str, sid: str, incoming: list[dict],
     # One segment stays under the message/byte caps. A fat Compact Now
     # (400+ tool turns, typical on local hosts) must still retain every
     # row — split across segments — rather than aborting archive_failed.
-    # A single row that cannot fit a segment still fails closed.
+    # A row over the cap keeps its text and loses its image bytes (one
+    # screenshot can be 16 MB). A row that still cannot fit fails closed.
+    from .context_budget import age_history_images
+
     if existing is not None:
         verified_archive_digest(state_dir, sid, existing)
         if commit_id and existing.get("commit_id") == commit_id:
@@ -420,6 +423,8 @@ def _append_complete(state_dir: str, sid: str, incoming: list[dict],
     def publish_batches(rows, parent, count):
         batch = []
         for row in rows:
+            if not _fits_retention([row]):
+                row = age_history_images([row], keep_last_user=False)[0]
             if not _fits_retention(batch + [row]):
                 if not batch:
                     return None
