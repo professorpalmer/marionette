@@ -821,6 +821,11 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
             pass
         key_env = get_env_var_for_reach(secret_reach) or key_env or "LOCAL_MODEL_API_KEY"
         vendor = str(resolved.get("vendor") or "")
+        if vendor == "llama.cpp":
+            # Marionette runs every tool itself. A llama.cpp front with its own tool loop (the Bonsai layer offers
+            # a sandboxed run_python to requests without tools: compaction, wiki, side calls) would answer from its
+            # sandbox, not the repo. llama-server ignores the field.
+            extra_body = {"code_interpreter": False, **(extra_body or {})}
         sampling = resolved.get("sampling") or {}
         if sampling:
             extra_body = {**(extra_body or {}), **sampling}
