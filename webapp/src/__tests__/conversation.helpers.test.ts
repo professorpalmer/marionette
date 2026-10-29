@@ -2695,6 +2695,11 @@ describe("composerSend module", () => {
         Object.assign(new Error("rejected"), { reason: "summary_rejected" }),
       ),
     ).toMatch(/rejected/i);
+    expect(
+      formatCompactErrorMessage(
+        Object.assign(new Error("no compaction occurred"), { reason: "archive_failed" }),
+      ),
+    ).toMatch(/archive/i);
   });
 
   it("shouldApplyCompactSettle fences mid-flight A→B session switch", () => {

@@ -678,3 +678,34 @@ def test_a_reasoning_budget_gets_room_for_the_answer(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_MAX_TOKENS", "8000")
     assert body("local:loop/bonsai")["max_tokens"] == 8000  # an explicit cap is the user's
     assert prov.local_output_limit(None, {"reasoning_budget_tokens": -1}) is None
+
+
+def _two_local_externals(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    reset_manager_for_tests()
+    catalog = {
+        "version": 1,
+        "runtime": {"id": "llama.cpp", "release": "t", "binary": "llama-server", "assets": {}},
+        "models": [],
+    }
+    mgr = LocalModelManager(root=str(tmp_path / "local-models"), catalog=catalog)
+    state = mgr._state()
+    common = {"models": ["m"], "selected_model": "m", "healthy": True, "has_key": False,
+              "kind": "loopback", "requires_key": False}
+    state["externals"] = [
+        dict(common, id="llama-loop", vendor="llama.cpp", base_url="http://127.0.0.1:8080/v1"),
+        dict(common, id="ollama-loop", vendor="ollama", base_url="http://127.0.0.1:11434/v1"),
+    ]
+    mgr._save(state)
+    monkeypatch.setattr("harness.local_model_manager.get_manager", lambda: mgr)
+
+
+def test_llama_cpp_local_turns_off_a_server_side_interpreter(tmp_path, monkeypatch):
+    # A llama.cpp front with its own tool loop (the Bonsai layer: sandboxed run_python for requests without
+    # tools) answered from its sandbox instead of the repo; Marionette runs every tool itself.
+    _two_local_externals(tmp_path, monkeypatch)
+    llama = prov.build_pilot("local:llama-loop/m")
+    assert llama.extra_body.get("code_interpreter") is False
+    ollama = prov.build_pilot("local:ollama-loop/m")
+    assert "code_interpreter" not in (ollama.extra_body or {})
+

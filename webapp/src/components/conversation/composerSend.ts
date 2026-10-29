@@ -126,14 +126,19 @@ export function formatCompactErrorMessage(err: unknown): string {
     err && typeof err === "object" && "reason" in err
       ? String((err as { reason?: unknown }).reason || "")
       : "";
-  if (reason === "no_compactable_history") {
-    return "System Note: Recent turn is already compact — nothing further to summarize.";
-  }
-  if (reason === "summary_rejected") {
-    return "System Note: Compaction summary was rejected; history left unchanged. You can try again or continue.";
-  }
-  return formatComposerActionError(err, "Compaction");
+  return COMPACT_REASON_MESSAGES[reason] ?? formatComposerActionError(err, "Compaction");
 }
+
+const COMPACT_REASON_MESSAGES: Record<string, string> = {
+  no_compactable_history:
+    "System Note: Recent turn is already compact — nothing further to summarize.",
+  summary_rejected:
+    "System Note: Compaction summary was rejected; history left unchanged. You can try again or continue.",
+  below_min_compactable:
+    "System Note: Not enough history to compact yet; history left unchanged.",
+  archive_failed:
+    "System Note: Compaction could not save the old history to its archive; history left unchanged.",
+};
 
 function formatComposerActionError(err: unknown, action: string): string {
   return inputFailureMessage(err) || `[error] ${action} failed. Please try again.`;

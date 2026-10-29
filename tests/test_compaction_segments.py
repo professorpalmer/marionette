@@ -35,6 +35,28 @@ def test_complete_append_refuses_a_single_row_over_the_byte_cap(tmp_path):
     assert archive.load_compaction_archive_page(state, "huge") == ([], 0)
 
 
+def test_complete_append_archives_an_image_row_over_the_byte_cap_without_pixels(tmp_path):
+    """A 16 MB screenshot row made every Compact abort archive_failed (session 56a91c059ed3)."""
+    state = str(tmp_path)
+    pixels = "data:image/png;base64," + "A" * (archive.ARCHIVE_MAX_SERIALIZED_BYTES + 100)
+    rows = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": pixels}},
+        ]},
+        {"role": "assistant", "content": "seen"},
+    ]
+    assert archive.append_compaction_archive(
+        state, "shot", rows, require_complete=True, commit_id="shot-one",
+    )
+    page, total = archive.load_compaction_archive_page(state, "shot", offset=0, limit=2)
+    assert total == 2
+    assert page[0]["content"][0] == {"type": "text", "text": "look at this"}
+    assert page[0]["content"][1]["type"] == "text"
+    assert "image" in page[0]["content"][1]["text"]
+    assert page[1] == rows[1]
+
+
 def test_commit_compacted_transcript_fat_middle(tmp_path):
     state = str(tmp_path)
     rows = [{"role": "assistant", "content": f"turn-{i}"} for i in range(450)]

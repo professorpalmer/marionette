@@ -12,6 +12,7 @@ from typing import Optional
 
 from pmharness.intent import validate_intent, parse_intent_text, IntentError
 from pmharness.bridge import execute_intent
+from pmharness.eval_substrate import eval_intent, local_substrate
 from pmharness.drivers.base import Driver, SYSTEM_PROMPT
 from pmharness.episode_v2_runner import TrajectoryV2, TurnV2
 from pmharness.episode_s4 import EpisodeS4
@@ -47,7 +48,8 @@ def run_episode_s4(driver: Driver, ep: EpisodeS4) -> TrajectoryV2:
         if swarms >= ep.budget:
             turns.append(turn); break
         try:
-            result = execute_intent(intent)
+            with local_substrate():
+                result = execute_intent(eval_intent(intent))
         except Exception as e:
             turn.error = f"execute: {e}"; turns.append(turn); err = turn.error; break
         turn.executed = result; turns.append(turn)
