@@ -3600,7 +3600,7 @@ class ConversationalSession(
         ``_history`` is not rewritten.
         """
         self._sanitize_tool_pairs()
-        outbound = self._elide_stale_reads(self._history[1:])
+        outbound = self._wire_history(self._history[1:])
         # Chat transports need a user-shaped trigger after assistant output
         # (Anthropic otherwise treats it as a prefill). Canonical history and
         # exports retain system authorship; only this outbound copy is adapted.
