@@ -24,6 +24,28 @@ from .skill_distiller import distill_session, distill_rules
 from .wiki import query_relevant_passage, session_digest
 
 
+def _local_side_call_costs_cache(session) -> bool:
+    """True when the automatic distill would run on a local host's only slot.
+
+    The distill is a hidden pilot call with its own system prompt and the
+    session digest. On a local llama.cpp host it takes the slot the
+    conversation lives in, so the next turn reads the whole conversation again
+    (measured: one full re-read per user turn, 75-120 s at 75-96k tokens on a
+    12 GB card), and it competes with the turn for the GPU. Same rule as the
+    compaction summarizer: local pilots do not make the hidden call.
+    HARNESS_LOCAL_AUTO_DISTILL=1 turns it back on; distill() on request is
+    unchanged.
+    """
+    if (os.environ.get("HARNESS_LOCAL_AUTO_DISTILL") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return False
+    try:
+        from .compaction_mixin import session_uses_local_pilot
+
+        return bool(session_uses_local_pilot(session))
+    except Exception:
+        return False
+
+
 def _slugify(s: str) -> str:
     return (re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "session")[:60]
 
@@ -298,6 +320,8 @@ class WikiDistillMixin:
         """If auto-distill is enabled and there is new signal, propose
         PENDING candidates and yield a 'distilled' event. Best-effort."""
         if not self._auto_distill or self._sealed_session():
+            return None
+        if _local_side_call_costs_cache(self):
             return None
 
         has_new_findings = len(self._session_findings) > self._distilled_findings_hwm
