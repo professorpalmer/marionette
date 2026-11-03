@@ -29,7 +29,7 @@ import signal
 import subprocess
 import threading
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from . import mcp_supervisor
 
@@ -363,6 +363,11 @@ class StdioMcpClient:
                 if mid is None:
                     self.tools_revision.note(msg)
                     continue
+                if "method" in msg:
+                    # A server request uses its own id space, so its id can
+                    # equal one of ours. It is never the reply to our request.
+                    self._answer_server_request(mid, msg.get("method"))
+                    continue
                 with self._lock:
                     q = self._pending.get(mid)
                 if q is not None:
@@ -381,6 +386,34 @@ class StdioMcpClient:
                 f"MCP server '{self.name}' closed the connection. {err[-400:]}"
             )
         )
+
+    def _answer_server_request(self, rid: Any, method: Any) -> None:
+        if method == "ping":
+            reply = {"jsonrpc": "2.0", "id": rid, "result": {}}
+        else:
+            # The client declares no sampling, roots or elicitation support.
+            reply = {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "error": {"code": -32601, "message": f"Method not found: {method}"},
+            }
+        try:
+            with self._lock:
+                self._send(reply)
+        except Exception:
+            pass
+
+    def _cancel_request(self, rid: int, method: str) -> None:
+        # MCP forbids a cancel of initialize.
+        if method == "initialize":
+            return
+        try:
+            self._notify(
+                "notifications/cancelled",
+                {"requestId": rid, "reason": f"timeout waiting for {method}"},
+            )
+        except Exception:
+            pass
 
     def _request(self, method: str, params: dict, timeout: float = 60.0) -> dict:
         if self._reader_error is not None:
@@ -401,6 +434,8 @@ class StdioMcpClient:
         except queue.Empty:
             with self._lock:
                 self._pending.pop(rid, None)
+            # Tell the server to stop, so a slow call does not keep working.
+            self._cancel_request(rid, method)
             raise McpError(f"MCP server '{self.name}': timeout waiting for {method}")
         with self._lock:
             self._pending.pop(rid, None)
