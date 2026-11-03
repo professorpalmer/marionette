@@ -1932,7 +1932,12 @@ class ToolDispatchMixin:
         """
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        from .command_policy import guard_destructive_command, effective_command_timeout, run_cancellable
+        from .command_policy import (
+            background_command_timeout,
+            effective_command_timeout,
+            guard_destructive_command,
+            run_cancellable,
+        )
 
         if getattr(self, "_auto_mode", False) and getattr(self, "_auto_command_guard", None):
             verdict = guard_destructive_command(act.command or "")
@@ -2089,7 +2094,12 @@ class ToolDispatchMixin:
             if reason:
                 payload["preflight_reason"] = reason
         payload.update(recovery)
-        hint = _command_failure_hint(effective_command, exit_code, output)
+        if run_status == "timeout":
+            from .command_hints import command_timeout_hint
+
+            hint = command_timeout_hint(cmd_timeout, background_command_timeout())
+        else:
+            hint = _command_failure_hint(effective_command, exit_code, output)
         if hint:
             payload["hint"] = hint
         failure_class = classify_env_prerequisite_failure(

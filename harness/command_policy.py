@@ -287,6 +287,22 @@ def effective_command_timeout(env: dict | None = None) -> int | None:
     return resolve_hard_ceiling(env)
 
 
+def background_command_timeout(env: dict | None = None) -> int | None:
+    """Timeout for a background run_command job.
+
+    The foreground limit stops one command from holding the turn. A
+    background job does not hold the turn and Stop still cancels it, so it
+    runs up to the hard ceiling. A larger explicit limit or an unbounded
+    setting still wins.
+    """
+    env = env if env is not None else os.environ
+    foreground = effective_command_timeout(env)
+    ceiling = resolve_hard_ceiling(env)
+    if foreground is None or ceiling is None:
+        return None
+    return max(foreground, ceiling)
+
+
 @dataclass
 class CommandVerdict:
     danger: bool
