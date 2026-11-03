@@ -21,7 +21,7 @@ from typing import Callable
 
 from . import http_pool
 from .request_boundary import http_request
-from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
+from .base import http_error_excerpt, DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
     apply_openai_compat_cache_control,
     maybe_attach_openrouter_session_id,
@@ -1374,7 +1374,7 @@ class OpenAICompatDriver:
                     last_err = None
                     break
                 except urllib.error.HTTPError as e:
-                    detail = e.read().decode("utf-8", "replace")[:500]
+                    detail = http_error_excerpt(e, headers, 500)
                     last_err = (e.code, detail)
                     if attempt == 0:
                         nxt = self._pool_rotate_on_http_error(e.code, detail)
@@ -1509,7 +1509,7 @@ class OpenAICompatDriver:
                 with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 rejected = self._rejected_optional_field(e.code, detail, body)
                 if max_attempts > 1 and request_attempts == 1 and rejected:
                     # Drop the rejected optional field for the rest of the
@@ -1531,7 +1531,7 @@ class OpenAICompatDriver:
                         with http_pool.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
-                        d2 = e2.read().decode("utf-8", "replace")[:500]
+                        d2 = http_error_excerpt(e2, headers, 500)
                         return DriverResponse(
                             text="", model=self.name,
                             error=f"HTTP {e2.code}: {d2}",
@@ -1568,7 +1568,7 @@ class OpenAICompatDriver:
                             with http_pool.urlopen(req, timeout=self.timeout) as resp:
                                 raw = json.loads(resp.read().decode("utf-8"))
                         except urllib.error.HTTPError as e2:
-                            d2 = e2.read().decode("utf-8", "replace")[:500]
+                            d2 = http_error_excerpt(e2, headers, 500)
                             return DriverResponse(
                                 text="", model=self.name,
                                 error=f"HTTP {e2.code}: {d2}",
@@ -1832,7 +1832,7 @@ class OpenAICompatDriver:
                         keepalives = 0
                         idle_armed = _arm_post_answer_idle_timeout(resp, 2.0) or idle_armed
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 # Endpoint rejected an optional field: drop it for the
                 # session and fall back to the non-streaming chat() (which shares
                 # the retry path) so the turn still succeeds. Only safe before any

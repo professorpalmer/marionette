@@ -18,7 +18,7 @@ from . import http_pool
 from .request_boundary import http_request
 from .reasoning_envelope import capture_reasoning, replay_reasoning
 from .cache_refresh import CacheRefreshDriver, cache_foreground
-from .base import tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT
+from .base import http_error_excerpt, tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT
 from .prompt_cache import (
     _can_carry_marker,
     _mark_content_block,
@@ -327,7 +327,7 @@ class AnthropicDriver(CacheRefreshDriver):
                         raw = json.loads(resp.read().decode("utf-8"))
                     break
                 except urllib.error.HTTPError as e:
-                    detail = e.read().decode("utf-8", "replace")[:500]
+                    detail = http_error_excerpt(e, headers, 500)
                     if attempt == 0:
                         nxt = self._retry_after_http_error(e.code, detail)
                         if nxt:
@@ -617,7 +617,7 @@ class AnthropicDriver(CacheRefreshDriver):
                         raw = json.loads(resp.read().decode("utf-8"))
                     break
                 except urllib.error.HTTPError as e:
-                    detail = e.read().decode("utf-8", "replace")[:500]
+                    detail = http_error_excerpt(e, headers, 500)
                     if attempt == 0:
                         nxt = self._retry_after_http_error(e.code, detail)
                         if nxt:
@@ -863,7 +863,7 @@ class AnthropicDriver(CacheRefreshDriver):
                         )
 
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:500]
+            detail = http_error_excerpt(e, headers, 500)
             if not full_text_pieces:
                 nxt = self._retry_after_http_error(e.code, detail)
                 if nxt:

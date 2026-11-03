@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import http_pool
 from .request_boundary import http_request
-from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
+from .base import http_error_excerpt, tool_result_content, DriverResponse, SYSTEM_PROMPT, known_assistant_phase
 from .reasoning_envelope import capture_reasoning, replay_reasoning
 from .cache_refresh import CacheRefreshDriver, cache_foreground
 from .retry import with_retry
@@ -1415,7 +1415,7 @@ class CodexResponsesDriver(CacheRefreshDriver):
                     self.remember_cache_request("responses", body, headers, request_started, raw.get("usage"))
                 return raw, None, data
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:800]
+                detail = http_error_excerpt(e, headers, 800)
                 low = detail.lower()
                 if (
                     attempt < 2
