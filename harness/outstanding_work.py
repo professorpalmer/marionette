@@ -42,7 +42,7 @@ def _started(ts: Any) -> str:
 def _label(text: Any) -> str:
     from .command_jobs import secret_free_command_preview
 
-    # Goals and commands can carry keys; the residual goes to the provider.
+    # Goals and commands can carry keys. The residual goes to the provider.
     return secret_free_command_preview(str(text or ""), max_chars=_LABEL_CHARS)
 
 
