@@ -46,7 +46,7 @@ def test_timeout_after_effect_same_action_does_not_repeat(tmp_path, startup_dela
         side_effect=_timeout_after_effect(tmp_path / 'effect'),
     )
     timeout_patch = patch(
-        'harness.command_policy.effective_command_timeout', return_value=0.2,
+        'harness.command_policy.background_command_timeout', return_value=0.2,
     )
     with wait_patch, timeout_patch:
         first = start_command_batch(sess, [command], 'effect-action')

@@ -1260,8 +1260,10 @@ def build_tools_schema(
                         "description": (
                             "Opt-in durable background execution. When true, "
                             "registers a local command job before launch and "
-                            "returns a pending receipt with job_id. Default false; "
-                            "CodeGraph init/index is automatically backgrounded."
+                            "returns a pending receipt with job_id. It runs up to the "
+                            "hard ceiling (900 s by default), not the foreground limit. "
+                            "Default false; CodeGraph init/index is automatically "
+                            "backgrounded."
                         ),
                     },
                 },
@@ -1280,6 +1282,7 @@ def build_tools_schema(
                 "Each command gets its own child job and terminal receipt; the "
                 "aggregate references children but does not own their truth. "
                 "Returns a pending batch receipt without holding the turn. "
+                "Each command runs up to the hard ceiling (900 s by default). "
                 "Not a provider swarm — do not use run_parallel for shell batches."
             ),
             "parameters": {

@@ -208,6 +208,29 @@ def command_failure_hint(command: str, exit_code: int, output: str) -> Optional[
     return _EXIT_CODE_HINTS.get(exit_code)
 
 
+def command_timeout_hint(foreground: Optional[int], background: Optional[int]) -> str:
+    """Recovery hint for a foreground command stopped at its time limit.
+
+    Without it the pilot reruns the command with the same limit and gets the
+    same timeout. The background option only helps when its limit is longer.
+    """
+    stopped = (
+        f"Stopped at the {foreground} s foreground limit. Its external "
+        "effects are unknown, so check them before a rerun."
+    )
+    if background is None:
+        return stopped + (
+            " If it needs longer, run it with background=true (no time limit)."
+            " A message comes when it ends."
+        )
+    if foreground is not None and background > foreground:
+        return stopped + (
+            f" If it needs longer, run it with background=true (limit {background} s)."
+            " A message comes when it ends."
+        )
+    return stopped + " Split the work or make it faster."
+
+
 def blocked_command_recovery(command: str, command_hash: str) -> dict:
     """Secret-free recovery metadata for a full-auto blocked command.
 

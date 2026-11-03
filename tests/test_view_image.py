@@ -296,12 +296,12 @@ def test_vision_default_sidecar_fallback(monkeypatch):
         clear_pools_for_tests()
     except Exception:
         pass
-    for ev in ("HARNESS_VLM_REACH", "HARNESS_VLM_MODEL", "OPENROUTER_API_KEY",
-               "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_API_KEY",
-               "GEMINI_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
-               "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "MINIMAX_API_KEY",
-               "XAI_API_KEY", "XAI_OAUTH_TOKEN", "NVIDIA_API_KEY",
-               "OPENAI_CODEX_TOKEN", "NOUS_API_KEY"):
+    from harness.providers import PROVIDERS
+
+    # Take the key names from the provider table: a hand list missed
+    # OPENCODE_GO_API_KEY, and a Go key in the shell then gave a sidecar.
+    provider_keys = {ev for p in PROVIDERS for ev in p.env_vars}
+    for ev in provider_keys | {"HARNESS_VLM_REACH", "HARNESS_VLM_MODEL", "XAI_OAUTH_TOKEN"}:
         monkeypatch.delenv(ev, raising=False)
 
     monkeypatch.setenv("HARNESS_VLM_REACH", "openrouter")
