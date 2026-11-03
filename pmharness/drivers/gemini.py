@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 
 from . import http_pool
-from .base import tool_result_content, DriverResponse, SYSTEM_PROMPT
+from .base import http_error_excerpt, tool_result_content, DriverResponse, SYSTEM_PROMPT
 from .retry import with_retry
 from .metering import metered
 
@@ -328,7 +328,7 @@ class GeminiDriver:
                 with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 return DriverResponse(
                     text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0
@@ -389,7 +389,7 @@ class GeminiDriver:
                 with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 return DriverResponse(
                     text="", model=self.name, error=f"HTTP {e.code}: {detail}",
                     latency_ms=(time.time() - t0) * 1000.0
@@ -542,7 +542,7 @@ class GeminiDriver:
                         stream_started = True
 
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:500]
+            detail = http_error_excerpt(e, headers, 500)
             return DriverResponse(
                 text="".join(text_pieces),
                 model=self.name,

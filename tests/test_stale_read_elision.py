@@ -112,3 +112,30 @@ def test_path_spelling_alone_is_not_reported_as_a_change(tmp_path):
     pointer = s._elide_stale_reads(msgs)[0]["content"]
     assert pointer.startswith("[earlier read of x.py")
     assert "changed since" not in pointer
+
+
+def test_append_only_keeps_earlier_reads_on_the_wire():
+    # Eliding an earlier read rewrites the prompt deep in history: the prefix cache is lost from there on, and a local
+    # host with recurrent layers (Bonsai/Mirai) reads the whole conversation again. Under append-only nothing is elided.
+    s = _s()
+    s._append_only = True
+    hist = _hist()
+    out = s._wire_history(hist)
+    assert out == hist
+    assert "FOO V1" in out[0]["content"]
+
+
+def test_without_append_only_the_wire_copy_is_still_elided():
+    s = _s()
+    s._append_only = False
+    out = s._wire_history(_hist())
+    assert "earlier read of foo.py elided" in out[0]["content"]
+
+
+def test_append_only_request_extends_the_previous_one():
+    # The second request must start with every message of the first, unchanged (prefix reuse).
+    s = _s()
+    s._append_only = True
+    first = s._wire_history(_hist()[:3])
+    second = s._wire_history(_hist())
+    assert second[:len(first)] == first

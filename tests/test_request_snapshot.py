@@ -197,7 +197,7 @@ def test_real_normalizer_revision_survives_history_mutation():
                           'name': 'run', 'arguments': '{}'}}]},
                   {'role': 'tool', 'tool_call_id': 'run:0', 'content': 'result'},
                   {'role': 'system', 'source': 'goal_mode', 'content': 'continue'}],
-        _sanitize_tool_pairs=lambda: None, _elide_stale_reads=lambda rows: rows,
+        _sanitize_tool_pairs=lambda: None, _wire_history=lambda rows: rows,
     )
     outbound = ConversationalSession._messages_for_provider(session)
     assert outbound[-1]['role'] == 'user'

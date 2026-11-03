@@ -37,3 +37,29 @@ def test_a_bare_turn_does_not_trigger_a_distill_call(monkeypatch):
     s._session_findings.append({"type": "finding", "claim": "x"})
     s._maybe_auto_distill()
     assert calls == [1, 1]
+
+
+def _local_session(monkeypatch):
+    s = ConversationalSession(HarnessConfig(driver="local:host/model", state_dir=tempfile.mkdtemp()))
+    s._auto_distill = True
+    calls = []
+    monkeypatch.setattr(s, "distill", lambda: calls.append(1) or {"status": "ok"})
+    return s, calls
+
+
+def test_a_local_pilot_does_not_make_the_hidden_distill_call(monkeypatch):
+    # On a local host the distill call takes the conversation's slot: the next turn reads the whole prompt again.
+    monkeypatch.delenv("HARNESS_LOCAL_AUTO_DISTILL", raising=False)
+    s, calls = _local_session(monkeypatch)
+    s._total_tool_calls += DISTILL_MIN_NEW_TOOL_CALLS
+    s._session_findings.append({"type": "finding", "claim": "x"})
+    assert s._maybe_auto_distill() is None
+    assert calls == []
+
+
+def test_a_local_pilot_can_opt_back_in(monkeypatch):
+    monkeypatch.setenv("HARNESS_LOCAL_AUTO_DISTILL", "1")
+    s, calls = _local_session(monkeypatch)
+    s._total_tool_calls += DISTILL_MIN_NEW_TOOL_CALLS
+    s._maybe_auto_distill()
+    assert calls == [1]

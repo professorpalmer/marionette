@@ -15,7 +15,7 @@ def _canon_messages(messages: Any) -> bytes:
 
 def _rebuild_from_history(session: Any, outbound: Any) -> Any:
     history = getattr(session, '_history', None)
-    elide = getattr(session, '_elide_stale_reads', None)
+    elide = getattr(session, '_wire_history', None) or getattr(session, '_elide_stale_reads', None)
     if callable(elide) and isinstance(history, list) and history:
         return elide(deepcopy(history[1:]))
     return None

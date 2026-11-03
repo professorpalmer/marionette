@@ -24,7 +24,25 @@ class ErrorClass(str, Enum):
     RATE_LIMIT = "rate_limit"         # 429; retry w/ longer backoff + Retry-After
     CONTEXT_OVERFLOW = "context_overflow"  # prompt too long; compact then retry
     AUTH = "auth"  # 401/403; fatal, do not retry
+    QUOTA = "quota"                   # credit or plan quota used up; do not retry, bench the key
     FATAL = "fatal"                   # 400 (non-context)/404/other; do not retry
+
+
+# Account credit or plan quota is used up. A retry cannot succeed until the
+# user tops up or the plan window resets, and every model on the key fails.
+# Plain per-minute limits ("rate_limit_exceeded", "too many requests") are
+# not here: they are RATE_LIMIT and cool only the model that hit them.
+_QUOTA_PATTERNS = [
+    "insufficient_quota", "exceeded your current quota", "quota exceeded",
+    "credit balance is too low", "insufficient credit", "out of credits",
+    "usage limit reached", "hit your usage limit", "plan limit",
+    "billing hard limit", "check your plan and billing",
+]
+
+
+def is_quota_message(message: Optional[str]) -> bool:
+    msg = _norm(message)
+    return any(p in msg for p in _QUOTA_PATTERNS)
 
 
 # Phrases that mean "the prompt exceeded the model's context window" across
@@ -87,6 +105,8 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
             return ErrorClass.CONTEXT_OVERFLOW
 
     if http_status is not None:
+        if http_status in (402, 429) and is_quota_message(message):
+            return ErrorClass.QUOTA
         if http_status == 429:
             return ErrorClass.RATE_LIMIT
         if http_status in (401, 403):

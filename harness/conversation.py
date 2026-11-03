@@ -3600,7 +3600,7 @@ class ConversationalSession(
         ``_history`` is not rewritten.
         """
         self._sanitize_tool_pairs()
-        outbound = self._elide_stale_reads(self._history[1:])
+        outbound = self._wire_history(self._history[1:])
         # Chat transports need a user-shaped trigger after assistant output
         # (Anthropic otherwise treats it as a prefill). Canonical history and
         # exports retain system authorship; only this outbound copy is adapted.
@@ -3990,6 +3990,10 @@ class ConversationalSession(
                 # No provider tail — AUTH bodies often echo key material.
                 return ("pilot: your API key was rejected (authentication failed). "
                         "Check the key for this provider in Settings > Providers.")
+            if cls == EC.QUOTA:
+                return ("pilot: the provider reports insufficient credit/quota on this "
+                        "key. Top up or switch to a provider/model with available "
+                        "budget." + tail)
             if cls == EC.RATE_LIMIT:
                 return ("pilot: the provider is rate-limiting your key (too many "
                         "requests, or you hit a quota). Wait a moment and retry, or "

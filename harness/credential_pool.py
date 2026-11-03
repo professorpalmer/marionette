@@ -17,6 +17,8 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pmharness.drivers.error_classifier import is_quota_message
+
 from .diag import note as _diag
 from .secure_files import restrict_to_owner
 
@@ -72,14 +74,6 @@ API_KEY_PROVIDERS = frozenset({
     "opencode-zen",
 })
 
-_PLAN_LIMIT_MARKERS = (
-    "usage limit reached",
-    "plan limit",
-    "rate_limit_exceeded",
-    "insufficient_quota",
-    "quota exceeded",
-    "too many requests",
-)
 
 _lock = threading.RLock()
 _pools: Dict[str, "CredentialPool"] = {}
@@ -181,8 +175,7 @@ def _model_cooling(entry: PooledCredential, model: Optional[str], now: float) ->
 
 
 def is_plan_limit_message(message: str) -> bool:
-    m = (message or "").lower()
-    return any(s in m for s in _PLAN_LIMIT_MARKERS)
+    return is_quota_message(message)
 
 
 class CredentialPool:

@@ -21,7 +21,7 @@ from typing import Callable
 
 from . import http_pool
 from .request_boundary import http_request
-from .base import DriverResponse, SYSTEM_PROMPT, chat_completions_messages
+from .base import http_error_excerpt, DriverResponse, SYSTEM_PROMPT, chat_completions_messages
 from .prompt_cache import (
     apply_openai_compat_cache_control,
     maybe_attach_openrouter_session_id,
@@ -290,6 +290,8 @@ class _OpenAIChatSseAccumulator:
         self.reasoning_content_seen = False
         self.assembled_tool_calls: dict = {}
         self.last_tool_call_index = None
+        # Wire index -> assembled slot, for a wire index reused by a new call.
+        self.tool_call_index_slots: dict = {}
         self.finish_reason = ""
         self.tokens_in = 0
         self.tokens_out = 0
@@ -426,6 +428,7 @@ class _OpenAIChatSseAccumulator:
                 chunk_pos=chunk_pos,
                 chunk_count=len(delta_tool_calls),
                 last_index=self.last_tool_call_index,
+                index_slots=self.tool_call_index_slots,
             )
             self.last_tool_call_index = idx
             tc_func = tc.get("function") or {}
@@ -923,27 +926,43 @@ class OpenAICompatDriver:
         chunk_pos: int,
         chunk_count: int,
         last_index: int | None,
+        index_slots: dict | None = None,
     ) -> int:
         """Pick the assembled-tool-call slot for one streamed tool_call delta.
 
-        Explicit ``index`` wins. Otherwise a nonempty id joins an existing call.
+        A nonempty id that matches an assembled call joins it. Otherwise an
+        explicit ``index`` wins, unless its slot already holds a call with
+        another id: some relays send every parallel call at index 0, and a
+        merge would join two names and two argument strings into one call.
+        Idless fragments at that index then follow the new call.
         Multiple indexless calls in one chunk stay distinct via chunk position.
         Idless name/argument fragments continue the sole or most recent call.
         New calls get the next deterministic index.
         """
         if not isinstance(tc, dict):
             return OpenAICompatDriver._next_stream_tool_call_index(assembled)
+        slots = index_slots if index_slots is not None else {}
+        call_id = tc.get("id") if isinstance(tc.get("id"), str) else ""
         raw_idx = tc.get("index")
+        wire_idx = None
         if raw_idx is not None:
             try:
-                return int(raw_idx)
+                wire_idx = int(raw_idx)
             except (TypeError, ValueError):
-                pass
-        call_id = tc.get("id") if isinstance(tc.get("id"), str) else ""
+                wire_idx = None
         if call_id:
             for idx, existing in assembled.items():
                 if isinstance(existing, dict) and existing.get("id") == call_id:
+                    if wire_idx is not None:
+                        slots[wire_idx] = idx
                     return idx
+        if wire_idx is not None:
+            slot = slots.get(wire_idx, wire_idx)
+            held = assembled.get(slot)
+            if call_id and isinstance(held, dict) and held.get("id"):
+                slot = OpenAICompatDriver._next_stream_tool_call_index(assembled)
+                slots[wire_idx] = slot
+            return slot
         if chunk_count > 1:
             if chunk_pos not in assembled:
                 return chunk_pos
@@ -1355,7 +1374,7 @@ class OpenAICompatDriver:
                     last_err = None
                     break
                 except urllib.error.HTTPError as e:
-                    detail = e.read().decode("utf-8", "replace")[:500]
+                    detail = http_error_excerpt(e, headers, 500)
                     last_err = (e.code, detail)
                     if attempt == 0:
                         nxt = self._pool_rotate_on_http_error(e.code, detail)
@@ -1490,7 +1509,7 @@ class OpenAICompatDriver:
                 with http_pool.urlopen(req, timeout=self.timeout) as resp:
                     raw = json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 rejected = self._rejected_optional_field(e.code, detail, body)
                 if max_attempts > 1 and request_attempts == 1 and rejected:
                     # Drop the rejected optional field for the rest of the
@@ -1512,7 +1531,7 @@ class OpenAICompatDriver:
                         with http_pool.urlopen(req, timeout=self.timeout) as resp:
                             raw = json.loads(resp.read().decode("utf-8"))
                     except urllib.error.HTTPError as e2:
-                        d2 = e2.read().decode("utf-8", "replace")[:500]
+                        d2 = http_error_excerpt(e2, headers, 500)
                         return DriverResponse(
                             text="", model=self.name,
                             error=f"HTTP {e2.code}: {d2}",
@@ -1549,7 +1568,7 @@ class OpenAICompatDriver:
                             with http_pool.urlopen(req, timeout=self.timeout) as resp:
                                 raw = json.loads(resp.read().decode("utf-8"))
                         except urllib.error.HTTPError as e2:
-                            d2 = e2.read().decode("utf-8", "replace")[:500]
+                            d2 = http_error_excerpt(e2, headers, 500)
                             return DriverResponse(
                                 text="", model=self.name,
                                 error=f"HTTP {e2.code}: {d2}",
@@ -1813,7 +1832,7 @@ class OpenAICompatDriver:
                         keepalives = 0
                         idle_armed = _arm_post_answer_idle_timeout(resp, 2.0) or idle_armed
             except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:500]
+                detail = http_error_excerpt(e, headers, 500)
                 # Endpoint rejected an optional field: drop it for the
                 # session and fall back to the non-streaming chat() (which shares
                 # the retry path) so the turn still succeeds. Only safe before any

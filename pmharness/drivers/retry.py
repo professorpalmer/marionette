@@ -100,6 +100,10 @@ def with_retry(
         if not error_classifier.is_retryable(err_class):
             resp.meta["retry_attempts"] = total_attempts
             resp.meta["error_class"] = err_class.value
+            if err_class == error_classifier.ErrorClass.QUOTA:
+                retry_after = error_classifier.parse_retry_after(resp.error)
+                if retry_after is not None:
+                    resp.meta["retry_after_seconds"] = retry_after
             return resp
 
         timeout = is_transport_timeout(resp)

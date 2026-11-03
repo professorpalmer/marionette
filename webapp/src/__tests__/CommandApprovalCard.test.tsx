@@ -62,6 +62,17 @@ describe("full-auto command approval card", () => {
     expect(decide).not.toHaveBeenCalled();
   });
 
+  it("shows hidden code points in the command it asks about", () => {
+    const decide = renderApproval(pendingApproval({
+      command: "ssh prod\u202E reboot",
+      suggestedAmendment: "ssh\u200b prod uptime",
+    }));
+
+    expect(screen.getByText("ssh prod\\u{202E} reboot")).toBeTruthy();
+    expect(screen.getByText("ssh\\u{200B} prod uptime")).toBeTruthy();
+    expect(decide).not.toHaveBeenCalled();
+  });
+
   it("sends the exact pending item for approval", () => {
     const decide = renderApproval();
 

@@ -129,6 +129,28 @@ def chat_completions_messages(messages: list) -> list:
     return out
 
 
+_CREDENTIAL_HEADERS = frozenset(("authorization", "x-api-key", "x-goog-api-key", "api-key"))
+
+
+def http_error_excerpt(err: Any, headers: Optional[dict] = None, limit: int = 500) -> str:
+    """Body of an HTTP error for the error string, cut to ``limit``.
+
+    Each credential the request sent is replaced before the cut. A provider
+    that echoes the key then cannot leave its prefix in the excerpt when the
+    key crosses the cut.
+    """
+    text = err.read().decode("utf-8", "replace")
+    for name, value in (headers or {}).items():
+        if str(name).lower() not in _CREDENTIAL_HEADERS:
+            continue
+        secret = str(value or "").strip()
+        if secret[:7].lower() == "bearer ":
+            secret = secret[7:].strip()
+        if len(secret) >= 8:
+            text = text.replace(secret, "REDACTED")
+    return text[:limit]
+
+
 @dataclass
 class DriverResponse:
     text: str

@@ -153,7 +153,7 @@ def test_with_retry_settles_at_once_when_retry_after_exceeds_cap():
 
     def fn():
         calls.append(1)
-        return DriverResponse(text="", error="HTTP 429: usage limit reached, retry-after: 600")
+        return DriverResponse(text="", error="HTTP 429: rate limited, retry-after: 600")
 
     resp = with_retry(fn, max_attempts=4, sleep=sleeps.append)
     assert len(calls) == 1
