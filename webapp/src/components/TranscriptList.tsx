@@ -3,6 +3,7 @@ import { captureSessionViewport, sessionViewportOffset, type TranscriptViewportH
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, useMemo, memo, forwardRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { measureAfterCommit } from "../lib/virtualRowMeasure";
+import { visibleCommand } from "../lib/visibleCommand";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText } from "lucide-react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -2071,12 +2072,12 @@ export const TranscriptList = memo(function TranscriptList({
                 title="Reveal command"
                 className="mt-2 block w-full max-h-28 overflow-auto rounded border border-edge bg-panel/60 p-2 font-mono text-ui-10.5 text-accent/85 hover:underline underline-offset-2 whitespace-pre-wrap break-all select-text text-left cursor-pointer"
               >
-                {it.command}
+                {visibleCommand(it.command)}
               </button>
               {amendment ? (
                 <div className="mt-1.5 text-ui-10 text-muted">
                   Suggested safer rewrite:{" "}
-                  <span className="font-mono text-accent/85">{amendment}</span>
+                  <span className="font-mono text-accent/85">{visibleCommand(amendment)}</span>
                 </div>
               ) : null}
               {it.error ? <div className="mt-1.5 text-risk/90">{it.error}</div> : null}
