@@ -1746,6 +1746,13 @@ class CompactionContextMixin:
         from .working_set import requests_block, requests_for_residual
 
         pinned = requests_block(requests_for_residual(original_middle))
+        # Live work started before the compact stays named, so the pilot
+        # does not start it again. Empty when nothing runs.
+        from .outstanding_work import outstanding_work_block
+
+        outstanding = outstanding_work_block(self)
+        if outstanding:
+            pinned = (pinned + "\n\n" + outstanding) if pinned else outstanding
 
         summary_msg = {
             "role": "user",
