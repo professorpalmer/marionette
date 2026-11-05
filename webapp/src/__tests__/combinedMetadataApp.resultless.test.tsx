@@ -1,8 +1,9 @@
-import { act, waitFor } from '@testing-library/react';
+import { act } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { RESULT_RECOVERY_DRAIN_LIMIT } from '../components/conversation/swarmPoll';
+import { advanceUntil, useFakePollTimers } from './fakeTime';
 
-afterEach(() => { vi.unstubAllGlobals(); Reflect.deleteProperty(window, 'harnessIPC'); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); Reflect.deleteProperty(window, 'harnessIPC'); });
 
 const bodyHas = (re: RegExp) => (document.body.innerHTML.match(re) ?? []).length;
 
@@ -13,19 +14,20 @@ it('settles a terminal job that never delivers a result card and stops draining'
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   window.matchMedia = vi.fn().mockImplementation(() => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
   document.body.innerHTML = '<div id="root"></div>';
+  // The app mounts on import, so its poll intervals must start on fake time.
+  useFakePollTimers();
   const fixtureModule = await import('./combinedMetadataApp');
   fixtureModule.fixture.total = 1;
   fixtureModule.fixture.pmLifecycle = 'completed';
   fixtureModule.appScenario.display = [{ type: 'swarm_pending', job_ids: ['job_1'], objective: 'Interrupted implement wave', status: 'running' }];
   fixtureModule.appScenario.resultBatches = [];
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 100)); });
-  await waitFor(() => expect(bodyHas(/Still working/g)).toBeGreaterThan(0), { timeout: 8000 });
+  await advanceUntil(() => bodyHas(/Still working/g) > 0, 100, 8000);
   const drains = () => fixtureModule.appScenario.calls.filter(p => p === '/api/session/swarm-results').length;
   // Each poll tick spends one results call plus one recovery drain.
-  await waitFor(() => expect(drains()).toBeGreaterThanOrEqual(2 * RESULT_RECOVERY_DRAIN_LIMIT), { timeout: 60000 });
-  await waitFor(() => expect(bodyHas(/Still working/g)).toBe(0), { timeout: 20000 });
+  await advanceUntil(() => drains() >= 2 * RESULT_RECOVERY_DRAIN_LIMIT, 1000, 60000);
+  await advanceUntil(() => bodyHas(/Still working/g) === 0, 1000, 20000);
   const settledAt = drains();
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 5000)); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
   expect(drains()).toBe(settledAt);
   act(() => fixtureModule.appRoot.unmount());
-}, 120000);
+}, 20000); // App render under a loaded worker pool, not timers

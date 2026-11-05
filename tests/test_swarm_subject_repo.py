@@ -464,26 +464,3 @@ class TestExplicitSubjectLeavesTheEnvAlone:
         assert "Acceptance criteria:" in seen[0][0].instruction
         assert "pyright is clean" in seen[0][0].instruction
 
-    def test_worker_spec_payload_carries_acceptance_criteria(self, monkeypatch, tmp_path):
-        from pmharness.bridge import execute_intent
-
-        workspace = _git_repo(tmp_path / "workspace")
-        seen = self._capture_specs(monkeypatch)
-        criteria = ["pyright is clean", "tsc passes"]
-
-        execute_intent(
-            DriverIntent(
-                action="run_swarm",
-                goal="audit",
-                roles=["explore"],
-                acceptance_criteria=criteria,
-            ),
-            state_dir=str(tmp_path / "state"),
-            cwd=workspace,
-        )
-
-        assert seen
-        payload = seen[0][0].payload
-        assert payload["acceptance_criteria"] == criteria
-        assert "Acceptance criteria:" in seen[0][0].instruction
-        assert "pyright is clean" in seen[0][0].instruction

@@ -261,6 +261,8 @@ def test_attachment_only_real_http_handler(session, monkeypatch, owned_server, r
                 if not chunk:
                     break
                 chunks.append(chunk)
+            # Close our side like a real client, so the server linger close ends now.
+            client.shutdown(socket.SHUT_WR)
             future.result(5)
     finally:
         client.close()

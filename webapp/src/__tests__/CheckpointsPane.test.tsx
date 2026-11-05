@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import CheckpointsPane from "../components/CheckpointsPane";
+import { advanceUntil, useFakePollTimers } from "./fakeTime";
 
 vi.mock("../lib/panelTransition", () => ({
   lastSelectedProjectRoot: "/repo",
@@ -124,6 +125,7 @@ describe("CheckpointsPane startup race", () => {
     apiMocks.getWorkspace.mockResolvedValue({ repo: "/repo" });
     apiMocks.sessions.mockResolvedValue([{ id: "s1", active: true }]);
   });
+  afterEach(() => { vi.useRealTimers(); });
 
   const refused = () => Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:8799"), { code: "ECONNREFUSED" });
 
@@ -132,16 +134,19 @@ describe("CheckpointsPane startup race", () => {
       .mockRejectedValueOnce(refused())
       .mockRejectedValueOnce(refused())
       .mockResolvedValue([{ id: "cp-1", label: "before edits", timestamp: 1, files: [] }]);
+    useFakePollTimers();
     render(<CheckpointsPane />);
-    expect(await screen.findByText("before edits", {}, { timeout: 4000 })).toBeTruthy();
+    await advanceUntil(() => screen.queryByText("before edits") !== null, 50, 2000);
     expect(screen.queryByText(/retrying|unavailable|ECONNREFUSED/i)).toBeNull();
   });
 
   it("asks for a manual refresh once the retries are spent", async () => {
     apiMocks.getCheckpoints.mockRejectedValue(refused());
+    useFakePollTimers();
     render(<CheckpointsPane />);
-    expect(await screen.findByText(/briefly unavailable/i, {}, { timeout: 8000 })).toBeTruthy();
-  }, 10000);
+    // Five backoff retries sum to 350 * (1 + 2 + 3 + 4 + 5) = 5250 ms of fake time.
+    await advanceUntil(() => screen.queryByText(/briefly unavailable/i) !== null, 50, 8000);
+  });
 });
 
 it("paints Loading, never the empty state, before the first load", async () => {

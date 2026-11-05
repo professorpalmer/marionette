@@ -9,6 +9,7 @@ Wave 6 offline full-auto safety gate: modules listed in
 run ``pytest -m full_auto_safety`` as a named invariant gate without live keys.
 """
 import socket
+import socketserver
 import os
 import shutil
 import stat
@@ -35,6 +36,17 @@ _FULL_AUTO_SAFETY_MODULES = frozenset({
 })
 
 os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
+
+# shutdown() waits up to one serve_forever poll (default 0.5 s). About 76 test
+# files start a server thread with the default, so each teardown cost 0.5 s.
+_real_serve_forever = socketserver.BaseServer.serve_forever
+
+
+def _serve_forever_fast_shutdown(self, poll_interval=0.01):
+    return _real_serve_forever(self, poll_interval)
+
+
+socketserver.BaseServer.serve_forever = _serve_forever_fast_shutdown
 
 # Windows: git marks object files read-only, which makes shutil.rmtree fail
 # with PermissionError on every temp-git-repo teardown. Wrap rmtree once here

@@ -59,8 +59,10 @@ CATALOG_HEADING = "## Handle catalog"
 HYBRID_INDEX_HEADING = "## Unique handles"
 SELECTED_STORY_HEADING = "### Selected story"
 
+# Start only at a token start: from inside a long word the scan for "/" was
+# quadratic (4 x 20k chars took 6.5 s), and "openrouter:x/y.z" became "r:x/y.z".
 _PATH_RE = re.compile(
-    r"(?:[A-Za-z]:)?(?:[\w.-]+/)+\w[\w.-]*\.[A-Za-z0-9]+"
+    r"(?<![\w.-])(?:[A-Za-z]:)?(?:[\w.-]+/)+\w[\w.-]*\.[A-Za-z0-9]+"
 )
 _ARTIFACT_URI_RE = re.compile(r"artifact://[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 _JOB_URI_RE = re.compile(r"job://[A-Za-z0-9._-]+")

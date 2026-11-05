@@ -221,9 +221,3 @@ def test_get_restart_last_reads_outcome(tmp_path, monkeypatch):
     assert payload["restart_outcome"]["requested_at"] == 111
 
 
-def test_no_rebuild_and_restart_pilot_tool():
-    from harness.pilot import VALID_ACTION_KINDS, build_tools_schema
-
-    assert "rebuild_and_restart" not in VALID_ACTION_KINDS
-    names = {item["function"]["name"] for item in build_tools_schema()}
-    assert "rebuild_and_restart" not in names

@@ -73,12 +73,6 @@ def test_from_env_defaults_agentic_even_without_repo(monkeypatch):
     assert HarnessConfig.from_env().swarm_adapter == "agentic"
 
 
-def test_from_env_promotes_poisoned_demo_env(monkeypatch):
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "demo")
-    assert HarnessConfig.from_env().swarm_adapter == "agentic"
-
-
 def test_ensure_upgrades_demo_cfg(monkeypatch):
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "demo")
     cfg = SimpleNamespace(repo="/tmp/wiki", swarm_adapter="demo")

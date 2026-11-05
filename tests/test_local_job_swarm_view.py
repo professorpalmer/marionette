@@ -154,18 +154,6 @@ def test_project_partial_and_timed_out_waves_are_terminal():
         assert row["tasks"][0]["instruction"] == ""
 
 
-def test_project_partial_and_timed_out_waves_are_terminal():
-    for status in ("partial", "timed_out"):
-        row = project_local_job_for_swarm_live(_sample_local_job(
-            id="local-wave-x",
-            status=status,
-            role="parallel_wave",
-            adapter="parallel_wave",
-        ))
-        assert row["status"] == status
-        assert row["tasks"][0]["instruction"] == ""
-
-
 def test_project_restart_interrupted_job():
     row = project_local_job_for_swarm_live(_sample_local_job(
         status="cancelled",

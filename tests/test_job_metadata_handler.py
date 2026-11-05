@@ -225,17 +225,18 @@ def test_actual_sustained_polls_no_body_constructor_discovery(host, monkeypatch)
                        session_id='A', repo=ctx['repo']) for j in host.jobs[:8]]
     metrics = trace_metadata(monkeypatch)
     pin_context = {k: ctx[k] for k in ('session_id', 'repo', 'view_generation', 'scope')}
-    for _ in range(30):
+    polls = 3  # each assert below scales with polls; more rounds prove nothing new
+    for _ in range(polls):
         assert host.request('GET', '/api/jobs/metadata/view')[0] == 200
         assert host.request('GET', path(ctx, mode='snapshot'))[0] == 200
         status, pinned, size = host.request('POST', '/api/jobs/metadata/pins', dict(pin_context, selections=selections))
         assert status == 200 and size <= 65536
         assert [r['result']['row']['selection'] for r in pinned['results']] == selections
         assert host.reg.metadata_view.reader() is reader
-    assert 0 < len(hydrated) <= 30 * 8
-    assert len(calls) == 30 * 17 + len(hydrated)
-    assert sum(kw['limit'] == 50 and kw['max_scan'] == 51 and kw['max_bytes'] == 32768 for kw in calls) == 30
-    assert sum(kw['limit'] == 1 and kw['max_scan'] == 2 and kw['max_bytes'] == 8192 for kw in calls) == 30 * 8 * 2 + len(hydrated)
+    assert 0 < len(hydrated) <= polls * 8
+    assert len(calls) == polls * 17 + len(hydrated)
+    assert sum(kw['limit'] == 50 and kw['max_scan'] == 51 and kw['max_bytes'] == 32768 for kw in calls) == polls
+    assert sum(kw['limit'] == 1 and kw['max_scan'] == 2 and kw['max_bytes'] == 8192 for kw in calls) == polls * 8 * 2 + len(hydrated)
     assert hashes(host.store.root) == before
     assert metrics['reads'] and any(table == 'projection_versions' for table, _ in metrics['reads'])
 
