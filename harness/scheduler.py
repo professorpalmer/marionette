@@ -902,9 +902,11 @@ class SchedulerDaemon:
         )
 
     def _interruptible_wait(self, tick_seconds: int) -> None:
-        deadline = time.time() + max(1, int(tick_seconds))
-        while not self._stop and time.time() < deadline:
-            remaining = deadline - time.time()
+        # Monotonic: a wall clock set back by N seconds made one tick N
+        # seconds longer, and no schedule fired in that time.
+        deadline = time.monotonic() + max(1, int(tick_seconds))
+        while not self._stop and time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             time.sleep(min(0.5, remaining))
