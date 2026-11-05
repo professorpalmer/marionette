@@ -126,6 +126,10 @@ class McpRemoteError(McpError):
     """The server answered with an error; the transport itself is healthy."""
 
 
+class McpTimeoutError(McpError):
+    """A stdio server did not answer in time. Its process is still running."""
+
+
 class StdioMcpClient:
     """One spawned MCP server, spoken to over stdio JSON-RPC."""
 
@@ -436,7 +440,7 @@ class StdioMcpClient:
                 self._pending.pop(rid, None)
             # Tell the server to stop, so a slow call does not keep working.
             self._cancel_request(rid, method)
-            raise McpError(f"MCP server '{self.name}': timeout waiting for {method}")
+            raise McpTimeoutError(f"MCP server '{self.name}': timeout waiting for {method}")
         with self._lock:
             self._pending.pop(rid, None)
         if isinstance(msg, BaseException):
