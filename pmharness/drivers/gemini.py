@@ -17,6 +17,24 @@ from .retry import with_retry
 from .metering import metered
 
 
+def prompt_block_error(raw) -> str:
+    """Return the error text when Gemini refused the prompt itself.
+
+    Gemini answers a blocked prompt with HTTP 200, no candidates, and
+    ``promptFeedback.blockReason``. That is not an empty reply: the same
+    prompt is blocked again, so the turn must stop with the reason.
+    """
+    feedback = raw.get("promptFeedback") if isinstance(raw, dict) else None
+    if not isinstance(feedback, dict) or raw.get("candidates"):
+        return ""
+    reason = str(feedback.get("blockReason") or "").strip()
+    if not reason:
+        return ""
+    detail = str(feedback.get("blockReasonMessage") or "").strip()
+    text = f"Gemini blocked the prompt (blockReason {reason})"
+    return f"{text}: {detail}" if detail else text
+
+
 @metered
 class GeminiDriver:
     supports_streaming = True
@@ -340,6 +358,12 @@ class GeminiDriver:
                 )
 
             latency = (time.time() - t0) * 1000.0
+            blocked = prompt_block_error(raw)
+            if blocked:
+                return DriverResponse(
+                    text="", model=self.name, error=blocked, latency_ms=latency,
+                    meta={"finish_reason": "prompt_blocked"},
+                )
 
             try:
                 candidates = raw.get("candidates") or []
@@ -401,6 +425,12 @@ class GeminiDriver:
                 )
 
             latency = (time.time() - t0) * 1000.0
+            blocked = prompt_block_error(raw)
+            if blocked:
+                return DriverResponse(
+                    text="", model=self.name, error=blocked, latency_ms=latency,
+                    meta={"finish_reason": "prompt_blocked"},
+                )
 
             try:
                 candidates = raw.get("candidates") or []
@@ -486,6 +516,7 @@ class GeminiDriver:
         cache_read = 0
         part_offset = 0
         stream_started = False
+        blocked = ""
 
         try:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -510,6 +541,7 @@ class GeminiDriver:
                             usage.get("cachedContentTokenCount", cache_read) or cache_read
                         )
 
+                    blocked = blocked or prompt_block_error(chunk)
                     candidates = chunk.get("candidates") or []
                     if not candidates:
                         continue
@@ -560,6 +592,12 @@ class GeminiDriver:
             )
 
         latency = (time.time() - t0) * 1000.0
+        if blocked and not stream_started:
+            return DriverResponse(
+                text="", model=self.name, error=blocked, latency_ms=latency,
+                tokens_in=tokens_in,
+                meta={"finish_reason": "prompt_blocked", "stream_started": False},
+            )
         return DriverResponse(
             text="".join(text_pieces),
             tokens_in=tokens_in,
