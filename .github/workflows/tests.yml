@@ -53,7 +53,8 @@ jobs:
   pytest-linux:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 in the setup-python manifest.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
@@ -163,7 +164,8 @@ jobs:
   pmharness-units:
     needs: reuse-green-tree
     if: needs.reuse-green-tree.outputs.skip_suite != 'true'
-    runs-on: ubuntu-latest
+    # ubuntu-latest (26.04) has no Python 3.9 in the setup-python manifest.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5

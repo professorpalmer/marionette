@@ -69,6 +69,15 @@ def _end_child(proc: "subprocess.Popen[str]") -> None:
         pass
 
 
+def _read_replies(stream, replies: "queue.Queue[Optional[dict]]") -> None:
+    for line in stream:
+        try:
+            replies.put(json.loads(line))
+        except ValueError:
+            continue
+    replies.put(None)
+
+
 class _Child:
     """One kernel process and the thread that reads its replies."""
 
@@ -87,21 +96,17 @@ class _Child:
             bufsize=1,
         )
         self.replies: "queue.Queue[Optional[dict]]" = queue.Queue()
-        threading.Thread(target=self._read, name="marionette-ipython-reader", daemon=True).start()
+        # The reader must not hold self: a live thread would keep the finalizer from ending the child.
+        threading.Thread(
+            target=_read_replies, args=(self.proc.stdout, self.replies),
+            name="marionette-ipython-reader", daemon=True,
+        ).start()
         self._finalizer = weakref.finalize(self, _end_child, self.proc)
         ready = self.next_reply(_START_TIMEOUT_SEC)
         if not ready or not ready.get("ready"):
             self.end()
             raise RuntimeError("python kernel did not start")
         self.backend = str(ready.get("backend") or "stdlib")
-
-    def _read(self) -> None:
-        for line in self.proc.stdout:
-            try:
-                self.replies.put(json.loads(line))
-            except ValueError:
-                continue
-        self.replies.put(None)
 
     def next_reply(self, timeout: float) -> Optional[dict]:
         try:

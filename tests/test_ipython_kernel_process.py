@@ -68,3 +68,17 @@ def test_close_ends_the_child(tmp_path):
     proc = k._child.proc
     k.close()
     assert proc.poll() is not None
+
+
+def test_a_dropped_kernel_ends_its_child_without_close(tmp_path):
+    # A session that drops its kernel must not leave the child alive. The
+    # reader thread once held the child object, so its finalizer never ran.
+    import gc
+
+    k = PersistentPythonKernel(str(tmp_path))
+    assert k.execute("1", timeout=10).ok
+    proc = k._child.proc
+    del k
+    gc.collect()
+    proc.wait(timeout=10)
+    assert proc.poll() is not None
