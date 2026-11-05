@@ -60,6 +60,8 @@ describe("isSwarmTrackerJob allowlist", () => {
       adapter: "command",
       role: "command",
     })).toBe(true);
+    expect(isSwarmTrackerJob({ job_kind: "run_swarm", id: "job_abc" })).toBe(true);
+    expect(isSwarmTrackerJob({ job_kind: "provider", id: "local-cedfbf8c", adapter: "agentic" })).toBe(true);
   });
 
   it("hides command jobs, wave parents, and command/wave role stamps", () => {
@@ -77,6 +79,8 @@ describe("isSwarmTrackerJob allowlist", () => {
     })).toBe(false);
     expect(isSwarmTrackerJob({ id: "job-timeout", adapter: "command", role: "command" })).toBe(false);
     expect(isSwarmTrackerJob({ id: "local-cmdbatch-aa11bb22", job_kind: "run_command_batch" })).toBe(false);
+    expect(isSwarmTrackerJob({ job_kind: "run_command", id: "local-cmd-1" })).toBe(false);
+    expect(isSwarmTrackerJob({ job_kind: "parallel_wave", id: "local-wave-1" })).toBe(false);
   });
 
   it("keeps unnamed store-shaped swarm rows that are not coordinators", () => {

@@ -29,17 +29,23 @@ def test_non_http_scheme_blocked():
     assert "scheme" in reason
 
 
-def test_localhost_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "127.0.0.1")
-    ok, reason = is_safe_url("http://localhost/admin")
-    assert not ok
-
-
-def test_loopback_ip_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "127.0.0.1")
-    ok, reason = is_safe_url("http://127.0.0.1:8080/")
-    assert not ok
-    assert "127.0.0.1" in reason
+@pytest.mark.parametrize("resolved_ip,url,expected_ok,reason_substr", [
+    pytest.param("127.0.0.1", "http://localhost/admin", False, None, id="localhost"),
+    pytest.param("127.0.0.1", "http://127.0.0.1:8080/", False, "127.0.0.1", id="loopback_ip"),
+    pytest.param("10.0.0.5", "http://10.0.0.5/", False, None, id="private_10_range"),
+    pytest.param("192.168.1.1", "http://192.168.1.1/", False, None, id="private_192_168_range"),
+    pytest.param("10.1.2.3", "https://evil.example.com/", False, "resolved", id="dns_rebind_to_private"),
+    pytest.param("100.64.0.1", "http://100.64.0.1/", False, "100.64.0.1", id="cgnat"),
+    # 100.63.255.255 and 100.128.0.0 are outside 100.64.0.0/10.
+    pytest.param("100.63.255.255", "http://100.63.255.255/", True, None, id="cgnat_boundary_below"),
+    pytest.param("100.128.0.0", "http://100.128.0.0/", True, None, id="cgnat_boundary_above"),
+])
+def test_is_safe_url_table(monkeypatch, resolved_ip, url, expected_ok, reason_substr):
+    _patch_resolve(monkeypatch, resolved_ip)
+    ok, reason = is_safe_url(url)
+    assert ok == expected_ok, reason
+    if reason_substr is not None:
+        assert reason_substr in reason
 
 
 def test_metadata_ip_blocked(monkeypatch):
@@ -47,18 +53,6 @@ def test_metadata_ip_blocked(monkeypatch):
     ok, reason = is_safe_url("http://169.254.169.254/latest/meta-data/")
     assert not ok
     assert "metadata" in reason.lower()
-
-
-def test_private_10_range_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "10.0.0.5")
-    ok, reason = is_safe_url("http://10.0.0.5/")
-    assert not ok
-
-
-def test_private_192_168_range_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "192.168.1.1")
-    ok, reason = is_safe_url("http://192.168.1.1/")
-    assert not ok
 
 
 def test_metadata_hostname_blocked(monkeypatch):
@@ -88,13 +82,6 @@ def test_metadata_still_blocked_with_hatch(monkeypatch):
     assert not ok
     ok2, _ = is_safe_url("http://metadata.google.internal/")
     assert not ok2
-
-
-def test_dns_rebind_to_private_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "10.1.2.3")
-    ok, reason = is_safe_url("https://evil.example.com/")
-    assert not ok
-    assert "resolved" in reason
 
 
 def test_normalize_url_encodes_unicode():
@@ -148,21 +135,19 @@ def test_pinned_ip_literal():
     assert pinned == "93.184.216.34"
 
 
-def test_pinned_ip_literal_private_blocked():
-    ok, reason, pinned = is_safe_url_pinned("http://10.0.0.5/")
-    assert not ok
-    assert pinned is None
-
-
-def test_pinned_metadata_ip_blocked():
-    ok, reason, pinned = is_safe_url_pinned("http://169.254.169.254/latest/meta-data/")
-    assert not ok
-    assert pinned is None
-
-
-def test_pinned_metadata_hostname_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "169.254.169.254")
-    ok, reason, pinned = is_safe_url_pinned("http://metadata.google.internal/computeMetadata/v1/")
+@pytest.mark.parametrize("resolved_ip,url", [
+    pytest.param(None, "http://10.0.0.5/", id="ip_literal_private"),
+    pytest.param(None, "http://169.254.169.254/latest/meta-data/", id="metadata_ip"),
+    pytest.param(None, "file:///etc/passwd", id="non_http_scheme"),
+    pytest.param("169.254.169.254", "http://metadata.google.internal/computeMetadata/v1/",
+                 id="metadata_hostname"),
+    pytest.param("127.0.0.1", "http://127.0.0.1:8080/", id="loopback_ip"),
+    pytest.param("127.0.0.1", "http://localhost/admin", id="localhost"),
+])
+def test_is_safe_url_pinned_blocked_table(monkeypatch, resolved_ip, url):
+    if resolved_ip is not None:
+        _patch_resolve(monkeypatch, resolved_ip)
+    ok, reason, pinned = is_safe_url_pinned(url)
     assert not ok
     assert pinned is None
 
@@ -173,20 +158,6 @@ def test_pinned_dns_rebind_to_private_blocked(monkeypatch):
     assert not ok
     assert pinned is None
     assert "resolved" in reason
-
-
-def test_pinned_loopback_ip_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "127.0.0.1")
-    ok, reason, pinned = is_safe_url_pinned("http://127.0.0.1:8080/")
-    assert not ok
-    assert pinned is None
-
-
-def test_pinned_localhost_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "127.0.0.1")
-    ok, reason, pinned = is_safe_url_pinned("http://localhost/admin")
-    assert not ok
-    assert pinned is None
 
 
 def test_pinned_escape_hatch(monkeypatch):
@@ -201,12 +172,6 @@ def test_pinned_metadata_still_blocked_with_hatch(monkeypatch):
     monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
     _patch_resolve(monkeypatch, "169.254.169.254")
     ok, reason, pinned = is_safe_url_pinned("http://169.254.169.254/latest/meta-data/")
-    assert not ok
-    assert pinned is None
-
-
-def test_pinned_non_http_scheme():
-    ok, reason, pinned = is_safe_url_pinned("file:///etc/passwd")
     assert not ok
     assert pinned is None
 
@@ -241,13 +206,6 @@ def test_unresolvable_host_empty_dns(monkeypatch):
     assert not ok2
     assert pinned is None
     assert "no addresses" in reason2
-
-
-def test_is_safe_url_still_works(monkeypatch):
-    """Verify is_safe_url (the original API) still works unchanged."""
-    _patch_resolve(monkeypatch, "93.184.216.34")
-    ok, reason = is_safe_url("https://example.com/page")
-    assert ok, reason
 
 
 def _clear_dns_cache():
@@ -324,27 +282,6 @@ def test_pinned_ipv6(monkeypatch):
 
 
 # -- RFC 6598 CGNAT (100.64.0.0/10) ------------------------------------------
-
-def test_cgnat_blocked(monkeypatch):
-    _patch_resolve(monkeypatch, "100.64.0.1")
-    ok, reason = is_safe_url("http://100.64.0.1/")
-    assert not ok
-    assert "100.64.0.1" in reason
-
-
-def test_cgnat_boundary_below_not_cgnat(monkeypatch):
-    """100.63.255.255 is outside 100.64.0.0/10 — not blocked by the CGNAT rule."""
-    _patch_resolve(monkeypatch, "100.63.255.255")
-    ok, reason = is_safe_url("http://100.63.255.255/")
-    assert ok, reason
-
-
-def test_cgnat_boundary_above_not_cgnat(monkeypatch):
-    """100.128.0.0 is outside 100.64.0.0/10 — not blocked by the CGNAT rule."""
-    _patch_resolve(monkeypatch, "100.128.0.0")
-    ok, reason = is_safe_url("http://100.128.0.0/")
-    assert ok, reason
-
 
 def test_cgnat_ipv6_mapped_blocked(monkeypatch):
     mapped = "::ffff:100.64.0.1"

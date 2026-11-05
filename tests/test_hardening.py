@@ -39,14 +39,6 @@ def test_version(capsys):
 
 
 @pytest.mark.swarm
-def test_eval_subcommand_offline(capsys):
-    code = cli.main(["eval", "--stage", "v2"])
-    out = capsys.readouterr().out
-    assert "mean:" in out
-    assert code == 0
-
-
-@pytest.mark.swarm
 def test_eval_s4_offline(capsys):
     code = cli.main(["eval", "--driver", "stub-oracle-v2", "--stage", "s4"])
     # stub-oracle-v2 isn't the reader; just assert it runs and reports a mean

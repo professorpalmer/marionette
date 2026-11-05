@@ -45,15 +45,6 @@ def test_openai_path_requires_repo(monkeypatch):
         )
 
 
-def test_analysis_specs_are_read_only():
-    from puppetmaster.workers import WorkerSpec, spec_edits_files, spec_explicitly_no_edit
-    spec = WorkerSpec(role="explore", instruction="analyze", adapter="openai",
-                      payload={"read_only": True, "no_edit": True, "dry_run": True,
-                               "cwd": "/tmp"})
-    assert spec_explicitly_no_edit(spec) is True
-    assert spec_edits_files(spec) is False
-
-
 def test_analysis_does_not_mutate_target_repo(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -1,15 +1,31 @@
 """Tests for persistent provider disconnect + per-workspace model memory."""
+import importlib
 import os
 import tempfile
 
+import pytest
 
-def test_disconnect_persists_over_shell_env(monkeypatch):
-    """A deliberately disconnected provider stays disconnected on restart even
-    when the user's shell exports its key (login-shell env re-injects it)."""
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
+
+@pytest.fixture
+def state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    # A reload of harness.server builds its config from env. Keep it offline.
+    monkeypatch.setenv("HARNESS_DRIVER", "stub-oracle-v2")
+    return tmp_path
+
+
+@pytest.fixture
+def keys_mod(state_dir):
+    """harness.keys reloaded on the test state dir."""
     from harness import keys as K
     importlib.reload(K)
+    return K
+
+
+def test_disconnect_persists_over_shell_env(monkeypatch, keys_mod):
+    """A deliberately disconnected provider stays disconnected on restart even
+    when the user's shell exports its key (login-shell env re-injects it)."""
+    K = keys_mod
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret-1234")
     K.clear_api_key("openrouter")
@@ -22,12 +38,9 @@ def test_disconnect_persists_over_shell_env(monkeypatch):
     assert "OPENROUTER_API_KEY" not in os.environ
 
 
-def test_disconnect_clears_env_backed_cache(monkeypatch):
+def test_disconnect_clears_env_backed_cache(monkeypatch, keys_mod):
     """Disconnect must drop the env cache so Settings can show a paste field."""
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
+    K = keys_mod
 
     monkeypatch.setenv("OPENCODE_GO_API_KEY", "go-old-key-1234")
     K.snapshot_env_keys()
@@ -37,11 +50,8 @@ def test_disconnect_clears_env_backed_cache(monkeypatch):
     assert "OPENCODE_GO_API_KEY" not in os.environ
 
 
-def test_reconnect_clears_disconnect(monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
+def test_reconnect_clears_disconnect(keys_mod):
+    K = keys_mod
 
     K.clear_api_key("openrouter")
     assert "openrouter" in K.get_disconnected()
@@ -50,11 +60,8 @@ def test_reconnect_clears_disconnect(monkeypatch):
     assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-new-key-5678"
 
 
-def test_available_providers_excludes_disconnected(monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
+def test_available_providers_excludes_disconnected(monkeypatch, keys_mod):
+    K = keys_mod
     from harness import providers as prov
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
@@ -63,9 +70,7 @@ def test_available_providers_excludes_disconnected(monkeypatch):
     assert "anthropic" not in names
 
 
-def test_workspace_driver_memory(monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
+def test_workspace_driver_memory(state_dir):
     import harness.server as srv
     importlib.reload(srv)
 
@@ -81,9 +86,7 @@ def test_workspace_driver_memory(monkeypatch):
     assert srv._get_workspace_driver(repoB) == "openrouter:openai/gpt-5.5"
 
 
-def test_workspace_driver_skips_temp_dirs(monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
+def test_workspace_driver_skips_temp_dirs(state_dir):
     import harness.server as srv
     importlib.reload(srv)
     tmp = tempfile.mkdtemp()  # under /tmp -> must NOT be persisted
@@ -91,14 +94,11 @@ def test_workspace_driver_skips_temp_dirs(monkeypatch):
     assert srv._get_workspace_driver(tmp) is None
 
 
-def test_disconnect_authoritative_over_stored_and_env_key(monkeypatch):
+def test_disconnect_authoritative_over_stored_and_env_key(monkeypatch, keys_mod):
     """The killer case: a disconnected provider with BOTH a stored key and a
     shell-exported env key must read as fully disconnected across every accessor,
     and survive a restart. This is the race-proof gate at Provider.key()."""
-    monkeypatch.setenv("HARNESS_STATE_DIR", tempfile.mkdtemp())
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
+    K = keys_mod
     from harness import providers as prov
     importlib.reload(prov)
     from harness import registry_wizard as rw

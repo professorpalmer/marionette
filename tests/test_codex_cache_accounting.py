@@ -5,6 +5,8 @@ import json
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from harness.api.cost_accounting import _cache_savings
 from harness.send_loop_phases import meter_pilot_step
 from pmharness.drivers.codex_responses import CodexResponsesDriver
@@ -36,7 +38,31 @@ def test_plan_value_persists_at_each_calls_rates(session, tmp_path, monkeypatch)
     assert row["plan_calls"] == 2
 
 
-def test_response_from_raw_stamps_cache_read_tokens():
+_ABSENT = "absent"
+
+
+@pytest.mark.parametrize("usage, expected_read, expected_write", [
+    pytest.param(
+        {"input_tokens": 10_000, "output_tokens": 200,
+         "input_tokens_details": {"cached_tokens": 8_000}},
+        8_000, _ABSENT,
+        id="stamps-cache-read-tokens",
+    ),
+    # Provider-reported zeros must not be omitted or inferred away.
+    pytest.param(
+        {"input_tokens": 40, "output_tokens": 2,
+         "input_tokens_details": {"cached_tokens": 0}, "cache_write_tokens": 0},
+        0, 0,
+        id="keeps-explicit-zero-cache-fields",
+    ),
+    # Absent provider cache fields stay absent. Never invent zeros or hits.
+    pytest.param(
+        {"input_tokens": 40, "output_tokens": 2},
+        _ABSENT, _ABSENT,
+        id="omits-absent-cache-fields",
+    ),
+])
+def test_response_from_raw_cache_fields(usage, expected_read, expected_write):
     driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5")
     raw = {
         "status": "completed",
@@ -46,64 +72,17 @@ def test_response_from_raw_stamps_cache_read_tokens():
                 "content": [{"type": "output_text", "text": "ok"}],
             }
         ],
-        "usage": {
-            "input_tokens": 10_000,
-            "output_tokens": 200,
-            "input_tokens_details": {"cached_tokens": 8_000},
-        },
+        "usage": usage,
     }
     resp = driver._response_from_raw(raw, t0=time.time())
-    assert resp.meta["cache_read_tokens"] == 8_000
-    assert resp.meta["raw_usage"]["input_tokens_details"]["cached_tokens"] == 8_000
-    assert resp.tokens_in == 10_000
-    assert resp.tokens_out == 200
-
-
-def test_response_from_raw_keeps_explicit_zero_cache_fields():
-    """Provider-reported zeros must not be omitted or inferred away."""
-    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5")
-    raw = {
-        "status": "completed",
-        "output": [
-            {
-                "type": "message",
-                "content": [{"type": "output_text", "text": "ok"}],
-            }
-        ],
-        "usage": {
-            "input_tokens": 40,
-            "output_tokens": 2,
-            "input_tokens_details": {"cached_tokens": 0},
-            "cache_write_tokens": 0,
-        },
-    }
-    resp = driver._response_from_raw(raw, t0=time.time())
-    assert resp.meta["cache_read_tokens"] == 0
-    assert resp.meta["cache_write_tokens"] == 0
-    assert resp.meta["raw_usage"]["input_tokens_details"]["cached_tokens"] == 0
-    assert resp.meta["raw_usage"]["cache_write_tokens"] == 0
-
-
-def test_response_from_raw_omits_absent_cache_fields():
-    """Absent provider cache fields stay absent — never invent zeros/hits."""
-    driver = CodexResponsesDriver(name="openai-codex/test", model="gpt-5")
-    raw = {
-        "status": "completed",
-        "output": [
-            {
-                "type": "message",
-                "content": [{"type": "output_text", "text": "ok"}],
-            }
-        ],
-        "usage": {
-            "input_tokens": 40,
-            "output_tokens": 2,
-        },
-    }
-    resp = driver._response_from_raw(raw, t0=time.time())
-    assert "cache_read_tokens" not in resp.meta
-    assert "cache_write_tokens" not in resp.meta
-    assert resp.meta["raw_usage"] == {"input_tokens": 40, "output_tokens": 2}
+    for key, expected in (("cache_read_tokens", expected_read), ("cache_write_tokens", expected_write)):
+        if expected == _ABSENT:
+            assert key not in resp.meta
+        else:
+            assert resp.meta[key] == expected
+    assert resp.meta["raw_usage"] == usage
+    assert resp.tokens_in == usage["input_tokens"]
+    assert resp.tokens_out == usage["output_tokens"]
 
 
 def test_continuation_aggregates_explicit_zero_cache_provenance(monkeypatch):

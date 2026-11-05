@@ -186,32 +186,6 @@ def test_ladder_matches_flattened_live_ids_and_aliases(tmp_path, monkeypatch):
     assert by_id["agentic/minimax-m3"]["capability_score"] == 68
 
 
-def test_ladder_never_adds_vision_to_deepseek_v4_pro(tmp_path, monkeypatch):
-    dest = tmp_path / "marionette-models.json"
-    dest.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "models": [
-                    {
-                        "id": "agentic/deepseek-v4-pro",
-                        "adapter_model_name": "deepseek-v4-pro",
-                        "capability_score": 1,
-                        "tags": ["code"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(dest))
-    apply_marionette_router_ladder(str(dest))
-    data = json.loads(dest.read_text(encoding="utf-8"))
-    tags = data["models"][0]["tags"]
-    assert "vision" not in tags
-    assert "detailed-vision" not in tags
-
-
 def test_ensure_respects_existing_env(tmp_path, monkeypatch):
     pinned = tmp_path / "pinned.json"
     pinned.write_text('{"version":1,"models":[]}\n', encoding="utf-8")

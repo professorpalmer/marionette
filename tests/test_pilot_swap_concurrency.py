@@ -14,7 +14,9 @@ import pytest
 pytestmark = pytest.mark.usefixtures("owned_server")
 
 
-def test_concurrent_rebuild_no_torn_state():
+def test_concurrent_rebuild_no_torn_state(monkeypatch):
+    # The import-time driver can come from the host config and need a live CLI login.
+    monkeypatch.setattr(srv._cfg, "driver", "stub-oracle-v2")
     # Seed a known history to carry across rebinds.
     marker = [{"role": "user", "content": "carry-me"}]
     srv._pilot._history = list(marker)

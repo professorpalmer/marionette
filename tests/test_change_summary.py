@@ -1,7 +1,6 @@
 """Tests for harness.change_summary: delta summaries over full re-dumps."""
 
 from harness.change_summary import (
-    Region,
     line_diff_regions,
     summarize_change,
 )
@@ -144,11 +143,6 @@ def test_summary_bounded_for_many_regions():
     # Bounded regardless of thousands of changed lines.
     assert len(summary) < 400
     assert len(summary) < len(new)
-
-
-def test_region_dataclass_fields():
-    r = Region(start_line=1, end_line=3, added=2, removed=1)
-    assert (r.start_line, r.end_line, r.added, r.removed) == (1, 3, 2, 1)
 
 
 def test_context_param_accepted():

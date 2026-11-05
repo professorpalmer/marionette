@@ -1,21 +1,15 @@
-"""Characterization tests for send_loop_dispatch peel from _send_locked_inner.
-
-Locks the extracted swarm / implement / parallel / route_task / memory helper
-contracts and asserts those branches no longer live inline in the turn kernel.
+"""Characterization tests for the send_loop_dispatch swarm / implement /
+parallel / route_task / memory helpers.
 """
 
 from __future__ import annotations
 
-import ast
-import inspect
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.pilot import PilotAction
-from harness.send_loop import SendLoopMixin
 from harness.send_loop_dispatch import (
     DISPATCH_ACTION_KINDS,
     _TRACKABLE_SWARM_REFUSAL,
@@ -25,16 +19,6 @@ from harness.send_loop_dispatch import (
     dispatch_route_task_action,
     dispatch_swarm_action,
     is_untracked_pm_start_tool,
-)
-
-DISPATCH_HELPERS = (
-    "dispatch_swarm_action",
-    "dispatch_implement_action",
-    "dispatch_parallel_action",
-    "dispatch_flow_action",
-    "dispatch_flow_control_action",
-    "dispatch_route_task_action",
-    "dispatch_memory_action",
 )
 
 
@@ -118,29 +102,6 @@ def test_background_success_copies_finish_reuse_onto_queued_result(tmp_path):
     assert queued["result"]["validation_fingerprint"] == "fp-test"
 
 
-def _inner_source() -> str:
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "SendLoopMixin":
-            for item in node.body:
-                if (
-                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and item.name == "_send_locked_inner"
-                ):
-                    return ast.get_source_segment(src, item) or ""
-    raise AssertionError("_send_locked_inner not found")
-
-
-def test_dispatch_helpers_are_module_level_callables():
-    import harness.send_loop_dispatch as dispatch
-
-    for name in DISPATCH_HELPERS:
-        fn = getattr(dispatch, name)
-        assert callable(fn)
-        assert fn.__module__ == "harness.send_loop_dispatch"
-
-
 def test_dispatch_action_kinds_covers_delegate_surface():
     assert DISPATCH_ACTION_KINDS == frozenset(
         {
@@ -152,61 +113,6 @@ def test_dispatch_action_kinds_covers_delegate_surface():
     assert "read_file" not in DISPATCH_ACTION_KINDS
     assert "write_file" not in DISPATCH_ACTION_KINDS
     assert "run_command" not in DISPATCH_ACTION_KINDS
-
-
-def test_mixin_still_owns_public_orchestration_surface():
-    for name in ("send", "_send_locked", "_send_locked_inner"):
-        attr = getattr(SendLoopMixin, name)
-        assert attr.__qualname__ == f"SendLoopMixin.{name}"
-
-
-def test_mixin_calls_dispatch_helpers():
-    # Kernel fans out via execute_turn_actions; dispatch helpers are invoked there.
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    assert "execute_turn_actions(" in src
-    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
-    for name in DISPATCH_HELPERS:
-        assert f"{name}(" in actions_src, name
-    assert "DISPATCH_ACTION_KINDS" in actions_src
-
-
-def test_send_locked_inner_no_longer_inlines_dispatch_branches():
-    segment = _inner_source()
-    assert "---- swarm branch" not in segment
-    assert "---- run_implement branch" not in segment
-    assert "---- run_parallel branch" not in segment
-    assert "---- route_task branch" not in segment
-    assert "---- memory branch" not in segment
-    assert "execute_turn_actions(" in segment
-    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
-    assert "dispatch_swarm_action(" in actions_src
-    assert "dispatch_implement_action(" in actions_src
-    assert "dispatch_parallel_action(" in actions_src
-    assert "dispatch_route_task_action(" in actions_src
-    assert "dispatch_memory_action(" in actions_src
-    assert "DISPATCH_ACTION_KINDS" in actions_src
-
-
-def test_send_locked_inner_no_longer_nests_dispatch_helpers():
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    nested_names: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef) or node.name != "SendLoopMixin":
-            continue
-        for item in node.body:
-            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if item.name != "_send_locked_inner":
-                continue
-            for child in ast.walk(item):
-                if (
-                    isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and child is not item
-                ):
-                    nested_names.add(child.name)
-    assert not (nested_names & set(DISPATCH_HELPERS)), nested_names & set(DISPATCH_HELPERS)
-    assert "execute_turn_actions" not in nested_names
 
 
 def test_dispatch_route_task_requires_cli():

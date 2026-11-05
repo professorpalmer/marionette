@@ -6,6 +6,8 @@ import io
 import json
 from unittest.mock import patch
 
+import pytest
+
 from pmharness.drivers import error_classifier
 from pmharness.drivers.gemini import GeminiDriver
 
@@ -41,7 +43,14 @@ def _assert_blocked(resp, calls):
     assert error_classifier.classify(None, resp.error) == error_classifier.ErrorClass.FATAL
 
 
-def test_chat_returns_the_block_reason(monkeypatch):
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(lambda d: d.chat([{"role": "user", "content": "hi"}]), id="chat"),
+        pytest.param(lambda d: d.complete("hi"), id="complete"),
+    ],
+)
+def test_nonstream_returns_the_block_reason(monkeypatch, call):
     d = _driver(monkeypatch)
     calls = []
 
@@ -50,20 +59,7 @@ def test_chat_returns_the_block_reason(monkeypatch):
         return _json(_BLOCKED)
 
     with patch("urllib.request.urlopen", side_effect=fake):
-        resp = d.chat([{"role": "user", "content": "hi"}])
-    _assert_blocked(resp, len(calls))
-
-
-def test_complete_returns_the_block_reason(monkeypatch):
-    d = _driver(monkeypatch)
-    calls = []
-
-    def fake(req, timeout=None):
-        calls.append(req)
-        return _json(_BLOCKED)
-
-    with patch("urllib.request.urlopen", side_effect=fake):
-        resp = d.complete("hi")
+        resp = call(d)
     _assert_blocked(resp, len(calls))
 
 

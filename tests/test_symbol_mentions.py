@@ -1,3 +1,4 @@
+import contextlib
 import os
 import json
 import tempfile
@@ -6,6 +7,8 @@ import urllib.error
 import threading
 from http.server import ThreadingHTTPServer
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 
 def _server():
@@ -181,82 +184,79 @@ def test_at_symbol_resolution_on_send(owned_server, monkeypatch):
                 httpd.shutdown()
 
 
-def test_at_symbol_resolution_confinement(owned_server, monkeypatch):
+_OUTSIDE_HIT = {
+    "ok": True,
+    "stdout": json.dumps([
+        {
+            "node": {
+                "name": "outside_func",
+                "kind": "function",
+                "filePath": "../outside.py",
+                "startLine": 1,
+                "endLine": 5
+            }
+        }
+    ])
+}
+
+
+@pytest.mark.parametrize(
+    ("symbol", "ready", "query_patch", "expected"),
+    [
+        pytest.param(
+            "outside_func", True, {"return_value": _OUTSIDE_HIT},
+            [
+                "--- Symbol: outside_func ---",
+                "... skipped: symbol file not found in workspace",
+                "@symbol:outside_func",
+            ],
+            id="confinement",
+        ),
+        pytest.param(
+            "MissingThing", True, {"return_value": {"ok": True, "stdout": "[]"}},
+            [
+                "--- Symbol: MissingThing ---",
+                "... skipped: no matching symbol in CodeGraph",
+            ],
+            id="empty_hits",
+        ),
+        pytest.param(
+            "NotReadyYet", False, None,
+            ["--- Symbol: NotReadyYet ---", "... skipped:", "not ready"],
+            id="not_ready",
+        ),
+        pytest.param(
+            "BoomSym", True, {"side_effect": RuntimeError("cg boom")},
+            ["--- Symbol: BoomSym ---", "... failed to read: cg boom"],
+            id="exception",
+        ),
+    ],
+)
+def test_at_symbol_miss_honesty(owned_server, monkeypatch, symbol, ready, query_patch, expected):
+    """A symbol that does not resolve must append a Symbol note (never silent)."""
     import harness.server as srv
-    from unittest.mock import patch, MagicMock
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
         srv._cfg.repo = real_tmp
-
-        mock_pilot = owned_server._pilot
-        monkeypatch.setattr(mock_pilot, "send", MagicMock())
-        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
-        
-        with patch("harness.server._pilot_preflight", return_value=None), \
-             patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_query") as mock_query:
-
-            mock_query.return_value = {
-                "ok": True,
-                "stdout": json.dumps([
-                    {
-                        "node": {
-                            "name": "outside_func",
-                            "kind": "function",
-                            "filePath": "../outside.py",
-                            "startLine": 1,
-                            "endLine": 5
-                        }
-                    }
-                ])
-            }
-
-            httpd, port, srv_inst = _server()
-            try:
-                srv_inst._cfg.repo = real_tmp
-                headers = {
-                    "Content-Type": "application/json",
-                    "X-Harness-Token": srv_inst._TOKEN
-                }
-
-                res = _get(port, "/api/chat?message=@symbol:outside_func", headers)
-                
-                # Consume line by line until we hit 'done'
-                while True:
-                    line = res.readline().decode()
-                    if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
-                        break
-
-                sent_msg = mock_pilot.send.call_args[0][0]
-                assert "Referenced symbols:" in sent_msg
-                assert "--- Symbol: outside_func ---" in sent_msg
-                assert "... skipped: symbol file not found in workspace" in sent_msg
-                assert "@symbol:outside_func" in sent_msg
-
-            finally:
-                httpd.shutdown()
-
-
-def test_at_symbol_miss_empty_hits_honesty(owned_server, monkeypatch):
-    """Empty CodeGraph hits must append a Symbol skip note (never silent)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        real_tmp = os.path.realpath(tmpdir)
         mock_pilot = owned_server._pilot
         monkeypatch.setattr(mock_pilot, "send", MagicMock())
         monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
         mock_pilot.send.return_value = []
         mock_pilot.drain_swarm_results.return_value = []
 
-        with patch("harness.server._pilot_preflight", return_value=None), \
-             patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_query") as mock_query:
-
-            mock_query.return_value = {"ok": True, "stdout": "[]"}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("harness.server._pilot_preflight", return_value=None))
+            stack.enter_context(
+                patch("puppetmaster.codegraph.codegraph_available", return_value=True)
+            )
+            stack.enter_context(
+                patch("puppetmaster.codegraph.codegraph_ready", return_value=ready)
+            )
+            if query_patch is not None:
+                stack.enter_context(
+                    patch("puppetmaster.codegraph.codegraph_query", **query_patch)
+                )
 
             httpd, port, srv_inst = _server()
             try:
@@ -266,7 +266,7 @@ def test_at_symbol_miss_empty_hits_honesty(owned_server, monkeypatch):
                     "X-Harness-Token": srv_inst._TOKEN,
                 }
 
-                res = _get(port, "/api/chat?message=@symbol:MissingThing", headers)
+                res = _get(port, f"/api/chat?message=@symbol:{symbol}", headers)
                 while True:
                     line = res.readline().decode()
                     if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
@@ -274,85 +274,8 @@ def test_at_symbol_miss_empty_hits_honesty(owned_server, monkeypatch):
 
                 sent_msg = mock_pilot.send.call_args[0][0]
                 assert "Referenced symbols:" in sent_msg
-                assert "--- Symbol: MissingThing ---" in sent_msg
-                assert "... skipped: no matching symbol in CodeGraph" in sent_msg
-            finally:
-                httpd.shutdown()
-
-
-def test_at_symbol_miss_not_ready_honesty(owned_server, monkeypatch):
-    """!codegraph_ready must append a Symbol skip note (never silent)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = owned_server._pilot
-        monkeypatch.setattr(mock_pilot, "send", MagicMock())
-        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
-
-        with patch("harness.server._pilot_preflight", return_value=None), \
-             patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_ready", return_value=False):
-
-            httpd, port, srv_inst = _server()
-            try:
-                srv_inst._cfg.repo = real_tmp
-                headers = {
-                    "Content-Type": "application/json",
-                    "X-Harness-Token": srv_inst._TOKEN,
-                }
-
-                res = _get(port, "/api/chat?message=@symbol:NotReadyYet", headers)
-                while True:
-                    line = res.readline().decode()
-                    if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
-                        break
-
-                sent_msg = mock_pilot.send.call_args[0][0]
-                assert "Referenced symbols:" in sent_msg
-                assert "--- Symbol: NotReadyYet ---" in sent_msg
-                assert "... skipped:" in sent_msg
-                assert "not ready" in sent_msg
-            finally:
-                httpd.shutdown()
-
-
-def test_at_symbol_miss_exception_honesty(owned_server, monkeypatch):
-    """CodeGraph exceptions must append a Symbol failure note (never silent)."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        real_tmp = os.path.realpath(tmpdir)
-        mock_pilot = owned_server._pilot
-        monkeypatch.setattr(mock_pilot, "send", MagicMock())
-        monkeypatch.setattr(mock_pilot, "drain_swarm_results", MagicMock())
-        mock_pilot.send.return_value = []
-        mock_pilot.drain_swarm_results.return_value = []
-
-        with patch("harness.server._pilot_preflight", return_value=None), \
-             patch("puppetmaster.codegraph.codegraph_available", return_value=True), \
-             patch("puppetmaster.codegraph.codegraph_ready", return_value=True), \
-             patch(
-                 "puppetmaster.codegraph.codegraph_query",
-                 side_effect=RuntimeError("cg boom"),
-             ):
-
-            httpd, port, srv_inst = _server()
-            try:
-                srv_inst._cfg.repo = real_tmp
-                headers = {
-                    "Content-Type": "application/json",
-                    "X-Harness-Token": srv_inst._TOKEN,
-                }
-
-                res = _get(port, "/api/chat?message=@symbol:BoomSym", headers)
-                while True:
-                    line = res.readline().decode()
-                    if not line or '{"kind": "done"}' in line or '{"kind": "error"' in line:
-                        break
-
-                sent_msg = mock_pilot.send.call_args[0][0]
-                assert "Referenced symbols:" in sent_msg
-                assert "--- Symbol: BoomSym ---" in sent_msg
-                assert "... failed to read: cg boom" in sent_msg
+                for text in expected:
+                    assert text in sent_msg
             finally:
                 httpd.shutdown()
 

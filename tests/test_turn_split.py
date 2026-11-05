@@ -19,7 +19,7 @@ def _run(tmp_path, monkeypatch, pilot_cls, steps, every="10"):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     cfg.repo = str(tmp_path)
     session = ConversationalSession(cfg)
-    turns = [json.dumps({"say": f"Step {i}", "actions": [{"kind": "run_command", "command": f"echo {i}"}]})
+    turns = [json.dumps({"say": f"Step {i}", "actions": [{"kind": "list_dir", "path": f"d{i}"}]})
              for i in range(steps)] + [json.dumps({"say": "Done.", "actions": []})]
     session.pilot = pilot_cls(turns)
     calls = []
@@ -35,7 +35,7 @@ def _run(tmp_path, monkeypatch, pilot_cls, steps, every="10"):
 
 
 def test_local_pilot_compacts_every_n_steps(tmp_path, monkeypatch):
-    assert _run(tmp_path, monkeypatch, LocalFakePilot, 25) == [(True, False), (True, False)]
+    assert _run(tmp_path, monkeypatch, LocalFakePilot, 7, every="3") == [(True, False), (True, False)]
 
 
 def test_local_pilot_keeps_one_turn_by_default(tmp_path, monkeypatch):
@@ -43,7 +43,7 @@ def test_local_pilot_keeps_one_turn_by_default(tmp_path, monkeypatch):
 
 
 def test_cloud_pilot_keeps_one_turn(tmp_path, monkeypatch):
-    assert _run(tmp_path, monkeypatch, FakePilot, 25) == []
+    assert _run(tmp_path, monkeypatch, FakePilot, 7, every="3") == []
 
 
 def test_split_due():

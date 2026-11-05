@@ -8,6 +8,8 @@ import tempfile
 import threading
 from unittest.mock import patch
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 from harness.conversation_jobs import (
@@ -289,39 +291,45 @@ def test_empty_diff_implement_failure_detector():
     assert _is_empty_diff_implement_failure(ok_patch, expects_diff=True) is False
 
 
-def test_agentic_empty_managed_implement_does_not_retry():
-    for error in ("agentic_orchestrator_failed", "agentic_no_diff"):
-        result = WorkerResult(
-            ok=False,
-            error=error,
-            summary="Worker produced no changes in disposable managed worktree",
-            patch="",
-            worktree_diff_empty=True,
-            managed_worktree_mode="managed",
-        )
-
-        assert _empty_implement_recovery_eligible(
-            result,
-            expects_diff=True,
-            live_dirty_before=["src/lib/db/schema.ts"],
-            cancelled=False,
-        ) is False
+_NO_CHANGES = "Worker produced no changes in disposable managed worktree"
+_ENGINE_ERROR = "Agentic engine error: swarm exited with incomplete tasks"
 
 
-def test_agentic_orchestrator_failure_without_empty_worktree_evidence_does_not_retry():
+@pytest.mark.parametrize("error,worktree_diff_empty,mode,summary,live_dirty", [
+    pytest.param("agentic_orchestrator_failed", True, "managed", _NO_CHANGES,
+                 "src/lib/db/schema.ts", id="agentic_orchestrator_failed_empty_managed"),
+    pytest.param("agentic_no_diff", True, "managed", _NO_CHANGES,
+                 "src/lib/db/schema.ts", id="agentic_no_diff_empty_managed"),
+    pytest.param("agentic_orchestrator_failed", False, "managed",
+                 "provider process exited unexpectedly", "src/lib/db/schema.ts",
+                 id="agentic_orchestrator_failed_without_empty_worktree_evidence"),
+    pytest.param("agentic_error", True, "managed", _ENGINE_ERROR, "report.ts",
+                 id="agentic_engine_error"),
+    pytest.param("agentic_orchestrator_failed", True, "managed", _ENGINE_ERROR, "report.ts",
+                 id="agentic_orchestrator_failed_engine_error"),
+    pytest.param("worktree_create_failed", True, "none", None, "report.ts",
+                 id="stage_worktree_create_failed"),
+    pytest.param("patch_capture_failed", True, "managed", None, "report.ts",
+                 id="stage_patch_capture_failed"),
+    pytest.param("worker_cleanup_failed", True, "managed", None, "report.ts",
+                 id="stage_worker_cleanup_failed"),
+])
+def test_empty_implement_recovery_not_eligible(
+    error, worktree_diff_empty, mode, summary, live_dirty,
+):
+    extra = {} if summary is None else {"summary": summary}
     result = WorkerResult(
         ok=False,
-        error="agentic_orchestrator_failed",
-        summary="provider process exited unexpectedly",
+        error=error,
         patch="",
-        worktree_diff_empty=False,
-        managed_worktree_mode="managed",
+        worktree_diff_empty=worktree_diff_empty,
+        managed_worktree_mode=mode,
+        **extra,
     )
-
     assert _empty_implement_recovery_eligible(
         result,
         expects_diff=True,
-        live_dirty_before=["src/lib/db/schema.ts"],
+        live_dirty_before=[live_dirty],
         cancelled=False,
     ) is False
 
@@ -586,23 +594,6 @@ def test_empty_implement_recovery_skips_guard_exhausted_first_attempt(monkeypatc
         empty,
         expects_diff=True,
         live_dirty_before=["app.js"],
-        cancelled=False,
-    ) is False
-
-
-def test_empty_implement_recovery_skips_agentic_engine_error():
-    crashed = WorkerResult(
-        ok=False,
-        error="agentic_error",
-        summary="Agentic engine error: swarm exited with incomplete tasks",
-        worktree_diff_empty=True,
-        patch="",
-        managed_worktree_mode="managed",
-    )
-    assert _empty_implement_recovery_eligible(
-        crashed,
-        expects_diff=True,
-        live_dirty_before=["report.ts"],
         cancelled=False,
     ) is False
 
@@ -925,44 +916,6 @@ def test_usage_known_false_does_not_claim_measured_zero():
     assert "$0" not in text
     assert "0.00" not in text
     assert "measured $0" not in text.lower()
-
-
-def test_agentic_orchestrator_failed_skips_empty_implement_recovery():
-    crashed = WorkerResult(
-        ok=False,
-        error="agentic_orchestrator_failed",
-        summary="Agentic engine error: swarm exited with incomplete tasks",
-        worktree_diff_empty=True,
-        patch="",
-        managed_worktree_mode="managed",
-    )
-    assert _empty_implement_recovery_eligible(
-        crashed,
-        expects_diff=True,
-        live_dirty_before=["report.ts"],
-        cancelled=False,
-    ) is False
-
-
-def test_stage_codes_skip_empty_implement_recovery():
-    for err in (
-        "worktree_create_failed",
-        "patch_capture_failed",
-        "worker_cleanup_failed",
-    ):
-        res = WorkerResult(
-            ok=False,
-            error=err,
-            worktree_diff_empty=True,
-            patch="",
-            managed_worktree_mode="none" if err == "worktree_create_failed" else "managed",
-        )
-        assert _empty_implement_recovery_eligible(
-            res,
-            expects_diff=True,
-            live_dirty_before=["report.ts"],
-            cancelled=False,
-        ) is False
 
 
 def test_failure_stamp_fields_survive_in_provenance_text():

@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from harness.approval_identity import approval_turn, get_approval_turn_id
 from harness.command_allowlist import (
     ALLOWLIST_FILENAME,
@@ -41,10 +43,11 @@ def test_turn_identity_is_contextvar_scoped() -> None:
     assert get_approval_turn_id() is None
 
 
-def test_smart_approve_allowlist_wins_even_for_danger(tmp_path: Path) -> None:
-    danger = "rm -rf /tmp/scratch-ok"
+@pytest.mark.parametrize("danger", ["rm -rf /tmp/scratch-ok", "sudo reboot"])
+def test_smart_approve_allowlist_wins_even_for_danger(tmp_path: Path, danger: str) -> None:
     assert classify_command(danger).danger is True
     assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "pending"
+    assert allowlist_contains(danger, state_dir=str(tmp_path)) is False
     assert allowlist_add(danger, state_dir=str(tmp_path))
     assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "approve"
 
@@ -57,14 +60,6 @@ def test_smart_approve_amendment_then_pending() -> None:
     assert classify_command(ssh).danger is True
     assert suggested_amendment(ssh) is None
     assert smart_approve(ssh)["action"] == "pending"
-
-
-def test_danger_without_allowlist_stays_pending(tmp_path: Path) -> None:
-    """Do not auto-run danger unless the allowlist already has the command."""
-    cmd = "sudo reboot"
-    assert classify_command(cmd).danger is True
-    assert smart_approve(cmd, state_dir=str(tmp_path))["action"] == "pending"
-    assert allowlist_contains(cmd, state_dir=str(tmp_path)) is False
 
 
 def test_decide_reads_turn_identity_and_persists_allowlist(tmp_path: Path) -> None:

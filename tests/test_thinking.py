@@ -56,13 +56,17 @@ class _ThinkingScriptedPilot:
         return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
 
 
-def test_conversation_does_not_emit_thinking_event_when_present():
+@pytest.mark.parametrize(
+    "with_thinking",
+    [pytest.param(True, id="present"), pytest.param(False, id="absent")],
+)
+def test_conversation_does_not_emit_thinking_event(with_thinking):
     # Post-answer reasoning UI was removed: even when the pilot JSON includes
     # a thinking field, we never emit a ConvEvent("thinking", ...) -- the
     # answer is enough and streaming would otherwise paint reasoning after it.
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
-    s.pilot = _ThinkingScriptedPilot(with_thinking=True)
+    s.pilot = _ThinkingScriptedPilot(with_thinking=with_thinking)
     events = list(s.send("Test thinking"))
 
     thinking_events = [e for e in events if e.kind == "thinking"]
@@ -73,16 +77,6 @@ def test_conversation_does_not_emit_thinking_event_when_present():
         if h.get("role") == "assistant":
             assert h["content"] == "I am stopping."
             assert "I think" not in h["content"]
-
-
-def test_conversation_does_not_emit_thinking_event_when_absent():
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    s = ConversationalSession(cfg)
-    s.pilot = _ThinkingScriptedPilot(with_thinking=False)
-    events = list(s.send("Test thinking"))
-
-    thinking_events = [e for e in events if e.kind == "thinking"]
-    assert len(thinking_events) == 0
 
 
 def test_openai_compat_reasoning_param(monkeypatch):

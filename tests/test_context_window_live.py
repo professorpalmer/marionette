@@ -15,40 +15,20 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
 
 
-def test_catalog_value_used_when_live_off():
-    import pmharness.registry as reg
-    # gemini-3.5-flash has a catalog window; with live off it must come through.
-    w = reg.context_window("gemini-3.5-flash")
-    assert w >= 200000  # catalog says 1M; never below the floor
-
-
-def test_unknown_model_floor():
-    import pmharness.registry as reg
-    assert reg.context_window("totally-unknown-xyz") == 200000
-
-
-def test_explicit_default_override():
-    import pmharness.registry as reg
-    assert reg.context_window("totally-unknown-xyz", default=500000) == 500000
-
-
-def test_live_map_wins_when_present(monkeypatch):
+@pytest.mark.parametrize("live_map, query, expected", [
+    # The catalog says glm-5.2 = 200K. The live map says 1M, so live wins.
+    pytest.param({"z-ai/glm-5.2": 1048576}, "glm-5.2", 1048576, id="glm-5.2-bare"),
+    pytest.param({"z-ai/glm-5.2": 1048576}, "openrouter:z-ai/glm-5.2", 1048576,
+                 id="glm-5.2-provider-model-spec"),
+    pytest.param({"z-ai/glm-5.3": 1048576}, "glm-5.3", 1048576, id="glm-5.3-bare-over-static"),
+    pytest.param({"z-ai/glm-5.3": 1048576}, "zai:glm-5.3", 1048576, id="glm-5.3-zai-over-static"),
+])
+def test_live_map_wins(monkeypatch, live_map, query, expected):
     import pmharness.registry as reg
     monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "1")
     monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
-    # Inject a fake live map; no network.
-    monkeypatch.setattr(reg, "_live_windows", lambda: {"z-ai/glm-5.2": 1048576})
-    # catalog says glm-5.2 = 200K, live says 1M -> live wins
-    assert reg.context_window("glm-5.2") == 1048576
-
-
-def test_glm_5_3_live_map_wins_over_static(monkeypatch):
-    import pmharness.registry as reg
-    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "1")
-    monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
-    monkeypatch.setattr(reg, "_live_windows", lambda: {"z-ai/glm-5.3": 1048576})
-    assert reg.context_window("glm-5.3") == 1048576
-    assert reg.context_window("zai:glm-5.3") == 1048576
+    monkeypatch.setattr(reg, "_live_windows", lambda: live_map)
+    assert reg.context_window(query) == expected
 
 
 def test_native_name_fuzzy_matches_openrouter_twin(monkeypatch):
@@ -60,14 +40,6 @@ def test_native_name_fuzzy_matches_openrouter_twin(monkeypatch):
                                  "anthropic/claude-opus-4.8-fast": 1000000})
     # native 'claude-opus-4-8' should fuzzy-match the base (shortest) twin
     assert reg.context_window("claude-opus-4-8") == 1000000
-
-
-def test_provider_model_spec_resolves(monkeypatch):
-    import pmharness.registry as reg
-    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "1")
-    monkeypatch.setattr(reg, "_CW_MEM", None, raising=False)
-    monkeypatch.setattr(reg, "_live_windows", lambda: {"z-ai/glm-5.2": 1048576})
-    assert reg.context_window("openrouter:z-ai/glm-5.2") == 1048576
 
 
 def test_live_fetch_failure_degrades_gracefully(monkeypatch):

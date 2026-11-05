@@ -28,10 +28,6 @@ PRICE_IN = 3.0   # $/Mtok
 PRICE_OUT = 15.0  # $/Mtok
 
 
-def test_cache_multiplier_is_ten_percent():
-    assert CACHE_READ_MULTIPLIER == 0.1
-
-
 def test_cached_tokens_billed_at_discount():
     # Two identical sessions except one has 100k of its input cached. The only
     # difference must be the cache discount on exactly those 100k tokens:

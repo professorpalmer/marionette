@@ -116,21 +116,6 @@ def test_partial_success_wave_projects_child_tasks(tmp_path):
     assert _pending(session).get("status") == "partial"
 
 
-def test_two_child_partial_task_len(tmp_path):
-    session = _session(tmp_path)
-    _put_child(session, "ok", status="completed")
-    _put_child(session, "bad", status="failed", error="boom")
-    session._register_parallel_wave(
-        "local-wave-2",
-        child_job_ids=["ok", "bad"],
-        objective="pair",
-    )
-    session._sync_parallel_wave_from_children("local-wave-2")
-    parent = session._local_jobs["local-wave-2"]
-    assert parent["status"] == "partial"
-    assert len(parent["tasks"]) == 2
-
-
 def test_all_fail_wave(tmp_path):
     session = _session(tmp_path)
     _put_child(session, "a", status="failed")

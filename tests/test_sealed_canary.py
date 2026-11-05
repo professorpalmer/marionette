@@ -72,7 +72,7 @@ class Backend:
             except Exception:
                 if self.proc.poll() is not None:
                     break
-                time.sleep(0.5)
+                time.sleep(0.05)
         code = self.proc.poll()
         self.stop()
         raise AssertionError(f"backend did not start (exit {code}):\n{self.log_tail()}")
@@ -110,7 +110,7 @@ class Backend:
         previous one still finishes gets "session busy" and is sent again.
         """
         q = urllib.parse.quote(message)
-        for _ in range(60):
+        for _ in range(600):
             out = []
             try:
                 req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/chat?message={q}",
@@ -122,13 +122,13 @@ class Backend:
                             break
                 text = "".join(out)
                 if "session busy or replaced" in text:
-                    time.sleep(1)
+                    time.sleep(0.1)
                     continue
                 return text
             except urllib.error.HTTPError as e:
                 if e.code not in (409, 503):
                     raise
-                time.sleep(1)
+                time.sleep(0.1)
             except OSError as e:
                 raise AssertionError(f"chat failed ({e!r}); stream so far:\n{''.join(out)[-3000:]}\n"
                                      f"backend log:\n{self.log_tail()}") from e
@@ -288,7 +288,7 @@ def _worker_scenario(backend: Backend, tag: str) -> str:
     edits = [backend.root / "proj" / f"{name}.txt" for name in "bcd"]
     deadline = time.time() + 240
     while time.time() < deadline and not all(p.exists() for p in edits):
-        time.sleep(1)
+        time.sleep(0.1)
     assert all(p.read_text().strip() == c("edit") for p in edits), backend.log_tail()
     return sid
 
@@ -297,7 +297,7 @@ def _wait_for_empty_job_stores(backend: Backend, sid: str) -> None:
     jobs = backend.state / "sealed" / sid / "jobs"
     deadline = time.time() + 120
     while time.time() < deadline and jobs.exists() and any(jobs.iterdir()):
-        time.sleep(1)
+        time.sleep(0.1)
     assert not jobs.exists() or not any(jobs.iterdir()), sorted(p.name for p in jobs.iterdir())
 
 

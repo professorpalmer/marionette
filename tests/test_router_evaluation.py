@@ -17,10 +17,9 @@ def reseal(value):
     return seal({k: v for k, v in value.items() if k != 'sha256'})
 
 
-@pytest.fixture
-def runs(tmp_path):
+def _build_runs(root):
     snapshot = manifest(REPO)
-    store = create_store('sqlite', tmp_path / 'state')
+    store = create_store('sqlite', root / 'state')
     records = []
     for row in snapshot['tasks']:
         if row['split'] != 'heldout':
@@ -54,8 +53,19 @@ def runs(tmp_path):
     return snapshot, left, right, store
 
 
-def test_public_store_and_cli_contract(runs, tmp_path, capsys):
-    snapshot, left, right, store = runs
+@pytest.fixture(scope='module')
+def _shared_runs(tmp_path_factory):
+    return _build_runs(tmp_path_factory.mktemp('router_evaluation'))
+
+
+@pytest.fixture
+def runs(_shared_runs):
+    snapshot, left, right, store = _shared_runs
+    return copy.deepcopy(snapshot), copy.deepcopy(left), copy.deepcopy(right), store
+
+
+def test_public_store_and_cli_contract(tmp_path, capsys):
+    snapshot, left, right, store = _build_runs(tmp_path)
     for name, value in [('manifest', snapshot), ('left', left), ('right', right)]:
         (tmp_path / name).write_text(json.dumps(value))
     assert main(['ingest', str(tmp_path / 'manifest'), str(store.root),

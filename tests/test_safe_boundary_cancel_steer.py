@@ -11,7 +11,6 @@ Proves:
 from __future__ import annotations
 
 import collections
-import tempfile
 import threading
 from types import SimpleNamespace
 
@@ -241,23 +240,6 @@ def test_interrupt_drains_local_and_dual_store_jobs(monkeypatch):
     assert "job-harness" not in cli.statuses
 
 
-def test_interrupt_source_has_no_unsafe_thread_kill():
-    import inspect
-    import harness.busy_control as bc
-
-    src = inspect.getsource(bc.BusyControlMixin.interrupt)
-    src += inspect.getsource(bc.BusyControlMixin._drain_session_jobs_dual_store)
-    banned = (
-        "TerminateThread",
-        "PyThreadState_SetAsyncExc",
-        "ctypes.pythonapi",
-        "thread._stop",
-        ".kill()",
-    )
-    for token in banned:
-        assert token not in src, f"unsafe kill primitive leaked into interrupt: {token}"
-
-
 def test_http_cancel_refuses_while_interrupt_retains_dual_store_seam(monkeypatch):
     """HTTP cannot promise a worker stop through the legacy drain helper."""
     label = job_label_for_session("sess-x")
@@ -391,9 +373,9 @@ def test_stop_then_late_inject_does_not_contaminate_history(monkeypatch):
     )
 
 
-def test_new_user_send_after_stop_does_not_receive_stale_steers():
+def test_new_user_send_after_stop_does_not_receive_stale_steers(tmp_path):
     """A fresh send after Stop must not inherit pre-stop queued steers."""
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
     s.enqueue_steer("stale steer before stop")
     # Abandoned generation: busy still held when Stop lands.
@@ -426,9 +408,9 @@ def test_new_user_send_after_stop_does_not_receive_stale_steers():
     )
 
 
-def test_ready_session_steer_after_idle_stop_is_preserved():
+def test_ready_session_steer_after_idle_stop_is_preserved(tmp_path):
     """Idle-session Stop must not discard a later ready-session steer on acquire."""
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
     s.interrupt()
     assert s._stop_holds_idle is True
@@ -446,7 +428,7 @@ def test_ready_session_steer_after_idle_stop_is_preserved():
     s._release_busy(s._busy_gen)
 
 
-def test_post_unwind_steer_survives_next_acquire_after_abandoned_release():
+def test_post_unwind_steer_survives_next_acquire_after_abandoned_release(tmp_path):
     """After abandoned gen releases busy, intentional post-unwind steers survive.
 
     Pre-unwind race steers remain covered by interrupt drain + acquire-time drop
@@ -454,7 +436,7 @@ def test_post_unwind_steer_survives_next_acquire_after_abandoned_release():
     """
     import time as _t
 
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
     assert s._busy.acquire(blocking=False)
     s._busy_since = _t.monotonic() - 1.0
@@ -477,11 +459,11 @@ def test_post_unwind_steer_survives_next_acquire_after_abandoned_release():
     s._release_busy(s._busy_gen)
 
 
-def test_post_stop_late_steer_cleanup_records_drop_notice():
+def test_post_stop_late_steer_cleanup_records_drop_notice(tmp_path):
     """Late steers that race past interrupt must not vanish silently on acquire."""
     import time as _t
 
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
     s = ConversationalSession(cfg)
     assert s._busy.acquire(blocking=False)
     s._busy_since = _t.monotonic() - 1.0

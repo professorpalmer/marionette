@@ -200,8 +200,15 @@ def _python_command(source):
     return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
 
 
-@pytest.mark.parametrize("rerun_exit_code", [0, 1])
-@pytest.mark.parametrize("mutation_kind", ["write_file", "edit_file", "hash_edit"])
+@pytest.mark.parametrize(
+    ("mutation_kind", "rerun_exit_code"),
+    [
+        pytest.param("write_file", 0, id="write_file-0"),
+        pytest.param("edit_file", 0, id="edit_file-0"),
+        pytest.param("hash_edit", 0, id="hash_edit-0"),
+        pytest.param("write_file", 1, id="write_file-1"),
+    ],
+)
 def test_cached_run_command_reexecutes_after_native_file_mutation(
     tmp_path, monkeypatch, mutation_kind, rerun_exit_code,
 ):

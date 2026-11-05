@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import EconomicsPane from "../components/EconomicsPane";
 import { api } from "../lib/api";
 import { _resetProcessUsageForTests } from "../lib/processUsage";
@@ -637,6 +637,8 @@ describe("EconomicsPane", () => {
 });
 
 it("never substitutes app-run spend for an unavailable session total", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  onTestFinished(() => { vi.useRealTimers(); });
   _resetProcessUsageForTests();
   clearSWRCache();
   mockGetEconomics.mockResolvedValue({ available: false, repo: "/repo-a", scope: "conversation", counterfactual: null });
@@ -646,7 +648,10 @@ it("never substitutes app-run spend for an unavailable session total", async () 
   render(<EconomicsPane />);
   await chooseScope("conversation");
   expect(await screen.findByText("Loading usage…")).toBeInTheDocument();
-  const retry = await screen.findByRole("button", { name: "Session usage is incomplete or unavailable. Retry" }, { timeout: 4500 });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+  }
+  const retry = await screen.findByRole("button", { name: "Session usage is incomplete or unavailable. Retry" });
   expect(retry).not.toHaveClass("text-risk");
   expect(screen.queryByText("~$4.00")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "App-run usage partial / unavailable. Retry" })).not.toBeInTheDocument();

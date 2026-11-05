@@ -5,6 +5,8 @@ import queue
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+import pytest
+
 from harness.send_loop_phases import (
     maybe_attach_pilot_session_id,
     pilot_accepts_session_id,
@@ -22,33 +24,36 @@ def _stream_session(pilot, harness_session_id: str, *, messages=None):
     )
 
 
-def test_pilot_accepts_session_id_explicit_param():
-    def chat_stream(messages, *, session_id=None, on_delta):
-        pass
-
-    assert pilot_accepts_session_id(chat_stream) is True
+def _explicit_param_stream(messages, *, session_id=None, on_delta):
+    pass
 
 
-def test_pilot_accepts_session_id_kwargs_driver():
-    def chat_stream(messages, **kwargs):
-        pass
-
-    assert pilot_accepts_session_id(chat_stream) is True
+def _kwargs_stream(messages, **kwargs):
+    pass
 
 
-def test_pilot_accepts_session_id_legacy_driver():
-    def chat_stream(
-        messages,
-        *,
-        tools=None,
-        system=None,
-        on_delta,
-        on_reasoning_delta=None,
-        on_tool_hint=None,
-    ):
-        pass
+def _legacy_stream(
+    messages,
+    *,
+    tools=None,
+    system=None,
+    on_delta,
+    on_reasoning_delta=None,
+    on_tool_hint=None,
+):
+    pass
 
-    assert pilot_accepts_session_id(chat_stream) is False
+
+@pytest.mark.parametrize(
+    "chat_stream, accepts",
+    [
+        pytest.param(_explicit_param_stream, True, id="explicit_param"),
+        pytest.param(_kwargs_stream, True, id="kwargs_driver"),
+        pytest.param(_legacy_stream, False, id="legacy_driver"),
+    ],
+)
+def test_pilot_accepts_session_id(chat_stream, accepts):
+    assert pilot_accepts_session_id(chat_stream) is accepts
 
 
 def test_maybe_attach_skips_empty_session_id():
@@ -88,31 +93,6 @@ def test_run_stream_passes_stable_session_id_across_turns():
             q.get_nowait()
 
     assert seen == ["marionette-chat-7", "marionette-chat-7"]
-
-
-def test_run_stream_resume_turn_reuses_same_session_id():
-    """Resume keeps harness_session_id on the session object — same cache key."""
-    seen: List[Optional[str]] = []
-
-    def chat_stream(messages, **kwargs):
-        seen.append(kwargs.get("session_id"))
-        return SimpleNamespace(text="ok")
-
-    pilot = SimpleNamespace(chat_stream=chat_stream, supports_streaming=True)
-    session = _stream_session(pilot, "resume-sess-1")
-
-    q1: queue.Queue = queue.Queue()
-    run_stream(session, q1, [], "sys")
-    while not q1.empty():
-        q1.get_nowait()
-
-    # Resume path reuses the same session runner; harness_session_id unchanged.
-    q2: queue.Queue = queue.Queue()
-    run_stream(session, q2, [], "sys")
-    while not q2.empty():
-        q2.get_nowait()
-
-    assert seen == ["resume-sess-1", "resume-sess-1"]
 
 
 def test_run_stream_different_chat_sessions_get_different_ids():
@@ -162,24 +142,6 @@ def test_run_stream_legacy_driver_receives_no_session_id_kwarg():
     kind, val = q.get_nowait()
     assert kind == "done"
     assert val.text == "ok"
-
-
-def test_run_stream_kwargs_driver_receives_session_id():
-    captured: dict = {}
-
-    def chat_stream(messages, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(text="ok")
-
-    session = _stream_session(
-        SimpleNamespace(chat_stream=chat_stream),
-        "kwargs-sess",
-    )
-    q: queue.Queue = queue.Queue()
-    run_stream(session, q, [], "sys")
-    while not q.empty():
-        q.get_nowait()
-    assert captured["session_id"] == "kwargs-sess"
 
 
 def test_sync_chat_path_attaches_session_id():

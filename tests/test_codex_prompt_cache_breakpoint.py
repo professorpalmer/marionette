@@ -1,12 +1,10 @@
 """GPT-5.6 Codex prompt-cache: durable key, breakpoint placement, usage, meters.
 
-Hermetic wire-shape / parsing tests. Live network checks are opt-in via
-``HARNESS_LIVE_CODEX_CACHE=1`` and are skipped in the default suite.
+Hermetic wire-shape / parsing tests.
 """
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -1042,12 +1040,3 @@ def test_unrelated_http_400_is_not_stripped(monkeypatch):
     assert not codex_prompt_cache_breakpoint_known_unsupported(
         driver.base_url, driver.model,
     )
-
-
-@pytest.mark.skipif(
-    os.environ.get("HARNESS_LIVE_CODEX_CACHE", "").strip() not in ("1", "true", "yes"),
-    reason="opt-in live Codex cache probe (HARNESS_LIVE_CODEX_CACHE=1)",
-)
-def test_live_codex_cache_probe_opt_in():
-    """Live network smoke — never runs in the default suite."""
-    pytest.skip("placeholder opt-in seam; enable with credentials + env flag")

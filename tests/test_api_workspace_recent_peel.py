@@ -8,11 +8,6 @@ import harness.api.workspace as ws_api
 import harness.server as srv
 
 
-def test_server_reexports_recent_helpers():
-    assert srv._record_recent_workspace is ws_api.record_recent_workspace
-    assert srv._forget_recent_workspace is ws_api.forget_recent_workspace
-
-
 def test_record_recent_appends_and_caps(monkeypatch, tmp_path):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(tempfile, "gettempdir", lambda: "/some/other/dummy/path")

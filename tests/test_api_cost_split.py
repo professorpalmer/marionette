@@ -6,36 +6,8 @@ from types import SimpleNamespace
 
 import harness.api.cost as cost
 import harness.api.cost_accounting as accounting
-import harness.api.swarm_cost as swarm
 import harness.api.usage_meters as meters
 import harness.server as server
-
-
-def test_accounting_module_owns_pure_pricing_helpers():
-    assert accounting._session_cost is cost._session_cost
-    assert accounting._job_cost is cost._job_cost
-    assert accounting._cache_savings is cost._cache_savings
-    assert accounting._cost_source_label is cost._cost_source_label
-    assert accounting.CACHE_READ_MULTIPLIER is cost.CACHE_READ_MULTIPLIER
-    assert accounting._session_cost(1_000_000, 0, 0, 3.0, 15.0) == 3.0
-    assert accounting._job_cost(0, 0, 1_000_000, 1.0, 2.0) == 2.0
-
-
-def test_usage_meters_module_owns_boot_state_and_cache():
-    assert meters._boot_usage_meters is cost._boot_usage_meters
-    assert meters._persist_boot_usage is cost._persist_boot_usage
-    assert meters._usage_cache_get is cost._usage_cache_get
-    assert meters._BOOT_METER_CARRY is cost._BOOT_METER_CARRY
-    assert meters._BOOT_REPOS is cost._BOOT_REPOS
-    assert server._BOOT_METER_CARRY is meters._BOOT_METER_CARRY
-
-
-def test_swarm_module_owns_job_accounting_helpers():
-    assert swarm._job_swarm_accounting is cost._job_swarm_accounting
-    assert swarm._sum_job_set_savings is cost._sum_job_set_savings
-    assert swarm._routing_saved_usd is cost._routing_saved_usd
-    assert swarm._cache_saved_usd_swarm is cost._cache_saved_usd_swarm
-    assert swarm._COST_OPTIMIZING_POLICIES is cost._COST_OPTIMIZING_POLICIES
 
 
 def test_boot_scalars_write_through_facade_to_usage_meters():

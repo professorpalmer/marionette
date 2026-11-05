@@ -22,13 +22,6 @@ def _lsp_schema_modes():
     raise AssertionError("lsp tool missing from schema")
 
 
-def test_validate_accepts_references_with_symbol():
-    act = PilotAction(
-        kind="lsp", arguments={"mode": "references", "symbol": "sync_agentic_registry"},
-    ).validate()
-    assert act.arguments["mode"] == "references"
-
-
 def test_validate_rejects_references_without_symbol():
     with pytest.raises(PilotError, match="non-empty symbol"):
         PilotAction(kind="lsp", arguments={"mode": "references"}).validate()
@@ -48,7 +41,8 @@ def test_every_advertised_mode_passes_validation(mode):
     args = {"mode": mode}
     if mode == "references":
         args["symbol"] = "PilotAction"
-    PilotAction(kind="lsp", arguments=args).validate()
+    act = PilotAction(kind="lsp", arguments=args).validate()
+    assert act.arguments["mode"] == mode
 
 
 def test_missing_toolchain_reports_truthfully_not_as_an_error(tmp_path):

@@ -381,11 +381,19 @@ def test_investigate_shaped_turn_swarm_gate_suppresses_exploration(monkeypatch):
     assert second.replay is True
 
 
-def test_swarm_gate_disabled_by_env(monkeypatch):
-    monkeypatch.delenv("HARNESS_SWARM_GATE", raising=False)
-    assert swarm_gate_enabled() is False
-    monkeypatch.setenv("HARNESS_SWARM_GATE", "1")
-    assert swarm_gate_enabled() is True
+@pytest.mark.parametrize(
+    "env, enabled, default, value, flipped",
+    [
+        pytest.param("HARNESS_SWARM_GATE", swarm_gate_enabled, False, "1", True, id="swarm_gate"),
+        pytest.param("HARNESS_LOOP_GUARD", loop_guard_enabled, True, "0", False, id="loop_guard"),
+        pytest.param("HARNESS_DELEGATE_GATE", delegate_gate_enabled, False, "1", True, id="delegate_gate"),
+    ],
+)
+def test_guard_env_switch(monkeypatch, env, enabled, default, value, flipped):
+    monkeypatch.delenv(env, raising=False)
+    assert enabled() is default
+    monkeypatch.setenv(env, value)
+    assert enabled() is flipped
 
 
 def test_iteration_budget_cap_from_env(monkeypatch):
@@ -662,20 +670,6 @@ def test_check_pilot_guards_swarm_gate_before_delegate(monkeypatch):
     assert verdict.reason == "swarm_gate"
 
 
-def test_loop_guard_disabled_by_env(monkeypatch):
-    monkeypatch.delenv("HARNESS_LOOP_GUARD", raising=False)
-    assert loop_guard_enabled() is True
-    monkeypatch.setenv("HARNESS_LOOP_GUARD", "0")
-    assert loop_guard_enabled() is False
-
-
-def test_delegate_gate_disabled_by_env(monkeypatch):
-    monkeypatch.delenv("HARNESS_DELEGATE_GATE", raising=False)
-    assert delegate_gate_enabled() is False
-    monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
-    assert delegate_gate_enabled() is True
-
-
 def test_guards_active_reflects_either_switch(monkeypatch):
     monkeypatch.setenv("HARNESS_LOOP_GUARD", "1")
     monkeypatch.setenv("HARNESS_DELEGATE_GATE", "1")
@@ -928,10 +922,6 @@ def test_loop_guard_off_allows_repeats(monkeypatch):
     act = _Act(kind="read_file", path="x.py")
     record_action_execution(state, "read_file", act)
     assert check_loop_guard(state, "read_file", act).suppress is False
-
-
-def test_loop_repeat_cap_constant_documented():
-    assert LOOP_REPEAT_CAP >= 1
 
 
 def test_delegate_gate_trips_after_threshold(monkeypatch):

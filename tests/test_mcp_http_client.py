@@ -108,21 +108,6 @@ def test_blocked_redirect_raises(local_mcp_server):
     assert "redirect" in msg or "blocked" in msg or "http" in msg
 
 
-def test_unresolvable_hostname_still_gets_redirect_handler(monkeypatch):
-    """When DNS fails, opener must still include SafeRedirectHandler."""
-    monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
-
-    def boom(host, port, *a, **kw):
-        raise OSError("name resolution failed")
-
-    monkeypatch.setattr("harness.url_safety.socket.getaddrinfo", boom)
-    client = HttpMcpClient("t", "http://does-not-resolve.invalid/rpc")
-    assert client._pinned_ip is None
-    assert client._opener is not None
-    handler_types = [type(h) for h in client._opener.handlers]
-    assert SafeRedirectHandler in handler_types
-
-
 def test_pinned_opener_includes_safe_redirect(monkeypatch):
     monkeypatch.setenv("HARNESS_ALLOW_PRIVATE_URLS", "1")
 

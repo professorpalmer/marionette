@@ -4,12 +4,39 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from harness.api.settings import (
     SettingsServices,
     get_config,
     get_settings,
     post_settings,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_registry_sync(monkeypatch):
+    monkeypatch.setattr(
+        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
+    )
+
+
+@pytest.fixture
+def _offline_config(monkeypatch):
+    monkeypatch.setattr(
+        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.edit_engines.workers_ready", lambda: False, raising=False
+    )
+    monkeypatch.setattr(
+        "harness.reasoning_effort.current_reasoning_effort",
+        lambda: "low",
+        raising=False,
+    )
 
 
 def _svc(**overrides):
@@ -48,21 +75,7 @@ def _svc(**overrides):
     return SettingsServices(**base), cfg, pilot, calls
 
 
-def test_get_config_and_settings(monkeypatch):
-    monkeypatch.setattr(
-        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.workers_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.reasoning_effort.current_reasoning_effort",
-        lambda: "low",
-        raising=False,
-    )
+def test_get_config_and_settings(_offline_config):
     svc, cfg, _, _ = _svc()
     code, payload = get_config(svc)
     assert code == 200
@@ -79,21 +92,7 @@ def test_get_config_and_settings(monkeypatch):
     assert get_settings(svc)[1]["budget"] == 3
 
 
-def test_get_config_includes_dynamic_model_labels(monkeypatch):
-    monkeypatch.setattr(
-        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.workers_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.reasoning_effort.current_reasoning_effort",
-        lambda: "low",
-        raising=False,
-    )
+def test_get_config_includes_dynamic_model_labels(monkeypatch, _offline_config):
     seen = {}
 
     def fake_labels(specs, force=False):
@@ -161,10 +160,7 @@ def test_get_config_retains_reasoning_support_when_model_labels_fail(monkeypatch
     assert calls["persist"] == []
 
 
-def test_post_settings_budget_and_flags(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
+def test_post_settings_budget_and_flags():
     svc, cfg, pilot, calls = _svc()
     code, payload = post_settings(
         {
@@ -189,121 +185,58 @@ def test_post_settings_budget_and_flags(monkeypatch):
     assert env["HARNESS_WORKER_TOKEN_BUDGET"] == "50000"
 
 
-def test_post_settings_pilot_tool_budget_unlimited(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
+@pytest.mark.parametrize(
+    ("key", "value", "env", "expected"),
+    [
+        pytest.param("pilotToolBudget", "unlimited", "HARNESS_PILOT_TOOL_BUDGET", "0",
+                     id="pilot_tool_budget_unlimited"),
+        pytest.param("maxOutputTokens", "16000", "HARNESS_MAX_TOKENS", "16000",
+                     id="max_output_tokens_positive"),
+        pytest.param("workerTokenBudget", "0", "HARNESS_WORKER_TOKEN_BUDGET", "0",
+                     id="worker_token_budget_zero_is_unlimited"),
+        pytest.param("workerTokenBudget", "unlimited", "HARNESS_WORKER_TOKEN_BUDGET", "0",
+                     id="worker_token_budget_unlimited"),
+        pytest.param("workerTokenBudget", "1", "HARNESS_WORKER_TOKEN_BUDGET", "250000",
+                     id="worker_token_budget_one_resets_to_default"),
+        pytest.param("workerTokenBudget", "39999", "HARNESS_WORKER_TOKEN_BUDGET", "250000",
+                     id="worker_token_budget_below_floor_resets_to_default"),
+        pytest.param("workerTokenBudget", "40000", "HARNESS_WORKER_TOKEN_BUDGET", "40000",
+                     id="worker_token_budget_floor_accepted"),
+        pytest.param("autoMaxTokens", "unlimited", "HARNESS_AUTO_MAX_TOKENS", "0",
+                     id="auto_max_tokens_unlimited"),
+        pytest.param("autoMaxTokens", "2000000", "HARNESS_AUTO_MAX_TOKENS", "2000000",
+                     id="auto_max_tokens_positive"),
+        pytest.param("compactionResidual", "hybrid", "HARNESS_COMPACTION_RESIDUAL", "hybrid",
+                     id="compaction_residual_hybrid"),
+        pytest.param("compactionResidual", "catalog", "HARNESS_COMPACTION_RESIDUAL", "catalog",
+                     id="compaction_residual_catalog"),
+        pytest.param("swarm_reasoning_effort", "high", "HARNESS_SWARM_REASONING_EFFORT", "high",
+                     id="swarm_reasoning_effort"),
+    ],
+)
+def test_post_settings_persists_env(key, value, env, expected):
     svc, _, _, calls = _svc()
-    code, _ = post_settings({"pilotToolBudget": "unlimited"}, svc)
+    code, _ = post_settings({key: value}, svc)
     assert code == 200
-    assert dict(calls["persist"])["HARNESS_PILOT_TOOL_BUDGET"] == "0"
+    assert dict(calls["persist"])[env] == expected
 
 
-def test_post_settings_max_output_tokens_positive(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"maxOutputTokens": "16000"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_MAX_TOKENS"] == "16000"
-
-
-def test_post_settings_bad_max_output_tokens():
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        pytest.param("budget", "x", id="budget"),
+        pytest.param("maxOutputTokens", "nope", id="max_output_tokens_text"),
+        pytest.param("maxOutputTokens", "-5", id="max_output_tokens_negative"),
+        pytest.param("pilotToolBudget", "nope", id="pilot_tool_budget_text"),
+        pytest.param("pilotToolBudget", "-1", id="pilot_tool_budget_negative"),
+        pytest.param("workerTokenBudget", "nope", id="worker_token_budget_text"),
+        pytest.param("autoMaxTokens", "nope", id="auto_max_tokens_text"),
+        pytest.param("autoMaxTokens", "-1", id="auto_max_tokens_negative"),
+    ],
+)
+def test_post_settings_rejects_bad_value(key, value):
     svc, _, _, _ = _svc()
-    assert post_settings({"maxOutputTokens": "nope"}, svc)[0] == 400
-    assert post_settings({"maxOutputTokens": "-5"}, svc)[0] == 400
-
-
-def test_post_settings_bad_pilot_tool_budget():
-    svc, _, _, _ = _svc()
-    assert post_settings({"pilotToolBudget": "nope"}, svc)[0] == 400
-
-
-def test_post_settings_negative_pilot_tool_budget():
-    svc, _, _, _ = _svc()
-    assert post_settings({"pilotToolBudget": "-1"}, svc)[0] == 400
-
-
-def test_post_settings_bad_worker_token_budget():
-    svc, _, _, _ = _svc()
-    assert post_settings({"workerTokenBudget": "nope"}, svc)[0] == 400
-
-
-def test_post_settings_worker_token_budget_zero_is_unlimited(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"workerTokenBudget": "0"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "0"
-
-
-def test_post_settings_worker_token_budget_unlimited(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"workerTokenBudget": "unlimited"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "0"
-
-
-def test_post_settings_auto_max_tokens_unlimited(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"autoMaxTokens": "unlimited"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_AUTO_MAX_TOKENS"] == "0"
-
-
-def test_post_settings_auto_max_tokens_positive(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"autoMaxTokens": "2000000"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_AUTO_MAX_TOKENS"] == "2000000"
-
-
-def test_post_settings_bad_auto_max_tokens():
-    svc, _, _, _ = _svc()
-    assert post_settings({"autoMaxTokens": "nope"}, svc)[0] == 400
-    assert post_settings({"autoMaxTokens": "-1"}, svc)[0] == 400
-
-
-def test_post_settings_worker_token_budget_one_resets_to_default(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"workerTokenBudget": "1"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
-
-
-def test_post_settings_worker_token_budget_below_floor_resets_to_default(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"workerTokenBudget": "39999"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "250000"
-
-
-def test_post_settings_worker_token_budget_floor_accepted(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"workerTokenBudget": "40000"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_WORKER_TOKEN_BUDGET"] == "40000"
+    assert post_settings({key: value}, svc)[0] == 400
 
 
 def test_post_settings_jev_enabled_persists_off_by_default():
@@ -314,23 +247,6 @@ def test_post_settings_jev_enabled_persists_off_by_default():
     code, _ = post_settings({"jev_enabled": False}, svc)
     assert code == 200
     assert dict(calls["persist"])["HARNESS_JEV"] == "0"
-
-
-def test_post_settings_compaction_residual_hybrid(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"compactionResidual": "hybrid"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
-
-
-def test_post_settings_compaction_residual_catalog():
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"compactionResidual": "catalog"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_COMPACTION_RESIDUAL"] == "catalog"
 
 
 def test_post_settings_compaction_residual_rejects_off():
@@ -363,22 +279,7 @@ def test_post_settings_browser_real_profile_roundtrip(monkeypatch):
     assert cleaned == [True]
 
 
-def test_post_settings_persists_swarm_reasoning_effort():
-    svc, _, _, calls = _svc()
-    code, _ = post_settings({"swarm_reasoning_effort": "high"}, svc)
-    assert code == 200
-    assert dict(calls["persist"])["HARNESS_SWARM_REASONING_EFFORT"] == "high"
-
-
-def test_post_settings_bad_budget():
-    svc, _, _, _ = _svc()
-    assert post_settings({"budget": "x"}, svc)[0] == 400
-
-
-def test_post_settings_busy_on_key(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.sync_agentic_registry_safe", lambda: None
-    )
+def test_post_settings_busy_on_key():
     busy = threading.Lock()
     busy.acquire()
     svc, _, _, _ = _svc(
@@ -406,22 +307,7 @@ def test_post_settings_unknown_driver(monkeypatch):
     assert "Unknown" in payload["error"]
 
 
-
-def test_get_config_includes_recorded_key_bootstrap_issues(monkeypatch):
-    monkeypatch.setattr(
-        "harness.edit_engines.select_edit_engine", lambda cfg: "native", raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.pilot_keys_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.edit_engines.workers_ready", lambda: False, raising=False
-    )
-    monkeypatch.setattr(
-        "harness.reasoning_effort.current_reasoning_effort",
-        lambda: "low",
-        raising=False,
-    )
+def test_get_config_includes_recorded_key_bootstrap_issues(_offline_config):
     from harness.keys import record_key_bootstrap_issue, get_key_bootstrap_issues
 
     # Isolate from other tests that may have recorded issues.

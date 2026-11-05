@@ -1,22 +1,21 @@
 """The pilot must treat CodeGraph as the FIRST move on code work -- including
 broad audits/sweeps, not just point lookups -- so it stops opening with a blind
 grep and needing the user to remind it."""
+import pytest
+
 from harness.pilot import PILOT_SYSTEM
 
 
-def test_codegraph_first_directive_present():
-    s = PILOT_SYSTEM.lower()
-    assert "codegraph first" in s
-
-
-def test_codegraph_covers_audits_and_sweeps():
-    s = PILOT_SYSTEM.lower()
-    # The directive must explicitly name audit-style tasks so the pilot doesn't
-    # treat "look through the codebase / find all X" as a grep job.
-    for phrase in ["audit", "find all", "look through the codebase"]:
-        assert phrase in s, f"missing audit-coverage phrase: {phrase!r}"
-
-
-def test_blind_grep_called_out_as_defect():
-    s = PILOT_SYSTEM.lower()
-    assert "blind" in s and "grep" in s
+# The directive must name audit-style tasks, so the pilot does not treat
+# "look through the codebase / find all X" as a grep job. It must also call
+# out a blind grep as a defect.
+@pytest.mark.parametrize("phrase", [
+    pytest.param("codegraph first", id="directive"),
+    pytest.param("audit", id="audit"),
+    pytest.param("find all", id="find-all"),
+    pytest.param("look through the codebase", id="look-through-codebase"),
+    pytest.param("blind", id="blind"),
+    pytest.param("grep", id="grep"),
+])
+def test_pilot_system_names_codegraph_first(phrase):
+    assert phrase in PILOT_SYSTEM.lower(), f"missing phrase: {phrase!r}"

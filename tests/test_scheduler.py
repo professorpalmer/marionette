@@ -4,9 +4,11 @@ No real Puppetmaster, no network -- session_factory/budget_factory are stubs,
 mirroring the _fake_result / _NeverDonePilot injection style of test_auto.py.
 """
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -386,6 +388,24 @@ def test_daemon_stop_cancels_and_interruptible_wait(tmp_path):
     assert cancels == [s.id]
     daemon._interruptible_wait(30)
     assert time.time() - started < 2.0
+
+
+def test_tick_wait_ignores_a_backward_wall_clock_jump():
+    """The scheduler tick wait does not stretch when the wall clock goes back."""
+    daemon = SchedulerDaemon(MagicMock())
+    wall = iter([10_000.0] + [9_000.0] * 10_000)
+    done = threading.Event()
+
+    def wait():
+        daemon._interruptible_wait(1)
+        done.set()
+
+    with patch("harness.scheduler.time.time", side_effect=lambda: next(wall)):
+        worker = threading.Thread(target=wait, daemon=True)
+        worker.start()
+        finished = done.wait(5)
+        daemon.stop()
+    assert finished, "a 1 s tick waited for the 1000 s clock jump"
 
 
 def test_daemon_stop_closes_store(tmp_path):

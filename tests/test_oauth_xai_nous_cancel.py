@@ -1,9 +1,32 @@
-"""xAI / Nous device OAuth cancel clears pending sessions (no live network)."""
+"""Codex / xAI / Nous device OAuth cancel clears pending sessions (no live network)."""
 
 from __future__ import annotations
 
+from harness import oauth_codex as oc
 from harness import oauth_nous as on
 from harness import oauth_xai as ox
+
+
+def test_codex_cancel_clears_pending(monkeypatch):
+    oc.clear_pending_for_tests()
+
+    def fake_http(method, url, **kwargs):
+        return 200, {
+            "user_code": "ABCD-EFGH",
+            "device_auth_id": "dev-1",
+            "interval": 5,
+        }
+
+    monkeypatch.setattr(oc, "_http_json", fake_http)
+    start = oc.start_codex_device_login(label="t")
+    sid = start["session_id"]
+    assert sid in oc._pending
+    res = oc.cancel_codex_device_login(sid)
+    assert res["status"] == "cancelled"
+    assert res["cleared"] is True
+    assert sid not in oc._pending
+    res2 = oc.cancel_codex_device_login(sid)
+    assert res2["cleared"] is False
 
 
 def test_xai_cancel_clears_pending(monkeypatch):

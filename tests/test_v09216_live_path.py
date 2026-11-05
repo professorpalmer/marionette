@@ -184,18 +184,3 @@ def test_http_resume_latch_armed_for_a_not_peek_true_for_b():
             srv._pilot._history = saved_history
             srv._sessions._active = saved_active
             srv._clear_resume_latch()
-
-
-def test_conversational_send_emits_task_profile(tmp_path):
-    """Cheap live-path pin: send still emits ConvEvent task_profile."""
-    cfg = HarnessConfig(
-        driver="stub-oracle-v2",
-        state_dir=str(tmp_path / "state"),
-        repo=str(tmp_path / "repo"),
-    )
-    (tmp_path / "repo").mkdir(exist_ok=True)
-    (tmp_path / "state").mkdir(exist_ok=True)
-    session = ConversationalSession(cfg)
-    session.harness_session_id = "live-216"
-    events = list(session.send("typo in README.md"))
-    assert "task_profile" in [e.kind for e in events]

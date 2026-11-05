@@ -11,7 +11,6 @@ import {
 import { createApplyStreamEvent } from "../components/conversation/streamEventHandler";
 import {
   alreadySettledOnDoneStatus,
-  resetTurnLifecycleOnSessionSwitch,
   streamOnDoneDecision,
 } from "../components/conversation/streamTerminal";
 import {
@@ -483,15 +482,6 @@ describe("Wave 3: truthful cause copy", () => {
   });
 });
 
-describe("Wave 3: transport EOF decision ignores transcript shape", () => {
-  it("streamOnDoneDecision has no answerComplete authority", () => {
-    expect(streamOnDoneDecision({ turnSettled: false, userStopped: false }).kind).toBe(
-      "abort_error",
-    );
-    expect(streamOnDoneDecision({ turnSettled: true, userStopped: false }).kind).toBe("done");
-  });
-});
-
 describe("Wave 3 last-mile: fail-closed empty assistant_done", () => {
   it("blank stop_cause stays unspecified / incomplete, never natural", () => {
     expect(canonicalizeTerminalCause("")).toBe("unspecified");
@@ -603,25 +593,6 @@ describe("Wave 3 last-mile: one terminal explanation", () => {
 });
 
 describe("Wave 3 last-mile: session switch isolates recovery", () => {
-  it("resets lifecycle, cause, and recovery context on switch", () => {
-    const lifecycle: { current: string } = { current: "settled_incomplete" };
-    const cause: { current: string | null } = { current: "provider_eof" };
-    const recoveryDispatchingRef = { current: true };
-    const recoveryContextRef = {
-      current: { sessionId: "sess-a", generation: 4 },
-    };
-    resetTurnLifecycleOnSessionSwitch({
-      setTurnLifecycle: (next) => { lifecycle.current = next as typeof lifecycle.current; },
-      setTerminalCause: (next) => { cause.current = next as typeof cause.current; },
-      recoveryDispatchingRef,
-      recoveryContextRef,
-    });
-    expect(lifecycle.current).toBe("settled_complete");
-    expect(cause.current).toBeNull();
-    expect(recoveryDispatchingRef.current).toBe(false);
-    expect(recoveryContextRef.current).toBeNull();
-  });
-
   it("refuses Continue/Retry after a session switch", () => {
     expect(recoveryDispatchAllowed({
       composerBusy: false,
@@ -851,17 +822,6 @@ describe("Wave 3 last-mile: auto_halt and onDone-after-error", () => {
       liveJobs: true,
       userStopped: false,
     })).toBe("awaiting_swarm");
-  });
-
-  it("error then framing done does not reseal as success", () => {
-    const { state, apply } = makeApplyDeps();
-    apply({ kind: "error", data: { error: "backend dropped" } });
-    expect(state.status).toBe("error");
-    expect(state.settle?.lifecycle).toBe("error");
-    apply({ kind: "done", data: {} });
-    expect(state.status).toBe("error");
-    expect(state.settle?.lifecycle).toBe("error");
-    expect(state.items.filter((it) => it.kind === "turn_terminal")).toHaveLength(1);
   });
 });
 

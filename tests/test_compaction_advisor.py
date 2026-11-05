@@ -60,44 +60,48 @@ def _snapshot(l0_bytes: int, l1_bytes: int = 0, l3_before: int = 0, l3_after: in
     }
 
 
-def test_hot_now_boundary_below():
+@pytest.mark.parametrize("l0_ratio, l1_bytes, expect", [
+    pytest.param(_HOT_NOW_RATIO - 0.01, 0, {"level_not": "now"}, id="hot-now-below"),
+    pytest.param(_HOT_NOW_RATIO, 0, {
+        "equal": {"level": "now", "needs_intervention": True,
+                  "budget_kind": "percent", "budget_tokens": 0},
+        "warning_is_first_reason": True,
+    }, id="hot-now-at"),
+    pytest.param(_HOT_SOON_RATIO - 0.01, 0, {
+        "equal": {"level": "none", "needs_intervention": False, "warning_reason": ""},
+    }, id="hot-soon-below"),
+    pytest.param(_HOT_SOON_RATIO, 0, {
+        "equal": {"level": "soon", "needs_intervention": True,
+                  "budget_kind": "percent", "budget_tokens": 0},
+        "reason": "hot context",
+        "warning": "hot context",
+    }, id="hot-soon-at"),
+    pytest.param(_HOT_L1_COMBO_RATIO, _L1_PRESSURE_BYTES, {
+        "equal": {"level": "none"},
+    }, id="l1-pressure-below-bytes"),
+    pytest.param(_HOT_L1_COMBO_RATIO, _L1_PRESSURE_BYTES + 1, {
+        "equal": {"level": "soon"},
+        "l1_over_cap": True,
+        "reason": "session state exceeds 5 MB",
+    }, id="l1-pressure-promotes-none-to-soon"),
+])
+def test_layer_pressure_level(l0_ratio, l1_bytes, expect):
     budget = 1000
-    l0 = int(budget * 4 * (_HOT_NOW_RATIO - 0.01))
-    advice = assess_layer_pressure(_snapshot(l0), budget)
-    assert advice["level"] != "now"
-
-
-def test_hot_now_boundary_at():
-    budget = 1000
-    l0 = int(budget * 4 * _HOT_NOW_RATIO)
-    advice = assess_layer_pressure(_snapshot(l0), budget)
-    assert advice["level"] == "now"
-    assert advice["reasons"]
-    assert advice["needs_intervention"] is True
-    assert advice["warning_reason"] == advice["reasons"][0]
-    assert advice["budget_kind"] == "percent"
-    assert advice["budget_tokens"] == 0
-
-
-def test_hot_soon_boundary_below():
-    budget = 1000
-    l0 = int(budget * 4 * (_HOT_SOON_RATIO - 0.01))
-    advice = assess_layer_pressure(_snapshot(l0), budget)
-    assert advice["level"] == "none"
-    assert advice["needs_intervention"] is False
-    assert advice["warning_reason"] == ""
-
-
-def test_hot_soon_boundary_at():
-    budget = 1000
-    l0 = int(budget * 4 * _HOT_SOON_RATIO)
-    advice = assess_layer_pressure(_snapshot(l0), budget)
-    assert advice["level"] == "soon"
-    assert "hot context" in advice["reasons"][0]
-    assert advice["needs_intervention"] is True
-    assert "hot context" in advice["warning_reason"]
-    assert advice["budget_kind"] == "percent"
-    assert advice["budget_tokens"] == 0
+    l0 = int(budget * 4 * l0_ratio)
+    advice = assess_layer_pressure(_snapshot(l0, l1_bytes=l1_bytes), budget)
+    for key, value in expect.get("equal", {}).items():
+        assert advice[key] == value, key
+    if "level_not" in expect:
+        assert advice["level"] != expect["level_not"]
+    if expect.get("warning_is_first_reason"):
+        assert advice["reasons"]
+        assert advice["warning_reason"] == advice["reasons"][0]
+    if "reason" in expect:
+        assert expect["reason"] in advice["reasons"][0]
+    if "warning" in expect:
+        assert expect["warning"] in advice["warning_reason"]
+    if expect.get("l1_over_cap"):
+        assert advice["l1_bytes"] > _L1_PRESSURE_BYTES
 
 
 def test_needs_intervention_false_when_calm():
@@ -123,26 +127,12 @@ def test_needs_intervention_with_reclaim_under_pressure():
     assert advice["warning_reason"]
 
 
-def test_l1_pressure_boundary_below_bytes():
-    budget = 1000
-    l0 = int(budget * 4 * _HOT_L1_COMBO_RATIO)
-    advice = assess_layer_pressure(_snapshot(l0, l1_bytes=_L1_PRESSURE_BYTES), budget)
-    assert advice["level"] == "none"
-
-
-def test_l1_pressure_promotes_none_to_soon():
-    budget = 1000
-    l0 = int(budget * 4 * _HOT_L1_COMBO_RATIO)
-    advice = assess_layer_pressure(_snapshot(l0, l1_bytes=_L1_PRESSURE_BYTES + 1), budget)
-    assert advice["level"] == "soon"
-    assert advice["l1_bytes"] > _L1_PRESSURE_BYTES
-    assert "session state exceeds 5 MB" in advice["reasons"][0]
-
-
 def test_malformed_snapshot_returns_none():
     assert assess_layer_pressure({}, 1000)["level"] == "none"
     assert assess_layer_pressure({"L0": "bad"}, 1000)["level"] == "none"
     assert assess_layer_pressure(_snapshot(100), 0)["level"] == "none"
+    assert assess_layer_pressure(None, 1000)["level"] == "none"  # type: ignore[arg-type]
+    assert assess_layer_pressure({"L0": {"bytes": "x"}}, 1000)["level"] == "none"
 
 
 def test_hot_ratio_clamped():
@@ -151,11 +141,6 @@ def test_hot_ratio_clamped():
     advice = assess_layer_pressure(_snapshot(huge), budget)
     assert advice["hot_ratio"] == 2.0
     assert advice["level"] == "now"
-
-
-def test_l3_reclaimed_bytes_from_components():
-    advice = assess_layer_pressure(_snapshot(0, l3_before=5000, l3_after=2000), 1000)
-    assert advice["l3_reclaimed_bytes"] == 3000
 
 
 def test_advice_payload_disabled(monkeypatch, tmp_path):
@@ -288,11 +273,6 @@ def test_failed_compact_ack_keeps_needs_attention():
         assert not body.get("acked_manual_compact")
 
 
-def test_assess_never_raises_on_bad_input():
-    assess_layer_pressure(None, 1000)  # type: ignore[arg-type]
-    assess_layer_pressure({"L0": {"bytes": "x"}}, 1000)
-
-
 def _session_in_advisor_trigger_window(tmp_path):
     cfg = HarnessConfig(max_context_tokens=1000, state_dir=str(tmp_path))
     session = ConversationalSession(cfg)
@@ -329,25 +309,21 @@ def test_advisor_compaction_env_off_leaves_default_trigger(monkeypatch, tmp_path
     assert events == []
 
 
-def test_advisor_compaction_default_on(monkeypatch, tmp_path):
-    """Unset env defaults to auto-compaction at advisor level now."""
-    session = _session_in_advisor_trigger_window(tmp_path)
-    _journal_now_snapshot(tmp_path)
-
-    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
-    events = list(session._maybe_compact_history())
-    assert len(events) >= 1
-    assert events[0].kind == "compacting"
-
-
-def test_advisor_compaction_fires_between_65_and_75_percent(monkeypatch, tmp_path):
-    """Opt-in advisor at level now compacts even below the hard 75% trigger."""
+@pytest.mark.parametrize("env_value", [
+    pytest.param(None, id="unset-defaults-on"),
+    pytest.param("1", id="opt-in"),
+])
+def test_advisor_compaction_fires_in_window(monkeypatch, tmp_path, env_value):
+    """Advisor level now compacts below the hard 75% trigger. Unset env is on."""
     session = _session_in_advisor_trigger_window(tmp_path)
     tokens = session._estimate_context_tokens()
     assert 650 <= tokens < 750
     _journal_now_snapshot(tmp_path)
 
-    monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", "1")
+    if env_value is None:
+        monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_ADVISOR_COMPACTION", env_value)
     events = list(session._maybe_compact_history())
     assert len(events) >= 1
     assert events[0].kind == "compacting"

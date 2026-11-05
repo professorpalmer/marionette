@@ -275,6 +275,7 @@ def test_build_pilot_selects_openai_compat(monkeypatch):
     d = prov.build_pilot("openrouter:qwen/qwen3-coder-30b-a3b-instruct")
     assert isinstance(d, OpenAICompatDriver)
     assert "openrouter.ai" in d.base_url
+    assert "qwen3-coder-30b" in d.model
 
 
 def test_build_pilot_no_key_raises(monkeypatch):

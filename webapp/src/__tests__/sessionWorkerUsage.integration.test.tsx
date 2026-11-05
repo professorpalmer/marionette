@@ -50,11 +50,16 @@ describe('automatic current headers and session worker usage', () => {
     vi.useFakeTimers();
     render(<JobMetadataOwner repo={selection().repo} sessionId={selection().session_id}><MetadataJobs /></JobMetadataOwner>);
     let hydrated = false;
-    for (let i = 0; i < 60; i++) {
+    let pollsAfterHydration = 0;
+    // 17 polls after hydration cover more than one 32 s refresh cycle.
+    for (let i = 0; i < 30 && pollsAfterHydration < 17; i++) {
       await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
       const meter = screen.getByLabelText('Session worker usage');
       if (meter.textContent?.includes('120 tokens')) hydrated = true;
-      if (hydrated) expect(meter).toHaveTextContent('120 tokens');
+      if (hydrated) {
+        expect(meter).toHaveTextContent('120 tokens');
+        pollsAfterHydration++;
+      }
     }
     expect(hydrated).toBe(true);
   });

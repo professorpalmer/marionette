@@ -253,7 +253,9 @@ def test_detail_exact_scope_and_budget(env):
     store, reader, ctx, selection, _ = env
     j = job(store)
     expected = dict(tasks=set(), artifacts=set())
-    for i in range(206):
+    page_rows = 50
+    # Two full pages plus one row: each lane needs at least three pages.
+    for i in range(2 * page_rows + 1):
         t = Task(j.id, 'test', 'body', id=f'task_{i:04d}')
         a = Artifact(j.id, t.id, ArtifactType.FINDING, 'test', {'claim': 'recorded', 'passed': True}, 1.0, ['fixture'])
         store.save_task(t)
@@ -278,7 +280,7 @@ def test_detail_exact_scope_and_budget(env):
             assert len(json.dumps(current).encode()) <= 98304
             assert current['cancellation_authority'] is False
             chunk = current[lane]
-            assert len(chunk['rows']) <= 50 and chunk['page']['scanned'] <= 51
+            assert len(chunk['rows']) <= page_rows and chunk['page']['scanned'] <= page_rows + 1
             ids.extend(r['id'] for r in chunk['rows'])
             assert len(ids) == len(set(ids))
             token = chunk['page']['next_cursor']

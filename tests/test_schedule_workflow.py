@@ -58,9 +58,13 @@ def test_invalid_create_is_actionable_and_atomic(state, patch):
     assert api.get_schedules()[1]['schedules'] == []
 
 
-def test_unscoped_schedule_does_not_follow_environment(monkeypatch):
+@pytest.mark.parametrize('repo', [
+    pytest.param('', id='unscoped'),
+    pytest.param('relative', id='relative_legacy_scope'),
+])
+def test_unscoped_schedule_does_not_follow_environment(monkeypatch, repo):
     monkeypatch.setenv('HARNESS_REPO', '/some/other/project')
-    assert resolve_schedule_repo(Schedule(id='x', name='x', objective='x', cron='* * * * *')) == ''
+    assert resolve_schedule_repo(Schedule(id='x', name='x', objective='x', cron='* * * * *', repo=repo)) == ''
 
 
 def test_run_now_overlap_is_conflict_without_execution(state, monkeypatch):
@@ -171,10 +175,6 @@ def test_manual_run_rejects_stale_spec_without_executing(state, monkeypatch):
     assert code == 409
     assert result['run']['status'] == 'blocked'
     assert not api.get_schedules_history(added['id'])[1]['runs']
-
-
-def test_relative_legacy_scope_is_not_resolved_at_fire_time():
-    assert resolve_schedule_repo(Schedule(id='x', name='x', objective='x', cron='* * * * *', repo='relative')) == ''
 
 
 def test_impossible_cron_is_rejected_at_store_boundary(state):

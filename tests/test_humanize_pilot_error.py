@@ -8,6 +8,8 @@ Hermetic: exercises the humanizer directly, no model/network.
 """
 import tempfile
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 
@@ -66,17 +68,28 @@ def test_opencode_go_region_error_explains_opt_in_instead_of_bad_key():
     assert "authentication failed" not in out.lower()
 
 
-def test_rate_limit_is_explained():
-    s = _s()
-    out = s._humanize_pilot_error("HTTP 429: rate limit exceeded")
-    assert "rate-limiting" in out.lower()
-
-
-def test_context_overflow_is_explained():
-    s = _s()
-    out = s._humanize_pilot_error(
-        'HTTP 400: {"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum"}}')
-    assert "context window" in out.lower()
+@pytest.mark.parametrize(
+    "raw,all_of,any_of",
+    [
+        pytest.param("HTTP 429: rate limit exceeded", ("rate-limiting",), (), id="rate_limit"),
+        pytest.param(
+            'HTTP 400: {"error":{"message":"prompt is too long: 250000 tokens > 200000 maximum"}}',
+            ("context window",), (), id="context_overflow",
+        ),
+        pytest.param("HTTP 503: service unavailable", ("transient", "retry"), (), id="server_error"),
+        pytest.param(
+            'HTTP 400: {"error":{"message":"insufficient quota / billing"}}',
+            (), ("credit", "quota"), id="quota_exhaustion",
+        ),
+    ],
+)
+def test_error_class_is_explained(tmp_path, raw, all_of, any_of):
+    s = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
+    out = s._humanize_pilot_error(raw).lower()
+    for word in all_of:
+        assert word in out
+    if any_of:
+        assert any(word in out for word in any_of)
 
 
 def test_max_tokens_parameter_reject_is_not_overflow():
@@ -86,18 +99,6 @@ def test_max_tokens_parameter_reject_is_not_overflow():
     )
     assert "context window" not in out.lower()
     assert "pilot:" in out
-
-
-def test_server_error_is_retryable_guidance():
-    s = _s()
-    out = s._humanize_pilot_error("HTTP 503: service unavailable")
-    assert "transient" in out.lower() and "retry" in out.lower()
-
-
-def test_quota_exhaustion_is_explained():
-    s = _s()
-    out = s._humanize_pilot_error('HTTP 400: {"error":{"message":"insufficient quota / billing"}}')
-    assert "credit" in out.lower() or "quota" in out.lower()
 
 
 def test_opencode_responses_stream_death_does_not_say_codex():

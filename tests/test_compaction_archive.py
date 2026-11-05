@@ -14,7 +14,6 @@ from harness.compaction_archive import (
     compaction_archive_path,
     load_compaction_archive_messages,
     remove_compaction_archive,
-    retain_archive_messages,
 )
 from harness.sessions import save_transcript
 
@@ -114,6 +113,9 @@ def test_small_session_is_not_truncated(tmp_path):
     loaded = load_compaction_archive_messages(state_dir, sid)
     assert [m.get("content") for m in loaded] == [f"keep-{i}" for i in range(6)]
     assert not any(m.get(ARCHIVE_TRUNCATION_FLAG) for m in loaded)
+    assert ARCHIVE_MAX_MESSAGES >= 8
+    assert ARCHIVE_MAX_SERIALIZED_BYTES >= 1024
+    assert ARCHIVE_LOAD_MAX_BYTES >= ARCHIVE_MAX_SERIALIZED_BYTES
 
 
 def test_message_cap_keeps_oldest_and_newest_with_marker(tmp_path, monkeypatch):
@@ -202,9 +204,3 @@ def test_real_caps_bound_repeated_appends(tmp_path):
     assert contents[-1].startswith("w")
 
 
-def test_retain_helper_is_noop_under_caps():
-    rows = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"}]
-    assert retain_archive_messages(rows) == rows
-    assert ARCHIVE_MAX_MESSAGES >= 8
-    assert ARCHIVE_MAX_SERIALIZED_BYTES >= 1024
-    assert ARCHIVE_LOAD_MAX_BYTES >= ARCHIVE_MAX_SERIALIZED_BYTES

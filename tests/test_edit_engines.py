@@ -3,6 +3,7 @@ construction, error paths, and pure helpers. No real Puppetmaster workers or
 network calls."""
 from __future__ import annotations
 
+import atexit
 import contextlib
 import os
 import shutil
@@ -47,18 +48,31 @@ ROUTER_HAS_CEILING = _router_supports_max_capability()
 EXPECTED_CAP_KEY = "max_capability" if ROUTER_HAS_CEILING else "min_capability"
 
 
+_TEMPLATE_REPO: list[str] = []
+
+
+def _template_git_repo() -> str:
+    if not _TEMPLATE_REPO:
+        root = tempfile.mkdtemp()
+        atexit.register(shutil.rmtree, root, True)
+        repo_dir = os.path.join(root, "repo")
+        os.mkdir(repo_dir)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
+        with open(os.path.join(repo_dir, "test.txt"), "w", encoding="utf-8") as f:
+            f.write("hello\n")
+        subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True)
+        _TEMPLATE_REPO.append(repo_dir)
+    return _TEMPLATE_REPO[0]
+
+
 def create_temp_git_repo():
     # Unique parent so xdist workers do not share /tmp/.pmharness-worktrees.
     root = tempfile.mkdtemp()
     repo_dir = os.path.join(root, "repo")
-    os.mkdir(repo_dir)
-    subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
-    with open(os.path.join(repo_dir, "test.txt"), "w", encoding="utf-8") as f:
-        f.write("hello\n")
-    subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=repo_dir, capture_output=True)
+    shutil.copytree(_template_git_repo(), repo_dir, symlinks=True)
     return repo_dir
 
 
@@ -564,7 +578,34 @@ def test_pilot_keys_ready_with_opencode_go_when_openrouter_disconnected(monkeypa
         hkeys.unmark_disconnected("openrouter")
 
 
-def test_pilot_keys_ready_stored_opencode_go_and_codex_oauth(monkeypatch, tmp_path):
+_PROVIDER_KEY_ENV = (
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
+    "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+)
+
+
+@pytest.fixture
+def keyless_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    for k in _PROVIDER_KEY_ENV:
+        monkeypatch.delenv(k, raising=False)
+    return tmp_path
+
+
+def _stored_key(monkeypatch, name, value):
+    monkeypatch.setattr(
+        "harness.registry_wizard.get_provider_key",
+        lambda provider: value if provider.name == name else None,
+    )
+    monkeypatch.setattr(
+        "harness.keys.get_api_key_status",
+        lambda n: {"has_key": n == name, "masked": "****"},
+    )
+    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+
+
+def test_pilot_keys_ready_stored_opencode_go_and_codex_oauth(monkeypatch, keyless_env, tmp_path):
     """Exact production state: OpenRouter disconnected, state keys for OpenCode Go
     + ChatGPT Codex OAuth — ProviderKeyBanner must stay hidden.
 
@@ -574,13 +615,6 @@ def test_pilot_keys_ready_stored_opencode_go_and_codex_oauth(monkeypatch, tmp_pa
     import json
     from harness import keys as hkeys
 
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
-    for k in (
-        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    ):
-        monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
 
     import importlib
@@ -608,15 +642,8 @@ def test_pilot_keys_ready_stored_opencode_go_and_codex_oauth(monkeypatch, tmp_pa
         hkeys.unmark_disconnected("openrouter")
 
 
-def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, tmp_path):
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, keyless_env):
     monkeypatch.setattr("puppetmaster.providers.available_providers", lambda: [])
-    for k in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    ):
-        monkeypatch.delenv(k, raising=False)
     # Host machines may have Cursor CLI / OAuth pools; force the authoritative
     # providers path closed so the keyless banner regression stays hermetic.
     monkeypatch.setattr(
@@ -631,26 +658,10 @@ def test_pilot_keys_ready_false_when_truly_keyless(monkeypatch, tmp_path):
     assert pilot_keys_ready() is False
 
 
-def test_workers_ready_false_for_cursor_cli_only(monkeypatch, tmp_path):
+def test_workers_ready_false_for_cursor_cli_only(monkeypatch, keyless_env):
     """Pilot-only Cursor Agent login must not claim swarms can run."""
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    for k in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    ):
-        monkeypatch.delenv(k, raising=False)
-
-    def _key(provider):
-        return "cursor-cli-login" if provider.name == "cursor-cli" else None
-
-    monkeypatch.setattr("harness.registry_wizard.get_provider_key", _key)
-    monkeypatch.setattr(
-        "harness.keys.get_api_key_status",
-        lambda name: {"has_key": name == "cursor-cli", "masked": "****"},
-    )
-    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+    _stored_key(monkeypatch, "cursor-cli", "cursor-cli-login")
     monkeypatch.setattr(
         "harness.edit_engines.cursor_platform_available", lambda: False
     )
@@ -658,25 +669,9 @@ def test_workers_ready_false_for_cursor_cli_only(monkeypatch, tmp_path):
     assert pilot_keys_ready() is True
 
 
-def test_workers_ready_true_for_stored_openrouter(monkeypatch, tmp_path):
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+def test_workers_ready_true_for_stored_openrouter(monkeypatch, keyless_env):
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    for k in (
-        "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
-        "OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "OPENAI_CODEX_TOKEN",
-        "AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-    ):
-        monkeypatch.delenv(k, raising=False)
-
-    def _key(provider):
-        return "sk-or-stored" if provider.name == "openrouter" else None
-
-    monkeypatch.setattr("harness.registry_wizard.get_provider_key", _key)
-    monkeypatch.setattr(
-        "harness.keys.get_api_key_status",
-        lambda name: {"has_key": name == "openrouter", "masked": "****"},
-    )
-    monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
+    _stored_key(monkeypatch, "openrouter", "sk-or-stored")
     monkeypatch.setattr(
         "harness.edit_engines.cursor_platform_available", lambda: False
     )

@@ -330,43 +330,46 @@ def test_dispatch_parallel_refuses_non_git_resolved_workspace(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_coerce_goals_as_plain_string():
-    act = from_wire("run_parallel", {"goals": "Fix the flaky login test"})
-    assert act.goals == ["Fix the flaky login test"]
+def _swarm_tool_action(kind, args):
+    return _tool_name_to_action(kind, args, tool_call_id="tc_swarm")
 
 
-def test_coerce_goals_as_json_encoded_array_string():
-    act = from_wire(
-        "run_parallel",
-        {"goals": '["Add unit tests for auth.py", "Document the API routes"]'},
-    )
-    assert act.goals == [
-        "Add unit tests for auth.py",
-        "Document the API routes",
-    ]
-
-
-def test_coerce_goal_singular_to_goals_for_run_parallel():
-    act = from_wire("run_parallel", {"goal": "Ship the release notes"})
-    assert act.goals == ["Ship the release notes"]
-
-
-def test_coerce_goals_array_to_goal_for_run_implement():
-    act = from_wire(
-        "run_implement",
-        {"goals": ["Patch the retry loop", "also ignored second"]},
-    )
-    assert act.goal == "Patch the retry loop"
-    assert act.goals == []
-
-
-def test_coerce_goals_array_to_goal_for_run_swarm():
-    act = _tool_name_to_action(
-        "run_swarm",
-        {"goals": ["Map the auth flow"]},
-        tool_call_id="tc_swarm",
-    )
-    assert act.goal == "Map the auth flow"
+@pytest.mark.parametrize(
+    "convert, kind, args, expected",
+    [
+        pytest.param(
+            from_wire, "run_parallel", {"goals": "Fix the flaky login test"},
+            {"goals": ["Fix the flaky login test"]},
+            id="goals_plain_string",
+        ),
+        pytest.param(
+            from_wire, "run_parallel",
+            {"goals": '["Add unit tests for auth.py", "Document the API routes"]'},
+            {"goals": ["Add unit tests for auth.py", "Document the API routes"]},
+            id="goals_json_array_string",
+        ),
+        pytest.param(
+            from_wire, "run_parallel", {"goal": "Ship the release notes"},
+            {"goals": ["Ship the release notes"]},
+            id="singular_goal_to_goals_run_parallel",
+        ),
+        pytest.param(
+            from_wire, "run_implement",
+            {"goals": ["Patch the retry loop", "also ignored second"]},
+            {"goal": "Patch the retry loop", "goals": []},
+            id="goals_array_to_goal_run_implement",
+        ),
+        pytest.param(
+            _swarm_tool_action, "run_swarm", {"goals": ["Map the auth flow"]},
+            {"goal": "Map the auth flow"},
+            id="goals_array_to_goal_run_swarm",
+        ),
+    ],
+)
+def test_goal_coercion(convert, kind, args, expected):
+    act = convert(kind, args)
+    for field, value in expected.items():
+        assert getattr(act, field) == value
 
 
 def test_coerce_drops_whitespace_only_goals_and_normalizes_case():

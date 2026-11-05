@@ -1,10 +1,9 @@
 """Session scratch bindings — durable L1, distinct from memory / history."""
 from __future__ import annotations
 
-import tempfile
+import os
 
 from harness.config import HarnessConfig
-import os
 
 from harness.session_scratch import (
     MAX_SCRATCH_KEYS,
@@ -17,8 +16,8 @@ from harness.session_scratch import (
 )
 
 
-def test_scratch_roundtrip_save_load():
-    state_dir = tempfile.mkdtemp()
+def test_scratch_roundtrip_save_load(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionScratchStore(state_dir)
     store.set("focus", "handle-first digests")
     assert store.get("focus") == "handle-first digests"
@@ -26,8 +25,8 @@ def test_scratch_roundtrip_save_load():
     assert reloaded.get("focus") == "handle-first digests"
 
 
-def test_scratch_list_delete_clear():
-    state_dir = tempfile.mkdtemp()
+def test_scratch_list_delete_clear(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionScratchStore(state_dir)
     store.set("a", "1")
     store.set("b", "22")
@@ -39,8 +38,8 @@ def test_scratch_list_delete_clear():
     assert store.list() == []
 
 
-def test_scratch_caps_reject_oversized():
-    state_dir = tempfile.mkdtemp()
+def test_scratch_caps_reject_oversized(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionScratchStore(state_dir)
     try:
         store.set("big", "x" * (MAX_SCRATCH_VALUE_CHARS + 1))
@@ -57,8 +56,8 @@ def test_scratch_caps_reject_oversized():
         assert "full" in str(exc)
 
 
-def test_scratch_total_chars_cap():
-    state_dir = tempfile.mkdtemp()
+def test_scratch_total_chars_cap(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionScratchStore(state_dir)
     # Leave headroom for key lengths; next max-sized value must trip the total cap.
     per = MAX_SCRATCH_VALUE_CHARS
@@ -81,7 +80,8 @@ def test_scratch_survives_mock_compact_not_in_history(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr("harness.memory_store.MEMORY_PATH", tmp_path / "mem.json")
-    state_dir = tempfile.mkdtemp()
+    state_dir = str(tmp_path / "state")
+    os.makedirs(state_dir)
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=state_dir)
     from harness.conversation import ConversationalSession
 
@@ -104,7 +104,8 @@ def test_scratch_tools_via_dispatch(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr("harness.memory_store.MEMORY_PATH", tmp_path / "mem.json")
-    state_dir = tempfile.mkdtemp()
+    state_dir = str(tmp_path / "state")
+    os.makedirs(state_dir)
     from harness.conversation import ConversationalSession
     from harness.pilot import PilotAction
     from harness.send_loop_phases import dispatch_local_action
@@ -132,8 +133,8 @@ def test_scratch_tools_via_dispatch(monkeypatch, tmp_path):
     assert ok and "1" in cleared
 
 
-def test_corrupt_scratch_fails_closed_without_clobber():
-    state_dir = tempfile.mkdtemp()
+def test_corrupt_scratch_fails_closed_without_clobber(tmp_path):
+    state_dir = str(tmp_path)
     path = os.path.join(state_dir, SCRATCH_FILENAME)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("{not-json")
@@ -153,8 +154,8 @@ def test_corrupt_scratch_fails_closed_without_clobber():
     assert after == before
 
 
-def test_clear_quarantines_corrupt_scratch_then_allows_writes():
-    state_dir = tempfile.mkdtemp()
+def test_clear_quarantines_corrupt_scratch_then_allows_writes(tmp_path):
+    state_dir = str(tmp_path)
     path = os.path.join(state_dir, SCRATCH_FILENAME)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("[1, 2, 3]")
@@ -175,7 +176,8 @@ def test_corrupt_scratch_tools_surface_status(monkeypatch, tmp_path):
         ),
     )
     monkeypatch.setattr("harness.memory_store.MEMORY_PATH", tmp_path / "mem.json")
-    state_dir = tempfile.mkdtemp()
+    state_dir = str(tmp_path / "state")
+    os.makedirs(state_dir)
     path = os.path.join(state_dir, SCRATCH_FILENAME)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("{broken")

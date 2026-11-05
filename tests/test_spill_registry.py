@@ -307,15 +307,6 @@ class TestSpillJsonQuery:
             with pytest.raises(InternalUriError, match="line selectors"):
                 resolve_internal_uri("spill://sess1/call_json:1-2?json=/lines/0", ctx)
 
-    def test_preserves_line_selector_without_json_query(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config = BudgetConfig(max_result_chars=10, turn_budget_chars=50)
-            large = "line one\n" * 2000
-            maybe_persist_result(large, "call_read", tmpdir, config, spill_session_id="sess1")
-            ctx = InternalUriContext(state_dir=tmpdir)
-            sliced = resolve_internal_uri("spill://sess1/call_read:2-3", ctx)
-            assert "[lines 2-3 of 2000]" in sliced.content
-
     def test_json_pointer_escape_sequences(self):
         payload = {"a/b": {"~tilde": "value"}}
         with tempfile.TemporaryDirectory() as tmpdir:

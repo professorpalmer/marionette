@@ -75,15 +75,12 @@ def test_grok_4_6_is_not_in_curated_fallback():
     ("moonshotai/kimi-k2.7-code", "kimi-k2.7-code"),
     ("  deepseek-v4-flash  ", "deepseek-v4-flash"),
     ("z-ai/glm-5.2", "glm-5.2"),
+    ("opencode-go/mimo-v2.5-pro", "mimo-v2.5-pro"),
     ("", ""),
     (None, ""),
 ])
 def test_normalize_model_id(raw, expected):
     assert go.normalize_model_id(raw) == expected
-
-
-def test_normalize_model_id_preserves_dots():
-    assert go.normalize_model_id("opencode-go/mimo-v2.5-pro") == "mimo-v2.5-pro"
 
 
 # ── Endpoint routing ───────────────────────────────────────────────────────
@@ -588,87 +585,6 @@ def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
     )["name"] == "Ox Alpha Free"
 
 
-def test_ox_alpha_free_is_not_in_curated_fallback():
-    assert "ox-alpha-free" not in go.CURATED_MODELS
-    assert "x-preview-f-free" not in go.CURATED_MODELS
-
-
-def test_catalog_exposes_ox_alpha_friendly_name_for_live_go(monkeypatch):
-    monkeypatch.setattr(
-        prov, "available_providers",
-        lambda: [prov.get_provider("opencode-go")],
-    )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["ox-alpha-free", "deepseek-v4-flash"],
-    )
-    monkeypatch.setattr(mf, "model_metadata", lambda provider, slug: {"id": slug})
-    entries = [
-        row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-go"
-    ]
-    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
-    assert ox["spec"] == "opencode-go:ox-alpha-free"
-    assert ox["name"] == "Ox Alpha Free"
-
-
-def test_catalog_replaces_go_wire_echo_name_with_ox_label(monkeypatch):
-    monkeypatch.setattr(
-        prov, "available_providers",
-        lambda: [prov.get_provider("opencode-go")],
-    )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["ox-alpha-free"],
-    )
-    monkeypatch.setattr(
-        mf, "model_metadata",
-        lambda provider, slug: {"id": slug, "name": slug},
-    )
-    seen = {}
-
-    def fake_overlay(model, *, allow_network=False):
-        seen["called"] = True
-        seen["allow_network"] = allow_network
-        return {"name": "Ox Alpha Free", "source": "models.dev"}
-
-    monkeypatch.setattr(go, "overlay_metadata", fake_overlay)
-    entries = [
-        row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-go"
-    ]
-    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
-    assert seen.get("called") is True
-    assert ox["name"] == "Ox Alpha Free"
-
-
-def test_catalog_keeps_informative_go_native_name(monkeypatch):
-    monkeypatch.setattr(
-        prov, "available_providers",
-        lambda: [prov.get_provider("opencode-go")],
-    )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["ox-alpha-free"],
-    )
-    monkeypatch.setattr(
-        mf, "model_metadata",
-        lambda provider, slug: {"id": slug, "name": "Native Ox Label"},
-    )
-    seen = []
-
-    def fake_overlay(model, *, allow_network=False):
-        seen.append(model)
-        return {"name": "Overlay Must Not Win"}
-
-    monkeypatch.setattr(go, "overlay_metadata", fake_overlay)
-    entries = [
-        row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-go"
-    ]
-    ox = next(row for row in entries if row["model"] == "ox-alpha-free")
-    assert ox["name"] == "Native Ox Label"
-    assert seen == []
 
 # ── OpenCode Go session routing header ─────────────────────────────────────
 

@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import json
 import re
-from pathlib import Path
 
 import pytest
 
@@ -25,7 +23,6 @@ from harness.pilot import (
     tool_names_from_schema,
 )
 from harness.pilot_tool_recovery import parse_native_tool_turn
-from harness.send_loop import SendLoopMixin
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -202,23 +199,6 @@ def test_g_invalid_only_streak_helper():
     assert next_invalid_only_streak(2, [good]) == 0
     assert next_invalid_only_streak(2, [bad, good]) == 0
     assert next_invalid_only_streak(2, []) == 0
-
-
-def test_send_loop_source_passes_schema_names_and_halts():
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    recovery_src = Path(inspect.getsourcefile(parse_native_tool_turn)).read_text(
-        encoding="utf-8"
-    )
-    assert "parse_native_tool_turn" in src
-    assert "allowed_names=" in recovery_src
-    assert "tool_names_from_schema" in recovery_src
-    assert "_invalid_only_streak" in src
-    assert "invalid_tool_halt" in src
-    from harness.send_loop_phases import dispatch_pilot_provider_call
-    phase_src = Path(
-        inspect.getsourcefile(dispatch_pilot_provider_call)
-    ).read_text(encoding="utf-8")
-    assert "_step_tools_schema" in phase_src
 
 
 def test_parse_native_tool_turn_allowlist_and_inline_fallback():

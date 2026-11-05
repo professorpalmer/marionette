@@ -5,6 +5,8 @@ import copy
 import json
 import os
 
+import pytest
+
 from harness.config import HarnessConfig
 from harness.conversation import ConvEvent, ConversationalSession
 from harness.job_actions import (
@@ -380,29 +382,35 @@ def test_post_terminal_ingest_settles_running(tmp_path):
     assert snap2[-1]["status"] == "failed"
 
 
-def test_post_terminal_ingest_completed_parent_late_start_is_complete(tmp_path):
+def _finish_completed(sess, job_id):
+    sess._finish_local_job(job_id, ok=True, summary="done")
+
+
+def _finish_cancelled(sess, job_id):
+    assert sess.cancel_local_job(job_id) is True
+    assert sess._local_jobs[job_id]["status"] == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "finish,expected_status,expected_error",
+    [
+        pytest.param(_finish_completed, "complete", None, id="completed"),
+        pytest.param(_finish_cancelled, "failed", "cancelled", id="cancelled"),
+    ],
+)
+def test_post_terminal_late_start_follows_parent(tmp_path, finish, expected_status, expected_error):
     sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
     sess._register_local_job("local-term3", "do work")
-    sess._finish_local_job("local-term3", ok=True, summary="done")
+    finish(sess, "local-term3")
     snap = sess._ingest_local_job_events("local-term3", [
         ConvEvent("action_start", {"id": "n1", "kind": "edit_file", "goal": "b.py"}),
     ])
     assert snap[-1]["action_id"] == "n1"
-    assert snap[-1]["status"] == "complete"
-    assert not snap[-1].get("error")
-
-
-def test_post_terminal_ingest_cancelled_parent_late_start_is_failed(tmp_path):
-    sess = ConversationalSession(HarnessConfig(state_dir=str(tmp_path)))
-    sess._register_local_job("local-term4", "do work")
-    assert sess.cancel_local_job("local-term4") is True
-    assert sess._local_jobs["local-term4"]["status"] == "cancelled"
-    snap = sess._ingest_local_job_events("local-term4", [
-        ConvEvent("action_start", {"id": "n1", "kind": "edit_file", "goal": "b.py"}),
-    ])
-    assert snap[-1]["action_id"] == "n1"
-    assert snap[-1]["status"] == "failed"
-    assert snap[-1].get("error") == "cancelled"
+    assert snap[-1]["status"] == expected_status
+    if expected_error is None:
+        assert not snap[-1].get("error")
+    else:
+        assert snap[-1].get("error") == expected_error
     assert all(a["status"] != "running" for a in snap)
 
 

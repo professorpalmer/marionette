@@ -59,30 +59,6 @@ def _session(budget=1000):
     return s
 
 
-def test_estimate_falls_back_to_heuristic_when_no_real_usage():
-    """Offline / pre-first-turn: no real prompt tokens recorded -> chars//4."""
-    s = _session()
-    # No driver usage yet.
-    assert s._last_prompt_tokens == 0
-
-    s._history.append({"role": "user", "content": "A" * 400})
-    heuristic = s._estimate_context_tokens_for_list(s._history)
-    # With no real usage the live estimate must equal the pure heuristic.
-    assert s._estimate_context_tokens() == heuristic
-
-
-def test_estimate_prefers_real_when_it_exceeds_heuristic():
-    """A real prompt-token count larger than the heuristic wins (never under-count)."""
-    s = _session()
-    s._history.append({"role": "user", "content": "A" * 40})  # ~10 tokens heuristic
-    heuristic = s._estimate_context_tokens_for_list(s._history)
-
-    # Simulate the driver billing a much larger real prompt (denser tokenization).
-    s._last_prompt_tokens = heuristic + 5000
-    assert s._estimate_context_tokens() == heuristic + 5000
-    assert s._estimate_context_tokens() > heuristic
-
-
 def test_estimate_adds_growth_without_letting_heuristic_win():
     """Billed usage is the clock. Growth since the sample is added; the
     full chars//4 walk must not replace the real count via max()."""

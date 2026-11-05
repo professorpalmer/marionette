@@ -6,6 +6,8 @@ import queue
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from harness.send_loop_phases import (
     _finish_and_attach_timing,
     dispatch_pilot_provider_call,
@@ -700,58 +702,51 @@ def _exhaust_dispatch(gen):
         return stop.value
 
 
-def test_yield_timed_phase_excludes_consumer_suspension():
+@pytest.mark.parametrize(
+    ("phase", "before", "event", "after", "result", "pause", "phase_ms"),
+    [
+        pytest.param(
+            "task_profile", 0.010, {"kind": "task_profile", "profile": "STANDARD"},
+            0.005, "classified", 0.200, 15.0,
+            id="task_profile",
+        ),
+        pytest.param(
+            "image_prep", 0.008, {"kind": "vision", "status": "native"},
+            0.004, ("ok", []), 0.500, 12.0,
+            id="image_prep",
+        ),
+    ],
+)
+def test_yield_timed_phase_excludes_consumer_suspension(
+    phase, before, event, after, result, pause, phase_ms,
+):
     """Fake-clock time while the consumer is suspended must not enter phase_ms."""
     clock = FakeClock()
     acc = StreamTimingAccumulator(clock=clock)
 
     def gen():
-        clock.advance(0.010)
-        yield {"kind": "task_profile", "profile": "STANDARD"}
-        clock.advance(0.005)
-        return "classified"
+        clock.advance(before)
+        yield dict(event)
+        clock.advance(after)
+        return result
 
     def runner():
-        result = yield from yield_timed_phase(acc, "task_profile", gen())
-        assert result == "classified"
+        got = yield from yield_timed_phase(acc, phase, gen())
+        assert got == result
 
     it = runner()
     ev = next(it)
-    assert ev["profile"] == "STANDARD"
-    clock.advance(0.200)
+    assert ev == event
+    clock.advance(pause)
     try:
         while True:
             next(it)
     except StopIteration:
         pass
     snap = acc.snapshot()
-    assert snap["task_profile_ms"] == 15.0
-    assert "request_to_first_content_callback_ms" not in snap
-
-
-def test_yield_timed_phase_image_prep_excludes_yielded_event_wait():
-    clock = FakeClock()
-    acc = StreamTimingAccumulator(clock=clock)
-
-    def gen():
-        clock.advance(0.008)
-        yield {"kind": "vision", "status": "native"}
-        clock.advance(0.004)
-        return ("ok", [])
-
-    def runner():
-        result = yield from yield_timed_phase(acc, "image_prep", gen())
-        assert result == ("ok", [])
-
-    it = runner()
-    next(it)
-    clock.advance(0.500)
-    try:
-        while True:
-            next(it)
-    except StopIteration:
-        pass
-    assert acc.snapshot()["image_prep_ms"] == 12.0
+    assert snap[f"{phase}_ms"] == phase_ms
+    if phase == "task_profile":
+        assert "request_to_first_content_callback_ms" not in snap
 
 
 def test_malformed_tokens_out_does_not_drop_receipt_or_raise():

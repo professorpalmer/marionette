@@ -120,13 +120,10 @@ class TestInternalUriParsing:
         with pytest.raises(InternalUriError, match="traversal"):
             parse_internal_uri("job://job_ok/../secret")
 
-    def test_parse_rejects_backslashes(self):
-        with pytest.raises(InternalUriError, match="backslashes"):
-            parse_internal_uri(r"job://job_ok\tasks\task_1")
-
     @pytest.mark.parametrize(
         "uri",
         [
+            r"job://job_ok\tasks\task_1",
             r"artifact://job_ok\..\etc\passwd",
             r"conflict://src\..\..\windows\system32",
             r"agent://job_ok\runs\run_1",

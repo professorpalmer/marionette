@@ -9,7 +9,7 @@ from pmharness.drivers.stub import StubDriver
 def test_catalog_loads_and_is_well_formed():
     cat = reg.load_catalog()
     assert cat["models"]
-    required = {"name", "tier", "license", "price_in", "price_out"}
+    required = {"name", "tier", "license", "price_in", "price_out", "vision"}
     for m in cat["models"]:
         assert required <= set(m), f"{m.get('name')} missing keys"
         assert m["tier"] in ("flagship", "value", "frontier_control", "vision_sidecar")
@@ -64,9 +64,17 @@ def test_all_driver_names_includes_stub():
     assert "stub-oracle" in reg.all_driver_names()
 
 
-def test_vision_flags_present_on_all():
-    cat = reg.load_catalog()
-    for m in cat["models"]:
-        assert "vision" in m, f"{m['name']} missing vision flag"
+def test_price_catalog_fallback_when_live_disabled(monkeypatch):
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    monkeypatch.setattr(reg, "_PRICE_MEM", {})
+    pin, pout = reg.price("glm-5.2")
+    assert pin == 1.40 and pout == 4.40
+
+
+def test_price_live_wins_over_catalog(monkeypatch):
+    monkeypatch.setenv("PMHARNESS_OR_LIVE_WINDOWS", "0")
+    monkeypatch.setattr(reg, "_resolve_live_price", lambda name: (0.55, 2.19))
+    pin, pout = reg.price("glm-5.2")
+    assert (pin, pout) == (0.55, 2.19)
 
 

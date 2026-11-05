@@ -25,7 +25,9 @@ def _sleep_cmd(seconds, then_echo=None):
     return f'"{sys.executable}" -c "{body}"'
 
 
-def test_normal_completion():
+def test_normal_completion(monkeypatch):
+    """Default HARNESS_OS_SANDBOX=off preserves direct Popen path."""
+    monkeypatch.delenv("HARNESS_OS_SANDBOX", raising=False)
     out, code, status = run_cancellable("echo hello", timeout=10)
     assert "hello" in out
     assert code == 0
@@ -39,7 +41,9 @@ def test_nonzero_exit():
 
 
 def test_cancel_kills_promptly():
-    ev = threading.Event()
+    """Edge-triggering must not disarm a REAL stop: a clear->set transition that
+    happens while the command is running is honored and kills the group."""
+    ev = threading.Event()  # clear at launch
     threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
     t0 = time.time()
     out, code, status = run_cancellable(_sleep_cmd(30), timeout=None, cancel_event=ev)
@@ -68,23 +72,9 @@ def test_stale_preset_cancel_does_not_kill_fresh_command():
     assert "interrupted by user" not in out
 
 
-def test_cancel_set_during_run_still_kills():
-    """Edge-triggering must not disarm a REAL stop: a clear->set transition that
-    happens while the command is running is honored and kills the group."""
-    ev = threading.Event()  # clear at launch
-    threading.Thread(target=lambda: (time.sleep(0.3), ev.set())).start()
-    t0 = time.time()
-    out, code, status = run_cancellable(_sleep_cmd(30), timeout=None, cancel_event=ev)
-    elapsed = time.time() - t0
-    assert status == "cancelled"
-    assert code == 130
-    assert elapsed < 5, f"cancel took {elapsed}s -- should be sub-second"
-    assert "interrupted by user" in out
-
-
 def test_timeout_kills():
     t0 = time.time()
-    out, code, status = run_cancellable(_sleep_cmd(30), timeout=1)
+    out, code, status = run_cancellable(_sleep_cmd(30), timeout=0.2)
     elapsed = time.time() - t0
     assert status == "timeout"
     assert elapsed < 5
@@ -162,15 +152,6 @@ def test_output_cap_marks_truncated_and_preserves_prefix(monkeypatch):
     assert len(out) <= 2048 + 80  # cap + marker room
 
 
-def test_run_cancellable_off_mode_unchanged(monkeypatch):
-    """Default HARNESS_OS_SANDBOX=off preserves direct Popen path."""
-    monkeypatch.delenv("HARNESS_OS_SANDBOX", raising=False)
-    out, code, status = run_cancellable("echo direct_path", timeout=10)
-    assert "direct_path" in out
-    assert code == 0
-    assert status == "ok"
-
-
 def test_run_cancellable_required_unavailable_fails_closed(monkeypatch):
     """required mode must fail before spawn when no sandbox backend exists."""
     from harness import os_sandbox
@@ -212,49 +193,29 @@ def test_run_cancellable_auto_uses_sandbox_when_available(monkeypatch):
     assert status == "ok"
 
 
+def _platform_sandbox_available() -> bool:
+    from harness import os_sandbox
+
+    if _sys.platform == "darwin":
+        return os_sandbox._probe_macos_sandbox_exec()
+    if _sys.platform.startswith("linux"):
+        return os_sandbox._probe_linux_bubblewrap()
+    return False
+
+
 @pytest.mark.skipif(
-    __import__("sys").platform != "darwin"
-    or not __import__("harness.os_sandbox", fromlist=["_probe_macos_sandbox_exec"])._probe_macos_sandbox_exec(),
-    reason="macOS sandbox-exec not available",
+    not _platform_sandbox_available(),
+    reason="no platform sandbox (macOS sandbox-exec or Linux bubblewrap)",
 )
-def test_run_cancellable_sandbox_integration_echo():
+def test_run_cancellable_sandbox_integration_echo(monkeypatch):
     from harness import os_sandbox
 
     os_sandbox.reset_probe_cache()
-    prev = os.environ.get("HARNESS_OS_SANDBOX")
-    os.environ["HARNESS_OS_SANDBOX"] = "auto"
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", "auto")
     try:
         out, code, status = run_cancellable("echo sandbox_integration", timeout=10)
         assert status == "ok"
         assert code == 0
         assert "sandbox_integration" in out
     finally:
-        if prev is None:
-            os.environ.pop("HARNESS_OS_SANDBOX", None)
-        else:
-            os.environ["HARNESS_OS_SANDBOX"] = prev
-        os_sandbox.reset_probe_cache()
-
-
-@pytest.mark.skipif(
-    __import__("sys").platform != "linux"
-    or not __import__("harness.os_sandbox", fromlist=["_probe_linux_bubblewrap"])._probe_linux_bubblewrap(),
-    reason="Linux bubblewrap not available",
-)
-def test_run_cancellable_sandbox_integration_echo_linux():
-    from harness import os_sandbox
-
-    os_sandbox.reset_probe_cache()
-    prev = os.environ.get("HARNESS_OS_SANDBOX")
-    os.environ["HARNESS_OS_SANDBOX"] = "auto"
-    try:
-        out, code, status = run_cancellable("echo sandbox_integration", timeout=10)
-        assert status == "ok"
-        assert code == 0
-        assert "sandbox_integration" in out
-    finally:
-        if prev is None:
-            os.environ.pop("HARNESS_OS_SANDBOX", None)
-        else:
-            os.environ["HARNESS_OS_SANDBOX"] = prev
         os_sandbox.reset_probe_cache()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_resolve_opencode_go_deepseek_flash_pin_against_v4_registry(
     monkeypatch, tmp_path,
@@ -170,44 +172,24 @@ def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
     assert out["resolved"] == ""
 
 
-def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("ready", "keyed"),
+    [
+        pytest.param(True, {"openrouter"}, id="openrouter_keyed"),
+        pytest.param(False, set(), id="no_keyed_provider"),
+    ],
+)
+def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path, ready, keyed):
     models_path = tmp_path / "models.json"
     models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setattr(
         "harness.auto_registry.ensure_keyed_provider_registry_health",
-        lambda: {"ready": True},
+        lambda: {"ready": ready},
     )
     monkeypatch.setattr(
         "harness.auto_registry.keyed_agentic_providers",
-        lambda: {"openrouter"},
-    )
-    monkeypatch.setattr(
-        "puppetmaster.model_registry.apply_model_pin",
-        lambda payload, model, *, adapter, registry=None: {
-            **(payload or {}),
-            "model": model,
-        },
-    )
-
-    from harness.swarm_model_pin import resolve_agentic_model_pin
-
-    pin, error = resolve_agentic_model_pin("openrouter/stealth/ox-alpha")
-    assert pin is None
-    assert "not in keyed worker registry" in error
-
-
-def test_resolve_direct_agentic_pin_requires_keyed_provider(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setattr(
-        "harness.auto_registry.ensure_keyed_provider_registry_health",
-        lambda: {"ready": False},
-    )
-    monkeypatch.setattr(
-        "harness.auto_registry.keyed_agentic_providers",
-        lambda: set(),
+        lambda: set(keyed),
     )
     monkeypatch.setattr(
         "puppetmaster.model_registry.apply_model_pin",

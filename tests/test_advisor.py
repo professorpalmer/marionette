@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 from harness.advisor import (
     advise,
-    advisor_enabled,
     build_advisor_prompt,
     _parse_warnings,
 )
@@ -43,16 +42,6 @@ class _RecordingDriver:
 class _ExplodingDriver:
     def complete(self, prompt, system=None):
         raise RuntimeError("provider down")
-
-
-def test_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("HARNESS_ADVISOR", raising=False)
-    assert advisor_enabled() is False
-
-
-def test_enabled_via_env(monkeypatch):
-    monkeypatch.setenv("HARNESS_ADVISOR", "1")
-    assert advisor_enabled() is True
 
 
 def test_advise_returns_warnings_from_json_array():

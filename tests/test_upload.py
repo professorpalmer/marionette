@@ -5,8 +5,9 @@ import json
 import os
 import sys
 import urllib.request
-import urllib.error
 from contextlib import contextmanager
+
+import pytest
 
 from http_server_support import (
     TestThreadingHTTPServer as _TestThreadingHTTPServer,
@@ -67,132 +68,46 @@ def test_upload_then_config_roundtrip():
         assert os.path.exists(res["saved"][0]["path"])
 
 
-def test_upload_rejects_oversized_body():
-    """A body whose Content-Length exceeds the cap is refused with 413 BEFORE
-    it is parsed into memory -- the memory-exhaustion guard."""
-    with _upload_http_server() as (srv, port):
-        old_cap = os.environ.get("HARNESS_UPLOAD_MAX_BYTES")
-        os.environ["HARNESS_UPLOAD_MAX_BYTES"] = "16"  # tiny cap for the test
-        try:
-            base = f"http://127.0.0.1:{port}"
-            png = bytes.fromhex(
-                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-                "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
-            )
-            body, ctype = _multipart("file", "x.png", png)  # well over 16 bytes
-            req = urllib.request.Request(
-                base + "/api/upload",
-                data=body,
-                headers={"Content-Type": ctype, "X-Harness-Token": srv._TOKEN},
-                method="POST",
-            )
-            try:
-                urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
-                assert False, "expected HTTP 413 for oversized upload"
-            except urllib.error.HTTPError as e:
-                assert e.code == 413
-        finally:
-            if old_cap is None:
-                os.environ.pop("HARNESS_UPLOAD_MAX_BYTES", None)
-            else:
-                os.environ["HARNESS_UPLOAD_MAX_BYTES"] = old_cap
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+    "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
+)
+_BOUNDARY = "----harnessboundary"
 
 
-def test_upload_rejects_multipart_without_boundary():
-    with _upload_http_server() as (srv, port):
-        base = f"http://127.0.0.1:{port}"
-        png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
-        )
-        body, _ctype = _multipart("file", "x.png", png)
+@pytest.mark.parametrize("ctype,max_bytes,status,error_words", [
+    # The 16-byte cap refuses the body with 413 before the server reads it.
+    pytest.param(f"multipart/form-data; boundary={_BOUNDARY}", "16", 413, None,
+                 id="oversized_body"),
+    pytest.param("multipart/form-data", None, 400, None,
+                 id="multipart_without_boundary"),
+    pytest.param(f"multipart/form-dataX; boundary={_BOUNDARY}", None, 400, None,
+                 id="multipart_substring_wrong_media_type"),
+    # RFC 7578: a quoted boundary must use double quotes.
+    pytest.param(f"multipart/form-data; boundary='{_BOUNDARY}'", None, 400,
+                 ("quoted", "boundary"), id="single_quoted_boundary"),
+    pytest.param(f'multipart/form-data; boundary="{_BOUNDARY}"', None, None, None,
+                 id="double_quoted_boundary_accepted"),
+])
+def test_upload_request_rules(monkeypatch, tmp_path, ctype, max_bytes, status, error_words):
+    from harness.api.files import check_upload_request, save_upload
 
-        bad_ctype = "multipart/form-data"  # missing required boundary
-        req = urllib.request.Request(
-            base + "/api/upload",
-            data=body,
-            headers={"Content-Type": bad_ctype, "X-Harness-Token": srv._TOKEN},
-            method="POST",
-        )
-        try:
-            urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
-            assert False, "expected HTTP 400 for missing boundary"
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-
-
-def test_upload_rejects_content_type_with_multipart_substring_but_wrong_media_type():
-    with _upload_http_server() as (srv, port):
-        base = f"http://127.0.0.1:{port}"
-        png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
-        )
-        body, _ctype = _multipart("file", "x.png", png)
-
-        # Has "multipart/form-data" as a substring but is not the exact media
-        # type required by our strict parser.
-        bad_ctype = "multipart/form-dataX; boundary=----harnessboundary"
-        req = urllib.request.Request(
-            base + "/api/upload",
-            data=body,
-            headers={"Content-Type": bad_ctype, "X-Harness-Token": srv._TOKEN},
-            method="POST",
-        )
-        try:
-            urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
-            assert False, "expected HTTP 400 for wrong media type"
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-
-
-def test_upload_accepts_quoted_boundary_variant():
-    with _upload_http_server() as (srv, port):
-        base = f"http://127.0.0.1:{port}"
-        png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
-        )
-        body, _ctype = _multipart("file", "x.png", png)
-
-        boundary = "----harnessboundary"
-        good_ctype = f'multipart/form-data; boundary="{boundary}"'
-        req = urllib.request.Request(
-            base + "/api/upload",
-            data=body,
-            headers={"Content-Type": good_ctype, "X-Harness-Token": srv._TOKEN},
-            method="POST",
-        )
-        res = json.load(urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT))
+    if max_bytes is None:
+        monkeypatch.delenv("HARNESS_UPLOAD_MAX_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_UPLOAD_MAX_BYTES", max_bytes)
+    body, _ctype = _multipart("file", "x.png", _PNG)
+    early = check_upload_request(ctype, len(body))
+    if status is None:
+        assert early is None
+        code, res = save_upload(body, ctype, str(tmp_path))
+        assert code == 200
         assert res["saved"] and res["saved"][0]["path"].endswith(".png")
-
-
-def test_upload_rejects_single_quoted_boundary():
-    """RFC 7578: boundary parameter must use double quotes, not single quotes."""
-    with _upload_http_server() as (srv, port):
-        base = f"http://127.0.0.1:{port}"
-        png = bytes.fromhex(
-            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-            "890000000a49444154789c6360000002000154a24f3f0000000049454e44ae426082"
-        )
-        body, _ctype = _multipart("file", "x.png", png)
-
-        # Single-quoted boundary should be rejected (non-RFC)
-        boundary = "----harnessboundary"
-        bad_ctype = f"multipart/form-data; boundary='{boundary}'"
-        req = urllib.request.Request(
-            base + "/api/upload",
-            data=body,
-            headers={"Content-Type": bad_ctype, "X-Harness-Token": srv._TOKEN},
-            method="POST",
-        )
-        try:
-            urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT)
-            assert False, "expected HTTP 400 for single-quoted boundary"
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-            data = json.loads(e.read().decode())
-            assert "quoted" in data["error"].lower() or "boundary" in data["error"].lower()
+        return
+    assert early is not None
+    assert early[0] == status
+    if error_words:
+        assert any(word in early[1]["error"].lower() for word in error_words)
 
 
 def test_save_upload_accepts_markdown(tmp_path):

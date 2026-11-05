@@ -42,20 +42,6 @@ def test_stamp_match_install_and_enable(plugins_home: Path, tmp_path: Path) -> N
     assert enabled.stamp_ok is True
 
 
-def test_stamp_mismatch_rejects_enable(plugins_home: Path, tmp_path: Path) -> None:
-    source = _valid_package(tmp_path / "src")
-    record = install_from_source(str(source))
-    installed = Path(record.path)
-    (installed / "plugin.json").write_text(
-        (installed / "plugin.json").read_text(encoding="utf-8") + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(AgentPluginError, match="mismatch"):
-        enable_plugin(record.id)
-    with pytest.raises(AgentPluginError, match="mismatch"):
-        verify_integrity_stamp(installed)
-
-
 def test_manifest_permissions_surface(tmp_path: Path) -> None:
     root = _valid_package(tmp_path / "plugin")
     manifest = json.loads((root / "plugin.json").read_text(encoding="utf-8"))

@@ -8,7 +8,8 @@ from harness.repo_env import publish_harness_repo, sync_harness_repo_from_cfg
 
 
 def test_publish_does_not_clobber_different_live_repo(monkeypatch, tmp_path):
-    a = tmp_path / "repo_a"
+    """Release-gate flake: a late runner build must not undo a session switch."""
+    a =tmp_path / "repo_a"
     b = tmp_path / "repo_b"
     a.mkdir()
     b.mkdir()
@@ -36,19 +37,4 @@ def test_force_sync_from_cfg_overrides(monkeypatch, tmp_path):
         repo = str(a)
 
     sync_harness_repo_from_cfg(Cfg())
-    assert os.environ["HARNESS_REPO"] == str(a)
-
-
-def test_session_switch_repo_env_holds_after_deferred_style_clobber(
-    monkeypatch, tmp_path
-):
-    """Simulate the release-gate flake: late runner build must not undo switch."""
-    a = tmp_path / "repo_a"
-    b = tmp_path / "repo_b"
-    a.mkdir()
-    b.mkdir()
-    # Live workspace after sessions/switch.
-    monkeypatch.setenv("HARNESS_REPO", str(a))
-    # Late deferred ConversationalSession for the previous workspace.
-    publish_harness_repo(str(b), force=False)
     assert os.environ["HARNESS_REPO"] == str(a)

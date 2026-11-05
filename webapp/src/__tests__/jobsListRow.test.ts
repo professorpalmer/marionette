@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { isJobsListRow } from "../lib/jobMetadataContext";
-import { isSwarmTrackerJob } from "../lib/jobClassification";
 
 describe("Jobs list and Jobs strip row filters", () => {
   it("hides command rows from the Jobs panel", () => {
@@ -18,12 +17,5 @@ describe("Jobs list and Jobs strip row filters", () => {
     expect(isJobsListRow({ job_kind: "provider", id: "local-swarm-toolu_01DX9mTRjHQiNgGCiQTe49gm" })).toBe(true);
     expect(isJobsListRow({ job_kind: "provider", id: "local-impl-toolu_01abc" })).toBe(true);
     expect(isJobsListRow({ job_kind: "provider", id: "local-cedfbf8c", adapter: "agentic" })).toBe(false);
-  });
-
-  it("hides command and wave-parent rows from the Jobs strip", () => {
-    expect(isSwarmTrackerJob({ job_kind: "run_command", id: "local-cmd-1" })).toBe(false);
-    expect(isSwarmTrackerJob({ job_kind: "parallel_wave", id: "local-wave-1" })).toBe(false);
-    expect(isSwarmTrackerJob({ job_kind: "run_swarm", id: "job_abc" })).toBe(true);
-    expect(isSwarmTrackerJob({ job_kind: "provider", id: "local-cedfbf8c", adapter: "agentic" })).toBe(true);
   });
 });

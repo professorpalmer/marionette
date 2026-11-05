@@ -5,6 +5,8 @@ Regression guard for the browser-path wiring (agentic adapter honors
 allow_browser via its own _browser_enabled gate)."""
 import os
 
+import pytest
+
 import pmharness.bridge as b
 
 
@@ -25,18 +27,47 @@ def test_browser_swarm_env_override(monkeypatch):
     assert not b._browser_swarm_enabled("audit the auth module")
 
 
-def test_browser_instruction_mentions_browser_tools():
-    inst = b._analysis_instruction("open https://x.com", "/repo", "explore", browser=True)
-    assert "browser_navigate" in inst
-    assert "browser_snapshot" in inst
-    assert "browser_auth_handoff" in inst
-    # Still read-only: never edit files or submit credentials.
-    assert "READ-ONLY" in inst
-    assert "credentials" in inst
+# Stop conditions (ARC-AGI operations-manual style) make a sub-agent stop
+# looping and report back. Both briefs must carry them.
+_STOP_CONDITIONS = (
+    # (a) stop after 2-3 failed variations and report back to the caller.
+    "2-3 variations",
+    "report back",
+    # (b) never restart/reset to "think more carefully" / "clean approach".
+    "Never restart or reset",
+    "think more carefully",
+    "clean approach",
+    "discards the progress",
+    # (c) prefer a few well-evidenced findings over endless exploration.
+    "well-evidenced findings",
+    "never concludes",
+)
 
 
-def test_code_instruction_is_unchanged_read_only_code():
-    inst = b._analysis_instruction("audit auth", "/repo", "explore", browser=False)
-    assert "Analyze the REAL codebase" in inst
-    assert "READ-ONLY" in inst
-    assert "browser_navigate" not in inst
+@pytest.mark.parametrize(
+    ("goal", "browser", "required", "forbidden"),
+    [
+        pytest.param(
+            "audit auth", False,
+            ("Analyze the REAL codebase", "READ-ONLY", "submit_findings"),
+            ("browser_navigate",),
+            id="code",
+        ),
+        pytest.param(
+            "open https://x.com", True,
+            ("browser_navigate", "browser_snapshot", "browser_auth_handoff",
+             "READ-ONLY", "credentials", "submit_findings"),
+            (),
+            id="browser",
+        ),
+    ],
+)
+def test_analysis_instruction_contents(goal, browser, required, forbidden):
+    inst = b._analysis_instruction(goal, "/repo", "explore", browser=browser)
+    for sub in _STOP_CONDITIONS:
+        assert sub in inst, f"missing stop-condition guidance: {sub!r}"
+    for sub in required:
+        assert sub in inst, f"missing: {sub!r}"
+    for sub in forbidden:
+        assert sub not in inst, f"unexpected: {sub!r}"
+    assert inst.isascii(), "brief must stay plain ASCII (no emoji)"

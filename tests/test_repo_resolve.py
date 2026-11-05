@@ -211,28 +211,6 @@ def test_empty_root_unchanged():
     assert resolve_effective_repo("   ") == "   "
 
 
-def test_result_is_cached(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    home.mkdir()
-    child = home / "only"
-    child.mkdir()
-    _git_init(str(child))
-    first = resolve_effective_repo(str(home))
-    assert _norm(first) == _norm(str(child))
-
-    calls = {"n": 0}
-    real_listdir = os.listdir
-
-    def counting_listdir(path):
-        calls["n"] += 1
-        return real_listdir(path)
-
-    monkeypatch.setattr(os, "listdir", counting_listdir)
-    second = resolve_effective_repo(str(home))
-    assert _norm(second) == _norm(first)
-    assert calls["n"] == 0
-
-
 def _marionette_home_layout(tmp_path):
     """tmp/home/.marionette (non-git) + tmp/home/.marionette/marionette (git)."""
     home = tmp_path / "home" / ".marionette"

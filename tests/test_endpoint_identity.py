@@ -2,11 +2,13 @@
 import io
 import json
 import os
+import sqlite3
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
 
+from harness.api.endpoint import get_endpoint, validate_request
 from harness.api.session_events import SessionEventStore
 
 
@@ -175,3 +177,25 @@ def test_concurrent_identity_creation_converges(tmp_path):
     with ThreadPoolExecutor(max_workers=4) as pool:
         identities = list(pool.map(lambda _: EndpointIdentity(tmp_path / 'endpoint.json', 'boot'), range(12)))
     assert len({item.endpoint_id for item in identities}) == 1
+
+
+@pytest.mark.parametrize('error', [sqlite3.OperationalError('private database detail'), RuntimeError('PM store failed')])
+def test_factory_failure_is_structured_unavailable(error):
+    def fail():
+        raise error
+    for status, body in (get_endpoint(fail), validate_request({'X-Harness-Protocol':'1'}, '/api/session/events', fail)):
+        assert status == 503
+        assert body['code'] == 'endpoint_unavailable'
+        assert str(error) not in body['error']
+
+
+@pytest.mark.parametrize('method,path', [('GET','/api/endpoint'),('GET','/api/session/events'),('POST','/api/session/persist'),('DELETE','/api/sessions/s')])
+@pytest.mark.parametrize('error', [sqlite3.OperationalError('private database detail'), RuntimeError('PM store failed')])
+def test_http_guard_returns_503_on_factory_failure(endpoint, monkeypatch, method, path, error):
+    def fail():
+        raise error
+    monkeypatch.setattr(endpoint, '_endpoint_identity', fail)
+    status, body = request(endpoint, path, {'X-Harness-Protocol':'1'}, method)
+    assert status == 503
+    assert body['code'] == 'endpoint_unavailable'
+    assert str(error) not in body['error']

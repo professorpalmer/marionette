@@ -126,56 +126,56 @@ def test_awaiting_swarm_reports_running_via_statuses():
     assert reg.statuses() == {"swarm": "running"}
 
 
-def test_is_busy_pending_swarms_despite_idle_turn_and_state():
-    runner = _awaiting_swarm_runner()
-    assert _is_busy(runner) is True
-
-
-def test_is_busy_awaiting_swarm_via_state_when_has_pending_missing():
-    """state() == awaiting_swarm is enough when has_pending_swarms is absent."""
-    runner = SimpleNamespace(
-        _busy=threading.Lock(),
-        _state="idle",
-        is_turn_busy=lambda: False,
-        state=lambda: "awaiting_swarm",
-    )
-    assert _is_busy(runner) is True
-
-
-def test_is_busy_swarm_futures_attr_fallback():
-    """Non-empty _swarm_futures counts as busy without public swarm helpers."""
-    runner = SimpleNamespace(
-        _busy=threading.Lock(),
-        _state="idle",
-        is_turn_busy=lambda: False,
-        _swarm_futures={"a"},
-    )
-    assert _is_busy(runner) is True
-
-
-def test_is_busy_stop_holds_idle_still_idle_without_swarms():
-    """is_turn_busy False must not resurrect via locked _busy (Stop path)."""
+@pytest.mark.parametrize(
+    ("runner_fields", "lock_held", "expected"),
+    [
+        pytest.param(
+            {
+                "_state": "idle",
+                "is_turn_busy": lambda: False,
+                "has_pending_swarms": lambda: True,
+                "state": lambda: "awaiting_swarm",
+                "_swarm_futures": {"fut-1"},
+            },
+            False,
+            True,
+            id="pending_swarms_despite_idle_turn_and_state",
+        ),
+        # state() == awaiting_swarm is enough when has_pending_swarms is absent.
+        pytest.param(
+            {"_state": "idle", "is_turn_busy": lambda: False, "state": lambda: "awaiting_swarm"},
+            False,
+            True,
+            id="awaiting_swarm_via_state",
+        ),
+        # Non-empty _swarm_futures counts as busy without public swarm helpers.
+        pytest.param(
+            {"_state": "idle", "is_turn_busy": lambda: False, "_swarm_futures": {"a"}},
+            False,
+            True,
+            id="swarm_futures_attr_fallback",
+        ),
+        # is_turn_busy False must not resurrect via locked _busy (Stop path).
+        pytest.param(
+            {"_state": "thinking", "is_turn_busy": lambda: False, "has_pending_swarms": lambda: False},
+            True,
+            False,
+            id="stop_holds_idle_without_swarms",
+        ),
+        pytest.param(
+            {"_state": "thinking", "is_turn_busy": lambda: False, "has_pending_swarms": lambda: True},
+            True,
+            True,
+            id="stop_holds_idle_but_pending_swarm",
+        ),
+    ],
+)
+def test_is_busy(runner_fields, lock_held, expected):
     lock = threading.Lock()
-    lock.acquire()
-    runner = SimpleNamespace(
-        _busy=lock,
-        _state="thinking",
-        is_turn_busy=lambda: False,
-        has_pending_swarms=lambda: False,
-    )
-    assert _is_busy(runner) is False
-
-
-def test_is_busy_stop_holds_idle_but_pending_swarm_still_busy():
-    lock = threading.Lock()
-    lock.acquire()
-    runner = SimpleNamespace(
-        _busy=lock,
-        _state="thinking",
-        is_turn_busy=lambda: False,
-        has_pending_swarms=lambda: True,
-    )
-    assert _is_busy(runner) is True
+    if lock_held:
+        lock.acquire()
+    runner = SimpleNamespace(_busy=lock, **runner_fields)
+    assert _is_busy(runner) is expected
 
 
 def test_awaiting_swarm_runner_not_evicted_as_idle():

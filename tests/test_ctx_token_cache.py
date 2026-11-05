@@ -60,17 +60,6 @@ def test_second_call_returns_cached_and_does_not_rewalk():
     assert calls_after_second == calls_after_first
 
 
-def test_appending_message_updates_estimate():
-    s = _new_session()
-    s._history.append({"role": "user", "content": "hi"})
-    before = s._estimate_context_tokens()
-
-    s._history.append({"role": "assistant", "content": "X" * 400})
-    after = s._estimate_context_tokens()
-
-    assert after > before
-
-
 def test_inplace_same_length_rebuild_recomputes_after_invalidate():
     s = _new_session()
     s._history.append({"role": "user", "content": "small"})

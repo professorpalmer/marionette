@@ -397,11 +397,8 @@ def test_worker_destructive_guards(monkeypatch):
         shutil.rmtree(repo_dir)
 
 
-def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
-    from unittest.mock import MagicMock, patch
-    import json
+def test_worker_leaf_mode_schemas():
     from harness.pilot import build_tools_schema
-    from harness.config import HarnessConfig
 
     # 1. build_tools_schema with no_delegation=True
     schema_worker = build_tools_schema(no_delegation=True)
@@ -428,6 +425,12 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
     assert "run_swarm" in tool_names_default
     assert "search_codegraph" in tool_names_default
     assert "query_wiki" in tool_names_default
+
+
+def test_worker_leaf_mode_runtime_defense(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+    import json
+    from harness.config import HarnessConfig
 
     # 3. Verify ProviderWorker constructs session with no_delegation=True
     repo_dir = create_temp_git_repo()
@@ -458,7 +461,11 @@ def test_worker_leaf_mode_schemas_and_defense(monkeypatch):
         shutil.rmtree(repo_dir)
 
     # 4. Verify defense-in-depth on action loop
-    config = HarnessConfig(no_delegation=True, repo=os.path.abspath("."))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = HarnessConfig(
+        no_delegation=True, repo=str(workspace), state_dir=str(tmp_path / "state"),
+    )
     session = ConversationalSession(config)
 
     # Mock pilot chat() to return a run_implement attempt, then terminate.

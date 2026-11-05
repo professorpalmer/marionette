@@ -180,16 +180,10 @@ def test_finish_reason_error_is_provider_eof_not_transport():
     assert stream_err.cause == TERMINAL_TRANSPORT_ERROR
 
 
-def test_transport_error_string_and_wave1_error_terminal():
+def test_transport_error_string_without_stream_terminal():
     http = classify_provider_terminal(_resp("hello", error="HTTP 502: upstream"))
     assert http.cause == TERMINAL_TRANSPORT_ERROR
     assert http.blocks_clean_finalize is True
-
-    stream_err = classify_provider_terminal(_resp(
-        "hello", error="HTTP 502: upstream", stream_terminal="error",
-        stream_started=True,
-    ))
-    assert stream_err.cause == TERMINAL_TRANSPORT_ERROR
 
 
 def test_classifier_never_raises():

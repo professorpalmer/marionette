@@ -1,5 +1,7 @@
 """Tests for live model pricing resolution (cost estimator shows real $5/$25 for
 Opus 4.8 etc., not a 0.5/2.0 placeholder) -- offline via a mocked price map."""
+import pytest
+
 import pmharness.registry as reg
 
 
@@ -88,31 +90,25 @@ def test_resolve_price_live_for_picker_spec(monkeypatch):
     assert (pin, pout) == (5.0, 30.0)
 
 
-def test_resolve_price_cursor_cli_via_plan_alias(monkeypatch):
-    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4.6": (2.0, 6.0)})
+@pytest.mark.parametrize("price_map, spec, expected", [
+    pytest.param(
+        {"x-ai/grok-4.6": (2.0, 6.0)}, "cursor-cli:cursor-grok-4.6-high", (2.0, 6.0),
+        id="cursor_cli_plan_alias",
+    ),
+    pytest.param(
+        {"x-ai/grok-4.5": (0.2, 0.5)}, "cursor-cli:cursor-grok-4.5-high", (0.2, 0.5),
+        id="cursor_cli_grok_45_alias",
+    ),
+    pytest.param(
+        {"anthropic/claude-sonnet-4.5": (3.0, 15.0)}, "cursor-cli:claude-fable-5", (3.0, 15.0),
+        id="cursor_fable_frontier_equivalent_alias",
+    ),
+])
+def test_resolve_price_cursor_cli_live_alias(monkeypatch, price_map, spec, expected):
+    monkeypatch.setattr(reg, "_PRICE_MEM", price_map)
     monkeypatch.setattr(reg, "_live_windows", lambda: {})
-    pin, pout, src = reg.resolve_price_with_source("cursor-cli:cursor-grok-4.6-high")
-    assert (pin, pout) == (2.0, 6.0)
-    assert src == "live_alias"
-
-
-def test_resolve_price_cursor_cli_grok_45_alias_still_resolves(monkeypatch):
-    monkeypatch.setattr(reg, "_PRICE_MEM", {"x-ai/grok-4.5": (0.2, 0.5)})
-    monkeypatch.setattr(reg, "_live_windows", lambda: {})
-    pin, pout, src = reg.resolve_price_with_source("cursor-cli:cursor-grok-4.5-high")
-    assert (pin, pout) == (0.2, 0.5)
-    assert src == "live_alias"
-
-
-def test_resolve_price_cursor_fable_via_frontier_equivalent_alias(monkeypatch):
-    monkeypatch.setattr(
-        reg,
-        "_PRICE_MEM",
-        {"anthropic/claude-sonnet-4.5": (3.0, 15.0)},
-    )
-    monkeypatch.setattr(reg, "_live_windows", lambda: {})
-    pin, pout, src = reg.resolve_price_with_source("cursor-cli:claude-fable-5")
-    assert (pin, pout) == (3.0, 15.0)
+    pin, pout, src = reg.resolve_price_with_source(spec)
+    assert (pin, pout) == expected
     assert src == "live_alias"
 
 

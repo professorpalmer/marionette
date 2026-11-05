@@ -89,6 +89,7 @@ def test_do_run_command_timeout_is_not_success():
     assert val["status"] == "timeout"
     assert val["exit_code"] == -1
     assert "partial" in val["output"]
+    assert val["cwd"] == "/repo"
 
 
 def test_do_run_command_error_is_not_success():
@@ -155,6 +156,10 @@ def test_read_file_default_window_is_hermes_competitive(tmp_path):
     assert "This is line 2000\n" in val
     assert "This is line 2001\n" not in val
     assert "[file is large (2500 lines);" in val
+    assert (
+        "[file is large (2500 lines); re-read with start_line and limit "
+        "to see specific sections]"
+    ) in val
     assert "truncated after line 2000" in val
     assert "continue with start_line=2001" in val
 

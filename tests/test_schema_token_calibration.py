@@ -47,14 +47,16 @@ def _session(budget: int = 100_000) -> ConversationalSession:
     return s
 
 
-def test_flag_defaults_off(monkeypatch):
-    monkeypatch.delenv("HARNESS_SCHEMA_TOKEN_CALIBRATION", raising=False)
-    assert schema_token_calibration_enabled() is False
-
-
-def test_flag_on(monkeypatch):
-    monkeypatch.setenv("HARNESS_SCHEMA_TOKEN_CALIBRATION", "1")
-    assert schema_token_calibration_enabled() is True
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [pytest.param(None, False, id="unset"), pytest.param("1", True, id="on")],
+)
+def test_flag_defaults_off(monkeypatch, env_value, expected):
+    if env_value is None:
+        monkeypatch.delenv("HARNESS_SCHEMA_TOKEN_CALIBRATION", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_SCHEMA_TOKEN_CALIBRATION", env_value)
+    assert schema_token_calibration_enabled() is expected
 
 
 def test_cold_start_chars_div_four():

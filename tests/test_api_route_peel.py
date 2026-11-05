@@ -34,7 +34,6 @@ from harness.api.worktrees import (
     post_worktrees_max,
     post_worktrees_remove,
 )
-from harness.api import auth as auth_api
 
 
 # ---------------------------------------------------------------------------
@@ -377,14 +376,3 @@ def test_terminal_write_missing():
     svc = TerminalServices(cfg=SimpleNamespace(repo=None), pty=pty)
     code, payload = post_terminal_write({"id": "nope", "data": "x"}, svc)
     assert code == 404
-
-
-# ---------------------------------------------------------------------------
-# Auth ownership surface
-# ---------------------------------------------------------------------------
-
-
-def test_auth_module_reexports_pool_handlers():
-    assert callable(auth_api.post_auth_pools)
-    assert callable(auth_api.get_auth_pools)
-    assert callable(auth_api.post_auth_cursor_cli_status)

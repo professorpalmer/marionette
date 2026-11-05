@@ -338,6 +338,7 @@ def test_worker_reasoning_only_analysis_fails(monkeypatch):
         # for the pilot, but must not be treated as a clean success headline.
         assert res.ok is False
         assert not (res.patch or "").strip()
+        assert "Now let me look" in (res.summary or "")
     finally:
         shutil.rmtree(repo_dir)
 
@@ -575,32 +576,6 @@ def test_pick_analysis_message_prefers_structured_over_later_reasoning():
     assert "FINDING:" in text
     assert "Now let me look" not in text
     assert "stall" in halt
-
-
-def test_worker_degrade_keeps_diagnostic_summary(monkeypatch):
-    """Contract fail keeps last message under summary for the pilot."""
-    repo_dir = create_temp_git_repo()
-    try:
-        def mock_run_auto(self, objective, budget=None, require_codegraph=True, **kwargs):
-            yield ConvEvent(
-                "message",
-                {"text": "Now let me look at the auth module more carefully..."},
-            )
-            yield ConvEvent("auto_halt", {"reason": "max turns"})
-
-        monkeypatch.setattr(ConversationalSession, "run_auto", mock_run_auto)
-
-        worker = ProviderWorker(
-            repo=repo_dir,
-            goal="Audit auth",
-            expects_diff=False,
-        )
-        res = worker.run()
-        assert res.ok is False
-        assert "no structured findings" in (res.error or "")
-        assert "Now let me look" in (res.summary or "")
-    finally:
-        shutil.rmtree(repo_dir)
 
 
 def test_analysis_mode_skips_no_swarm_early_halt(monkeypatch):

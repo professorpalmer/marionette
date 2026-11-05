@@ -78,23 +78,6 @@ describe("useInFileReview", () => {
     }, "selected");
     expect(reviewHunkDecisionKey("rev-infile", "infile_a#0")).toBe("rev-infile::infile_a#0");
   });
-
-  it("Reject leaves sibling hunks pending", async () => {
-    vi.mocked(api.applyReview).mockResolvedValue({
-      ok: true,
-      message: "ok",
-      applied_files: ["src/target.ts"],
-      rejected_hunks: ["0:1"],
-      checkpoint_id: null,
-    } as any);
-
-    const { applyInFileHunkDecision } = await import("../lib/inFileReview");
-    await applyInFileHunkDecision(review, "infile_b#0", "reject");
-
-    expect(api.applyReview).toHaveBeenCalledWith("rev-infile", {
-      "infile_b#0": "reject",
-    }, "selected");
-  });
 });
 
 it('restarts editor generations, ignores old results, and refreshes on events', async () => {

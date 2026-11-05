@@ -204,6 +204,11 @@ def test_real_host_attach_rebuild_swap_relocate_workspace_and_clear(owned_server
     from harness.api.sessions import handle_session_relocate, post_sessions_clear, post_sessions_switch
     from harness.api.workspace import post_workspace_forget, post_workspace_open
     srv = owned_server
+    # Attach copies the session's stored driver into srv._cfg, and rebuild and
+    # swap load it. Pin both to the offline stub, so a driver that an earlier
+    # test left on the module config cannot need a provider key.
+    monkeypatch.setattr(srv._cfg, 'driver', 'stub-oracle-v2')
+    srv._sessions.pilot_preferences(srv._sessions.active, updates={'driver': 'stub-oracle-v2'})
     monkeypatch.setenv('HARNESS_DEFER_COLD_ATTACH', '0')
     monkeypatch.setattr(srv, '_puppetmaster_available', lambda: False)
     monkeypatch.setattr(srv, '_index_codegraph_bg', lambda *a: None)
@@ -351,8 +356,9 @@ def test_runner_swap_on_same_root_keeps_list_cursors_valid(tmp_path):
     # minted a new cursor secret and every continuation came back 400
     # (renderer: "Job updates unavailable (invalid request)", retried forever).
     reg, a, ctx, selection, _ = seeded(tmp_path)
+    store = a.state().store
     for i in range(70):
-        a.state().store.create_job(f'owned-{i}', origin='marionette', session_id='A')
+        store.create_job(f'owned-{i}', origin='marionette', session_id='A')
     view = reg.metadata_view
     qs = dict(session_id=['A'], repo=[ctx.repo], view_generation=[ctx.view_generation],
               scope=['session'], source=[selection.source], state_id=[selection.state_id], mode=['snapshot'])

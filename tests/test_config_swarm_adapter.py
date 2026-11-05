@@ -3,6 +3,8 @@
 Agentic is the shipped identity. Demo is never the product default -- not even
 when there is no repo -- because demo findings read as a broken product.
 Demo requires explicit HARNESS_ALLOW_DEMO_SWARM=1 (eval only).
+HARNESS_SWARM_ADAPTER=cursor is the CURSOR_API_KEY platform path.
+Agent-login cursor-cli is never a swarm adapter.
 """
 import pytest
 
@@ -16,37 +18,22 @@ def _hermetic(monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
 
 
-def test_repo_defaults_to_agentic_out_of_the_box(monkeypatch):
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    assert HarnessConfig.from_env().swarm_adapter == "agentic"
-
-
-def test_no_repo_still_defaults_to_agentic(monkeypatch):
-    monkeypatch.delenv("HARNESS_REPO", raising=False)
-    assert HarnessConfig.from_env().swarm_adapter == "agentic"
-
-
-def test_explicit_adapter_always_wins(monkeypatch):
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "openai")
-    assert HarnessConfig.from_env().swarm_adapter == "openai"
-
-
-def test_poisoned_demo_env_does_not_win(monkeypatch):
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "demo")
-    assert HarnessConfig.from_env().swarm_adapter == "agentic"
-
-
-def test_cursor_env_keeps_platform_cursor(monkeypatch):
-    """HARNESS_SWARM_ADAPTER=cursor is the CURSOR_API_KEY platform path."""
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "cursor")
-    assert HarnessConfig.from_env().swarm_adapter == "cursor"
-
-
-def test_cursor_cli_env_normalizes_to_agentic(monkeypatch):
-    """Agent-login cursor-cli is never a swarm adapter."""
-    monkeypatch.setenv("HARNESS_REPO", "/tmp/somerepo")
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "cursor-cli")
-    assert HarnessConfig.from_env().swarm_adapter == "agentic"
+@pytest.mark.parametrize(
+    "repo, adapter_env, expected",
+    [
+        pytest.param("/tmp/somerepo", None, "agentic", id="repo-defaults-to-agentic"),
+        pytest.param(None, None, "agentic", id="no-repo-still-agentic"),
+        pytest.param("/tmp/somerepo", "openai", "openai", id="explicit-adapter-wins"),
+        pytest.param("/tmp/somerepo", "demo", "agentic", id="poisoned-demo-env-does-not-win"),
+        pytest.param("/tmp/somerepo", "cursor", "cursor", id="cursor-env-keeps-platform-cursor"),
+        pytest.param("/tmp/somerepo", "cursor-cli", "agentic", id="cursor-cli-normalizes-to-agentic"),
+    ],
+)
+def test_from_env_swarm_adapter(monkeypatch, repo, adapter_env, expected):
+    if repo is None:
+        monkeypatch.delenv("HARNESS_REPO", raising=False)
+    else:
+        monkeypatch.setenv("HARNESS_REPO", repo)
+    if adapter_env is not None:
+        monkeypatch.setenv("HARNESS_SWARM_ADAPTER", adapter_env)
+    assert HarnessConfig.from_env().swarm_adapter == expected

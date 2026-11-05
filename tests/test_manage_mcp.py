@@ -36,6 +36,7 @@ def test_manager_manage_add_url_only(tmp_path, monkeypatch):
     out = m.manage("add", name="discord-mcp", url="http://127.0.0.1:1/mcp")
     # Port 1 almost never hosts MCP; expect saved + start error, not reject.
     assert out.get("saved") or out.get("ok")
+    assert not out.get("requires_confirmation")
     assert "discord-mcp" in m.load_config()
     assert m.load_config()["discord-mcp"]["url"] == "http://127.0.0.1:1/mcp"
 
@@ -58,15 +59,6 @@ def test_stdio_add_requires_explicit_confirmation(tmp_path):
         assert not any(s["name"] == "evil" for s in m.manage("list")["servers"])
     finally:
         m.stop_all()
-
-
-def test_http_url_add_needs_no_confirmation(tmp_path):
-    """url=... is not a local process spawn, so it stays zero-friction."""
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    out = m.manage("add", name="http-only", url="http://127.0.0.1:1/mcp")
-    assert not out.get("requires_confirmation")
-    assert "http-only" in m.load_config()
 
 
 def test_http_route_refuses_stdio_without_confirmation(tmp_path):

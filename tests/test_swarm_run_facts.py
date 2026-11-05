@@ -241,18 +241,6 @@ class TestAcceptanceCriteria:
         )
         assert facts[0].status == NOT_VERIFIED
 
-    def test_string_citation_without_a_locus_is_not_verified(self):
-        facts = evaluate_acceptance_criteria(
-            ["tsc passes"],
-            [{
-                "type": "finding",
-                "acceptance_criteria": ["tsc passes"],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
     def test_passed_status_dict_with_evidence_verifies(self):
         facts = evaluate_acceptance_criteria(
             ["pyright is clean"],
@@ -325,80 +313,135 @@ class TestAcceptanceCriteria:
         assert facts[0].status == NOT_VERIFIED
         assert "harness/unrelated.py" not in facts[0].basis
 
-    def test_malformed_non_path_evidence_stays_not_verified(self):
-        facts = evaluate_acceptance_criteria(
-            ["pyright is clean"],
-            [{
-                "type": "verification",
-                "acceptance_criteria": [{
-                    "criterion": "pyright is clean",
-                    "status": "passed",
-                    "evidence": "datetime.utcnow",
-                }],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
-    def test_unknown_status_dict_does_not_verify(self):
-        facts = evaluate_acceptance_criteria(
-            ["tsc passes"],
-            [{
-                "type": "verification",
-                "acceptance_criteria": [{
-                    "criterion": "tsc passes",
-                    "status": "unknown",
-                    "evidence": "not_reported",
-                }],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
-    def test_failed_status_dict_does_not_verify(self):
-        facts = evaluate_acceptance_criteria(
-            ["pyright is clean"],
-            [{
-                "type": "verification",
-                "acceptance_criteria": [{
-                    "criterion": "pyright is clean",
-                    "status": "failed",
-                    "evidence": "harness/a.py:1",
-                }],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
-    def test_malformed_dict_does_not_verify(self):
-        facts = evaluate_acceptance_criteria(
-            ["pyright is clean"],
-            [{
-                "type": "verification",
-                "acceptance_criteria": [{"status": "passed", "evidence": "x"}],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
-    def test_foreign_job_structured_record_does_not_verify(self):
-        facts = evaluate_acceptance_criteria(
-            ["tsc passes"],
-            [{
-                "type": "finding",
-                "acceptance_criteria": [{
-                    "criterion": "tsc passes",
-                    "status": "passed",
-                    "evidence": "harness/a.py:1",
-                }],
-                "execution_ref": {"job_id": "job-older"},
-            }],
-            CURRENT_JOB,
-        )
+    @pytest.mark.parametrize(
+        ("criterion", "artifact"),
+        [
+            pytest.param(
+                "tsc passes",
+                {
+                    "type": "finding",
+                    "acceptance_criteria": ["tsc passes"],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="string_citation_without_locus",
+            ),
+            pytest.param(
+                "pyright is clean",
+                {
+                    "type": "verification",
+                    "acceptance_criteria": [{
+                        "criterion": "pyright is clean",
+                        "status": "passed",
+                        "evidence": "datetime.utcnow",
+                    }],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="malformed_non_path_evidence",
+            ),
+            pytest.param(
+                "tsc passes",
+                {
+                    "type": "verification",
+                    "acceptance_criteria": [{
+                        "criterion": "tsc passes",
+                        "status": "unknown",
+                        "evidence": "not_reported",
+                    }],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="unknown_status_dict",
+            ),
+            pytest.param(
+                "pyright is clean",
+                {
+                    "type": "verification",
+                    "acceptance_criteria": [{
+                        "criterion": "pyright is clean",
+                        "status": "failed",
+                        "evidence": "harness/a.py:1",
+                    }],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="failed_status_dict",
+            ),
+            pytest.param(
+                "pyright is clean",
+                {
+                    "type": "verification",
+                    "acceptance_criteria": [{"status": "passed", "evidence": "x"}],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="malformed_dict",
+            ),
+            pytest.param(
+                "tsc passes",
+                {
+                    "type": "finding",
+                    "acceptance_criteria": [{
+                        "criterion": "tsc passes",
+                        "status": "passed",
+                        "evidence": "harness/a.py:1",
+                    }],
+                    "execution_ref": {"job_id": "job-older"},
+                },
+                id="foreign_job_structured_record",
+            ),
+            pytest.param(
+                "pyright is clean",
+                {
+                    "type": "verification",
+                    "body": "Pyright is clean across the package.",
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="current_prose_without_explicit_mapping",
+            ),
+            pytest.param(
+                "tsc passes",
+                {
+                    "type": "finding",
+                    "acceptance_criteria": ["tsc passes"],
+                    "execution_ref": {"job_id": "job-older"},
+                },
+                id="foreign_structural_citation",
+            ),
+            pytest.param(
+                "tsc passes",
+                {
+                    "type": "verification",
+                    "headline": "checked harness/a.py:1",
+                    "acceptance_criteria": [
+                        {
+                            "criterion": "tsc passes",
+                            "status": "unknown",
+                            "evidence": "not_reported",
+                        },
+                        "tsc passes",
+                    ],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="mixed_string_and_unknown_structured_record",
+            ),
+            pytest.param(
+                "pyright is clean",
+                {
+                    "type": "verification",
+                    "headline": "checked harness/a.py:1",
+                    "acceptance_criteria": [
+                        {
+                            "criterion": "pyright is clean",
+                            "status": "failed",
+                            "evidence": "harness/a.py:1",
+                        },
+                        "pyright is clean",
+                    ],
+                    "execution_ref": {"job_id": CURRENT_JOB},
+                },
+                id="mixed_string_and_failed_structured_record",
+            ),
+        ],
+    )
+    def test_citation_that_proves_nothing_stays_not_verified(self, criterion, artifact):
+        facts = evaluate_acceptance_criteria([criterion], [artifact], CURRENT_JOB)
         assert facts[0].status == NOT_VERIFIED
 
     def test_failed_prompt_repetition_cannot_verify_every_criterion(self):
@@ -414,18 +457,6 @@ class TestAcceptanceCriteria:
             CURRENT_JOB,
         )
         assert {fact.status for fact in facts} == {NOT_VERIFIED}
-
-    def test_current_prose_without_explicit_mapping_is_not_proof(self):
-        facts = evaluate_acceptance_criteria(
-            ["pyright is clean"],
-            [{
-                "type": "verification",
-                "body": "Pyright is clean across the package.",
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
 
     def test_unstamped_artifact_cannot_verify_a_criterion(self):
         """No parent attribution means no proof this run produced the check."""
@@ -464,18 +495,6 @@ class TestAcceptanceCriteria:
         assert facts[0].status == NOT_VERIFIED
         assert CURRENT_JOB in facts[0].basis
 
-    def test_foreign_structural_citation_is_also_rejected(self):
-        facts = evaluate_acceptance_criteria(
-            ["tsc passes"],
-            [{
-                "type": "finding",
-                "acceptance_criteria": ["tsc passes"],
-                "execution_ref": {"job_id": "job-older"},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
     def test_an_unknown_current_job_verifies_nothing(self):
         facts = evaluate_acceptance_criteria(
             ["tsc passes"],
@@ -500,46 +519,6 @@ class TestAcceptanceCriteria:
 
     def test_zero_criteria_yields_no_rows(self):
         assert evaluate_acceptance_criteria([], [{"type": "finding"}], CURRENT_JOB) == ()
-
-    def test_mixed_string_and_unknown_structured_record_stays_not_verified(self):
-        facts = evaluate_acceptance_criteria(
-            ["tsc passes"],
-            [{
-                "type": "verification",
-                "headline": "checked harness/a.py:1",
-                "acceptance_criteria": [
-                    {
-                        "criterion": "tsc passes",
-                        "status": "unknown",
-                        "evidence": "not_reported",
-                    },
-                    "tsc passes",
-                ],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
-
-    def test_mixed_string_and_failed_structured_record_stays_not_verified(self):
-        facts = evaluate_acceptance_criteria(
-            ["pyright is clean"],
-            [{
-                "type": "verification",
-                "headline": "checked harness/a.py:1",
-                "acceptance_criteria": [
-                    {
-                        "criterion": "pyright is clean",
-                        "status": "failed",
-                        "evidence": "harness/a.py:1",
-                    },
-                    "pyright is clean",
-                ],
-                "execution_ref": {"job_id": CURRENT_JOB},
-            }],
-            CURRENT_JOB,
-        )
-        assert facts[0].status == NOT_VERIFIED
 
     def test_full_checklist_string_echo_cannot_green_every_criterion(self):
         criteria = ["pyright is clean", "tsc passes", "vitest suite is green"]

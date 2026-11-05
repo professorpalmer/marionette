@@ -3,7 +3,6 @@ import sys
 import shutil
 import tempfile
 import threading
-import time
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -188,11 +187,12 @@ def test_startup_auto_index_fires_when_dir_present_but_no_db(monkeypatch):
         monkeypatch.setattr(server._cfg, "repo", temp_dir)
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
-        mock_index_bg = MagicMock()
+        called = threading.Event()
+        mock_index_bg = MagicMock(side_effect=lambda repo: called.set())
         monkeypatch.setattr(cgi, "index_codegraph_bg", mock_index_bg)
 
         server._maybe_auto_index_codegraph()
-        time.sleep(0.1)  # let the daemon thread run
+        assert called.wait(5)
 
         mock_index_bg.assert_called_once_with(temp_dir)
 
@@ -209,14 +209,13 @@ def test_startup_auto_index_fires_when_not_exists(monkeypatch):
         monkeypatch.setattr(server, "_puppetmaster_available", lambda: True)
 
         # Mock index_codegraph_bg (owned by harness.api.codegraph_index)
-        mock_index_bg = MagicMock()
+        called = threading.Event()
+        mock_index_bg = MagicMock(side_effect=lambda repo: called.set())
         monkeypatch.setattr(cgi, "index_codegraph_bg", mock_index_bg)
 
         # Run the auto index startup check
         server._maybe_auto_index_codegraph()
-
-        # Give the background daemon thread a tiny moment to execute
-        time.sleep(0.1)
+        assert called.wait(5)
 
         # It should call index_codegraph_bg
         mock_index_bg.assert_called_once_with(temp_dir)

@@ -33,6 +33,30 @@ def _post(port, path, body, headers):
     return urllib.request.urlopen(req, timeout=10)
 
 
+def _post_and_check_persisted(port, srv, state_dir, key, value, env_var, env_value):
+    """POST one setting, then check the response, GET, env var, and env_settings.json."""
+    import os
+
+    post_resp = _post(
+        port,
+        "/api/settings",
+        {key: value},
+        {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+    )
+    assert post_resp.status == 200
+    posted = json.loads(post_resp.read().decode())[key]
+    assert posted == value and type(posted) is type(value)
+    fetched = json.loads(_get(port, "/api/settings").read().decode())[key]
+    assert fetched == value and type(fetched) is type(value)
+    assert os.environ.get(env_var) == env_value
+    env_path = os.path.join(str(state_dir), "env_settings.json")
+    assert os.path.exists(env_path)
+    with open(env_path, encoding="utf-8") as f:
+        persisted = json.load(f)
+    assert persisted[env_var] == env_value
+    return env_path
+
+
 def test_settings_get_returns_expected_shape(monkeypatch):
     # Live developer shells often pin HARNESS_CODEX_REASONING_EFFORT=max;
     # this shape test asserts the factory default, not the host preference.
@@ -168,84 +192,39 @@ def test_settings_jev_opt_in_default_off_and_persists(monkeypatch):
         httpd.shutdown()
 
 
-def test_settings_post_persists_reasoning_effort(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("key", "env_var", "default", "value", "restore"),
+    [
+        pytest.param(
+            "reasoning_effort", "HARNESS_CODEX_REASONING_EFFORT", None, "xhigh", "low",
+            id="reasoning_effort",
+        ),
+        pytest.param(
+            "swarm_reasoning_effort", "HARNESS_SWARM_REASONING_EFFORT", "medium", "low", "medium",
+            id="swarm_reasoning_effort",
+        ),
+    ],
+)
+def test_settings_post_persists_reasoning_effort(
+    tmp_path, monkeypatch, key, env_var, default, value, restore,
+):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
+    if default is not None:
+        monkeypatch.delenv(env_var, raising=False)
     httpd, port, srv = _server()
     try:
-        post_resp = _post(
-            port,
-            "/api/settings",
-            {"reasoning_effort": "xhigh"},
-            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
-        )
-        assert post_resp.status == 200
-        post_data = json.loads(post_resp.read().decode())
-        assert post_data["reasoning_effort"] == "xhigh"
+        if default is not None:
+            assert json.loads(_get(port, "/api/settings").read().decode())[key] == default
 
-        get_data = json.loads(_get(port, "/api/settings").read().decode())
-        assert get_data["reasoning_effort"] == "xhigh"
-
-        import os
-        assert os.environ.get("HARNESS_CODEX_REASONING_EFFORT") == "xhigh"
-
-        env_path = os.path.join(str(tmp_path), "env_settings.json")
-        assert os.path.exists(env_path)
-        with open(env_path, encoding="utf-8") as f:
-            persisted = json.load(f)
-        assert persisted["HARNESS_CODEX_REASONING_EFFORT"] == "xhigh"
+        _post_and_check_persisted(port, srv, tmp_path, key, value, env_var, value)
 
         config = json.loads(_get(port, "/api/config").read().decode())
-        assert config["reasoning_effort"] == "xhigh"
+        assert config[key] == value
 
         restore_resp = _post(
             port,
             "/api/settings",
-            {"reasoning_effort": "low"},
-            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
-        )
-        assert restore_resp.status == 200
-    finally:
-        httpd.shutdown()
-
-
-def test_settings_post_persists_swarm_reasoning_effort(tmp_path, monkeypatch):
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path))
-    monkeypatch.delenv("HARNESS_SWARM_REASONING_EFFORT", raising=False)
-    httpd, port, srv = _server()
-    try:
-        assert json.loads(_get(port, "/api/settings").read().decode())[
-            "swarm_reasoning_effort"
-        ] == "medium"
-
-        post_resp = _post(
-            port,
-            "/api/settings",
-            {"swarm_reasoning_effort": "low"},
-            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
-        )
-        assert post_resp.status == 200
-        post_data = json.loads(post_resp.read().decode())
-        assert post_data["swarm_reasoning_effort"] == "low"
-
-        get_data = json.loads(_get(port, "/api/settings").read().decode())
-        assert get_data["swarm_reasoning_effort"] == "low"
-
-        import os
-        assert os.environ.get("HARNESS_SWARM_REASONING_EFFORT") == "low"
-
-        env_path = os.path.join(str(tmp_path), "env_settings.json")
-        assert os.path.exists(env_path)
-        with open(env_path, encoding="utf-8") as f:
-            persisted = json.load(f)
-        assert persisted["HARNESS_SWARM_REASONING_EFFORT"] == "low"
-
-        config = json.loads(_get(port, "/api/config").read().decode())
-        assert config["swarm_reasoning_effort"] == "low"
-
-        restore_resp = _post(
-            port,
-            "/api/settings",
-            {"swarm_reasoning_effort": "medium"},
+            {key: restore},
             {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
         )
         assert restore_resp.status == 200
@@ -262,26 +241,10 @@ def test_settings_post_persists_compaction_residual(tmp_path, monkeypatch):
             "compactionResidual"
         ] == "catalog"
 
-        post_resp = _post(
-            port,
-            "/api/settings",
-            {"compactionResidual": "hybrid"},
-            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        _post_and_check_persisted(
+            port, srv, tmp_path,
+            "compactionResidual", "hybrid", "HARNESS_COMPACTION_RESIDUAL", "hybrid",
         )
-        assert post_resp.status == 200
-        post_data = json.loads(post_resp.read().decode())
-        assert post_data["compactionResidual"] == "hybrid"
-
-        get_data = json.loads(_get(port, "/api/settings").read().decode())
-        assert get_data["compactionResidual"] == "hybrid"
-
-        import os
-        assert os.environ.get("HARNESS_COMPACTION_RESIDUAL") == "hybrid"
-
-        env_path = os.path.join(str(tmp_path), "env_settings.json")
-        with open(env_path, encoding="utf-8") as f:
-            persisted = json.load(f)
-        assert persisted["HARNESS_COMPACTION_RESIDUAL"] == "hybrid"
 
         catalog_resp = _post(
             port,
@@ -343,21 +306,10 @@ def test_settings_post_persists_browser_real_profile(tmp_path, monkeypatch):
             "browserRealProfile"
         ] is False
 
-        post_resp = _post(
-            port,
-            "/api/settings",
-            {"browserRealProfile": True},
-            {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN},
+        env_path = _post_and_check_persisted(
+            port, srv, tmp_path,
+            "browserRealProfile", True, "HARNESS_BROWSER_REAL_PROFILE", "1",
         )
-        assert post_resp.status == 200
-        post_data = json.loads(post_resp.read().decode())
-        assert post_data["browserRealProfile"] is True
-        assert os.environ.get("HARNESS_BROWSER_REAL_PROFILE") == "1"
-
-        env_path = os.path.join(str(tmp_path), "env_settings.json")
-        with open(env_path, encoding="utf-8") as f:
-            persisted = json.load(f)
-        assert persisted["HARNESS_BROWSER_REAL_PROFILE"] == "1"
 
         off_resp = _post(
             port,

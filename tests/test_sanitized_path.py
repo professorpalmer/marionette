@@ -172,9 +172,3 @@ def test_sanitized_env_handles_missing_path_key():
     assert "PATH" not in out
     # Input dict untouched.
     assert "PATH" not in src
-
-
-def test_sanitized_env_empty_dict_does_not_raise():
-    out = sanitized_env({})
-    assert isinstance(out, dict)
-    # Should not raise; contents are best-effort.

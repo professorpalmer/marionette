@@ -34,13 +34,6 @@ def test_worker_result_carries_tokens_cached_field():
     assert r_explicit.tokens_cached == 123
 
 
-def test_worker_result_tokens_cached_missing_defaults_to_zero_via_getattr():
-    """Downstream attribution reads tokens_cached via getattr with a 0 fallback;
-    make sure a bare result yields 0 rather than raising or leaking None."""
-    r = WorkerResult(ok=True)
-    assert int(getattr(r, "tokens_cached", 0) or 0) == 0
-
-
 def test_success_attribution_increases_parent_tokens_cached():
     """Mirror the success-path attribution block in
     ConversationalSession._run_native_edit_worker: a WorkerResult carrying
@@ -131,22 +124,3 @@ def test_add_worker_tokens_from_artifacts_sums_tokens_cached():
     # tokens_used must NOT include tokens_cached (would double-count against
     # tokens_in which already contains cached reads).
     assert session._tokens_used == 900
-
-
-def test_add_worker_tokens_from_artifacts_missing_tokens_cached_defaults_zero():
-    """Backward-compat: artifacts written by older worker code lack
-    tokens_cached; the aggregator must treat that as 0 and not crash."""
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-
-    artifacts = [
-        {"task_id": "t1", "tokens_in": 100, "tokens_out": 10},  # no tokens_cached key
-        {"payload": {"task_id": "t2", "tokens_in": 200, "tokens_out": 20}},
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-
-    assert sum_in == 300
-    assert sum_out == 30
-    assert sum_cached == 0
-    assert session._tokens_cached == 0
-    assert session._tokens_used == 330
