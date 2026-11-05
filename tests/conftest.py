@@ -213,11 +213,20 @@ def _lingering_children() -> list:
                 capture_output=True, text=True, timeout=20,
             ).stdout
         else:
-            out = _sp.run(["ps", "-o", "pid=,command=", "--ppid", str(pid)],
-                          capture_output=True, text=True, timeout=20).stdout
+            # --ppid is GNU only: on macOS it fails and the guard saw no children.
+            rows = _sp.run(["ps", "-A", "-o", "pid=,ppid=,command="],
+                           capture_output=True, text=True, timeout=20).stdout
+            kids = []
+            for line in rows.splitlines():
+                fields = line.split(None, 2)
+                # multiprocessing ends its own resource_tracker at interpreter exit.
+                if (len(fields) == 3 and fields[1] == str(pid)
+                        and "multiprocessing.resource_tracker" not in fields[2]):
+                    kids.append(f"{fields[0]} {fields[2]}")
+            out = "\n".join(kids)
     except Exception:
         return []
-    return [line.strip() for line in out.splitlines() if line.strip() and "Get-CimInstance" not in line and " ps -o" not in line]
+    return [line.strip() for line in out.splitlines() if line.strip() and "Get-CimInstance" not in line and " ps -A" not in line]
 
 
 def _report_lingering_work() -> None:
