@@ -56,7 +56,9 @@ def test_workspace_rules_caps_size(tmp_path):
     agents_block_start = rules.find("# Workspace rules (from AGENTS.md)\n") + len("# Workspace rules (from AGENTS.md)\n")
     claude_block_start = rules.find("# Workspace rules (from CLAUDE.md)\n")
     agents_content = rules[agents_block_start:claude_block_start].strip()
-    assert len(agents_content) == 8192
+    rule_text, marker = agents_content.split("\n[cut here:", 1)
+    assert rule_text == "x" * 8192
+    assert marker.startswith(" AGENTS.md has more text.")
 
 
 def test_workspace_rules_no_repo_no_crash():

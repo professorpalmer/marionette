@@ -290,28 +290,40 @@ def load_workspace_rules(repo: Optional[str]) -> str:
             pass
     files_to_try.append((".github/copilot-instructions.md", os.path.join(repo_abs, ".github", "copilot-instructions.md")))
     blocks = []
+    skipped = []
     total_bytes_read = 0
     max_file_size = 8 * 1024
     max_total_size = 16 * 1024
     for name, full_path in files_to_try:
-        if total_bytes_read >= max_total_size:
-            break
         if not is_safe_path(full_path, repo_abs):
             continue
         if not os.path.isfile(full_path):
             continue
+        if total_bytes_read >= max_total_size:
+            skipped.append(name)
+            continue
         try:
             with open(full_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read(max_file_size)
+                content = f.read(max_file_size + 1)
             if not content:
                 continue
-            available_bytes = max_total_size - total_bytes_read
-            if len(content) > available_bytes:
-                content = content[:available_bytes]
+            available_bytes = min(max_file_size, max_total_size - total_bytes_read)
+            cut = len(content) > available_bytes
+            content = content[:available_bytes]
             total_bytes_read += len(content)
+            if cut:
+                # The model must know the rule text stops here, or it acts on
+                # half a rule file.
+                content += f"\n[cut here: {name} has more text. read_file {name} for the rest.]"
             blocks.append(f"# Workspace rules (from {name})\n{content}")
         except Exception:
             pass
+    if skipped:
+        blocks.append(
+            "# Workspace rules not loaded (16 KB budget used)\n"
+            + "\n".join(f"- {name}" for name in skipped)
+            + "\nRead a file with read_file when its rules apply to the task."
+        )
     if blocks:
         return "\n\n" + "\n\n".join(blocks)
     return ""
