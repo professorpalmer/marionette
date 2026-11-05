@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from harness.job_scoping import (
     cwd_under_repo,
     filter_local_jobs,
-    filter_store_jobs,
+    filter_store_jobs_with_tasks,
     inspect_store_job_ownership,
     job_label_for_session,
     job_owned_by_marionette,
@@ -326,7 +326,7 @@ def test_registered_heal_without_active_session_omits_sessionless_row(tmp_path):
     job = store.create_job("legacy heal")
     _save_task(store, job.id, str(repo))
     rows = [{"id": job.id, "goal": "legacy heal", "status": "running"}]
-    visible = filter_store_jobs(
+    visible, _tasks = filter_store_jobs_with_tasks(
         rows,
         store,
         active_session_id="",
@@ -392,13 +392,13 @@ def test_filter_store_jobs_keeps_owned_drops_legacy(tmp_path):
         {"id": legacy.id, "goal": "legacy", "status": "complete", "adapter": "agentic"},
     ]
 
-    scoped_a = filter_store_jobs(rows, store, active_session_id="sess-a", repo_root=str(repo_a))
+    scoped_a = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-a", repo_root=str(repo_a))[0]
     ids_a = {j["id"] for j in scoped_a}
     assert job_a.id in ids_a
     assert job_b.id in ids_a
     assert legacy.id not in ids_a
 
-    scoped_b = filter_store_jobs(rows, store, active_session_id="sess-b", repo_root=str(repo_b))
+    scoped_b = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-b", repo_root=str(repo_b))[0]
     ids_b = {j["id"] for j in scoped_b}
     assert job_b.id in ids_b
     assert job_a.id in ids_b
@@ -419,7 +419,7 @@ def test_filter_store_jobs_keeps_pre_origin_harness_session(tmp_path):
     )
     store.save_task(task)
     rows = [{"id": job.id, "goal": "legacy sess", "status": "complete"}]
-    visible = filter_store_jobs(rows, store, active_session_id="sess-b", repo_root=str(repo))
+    visible = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-b", repo_root=str(repo))[0]
     assert [j["id"] for j in visible] == [job.id]
     assert visible[0]["session_id"] == "sess-a"
 

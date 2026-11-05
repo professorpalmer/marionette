@@ -3144,11 +3144,7 @@ class ConversationalSession(
         if self._append_only is not None:
             return self._append_only
         try:
-            driver_name = str(getattr(self.config, "driver", "") or "")
-            base_url = str(getattr(self.pilot, "base_url", "") or "")
-            self._append_only = self._turn_economy.resolve_append_only(
-                base_url, driver_name
-            )
+            self._append_only = self._turn_economy.resolve_append_only()
         except Exception:
             self._append_only = False
         return self._append_only

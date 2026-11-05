@@ -33,13 +33,6 @@ _MEDIA_MARKERS = (
 )
 
 
-def byte_size(content: str) -> int:
-    """Return the UTF-8 byte length of content (multibyte-aware sizing)."""
-    if not isinstance(content, str):
-        content = "" if content is None else str(content)
-    return len(content.encode("utf-8"))
-
-
 def truncate_bytes(content: str, max_bytes: int) -> str:
     """Truncate content to at most max_bytes UTF-8 bytes without splitting a
     multibyte character. Always returns valid text."""

@@ -91,13 +91,9 @@ class TurnEconomy:
         """Delegate to ``parse_turn_budget``."""
         return parse_turn_budget(text)
 
-    def resolve_append_only(self, base_url: str = "", driver_name: str = "") -> bool:
-        """Delegate to append-only setting + enablement helpers."""
-        return should_enable_append_only(
-            append_only_setting(),
-            base_url,
-            driver_name,
-        )
+    def resolve_append_only(self) -> bool:
+        """Delegate to the append-only setting."""
+        return should_enable_append_only(append_only_setting())
 
     def record_wiki_grounding(
         self,

@@ -61,9 +61,6 @@ def test_openrouter_only_selects_agentic_and_allowlist(monkeypatch, tmp_path):
         "harness.swarm_worker_allowlist._agentic_eligible", lambda: True
     )
     monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready", lambda: False
-    )
-    monkeypatch.setattr(
         "harness.swarm_worker_allowlist._platform_locked_adapters",
         lambda: frozenset({"agentic"}),
     )
@@ -94,9 +91,6 @@ def test_codex_oauth_only_is_full_stack_workers(monkeypatch, tmp_path):
         "harness.swarm_worker_allowlist._agentic_eligible", lambda: True
     )
     monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready", lambda: False
-    )
-    monkeypatch.setattr(
         "harness.swarm_worker_allowlist._platform_locked_adapters",
         lambda: frozenset({"agentic"}),
     )
@@ -124,9 +118,6 @@ def test_cursor_cli_only_is_not_workers_ready(monkeypatch, tmp_path):
     monkeypatch.setattr("harness.keys.get_disconnected", lambda: set())
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._agentic_eligible", lambda: False
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready", lambda: False
     )
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._platform_locked_adapters",

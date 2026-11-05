@@ -11,7 +11,6 @@ from harness.pty_manager import (
     PTY_AVAILABLE,
     PtyManager,
     PtySession,
-    _append_to_buffer,
     _unix_shell,
     _windows_shell,
     _windows_shell_command,
@@ -129,13 +128,16 @@ def test_pty_manager_reap_expires_idle(monkeypatch):
     assert s.alive() is False
 
 
-def test_append_to_buffer_caps_at_256kb():
-    buf = bytearray()
-    lock = threading.Lock()
-    chunk = b"x" * 100_000
+def test_append_output_caps_buffer_at_256kb_and_counts_all_bytes():
+    s = object.__new__(PtySession)
+    s._buffer = bytearray()
+    s._total_output = 0
+    s._lock = threading.Lock()
+    s._output_ready = threading.Condition(s._lock)
     for _ in range(4):
-        _append_to_buffer(buf, lock, chunk)
-    assert len(buf) == 262144
+        s._append_output(b"x" * 100_000)
+    assert len(s._buffer) == 262144
+    assert s._total_output == 400_000
 
 
 def test_read_since_offset_clamping():

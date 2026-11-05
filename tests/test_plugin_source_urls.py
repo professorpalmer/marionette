@@ -12,7 +12,6 @@ import pytest
 from harness.agent_plugins import AgentPluginError
 from harness.api.plugins import PluginServices, post_plugins_install
 from harness.plugin_registry import (
-    install_from_path,
     install_from_source,
     plugins_dir,
     resolve_plugin_source,
@@ -106,28 +105,6 @@ def test_install_accepts_git_https_github(
     assert record.enabled is False
 
 
-def test_install_from_path_accepts_git_https_github(
-    plugins_home: Path,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    del plugins_home
-    package = _valid_package(tmp_path / "src-plugin")
-    monkeypatch.setattr(
-        "harness.plugin_registry._clone_resolved_source", _stub_clone(package)
-    )
-    for source in (
-        "git@github.com:acme/widget.git",
-        "https://example.test/plugins/widget",
-        "https://github.com/acme/widget",
-        "github:acme/widget",
-    ):
-        shutil.rmtree(plugins_dir(), ignore_errors=True)
-        record = install_from_path(source)
-        assert record.name == "portable.test"
-        assert record.enabled is False
-
-
 def test_post_install_accepts_resolved_git_https_github(
     plugins_home: Path,
     tmp_path: Path,
@@ -173,7 +150,7 @@ def test_force_reinstall_replaces_existing(
 ) -> None:
     del plugins_home
     first = _valid_package(tmp_path / "src-plugin")
-    record = install_from_path(str(first))
+    record = install_from_source(str(first))
     assert record.enabled is False
     dest = plugins_dir() / record.id
     assert dest.is_dir()

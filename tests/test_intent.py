@@ -143,7 +143,7 @@ def test_run_prewalk_requires_goal():
 
 
 def test_is_prewalk_goal_detects_plan_then_implement():
-    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+    from pmharness.intent import is_prewalk_goal
 
     for goal in (
         "prewalk: add a settings toggle",
@@ -153,11 +153,10 @@ def test_is_prewalk_goal_detects_plan_then_implement():
         "quality plan then cheap implement of the parser",
     ):
         assert is_prewalk_goal(goal), goal
-        assert classify_dispatch_action(goal) == "run_prewalk", goal
 
 
 def test_is_prewalk_goal_rejects_ordinary_asks():
-    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+    from pmharness.intent import is_prewalk_goal
 
     for goal in (
         "Audit the platform for quality",
@@ -166,9 +165,6 @@ def test_is_prewalk_goal_rejects_ordinary_asks():
         "",
     ):
         assert not is_prewalk_goal(goal), goal
-    assert classify_dispatch_action("Audit the platform") == "run_swarm"
-    assert classify_dispatch_action("Implement the cache fix") == "run_swarm"
-    assert classify_dispatch_action("") is None
 
 
 def test_run_swarm_requires_goal():

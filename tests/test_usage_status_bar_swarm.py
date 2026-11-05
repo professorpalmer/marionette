@@ -391,10 +391,6 @@ def test_duplicate_job_id_across_stores_counted_once(tmp_path, monkeypatch):
             lambda workspace_root="": _FakeCliState(),
         )
         monkeypatch.setattr(
-            "harness.job_scoping.filter_store_jobs",
-            lambda rows, store, **kwargs: rows,
-        )
-        monkeypatch.setattr(
             server,
             "_swarm_registry",
             lambda: [_registry_spec("worker-model")],

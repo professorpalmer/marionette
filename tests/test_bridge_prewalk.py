@@ -43,28 +43,6 @@ class _CapturingOrchestrator:
         return _FakeResult()
 
 
-def test_build_prewalk_cli_argv_matches_conventions():
-    argv = bridge._build_prewalk_cli_argv(
-        "plan then implement the fix",
-        cwd="/repo",
-        allow_dirty=True,
-        allow_non_worktree=True,
-        adapter="agentic",
-        timeout_seconds=600,
-        worker_mode="subprocess",
-        label="session:abc",
-    )
-    assert argv[0] == "prewalk"
-    assert argv[1] == "plan then implement the fix"
-    assert "--cwd" in argv and "/repo" in argv
-    assert "--allow-dirty" in argv
-    assert "--allow-non-worktree" in argv
-    assert "--adapter" in argv and "agentic" in argv
-    assert "--timeout-seconds" in argv and "600" in argv
-    assert "--worker-mode" in argv and "subprocess" in argv
-    assert "--label" in argv and "session:abc" in argv
-
-
 def test_execute_prewalk_uses_build_prewalk_specs(monkeypatch, tmp_path):
     captured: dict = {}
 

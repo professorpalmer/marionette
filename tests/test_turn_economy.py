@@ -82,21 +82,12 @@ def test_parse_output_directive_matches_parse_turn_budget():
 def test_resolve_append_only_matches_helpers(monkeypatch):
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "auto")
     economy = TurnEconomy(state_dir=".", session_id="s")
-    cases = [
-        ("http://localhost:11434/v1", "ollama"),
-        ("https://api.openai.com/v1", "gpt-4"),
-        ("https://openrouter.ai/api/v1", "openrouter"),
-    ]
-    for base_url, driver_name in cases:
-        expected = should_enable_append_only(
-            append_only_setting(), base_url, driver_name
-        )
-        assert economy.resolve_append_only(base_url, driver_name) is expected
+    assert economy.resolve_append_only() is should_enable_append_only(append_only_setting())
 
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "off")
-    assert economy.resolve_append_only("http://localhost:11434", "ollama") is False
+    assert economy.resolve_append_only() is False
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "on")
-    assert economy.resolve_append_only("https://api.openai.com/v1", "gpt-4") is True
+    assert economy.resolve_append_only() is True
 
 
 def test_persist_tool_result_matches_maybe_persist_result():

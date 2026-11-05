@@ -81,13 +81,6 @@ def profile_ownership(
     return None
 
 
-def cmdline_is_marionette_browser(
-    cmdline: str, home: Optional[str] = None, platform: Optional[str] = None
-) -> bool:
-    """True when argv is a browser on this HOME's profile, not the user's Chrome."""
-    return profile_ownership(cmdline, home, platform) == "home"
-
-
 def _temp_profile_reapable(pid: int, parents: Dict[int, int], self_pid: int) -> bool:
     """Ours when this process is an ancestor; orphaned when the parent is gone.
 

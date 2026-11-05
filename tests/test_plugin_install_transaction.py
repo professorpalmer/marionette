@@ -19,7 +19,7 @@ def prepared(tmp_path):
     manifest = json.loads((source / 'plugin.json').read_text())
     manifest['extensions'] = {'marionette': {'requested_capabilities': ['fs']}}
     (source / 'plugin.json').write_text(json.dumps(manifest))
-    old = registry.install_from_path(str(source))
+    old = registry.install_from_source(str(source))
     registry.consent_plugin_capabilities(old.id, ['fs'])
     registry.enable_plugin(old.id)
     manifest['version'] = '2.0.0'
@@ -70,7 +70,7 @@ def test_failed_replacement_restores_package_and_state(plugins_home, tmp_path, m
         if failure == 'consent':
             patch.setattr(registry, '_write_capability_records', fail_write)
         with pytest.raises((OSError, AgentPluginError)):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     assert snapshot(registry.plugins_dir()) == before
     assert [p.name for p in registry.plugins_dir().iterdir() if p.is_dir()] == [old.id]
     assert registry.verify_integrity_stamp(Path(old.path)) == old.sha256
@@ -80,7 +80,7 @@ def test_failed_replacement_restores_package_and_state(plugins_home, tmp_path, m
 
 def test_replacement_requires_explicit_enable_and_consent(plugins_home, tmp_path):
     source, old = prepared(tmp_path)
-    new = registry.install_from_path(str(source), force=True)
+    new = registry.install_from_source(str(source), force=True)
     assert new.version == '2.0.0'
     assert new.path == old.path
     assert not new.enabled
@@ -101,7 +101,7 @@ def test_replacement_requires_explicit_enable_and_consent(plugins_home, tmp_path
 
 def test_enable_does_not_write_consent(plugins_home, tmp_path, monkeypatch):
     source = _valid_package(tmp_path / 'source')
-    installed = registry.install_from_path(str(source))
+    installed = registry.install_from_source(str(source))
     def fail(*args, **kwargs):
         raise AssertionError('enable must not publish consent records')
     monkeypatch.setattr(registry, '_write_capability_records', fail)
@@ -127,7 +127,7 @@ def test_discovery_waits_for_replacement(plugins_home, tmp_path, monkeypatch):
 
     monkeypatch.setattr(registry, '_write_enabled', paused)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        writer = pool.submit(registry.install_from_path, str(source), force=True)
+        writer = pool.submit(registry.install_from_source, str(source), force=True)
         try:
             assert entered.wait(5)
             reader = pool.submit(discover)
@@ -154,7 +154,7 @@ def test_failed_state_publication_restores_even_after_write(plugins_home, tmp_pa
         raise OSError('failure after state publication')
     monkeypatch.setattr(registry, '_write_capability_records', fail)
     with pytest.raises(OSError):
-        registry.install_from_path(str(source), force=True)
+        registry.install_from_source(str(source), force=True)
     assert snapshot(root) == before
     assert not list(root.glob('.install-*'))
 
@@ -169,7 +169,7 @@ def test_failed_directory_publication_restores_old(plugins_home, tmp_path, monke
         return replace(src, dst)
     monkeypatch.setattr(registry.os, 'replace', fail)
     with pytest.raises(OSError, match='publication'):
-        registry.install_from_path(str(source), force=True)
+        registry.install_from_source(str(source), force=True)
     assert snapshot(registry.plugins_dir()) == before
     assert not list(registry.plugins_dir().glob('.install-*'))
 
@@ -210,7 +210,7 @@ def test_prepare_flushes_writable_staged_files_only(plugins_home, tmp_path, monk
     with monkeypatch.context() as patch:
         patch.setattr(Path, 'open', tracked)
         patch.setattr(plugin_recovery.os, 'fsync', windows_fsync)
-        installed = registry.install_from_path(str(source), force=True)
+        installed = registry.install_from_source(str(source), force=True)
     assert flushed
     assert snapshot(source) == before_source
     assert stat.S_IMODE(payload.stat().st_mode) == source_mode
@@ -285,7 +285,7 @@ def test_staged_fsync_failure_keeps_old_plugin(plugins_home, tmp_path, monkeypat
     with monkeypatch.context() as patch:
         patch.setattr(os, 'fsync', fail)
         with pytest.raises(OSError, match='staged fsync failed'):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     assert snapshot(registry.plugins_dir()) == before
     assert snapshot(source) == original_source
     assert registry.verify_integrity_stamp(Path(old.path)) == old.sha256
@@ -320,7 +320,7 @@ def test_repeat_readonly_replacement(plugins_home, tmp_path, request, emulated):
     if emulated:
         request.getfixturevalue('windows_readonly_delete')
     for _ in range(3):
-        installed = registry.install_from_path(str(source), force=True)
+        installed = registry.install_from_source(str(source), force=True)
         target = Path(installed.path) / 'plugin.json'
         assert snapshot(source) == before
         assert payload.stat().st_mode == mode
@@ -337,7 +337,7 @@ def interrupted_retirement(source, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(plugin_recovery, '_remove_retired', fail)
         with pytest.raises(OSError, match='cleanup unavailable'):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     retired, = registry.plugins_dir().glob('.retired-*')
     return retired
 
@@ -374,7 +374,7 @@ def test_partial_retirement_failure_is_visible_and_retryable(plugins_home, tmp_p
     with monkeypatch.context() as patch:
         patch.setattr(Path, 'unlink', fail)
         with pytest.raises(AgentPluginError, match='unrelated deletion failure'):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     retired, = registry.plugins_dir().glob('.retired-*')
     assert removed
     assert (retired / plugin_recovery.MARKER).is_file()
@@ -440,7 +440,7 @@ def test_readonly_rollback_preserves_active_modes(plugins_home, tmp_path, monkey
     with monkeypatch.context() as patch:
         patch.setattr(registry, '_write_enabled', fail)
         with pytest.raises(OSError, match='state publication failure'):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     assert snapshot(Path(old.path)) == before
     assert snapshot(source) == source_before
     assert payload.stat().st_mode == mode
@@ -501,7 +501,7 @@ def test_retirement_preflight_preserves_external_hardlink(plugins_home, tmp_path
         os.link(external, transaction / 'old' / 'external')
     monkeypatch.setattr(plugin_recovery, 'commit', linked)
     with pytest.raises(AgentPluginError, match='non-private plain entry'):
-        registry.install_from_path(str(source), force=True)
+        registry.install_from_source(str(source), force=True)
     assert not list(registry.plugins_dir().glob('.retired-*'))
     transaction, = registry.plugins_dir().glob('.install-*')
     assert (transaction / 'old' / 'external').read_bytes() == b'keep'
@@ -520,7 +520,7 @@ def test_retired_empty_directory_retry(plugins_home, tmp_path, monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(Path, 'rmdir', fail)
         with pytest.raises(AgentPluginError, match='final rmdir failure'):
-            registry.install_from_path(str(source), force=True)
+            registry.install_from_source(str(source), force=True)
     retired, = registry.plugins_dir().glob('.retired-*')
     assert list(retired.iterdir()) == []
     plugin_recovery.recover(registry.plugins_dir(), registry.verify_integrity_stamp)

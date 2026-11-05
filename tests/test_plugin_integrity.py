@@ -17,7 +17,7 @@ from harness.plugin_capabilities import (
 from harness.plugin_registry import (
     consent_plugin_capabilities,
     enable_plugin,
-    install_from_path,
+    install_from_source,
     verify_integrity_stamp,
 )
 from tests.test_agent_plugins import _valid_package, _write_json
@@ -33,7 +33,7 @@ def _package_requesting(root: Path, caps: list) -> Path:
 
 def test_stamp_match_install_and_enable(plugins_home: Path, tmp_path: Path) -> None:
     source = _valid_package(tmp_path / "src")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     assert record.stamp_ok is True
     assert record.sha256
     assert record.permissions == []
@@ -44,7 +44,7 @@ def test_stamp_match_install_and_enable(plugins_home: Path, tmp_path: Path) -> N
 
 def test_stamp_mismatch_rejects_enable(plugins_home: Path, tmp_path: Path) -> None:
     source = _valid_package(tmp_path / "src")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     installed = Path(record.path)
     (installed / "plugin.json").write_text(
         (installed / "plugin.json").read_text(encoding="utf-8") + "\n",
@@ -91,7 +91,7 @@ def test_unknown_capability_id_rejected_on_install(
 ) -> None:
     source = _package_requesting(tmp_path / "src", ["camera"])
     with pytest.raises(AgentPluginError, match="unknown"):
-        install_from_path(str(source))
+        install_from_source(str(source))
 
 
 def test_requested_capabilities_default_empty(
@@ -100,7 +100,7 @@ def test_requested_capabilities_default_empty(
     assert parse_requested_capabilities(None) == frozenset()
     assert parse_requested_capabilities([]) == frozenset()
     source = _valid_package(tmp_path / "src")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     assert record.requested_capabilities == []
     assert record.capability_set_hash == capability_set_hash([])
     enabled = enable_plugin(record.id)
@@ -121,7 +121,7 @@ def test_enable_without_consent_of_requested_caps_fails(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _package_requesting(tmp_path / "src", ["fs", "shell"])
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     assert record.requested_capabilities == ["fs", "shell"]
     assert record.capability_set_hash == capability_set_hash(["fs", "shell"])
     assert record.consented_capabilities == []
@@ -136,7 +136,7 @@ def test_enable_after_consent_succeeds(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _package_requesting(tmp_path / "src", ["fs", "shell"])
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     first = consent_plugin_capabilities(record.id, ["fs"])
     second = consent_plugin_capabilities(record.id, ["fs", "shell"])
     assert first.consented_hash != second.consented_hash
@@ -151,7 +151,7 @@ def test_stamp_mismatch_rejected_independently_of_consent(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _package_requesting(tmp_path / "src", ["fs"])
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     consent_plugin_capabilities(record.id, ["fs"])
     installed = Path(record.path)
     (installed / "plugin.json").write_text(
@@ -170,7 +170,7 @@ def test_enabled_load_hashes_each_plugin_once_and_still_catches_tampering(
     import harness.agent_plugins as agent_plugins
     import harness.plugin_registry as registry
 
-    record = install_from_path(str(_valid_package(tmp_path / "src")))
+    record = install_from_source(str(_valid_package(tmp_path / "src")))
     enable_plugin(record.id)
     calls = []
     real = agent_plugins.compute_plugin_content_sha256

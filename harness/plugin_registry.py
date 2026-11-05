@@ -586,16 +586,6 @@ def _install_materialized(src: Path, *, force: bool = False) -> PluginRecord:
         return record
 
 
-def install_from_path(source: str, *, clone_fn=None, force: bool = False) -> PluginRecord:
-    """Copy a local dir or git / https / github source into plugins (disabled)."""
-    src, cleanup = _materialize_source(source, clone_fn=clone_fn)
-    try:
-        return _install_materialized(src, force=force)
-    finally:
-        if cleanup is not None:
-            shutil.rmtree(cleanup, ignore_errors=True)
-
-
 def install_from_source(source: object, *, clone_fn=None, force: bool = False) -> PluginRecord:
     """Install from a path string, source URL, or resolved source mapping."""
     src, cleanup = _materialize_source(source, clone_fn=clone_fn)

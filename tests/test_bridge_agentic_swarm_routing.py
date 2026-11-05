@@ -763,7 +763,6 @@ def test_run_swarm_settings_singleton_blocks_disabled_catalog_peer(monkeypatch, 
         lambda: ["openai-codex:gpt-5.6-luna"],
     )
     monkeypatch.setattr(swa, "_agentic_eligible", lambda: True)
-    monkeypatch.setattr(swa, "_cursor_platform_ready", lambda: False)
     monkeypatch.setattr(
         swa,
         "_platform_locked_adapters",

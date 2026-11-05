@@ -25,7 +25,7 @@ def interrupted(src, dst):
     if hit:
         os._exit(73)
 os.replace = interrupted
-r.install_from_path(sys.argv[1], force=True)
+r.install_from_source(sys.argv[1], force=True)
 '''
 COLD = r'''
 import json, sys
@@ -35,7 +35,7 @@ if mode == 'enable':
     r.enable_plugin(ident)
 elif mode == 'install':
     try:
-        r.install_from_path(source)
+        r.install_from_source(source)
     except r.AgentPluginError as exc:
         assert 'already installed' in str(exc), str(exc)
 records = r.discover_plugins()
@@ -125,7 +125,7 @@ def test_interrupted_recovery_replays_snapshots(plugins_home, tmp_path):
     source, old = prepared(tmp_path)
     before = {n: (registry.plugins_dir() / n).read_bytes() for n in ('enabled.json', 'capabilities.json')}
     assert run(CRASH, source, 'capabilities.json').returncode == 73
-    code = CRASH[:CRASH.index('r.install_from_path')] + 'r.discover_plugins()\n'
+    code = CRASH[:CRASH.index('r.install_from_source')] + 'r.discover_plugins()\n'
     assert run(code, source, 'enabled.json').returncode == 73
     for _ in range(2):
         cold = run(COLD, 'discover', source, old.id)
@@ -148,7 +148,7 @@ def interrupted(src, dst):
     if dst.name == 'transaction.json' and json.loads(dst.read_text())['phase'] == 'committed':
         os._exit(73)
 os.replace = interrupted
-r.install_from_path(sys.argv[1], force=True)
+r.install_from_source(sys.argv[1], force=True)
 '''
     assert run(code, source).returncode == 73
     for _ in range(2):
@@ -207,7 +207,7 @@ def paused(src, dst):
         print('paused', flush=True)
         assert sys.stdin.readline().strip() == 'continue'
 os.replace = paused
-r.install_from_path(sys.argv[1], force=True)
+r.install_from_source(sys.argv[1], force=True)
 '''
     writer = subprocess.Popen([sys.executable, '-c', code, str(source)],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -266,7 +266,7 @@ def interrupted(src, dst):
         os._exit(73)
     replace(src, dst)
 os.replace = interrupted
-r.install_from_path(sys.argv[1], force=True)
+r.install_from_source(sys.argv[1], force=True)
 '''
     assert run(code, source).returncode == 73
     for _ in range(2):

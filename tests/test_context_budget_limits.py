@@ -8,7 +8,6 @@ import pytest
 
 from harness.context_budget import (
     BudgetConfig,
-    byte_size,
     truncate_bytes,
     content_hash,
     generate_preview,
@@ -44,19 +43,11 @@ def test_short_content_returns_unchanged_in_both_modes():
     assert generate_preview(content, max_chars=1000, head_tail=True) == (content, False)
 
 
-def test_byte_size_multibyte():
-    assert byte_size("abc") == 3
-    # Each of these characters is multibyte in UTF-8.
-    assert byte_size("\u00e9") == 2       # e with acute accent
-    assert byte_size("\u4e2d") == 3       # CJK char
-    assert byte_size("\U0001f600") == 4   # emoji-range codepoint (not printed)
-
-
 def test_truncate_bytes_never_splits_multibyte():
     content = "\u4e2d" * 100  # 300 bytes total, 3 bytes each
     out = truncate_bytes(content, 7)  # 7 bytes -> 2 whole chars (6 bytes)
     assert out == "\u4e2d\u4e2d"
-    assert byte_size(out) <= 7
+    assert len(out.encode("utf-8")) <= 7
     # Must remain valid decodable text (no partial character).
     out.encode("utf-8").decode("utf-8")
 

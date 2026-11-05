@@ -1,13 +1,10 @@
 """Hermetic tests for FTS5 session transcript recall."""
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 
 from harness.session_fts import (
     index_session_transcript,
-    reindex_transcripts,
     remove_session_from_index,
     search_sessions,
 )
@@ -60,28 +57,6 @@ def test_no_match_returns_empty():
             _synthetic_transcript("talk about databases and indexing"),
         )
         assert search_sessions(state_dir, "xylophone-zzztop") == []
-
-
-def test_reindex_skips_corrupt_transcript_files():
-    with tempfile.TemporaryDirectory() as state_dir:
-        trans_dir = os.path.join(state_dir, "transcripts")
-        os.makedirs(trans_dir)
-        good_path = os.path.join(trans_dir, "good-sess.json")
-        with open(good_path, "w", encoding="utf-8") as f:
-            json.dump(
-                _synthetic_transcript("unique pineapple search token"),
-                f,
-            )
-        bad_path = os.path.join(trans_dir, "bad-sess.json")
-        with open(bad_path, "w", encoding="utf-8") as f:
-            f.write("{not valid json!!!")
-
-        stats = reindex_transcripts(state_dir)
-        assert stats["indexed"] == 1
-        assert stats["skipped"] >= 1
-        hits = search_sessions(state_dir, "pineapple")
-        assert len(hits) == 1
-        assert hits[0]["session_id"] == "good-sess"
 
 
 def test_save_transcript_hooks_fts_index():

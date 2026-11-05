@@ -2,26 +2,11 @@
 substrate feedback, sharper scoring with budget/premature penalties. Offline."""
 import pytest
 pytestmark = pytest.mark.swarm
-import tempfile
-from pathlib import Path
 
 from pmharness.registry import build
 from pmharness.episode_v2 import EPISODES_V2
 from pmharness.episode_v2_runner import run_episode_v2, HARD_TURN_CAP
 from pmharness.scoring_v2 import score_v2
-from pmharness.ledger import TrajectoryLedgerV2
-from pmharness.runner_v2 import run_driver_v2, new_v2_run_id
-
-
-def test_oracle_perfect_on_v2_battery():
-    drv = build("stub-oracle-v2")
-    led = TrajectoryLedgerV2(Path(tempfile.mkdtemp(prefix="pmh-v2-")) / "l.sqlite")
-    rid = new_v2_run_id()
-    scores = run_driver_v2(drv, led, run_id=rid)
-    assert len(scores) == len(EPISODES_V2)
-    mean = sum(s.score for s in scores) / len(scores)
-    assert mean == 1.0, f"oracle should be perfect under sharper scorer, got {mean}"
-    led.close()
 
 
 def test_investigate_episode_grounds_and_respects_budget():
