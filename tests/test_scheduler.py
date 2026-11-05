@@ -934,3 +934,25 @@ def test_daemon_stop_releases_live_claim(tmp_path):
     assert not got.claim_owner
     assert not got.claim_run_id
     assert (got.claim_lease_until or 0) == 0
+
+
+def test_lease_heartbeat_checks_cancel_about_once_a_second():
+    import harness.scheduler as sched_mod
+
+    class _Store:
+        checks = 0
+
+        def cancel_requested(self, _sid):
+            _Store.checks += 1
+            return False
+
+        def renew_claim(self, *_a):
+            return True
+
+    hb = sched_mod._ClaimLeaseHeartbeat(_Store(), "s", "r", 600, interval=30, cancel=lambda: None)
+    hb.start()
+    time.sleep(1.5)
+    hb.stop()
+    # A 30 s renew interval still polls cancel at the 1 s pace.
+    assert 1 <= _Store.checks <= 2
+    assert hb.cancelled is False

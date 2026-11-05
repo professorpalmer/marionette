@@ -718,7 +718,8 @@ def test_probe_redirect_refuses_public():
     req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
     with pytest.raises(urllib.error.HTTPError) as exc:
         handler.redirect_request(req, None, 302, "Found", {}, "https://example.com/steal")
-    assert "Public" in str(exc.value) or "blocked" in str(exc.value).lower() or exc.value.code == 302
+    assert exc.value.msg == "Probe endpoints must not redirect"
+    assert exc.value.url == "https://example.com/steal"
 
 
 def test_probe_redirect_refuses_metadata():

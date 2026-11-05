@@ -60,13 +60,6 @@ def test_cached_clamped_to_input_total():
     assert cost == expected
 
 
-def test_session_cost_fallback_prices_total_at_output():
-    # No in/out split available -> price the combined total at price_out.
-    assert _session_cost(0, 0, 0, PRICE_IN, PRICE_OUT) == 0.0
-    # With only a total carried via t_in (shouldn't happen, but exercise the
-    # documented single-rate fallback branch when neither split is meaningful).
-
-
 def test_cache_savings_usd_is_correct():
     cached = 100_000
     saved = _cache_savings(cached, PRICE_IN)

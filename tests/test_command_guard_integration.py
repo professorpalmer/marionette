@@ -100,17 +100,39 @@ def test_guard_can_be_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_AUTO_COMMAND_GUARD", "off")
     cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
     s = ConversationalSession(cfg)
-    s.pilot = _CmdPilot("echo safe-anyway")
+    ran = []
+    monkeypatch.setattr(
+        "harness.command_policy.run_cancellable",
+        lambda command, *a, **k: (ran.append(command), ("done", 0, "success"))[1],
+    )
+    s.pilot = _CmdPilot("ssh prod systemctl stop nginx")
     s._auto_mode = True
-    # guard disabled -> even if it were dangerous it would not block; benign here
     blocked, results = _run(s, "go")
-    assert len(blocked) == 0
+    assert blocked == []
+    assert len(results) == 1
+    assert ran == ["ssh prod systemctl stop nginx"]
 
 
-def test_auto_mode_resets_after_run_auto(tmp_path):
-    # _auto_mode must not stay stuck on after the wrapper completes
+def test_auto_mode_resets_after_run_auto(tmp_path, monkeypatch):
     cfg = HarnessConfig(repo=str(tmp_path), state_dir=str(tmp_path / "st"))
     s = ConversationalSession(cfg)
+    seen = []
+
+    def inner(objective, budget, **kw):
+        seen.append(s._auto_mode)
+        yield "step"
+        if objective == "boom":
+            raise RuntimeError("inner loop failed")
+
+    monkeypatch.setattr(s, "_run_auto_inner", inner)
+
+    assert list(s.run_auto("ok", input_id="in-1")) == ["step"]
+    assert seen == [True]
+    assert s._auto_mode is False
+
+    with pytest.raises(RuntimeError, match="inner loop failed"):
+        list(s.run_auto("boom", input_id="in-2"))
+    assert seen == [True, True]
     assert s._auto_mode is False
 
 

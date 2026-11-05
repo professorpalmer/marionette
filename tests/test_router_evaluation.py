@@ -144,8 +144,16 @@ def test_total_failure_and_missing_attempt_cost(runs):
 
 def test_duplicate_and_training_task_refused(runs):
     snapshot, left, right, _ = runs
-    left['records'].append(left['records'][0])
-    with pytest.raises(ValueError, match='duplicate'):
+    dup = copy.deepcopy(left)
+    dup['records'].append(dup['records'][0])
+    with pytest.raises(ValueError, match='unexpected or duplicate heldout task'):
+        compare(snapshot, reseal(dup), right, REPO)
+    train_ids = [t['id'] for t in snapshot['tasks'] if t['split'] == 'train']
+    assert train_ids
+    row = left['records'][0]
+    row['task_id'] = train_ids[0]
+    left['records'][0] = reseal(row)
+    with pytest.raises(ValueError, match='unexpected or duplicate heldout task'):
         compare(snapshot, reseal(left), right, REPO)
 
 
@@ -194,14 +202,29 @@ def test_manifest_split_cannot_be_resealed_to_change_heldout(runs):
         compare(reseal(snapshot), left, right, REPO)
 
 
-def test_nonfinite_and_negative_latency_is_unknown(runs):
+@pytest.mark.parametrize('latency', [-1, -0.5, True, '5'])
+def test_nonfinite_and_negative_latency_is_unknown(runs, latency):
     snapshot, left, right, _ = runs
+    for i, row in enumerate(left['records']):
+        row['latency_ms'] = i + 1
+        left['records'][i] = reseal(row)
     row = left['records'][0]
-    row['latency_ms'] = -1
+    row['latency_ms'] = latency
     left['records'][0] = reseal(row)
     result = compare(snapshot, reseal(left), right, REPO)['policies'][0]
     assert result['latency_p95_ms'] is None
-    assert result['unknown_latency'] == 6
+    assert result['latency_samples'] == 5
+    assert result['unknown_latency'] == 1
+
+
+# The record seal refuses NaN and inf, so compare never sees them.
+@pytest.mark.parametrize('latency', [float('nan'), float('inf'), float('-inf')])
+def test_nonfinite_latency_cannot_be_sealed(runs, latency):
+    _, left, _, _ = runs
+    row = left['records'][0]
+    row['latency_ms'] = latency
+    with pytest.raises(ValueError, match='Out of range float'):
+        reseal(row)
 
 
 def test_same_job_cannot_stand_for_two_policies(runs):

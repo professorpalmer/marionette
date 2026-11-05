@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import tempfile
 
+import pytest
+
 from harness.compaction_archive import compaction_archive_path
 from harness.config import HarnessConfig
-from harness.pilot import PilotAction, from_wire
+from harness.pilot import PilotAction, PilotError, from_wire
 from harness.sessions import load_transcript, save_transcript
 
 _GOOD_SUMMARY = (
@@ -236,7 +238,7 @@ def test_peek_artifact_by_uri_and_ids(tmp_path, monkeypatch):
         "type": "finding",
         "id": f"{job_id}-finding-0",
         "headline": "short headline",
-        "body": "BODY-" + ("x" * 200),
+        "body": "BODY-" + ("x" * 2000),
     }
     session._register_local_job(job_id, goal="peek", role="explore", engine="native")
     session._finish_local_job(
@@ -244,11 +246,15 @@ def test_peek_artifact_by_uri_and_ids(tmp_path, monkeypatch):
     )
     uri = f"artifact://{job_id}/{job_id}-finding-0"
     ok, status, text = session._do_peek_artifact(
-        PilotAction(kind="peek_artifact", path=uri, arguments={"uri": uri, "max_bytes": 512})
+        PilotAction(kind="peek_artifact", path=uri, arguments={"uri": uri})
     )
     assert ok and status == "success"
-    assert "uri=" in text
-    assert "short headline" in text or "BODY-" in text
+    header, body = text.split("\n", 1)
+    assert header.startswith(f"uri={uri} bytes=")
+    assert "truncated=true" not in header
+    assert "short headline" in body
+    assert art["body"] in body
+    full_bytes = len(body.encode("utf-8"))
 
     ok2, status2, text2 = session._do_peek_artifact(
         PilotAction(
@@ -257,16 +263,17 @@ def test_peek_artifact_by_uri_and_ids(tmp_path, monkeypatch):
         )
     )
     assert ok2 and status2 == "success"
-    assert "truncated=true" in text2 or len(text2.encode("utf-8")) <= 256 + 200
+    header2, body2 = text2.split("\n", 1)
+    assert header2 == f"uri={uri} bytes={full_bytes} max_bytes=256 truncated=true"
+    # Head and tail of 256 bytes each, plus the omitted marker.
+    assert "[middle omitted; peek_artifact head+tail]" in body2
+    assert len(body2.encode("utf-8")) < 600 < full_bytes
 
 
 def test_peek_artifact_wire_and_validate():
     act = from_wire("peek_artifact", {"uri": "artifact://job/a1"})
     assert act.kind == "peek_artifact"
-    assert act.path == "artifact://job/a1" or (act.arguments or {}).get("uri")
+    assert act.path == "artifact://job/a1"
 
-    try:
+    with pytest.raises(PilotError, match="peek_artifact"):
         from_wire("peek_artifact", {})
-        assert False, "expected PilotError"
-    except Exception as exc:
-        assert "peek_artifact" in str(exc)

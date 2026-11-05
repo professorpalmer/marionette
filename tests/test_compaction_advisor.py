@@ -157,11 +157,12 @@ def test_advice_payload_round_trip_from_journal(tmp_path):
     snap = snapshot_memory_layers(conv, state, "s1")
     record_memory_layer_snapshot(state, "s1", 1, snap)
     payload = advice_payload(state, "s1", 96000)
-    assert "compaction_advice" in payload
     advice = payload["compaction_advice"]
-    assert advice["level"] in ("none", "soon", "now")
-    assert isinstance(advice["hot_ratio"], float)
-    assert isinstance(advice["reasons"], list)
+    l0_bytes = snap["L0"]["bytes"]
+    assert l0_bytes > 0
+    assert advice["level"] == "none"
+    assert advice["hot_ratio"] == pytest.approx(l0_bytes / (96000 * 4))
+    assert advice["reasons"] == []
 
 
 def test_advice_payload_empty_when_no_journal(tmp_path):

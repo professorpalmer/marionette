@@ -25,19 +25,16 @@ def test_parse_pilot_turn_thinking():
     assert t4.thinking == ""
 
 
-def test_clean_say_applied_to_thinking():
-    # A thinking with an [INFO] line or USER:( echo should be cleaned using clean_say
-    # clean_say strips log lines like [INFO] ... or USER: (run_command ...completed)
-    raw_thinking = "Analyzing code...\n[INFO] background task running\nUSER: (run_command 'ls' completed with exit code 0)\nLet's write a file."
-    t = parse_pilot_turn(f'{{"thinking":{repr(raw_thinking)}, "say":"Done", "actions":[]}}')
-    
-    # We test that the conversation cleaning behaves as expected.
+def test_clean_say_strips_log_and_echo_lines_from_parsed_thinking():
+    # Unit test of clean_say on parsed thinking text. It removes [INFO] log lines
+    # and USER: (run_command ...) echo lines and keeps the prose.
     from harness.text_clean import clean_say
-    cleaned = clean_say(t.thinking)
-    assert "[INFO]" not in cleaned
-    assert "USER: (" not in cleaned
-    assert "Analyzing code..." in cleaned
-    assert "Let's write a file." in cleaned
+
+    raw_thinking = "Analyzing code...\n[INFO] background task running\nUSER: (run_command 'ls')\nLet's write a file."
+    t = parse_pilot_turn(f'{{"thinking":{repr(raw_thinking)}, "say":"Done", "actions":[]}}')
+    assert t.thinking == raw_thinking
+
+    assert clean_say(t.thinking) == "Analyzing code...\nLet's write a file."
 
 
 class _ThinkingScriptedPilot:

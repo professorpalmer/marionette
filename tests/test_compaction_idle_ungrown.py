@@ -145,14 +145,10 @@ def test_force_still_runs_when_fingerprint_unchanged(monkeypatch):
     try:
         list(session._maybe_compact_history(force=True))
         assert session._last_compaction_attempt.get("reason") == REASON_OK
-        frozen = list(session._history)
 
         events = list(session._maybe_compact_history(force=True))
         assert session._last_compaction_attempt.get("reason") != REASON_IDLE_UNGROWN
-        assert any(e.kind in ("compacting", "compaction") for e in events)
-        # Force entered the compact path; history may rewrite again or stay.
-        assert isinstance(session._history, list)
-        assert frozen[0]["role"] == "system"
+        assert [e.kind for e in events] == ["compacting", "compaction"]
     finally:
         shutil.rmtree(temp_dir)
 

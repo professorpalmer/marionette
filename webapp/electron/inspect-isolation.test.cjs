@@ -85,6 +85,29 @@ test("inspect mode never falls back to ~/.pmharness for markers", () => {
   assert.equal(resolveHarnessStateDir(env), path.resolve(state));
 });
 
+test("resolveHarnessStateDir without env uses <home>/.pmharness/state, then <home>/.pmharness", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-home-"));
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    assert.equal(os.homedir(), home);
+    const product = path.join(home, ".pmharness");
+    assert.equal(resolveHarnessStateDir({}), product);
+    fs.mkdirSync(path.join(product, "state"), { recursive: true });
+    assert.equal(resolveHarnessStateDir({}), path.join(product, "state"));
+    assert.equal(resolveHarnessStateDir({ HARNESS_STATE_DIR: "  " }), path.join(product, "state"));
+    assert.equal(resolveHarnessStateDir({ HARNESS_STATE_DIR: "rel/state" }), path.resolve("rel/state"));
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevProfile;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("non-inspect still searches product home after the explicit state dir", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "marionette-state-"));
   const state = path.join(tmp, "state");

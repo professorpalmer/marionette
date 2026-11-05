@@ -144,44 +144,53 @@ def test_run_stream_legacy_driver_receives_no_session_id_kwarg():
     assert val.text == "ok"
 
 
-def test_sync_chat_path_attaches_session_id():
-    captured: dict = {}
-
-    def chat(messages, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(text="ok", error=None)
-
+@pytest.mark.parametrize(
+    "call", [_kwargs_stream, _explicit_param_stream], ids=["kwargs", "explicit_param"],
+)
+def test_sync_path_attaches_session_id(call):
     kwargs: dict = {"tools": [], "system": "sys"}
-    maybe_attach_pilot_session_id(kwargs, chat, "sync-sess-9")
-    chat([{"role": "user", "content": "hi"}], **kwargs)
-    assert captured["session_id"] == "sync-sess-9"
+    maybe_attach_pilot_session_id(kwargs, call, "sync-sess-9")
+    assert kwargs == {"tools": [], "system": "sys", "session_id": "sync-sess-9"}
 
 
-def test_sync_complete_path_attaches_session_id():
-    captured: dict = {}
+class _RecordingSummarizer:
+    """Pilot with only complete(). It records the kwargs of each call."""
 
-    def complete(prompt, *, system=None, session_id=None):
-        captured["session_id"] = session_id
-        captured["system"] = system
-        return SimpleNamespace(text="ok", error=None)
+    model = "live-model"
 
-    kwargs: dict = {"system": "sys"}
-    maybe_attach_pilot_session_id(kwargs, complete, "complete-sess-3")
-    complete("ping", **kwargs)
-    assert captured["session_id"] == "complete-sess-3"
+    def __init__(self, calls):
+        self.calls = calls
+
+    def fork_for_compaction(self, *, model):
+        return _RecordingSummarizer(self.calls)
+
+    def complete(self, prompt, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(text="summary of old turns", error=None)
 
 
-def test_compaction_complete_path_excludes_session_id():
-    """Summarizers call complete() directly — must not inherit chat affinity."""
-    captured: dict = {}
+def test_compaction_complete_path_excludes_session_id(tmp_path, monkeypatch):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
 
-    def complete(prompt, *, system=None, session_id=None):
-        captured["session_id"] = session_id
-        return SimpleNamespace(text="summary", error=None)
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
+    monkeypatch.setenv("HARNESS_COMPACTION_MODEL", "summary-model")
+    session = ConversationalSession(HarnessConfig(
+        driver="stub-oracle-v2", state_dir=str(tmp_path), max_context_tokens=4000,
+    ))
+    session.harness_session_id = "chat-affinity-1"
+    calls: list = []
+    session.pilot = _RecordingSummarizer(calls)
+    session._history = [{"role": "system", "content": "system"}] + [
+        {"role": "user", "content": f"message {i} " + "x" * 500} for i in range(30)
+    ]
 
-    # Mirror compaction_mixin: no maybe_attach_pilot_session_id.
-    complete("fold history", system="compaction summarizer")
-    assert captured["session_id"] is None
+    list(session._maybe_compact_history(force=True))
+
+    assert len(calls) == 1
+    assert "session_id" not in calls[0]
+    assert calls[0]["system"]
 
 
 def test_codex_build_body_sets_prompt_cache_key_from_session_id():

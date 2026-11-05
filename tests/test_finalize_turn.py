@@ -7,12 +7,6 @@ from harness import server
 from harness import hooks as _hooks
 
 
-def _raise(exc):
-    def _f(*_a, **_k):
-        raise exc
-    return _f
-
-
 def test_finalize_turn_swallows_transcript_serialization_error(monkeypatch, owned_server):
     pilot = owned_server._pilot
     export = Mock(side_effect=RuntimeError("unserializable transcript object"))
@@ -31,9 +25,12 @@ def test_finalize_turn_swallows_posthook_error(monkeypatch):
         active = None  # no transcript persist; isolate the hook failure
 
     monkeypatch.setattr(server, "_sessions", _Sessions())
-    monkeypatch.setattr(_hooks, "run_hooks", _raise(RuntimeError("bad hook")))
+    hook = Mock(side_effect=RuntimeError("bad hook"))
+    monkeypatch.setattr(_hooks, "run_hooks", hook)
+    ctx = {"trigger": "chat"}
 
-    server._finalize_turn({"trigger": "chat"})
+    server._finalize_turn(ctx)
+    hook.assert_called_once_with("postRun", ctx)
 
 
 @pytest.mark.parametrize("owner_state", ["current", "retired", "unregistered"])

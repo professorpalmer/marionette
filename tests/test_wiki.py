@@ -125,14 +125,18 @@ def test_strip_cross_host_auth_headers():
     assert kept.get_header("Authorization") == "Bearer keep"
 
 
-def test_wiki_safe_urlopen_blocks_metadata_literal():
+def test_wiki_safe_urlopen_blocks_metadata_literal(monkeypatch):
     import pytest
     import urllib.error
     import urllib.request
     from harness.wiki import _wiki_safe_urlopen
 
+    def no_connect(*_a, **_k):
+        raise AssertionError("SSRF gate must refuse before any connection")
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", no_connect)
     req = urllib.request.Request("https://169.254.169.254/latest/meta-data/")
-    with pytest.raises(urllib.error.URLError):
+    with pytest.raises(urllib.error.URLError, match="unsafe wiki URL"):
         _wiki_safe_urlopen(req, timeout=1)
 
 

@@ -14,81 +14,44 @@ def _workspace_owns_its_codegraph_index(monkeypatch):
     monkeypatch.setattr("harness.codegraph_inject.index_in_scope", lambda repo: True)
 
 
-def test_codegraph_cache_fields_initialized():
+def _cg_session(monkeypatch, calls):
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
     s = ConversationalSession(cfg)
-    assert s._cg_cache_key is None
-    assert s._cg_cache_section == ""
-    assert s._cg_cache_symbols == 0
+    s._task_profile = "standard"
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+
+    def fake_context(task, cwd, **kw):
+        calls.append(task)
+        return "- **sym_a** something\n#### Header\nrelated"
+
+    import puppetmaster.codegraph as cg
+    monkeypatch.setattr(cg, "codegraph_context", fake_context)
+    return s
 
 
 def test_codegraph_cache_reused_for_same_message(monkeypatch):
     """The codegraph_context subprocess must run at most once per user message,
     even across many pilot steps in the same turn."""
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    cfg.repo = tempfile.mkdtemp()
-    s = ConversationalSession(cfg)
-
-    calls = {"n": 0}
-
-    def fake_context(task, cwd, **kw):
-        calls["n"] += 1
-        return "- **sym_a** something\n#### Header\nrelated"
-
-    import puppetmaster.codegraph as cg
-    monkeypatch.setattr(cg, "codegraph_context", fake_context)
-    monkeypatch.setattr(cg, "codegraph_prompt_section", lambda s: "SECTION\n" + s)
-
-    # Emulate the per-step cache lookup the turn loop performs.
-    def step_get(user_message):
-        if s._cg_cache_key == user_message:
-            return "cache"
-        from puppetmaster.codegraph import codegraph_context, codegraph_prompt_section
-        sl = codegraph_context(task=user_message, cwd=s.config.repo)
-        sec = ""
-        sym = 0
-        if sl:
-            sym = sl.count("- **") + sl.count("#### ")
-            sec = "AUTH\n" + codegraph_prompt_section(sl)
-        s._cg_cache_key = user_message
-        s._cg_cache_section = sec
-        s._cg_cache_symbols = sym
-        return "compute"
-
+    calls = []
+    s = _cg_session(monkeypatch, calls)
+    assert (s._cg_cache_key, s._cg_cache_section, s._cg_cache_symbols) == (None, "", 0)
     msg = "do a multi-step task"
-    sources = [step_get(msg) for _ in range(5)]
-    assert calls["n"] == 1, "subprocess should run exactly once for repeated steps"
-    assert sources[0] == "compute"
-    assert all(src == "cache" for src in sources[1:])
+    sections = [s._build_turn_cg_section(msg) for _ in range(5)]
+    assert calls == [msg]
+    assert sections[0] and all(sec == sections[0] for sec in sections)
+    assert s._cg_cache_key == msg
     assert s._cg_cache_symbols == 2
 
 
 def test_codegraph_cache_recomputes_for_new_message(monkeypatch):
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    cfg.repo = tempfile.mkdtemp()
-    s = ConversationalSession(cfg)
-
-    calls = {"n": 0}
-
-    def fake_context(task, cwd, **kw):
-        calls["n"] += 1
-        return "- **x** y"
-
-    import puppetmaster.codegraph as cg
-    monkeypatch.setattr(cg, "codegraph_context", fake_context)
-    monkeypatch.setattr(cg, "codegraph_prompt_section", lambda s: s)
-
-    def step_get(user_message):
-        if s._cg_cache_key == user_message:
-            return
-        from puppetmaster.codegraph import codegraph_context
-        codegraph_context(task=user_message, cwd=s.config.repo)
-        s._cg_cache_key = user_message
-
-    step_get("message one")
-    step_get("message one")
-    step_get("message two")
-    assert calls["n"] == 2, "a new message must recompute the slice"
+    calls = []
+    s = _cg_session(monkeypatch, calls)
+    s._build_turn_cg_section("message one")
+    s._build_turn_cg_section("message one")
+    s._build_turn_cg_section("message two")
+    assert calls == ["message one", "message two"]
+    assert s._cg_cache_key == "message two"
 
 
 def test_repeated_ask_points_at_the_codegraph_slice_already_in_history(monkeypatch):

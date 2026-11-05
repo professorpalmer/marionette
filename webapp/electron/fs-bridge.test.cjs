@@ -1,4 +1,3 @@
-// Light source-wiring checks for the native fs reveal bridge.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -7,15 +6,38 @@ const { describe, it } = require("node:test");
 const vm = require("node:vm");
 
 describe("fs-bridge revealInFolder", () => {
-  it("registers shell.showItemInFolder via fs:revealInFolder", () => {
-    const src = fs.readFileSync(path.join(__dirname, "fs-bridge.cjs"), "utf8");
-    assert.match(src, /shell\.showItemInFolder/);
-    assert.match(src, /fs:revealInFolder/);
-  });
-
-  it("preload exposes harnessIPC.fs.revealInFolder", () => {
-    const preload = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
-    assert.match(preload, /revealInFolder:\s*\(absPath\)\s*=>\s*ipcRenderer\.invoke\("fs:revealInFolder"/);
+  it("fs:revealInFolder reveals an allowed path and denies one outside the roots", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mari-reveal-root-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mari-reveal-out-"));
+    const inside = path.join(root, "a.txt");
+    fs.writeFileSync(inside, "x");
+    const revealed = [];
+    const handlers = new Map();
+    const mod = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "fs-bridge.cjs"), "utf8"), {
+      module: mod,
+      require: (name) => (name === "electron"
+        ? { shell: { showItemInFolder: (p) => revealed.push(p) } }
+        : name.startsWith("./") ? require(path.join(__dirname, name)) : require(name)),
+    });
+    mod.exports.registerFsBridge(
+      { handle: (channel, fn) => handlers.set(channel, fn) },
+      { getAllowedRoots: () => [root] },
+    );
+    const reveal = handlers.get("fs:revealInFolder");
+    try {
+      assert.equal(reveal({}, inside).ok, true);
+      const denied = reveal({}, path.join(outside, "b.txt"));
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error, "path not allowed");
+      const missing = reveal({}, "");
+      assert.equal(missing.ok, false);
+      assert.equal(missing.error, "missing path");
+      assert.deepEqual(revealed, [inside]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("sandboxed preload exposes harnessIPC without requiring Node filesystem access", () => {
@@ -50,7 +72,12 @@ describe("fs-bridge revealInFolder", () => {
     return exposed.isDirectory("/outside/folder").then(async (result) => {
       assert.equal(result, true);
       await exposed.fs.openPath("/outside/file.txt");
-      assert.deepEqual(invokes, [["fs:isDirectory", "/outside/folder"], ["fs:openPath", "/outside/file.txt"]]);
+      await exposed.fs.revealInFolder("/repo/a.txt");
+      assert.deepEqual(invokes, [
+        ["fs:isDirectory", "/outside/folder"],
+        ["fs:openPath", "/outside/file.txt"],
+        ["fs:revealInFolder", "/repo/a.txt"],
+      ]);
     });
   });
 

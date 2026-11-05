@@ -470,7 +470,11 @@ def test_pty_write_after_kill_is_safe():
     s = m.create()
     s.kill()
     assert _wait_until(lambda: not s.alive(), timeout=2.0)
-    s.write("echo hi\n")
+    _, offset = s.read_since(0)
+    activity = s.last_activity
+    assert s.write("echo late\n") == 0
+    assert s.read_since(offset) == (b"", offset)
+    assert s.last_activity == activity
     assert s.alive() is False
 
 

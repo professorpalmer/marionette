@@ -145,11 +145,17 @@ def test_send_micro_skips_wiki_search(tmp_path, monkeypatch):
     s._wiki = WikiClient(base_url="https://wiki.example.com", token="tok")
     s.pilot = _FakePilotWithActions([])
 
-    def boom(query, *, limit=5):
-        raise AssertionError("wiki search must not run on MICRO send")
+    calls = []
 
-    monkeypatch.setattr(s._wiki, "search_pages", boom)
-    list(s.send("typo in README.md"))
+    def record(query, *, limit=5):
+        calls.append(query)
+        return []
+
+    monkeypatch.setattr(s._wiki, "search_pages", record)
+    events = list(s.send("typo in README.md"))
+    prof = next(e for e in events if e.kind == "task_profile")
+    assert prof.data["profile"] == MICRO
+    assert calls == []
 
 
 def test_send_standard_wiki_uses_tighter_budget(tmp_path, monkeypatch):
