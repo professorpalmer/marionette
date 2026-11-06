@@ -719,7 +719,8 @@ def test_probe_redirect_refuses_public():
     with pytest.raises(urllib.error.HTTPError) as exc:
         handler.redirect_request(req, None, 302, "Found", {}, "https://example.com/steal")
     assert exc.value.msg == "Probe endpoints must not redirect"
-    assert exc.value.url == "https://example.com/steal"
+    # .url raises KeyError on Python 3.9 when the error has no body; .filename does not.
+    assert exc.value.filename == "https://example.com/steal"
 
 
 def test_probe_redirect_refuses_metadata():

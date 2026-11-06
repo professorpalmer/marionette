@@ -214,7 +214,8 @@ def _lingering_children() -> list:
             ).stdout
         else:
             # --ppid is GNU only: on macOS it fails and the guard saw no children.
-            rows = _sp.run(["ps", "-A", "-o", "pid=,ppid=,command="],
+            # -ww: without it GNU ps cuts the command and the exclusion below misses.
+            rows = _sp.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,command="],
                            capture_output=True, text=True, timeout=20).stdout
             kids = []
             for line in rows.splitlines():
