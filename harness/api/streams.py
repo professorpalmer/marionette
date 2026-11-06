@@ -117,27 +117,6 @@ def validate_upload_image_paths(
     return _validate_upload_images([p for p in (raw_images or '').split('|') if p], upload_dir, session=session)
 
 
-def resolve_stashed_chat_message(
-    mid: str,
-    message: str,
-    raw_images: str,
-    stash_pop: Callable[[str], Optional[dict]],
-) -> tuple[str, str]:
-    """Apply a stashed ``mid`` onto message/images for ``GET /api/chat``.
-
-    Unknown/expired mid falls through with whatever query-string values remain.
-    """
-    if not mid:
-        return message, raw_images
-    stashed = stash_pop(mid)
-    if stashed is not None:
-        message = stashed.get("message", "")
-        stashed_images = stashed.get("images") or []
-        if stashed_images and not raw_images:
-            raw_images = "|".join(stashed_images)
-    return message, raw_images
-
-
 def stream_run(handler: Any, prompt: str, images, svc: StreamServices) -> Any:
     """Stream a classic Session.run turn over SSE."""
     try:

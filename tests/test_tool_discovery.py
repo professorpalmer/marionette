@@ -218,7 +218,8 @@ def test_search_tools_handler_on_session():
     assert "github.create_issue" in {r["qualified"] for r in payload["results"]}
 
 
-def test_discovery_enabled_default():
+def test_discovery_enabled_default(monkeypatch):
+    monkeypatch.delenv("HARNESS_TOOL_DISCOVERY", raising=False)
     assert discovery_enabled() is True
 
 

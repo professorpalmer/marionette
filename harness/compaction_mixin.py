@@ -1012,9 +1012,8 @@ class CompactionContextMixin:
 
     def _extract_task_facts(self, middle_block: list[dict]) -> dict:
         """Pull paths, errors, and the last user ask — not head+tail chat."""
-        path_re = re.compile(
-            r"(?:[A-Za-z]:)?(?:[\w.-]+/)+\w[\w.-]*\.[A-Za-z0-9]+"
-        )
+        from .compaction_residual import _PATH_RE as path_re
+
         error_re = re.compile(
             r"(?im)^(?:\s*(?:error|exception|failed|traceback|fatal)[:\s].+)$"
         )

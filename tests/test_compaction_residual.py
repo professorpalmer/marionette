@@ -825,3 +825,16 @@ def test_selected_story_survives_catalog_reextract():
         "_compressed_summary": True,
     }])
     assert any("spare region" in line.lower() for line in second["story"])
+
+
+def test_handle_index_paths_start_at_a_token_and_scan_long_words_fast():
+    import time
+
+    files = extract_handle_index(
+        [{"role": "assistant", "content": "pin openrouter:z-ai/glm-5.2.json now"}]
+    )["files"]
+    assert files == ["z-ai/glm-5.2.json"]
+    # A path scan that starts inside a word is quadratic: 200k chars took about 60 s.
+    start = time.perf_counter()
+    extract_handle_index([{"role": "assistant", "content": "H" * 200_000}])
+    assert time.perf_counter() - start < 2.0

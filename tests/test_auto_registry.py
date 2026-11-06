@@ -13,6 +13,8 @@ import os
 import tempfile
 from unittest.mock import patch
 
+import pytest
+
 
 def test_sync_with_gemini_and_anthropic_only(monkeypatch, tmp_path):
     """With only gemini+anthropic keys, registry should contain only those providers.
@@ -415,56 +417,6 @@ def test_idempotent_sync(monkeypatch, tmp_path):
         assert data1 == data2
 
 
-def test_no_keys_no_agentic_entries(monkeypatch, tmp_path):
-    """With no provider keys, no agentic entries should be created."""
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-    
-    # Create existing models.json with a non-agentic entry
-    existing_data = {
-        "models": [
-            {
-                "id": "cursor/composer-2-5",
-                "adapter": "cursor",
-                "adapter_model_name": "composer-2.5",
-                "capability_score": 55,
-            }
-        ]
-    }
-    
-    with open(models_path, 'w') as f:
-        json.dump(existing_data, f)
-    
-    # Mock provider keys: none
-    def mock_get_provider_key(provider):
-        return None
-    
-    # Mock disconnected set: empty
-    def mock_get_disconnected():
-        return set()
-    
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", mock_get_disconnected):
-        
-        from harness.auto_registry import sync_agentic_registry
-        result = sync_agentic_registry()
-        
-        assert result["synced"] is True
-        assert result["providers"] == []
-        assert result["models_count"] == 0
-        
-        # Read the written models.json
-        with open(models_path) as f:
-            data = json.load(f)
-        
-        models = data.get("models", [])
-        
-        # Should still have the cursor entry
-        assert len(models) == 1
-        assert models[0]["id"] == "cursor/composer-2-5"
-
-
 def test_sync_safe_never_raises(monkeypatch, tmp_path):
     """sync_agentic_registry_safe should never raise, even on errors."""
     models_path = tmp_path / "models.json"
@@ -476,13 +428,6 @@ def test_sync_safe_never_raises(monkeypatch, tmp_path):
     # This should not raise
     from harness.auto_registry import sync_agentic_registry_safe
     sync_agentic_registry_safe()  # Should complete without raising
-
-
-def test_import_module():
-    """Verify the module can be imported."""
-    import harness.auto_registry
-    assert hasattr(harness.auto_registry, 'sync_agentic_registry')
-    assert hasattr(harness.auto_registry, 'sync_agentic_registry_safe')
 
 
 def test_build_agentic_spec_uses_live_prices(monkeypatch):
@@ -1002,6 +947,7 @@ def test_sync_with_no_keys_writes_no_agentic_models(monkeypatch, tmp_path):
         result = sync_agentic_registry()
 
     assert result["synced"] is True
+    assert result["providers"] == []
     assert result["models_count"] == 0
     data = json.loads(models_path.read_text())
     assert data["models"] == [{"id": "cursor/composer-2-5", "adapter": "cursor"}]
@@ -1182,178 +1128,86 @@ def test_preview_filter_keeps_ox_alpha():
     assert is_dated_or_noisy_preview("gemini-2.5-pro-preview-06-05") is True
 
 
-def test_opencode_go_live_non_curated_ox_does_not_restore_stale_curated(
-    monkeypatch, tmp_path,
+@pytest.mark.parametrize(
+    ("provider", "live", "enabled", "expect"),
+    [
+        # A live listing with only ox-alpha-free must not dump curated Go.
+        pytest.param(
+            "opencode-go", ["ox-alpha-free"], [],
+            {"exclude": ["agentic/ox-alpha-free", "agentic/gpt-5.6-luna",
+                         "agentic/deepseek-v4-flash", "agentic/mimo-v2.5"],
+             "no_agentic": True},
+            id="opencode_go_live_non_curated_ox_does_not_restore_stale_curated",
+        ),
+        pytest.param(
+            "opencode-go", ["ox-alpha-free", "deepseek-v4-flash"], ["ox-alpha-free"],
+            {"exact": {"agentic/ox-alpha-free"}, "exclude": ["agentic/deepseek-v4-flash"]},
+            id="opencode_go_explicit_enabled_ox_stays_when_live",
+        ),
+        # Curated and live still list MIMO. Worker sync must not hire it unasked.
+        pytest.param(
+            "opencode-go", ["mimo-v2.5-pro", "mimo-v2-5-pro", "deepseek-v4-flash"], [],
+            {"include": ["agentic/deepseek-v4-flash"], "mimo": False},
+            id="opencode_go_live_mimo_stays_out_unless_explicitly_enabled",
+        ),
+        pytest.param(
+            "opencode-go", ["mimo-v2.5-pro", "deepseek-v4-flash"], ["mimo-v2.5-pro"],
+            {"exclude": ["agentic/deepseek-v4-flash"], "mimo": True},
+            id="opencode_go_explicit_enabled_mimo_stays",
+        ),
+        # A Zen live listing with only ox-alpha-free must not dump curated.
+        pytest.param(
+            "opencode-zen", ["ox-alpha-free"], [],
+            {"exclude": ["agentic/ox-alpha-free", "agentic/x-preview-f-free",
+                         "agentic/big-pickle"],
+             "no_agentic": True},
+            id="opencode_zen_live_non_curated_ox_does_not_restore_stale_curated",
+        ),
+        pytest.param(
+            "opencode-zen", ["x-preview-f-free", "big-pickle"], ["x-preview-f-free"],
+            {"exact": {"agentic/x-preview-f-free"}, "exclude": ["agentic/big-pickle"]},
+            id="opencode_zen_explicit_enabled_ox_stays_when_live",
+        ),
+        pytest.param(
+            "opencode-zen", ["x-preview-f-free", "big-pickle", "gpt-5.5"], ["big-pickle"],
+            {"exact": {"agentic/big-pickle"},
+             "exclude": ["agentic/x-preview-f-free", "agentic/gpt-5.5"]},
+            id="zen_explicit_enabled_set_does_not_auto_enable_ox",
+        ),
+    ],
+)
+def test_opencode_sync_respects_live_and_enabled(
+    monkeypatch, tmp_path, provider, live, enabled, expect,
 ):
-    """Successful live listing with only ox-alpha-free must not dump curated Go."""
     models_path = tmp_path / "models.json"
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
 
-    def mock_get_provider_key(provider):
-        return "fake-go" if provider.name == "opencode-go" else None
+    def mock_get_provider_key(p):
+        return "fake-key" if p.name == provider else None
 
     with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
          patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: ["ox-alpha-free"]), \
-         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
+         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
+         patch(
+             "harness.auto_registry._enabled_picker_models",
+             lambda name: list(enabled) if name == provider else [],
+         ):
         from harness.auto_registry import sync_agentic_registry
         result = sync_agentic_registry()
 
     ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
     assert result["synced"] is True
-    assert "agentic/ox-alpha-free" not in ids
-    assert "agentic/gpt-5.6-luna" not in ids
-    assert "agentic/deepseek-v4-flash" not in ids
-    assert "agentic/mimo-v2.5" not in ids
-    assert not any(mid.startswith("agentic/") for mid in ids)
-
-
-def test_opencode_go_explicit_enabled_ox_stays_when_live(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    def mock_get_provider_key(provider):
-        return "fake-go" if provider.name == "opencode-go" else None
-
-    live = ["ox-alpha-free", "deepseek-v4-flash"]
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
-         patch(
-             "harness.auto_registry._enabled_picker_models",
-             lambda name: ["ox-alpha-free"] if name == "opencode-go" else [],
-         ):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert ids == {"agentic/ox-alpha-free"}
-    assert "agentic/deepseek-v4-flash" not in ids
-
-
-def test_opencode_go_live_mimo_stays_out_unless_explicitly_enabled(
-    monkeypatch, tmp_path,
-):
-    """Curated∩live still lists MIMO; worker sync must not hire it unsolicited."""
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    def mock_get_provider_key(provider):
-        return "fake-go" if provider.name == "opencode-go" else None
-
-    live = ["mimo-v2.5-pro", "mimo-v2-5-pro", "deepseek-v4-flash"]
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
-         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert not any("mimo" in mid.lower() for mid in ids)
-    assert "agentic/deepseek-v4-flash" in ids
-
-
-def test_opencode_go_explicit_enabled_mimo_stays(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    def mock_get_provider_key(provider):
-        return "fake-go" if provider.name == "opencode-go" else None
-
-    live = ["mimo-v2.5-pro", "deepseek-v4-flash"]
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
-         patch(
-             "harness.auto_registry._enabled_picker_models",
-             lambda name: ["mimo-v2.5-pro"] if name == "opencode-go" else [],
-         ):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert any("mimo" in mid.lower() for mid in ids)
-    assert "agentic/deepseek-v4-flash" not in ids
-
-
-def test_opencode_zen_live_non_curated_ox_does_not_restore_stale_curated(
-    monkeypatch, tmp_path,
-):
-    """Successful Zen live listing with only ox-alpha-free must not dump curated."""
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    def mock_get_provider_key(provider):
-        return "fake-zen" if provider.name == "opencode-zen" else None
-
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: ["ox-alpha-free"]), \
-         patch("harness.auto_registry._enabled_picker_models", lambda _name: []):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert "agentic/ox-alpha-free" not in ids
-    assert "agentic/x-preview-f-free" not in ids
-    assert "agentic/big-pickle" not in ids
-    assert not any(mid.startswith("agentic/") for mid in ids)
-
-
-def test_opencode_zen_explicit_enabled_ox_stays_when_live(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    def mock_get_provider_key(provider):
-        return "fake-zen" if provider.name == "opencode-zen" else None
-
-    live = ["x-preview-f-free", "big-pickle"]
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
-         patch(
-             "harness.auto_registry._enabled_picker_models",
-             lambda name: ["x-preview-f-free"] if name == "opencode-zen" else [],
-         ):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert ids == {"agentic/x-preview-f-free"}
-    assert "agentic/big-pickle" not in ids
-
-
-def test_zen_explicit_enabled_set_does_not_auto_enable_ox(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setenv("HARNESS_LIVE_PRICES", "0")
-
-    live = ["x-preview-f-free", "big-pickle", "gpt-5.5"]
-
-    def mock_get_provider_key(provider):
-        return "fake-zen" if provider.name == "opencode-zen" else None
-
-    with patch("harness.registry_wizard.get_provider_key", mock_get_provider_key), \
-         patch("harness.keys.get_disconnected", lambda: set()), \
-         patch("harness.model_fetch.fetch_models", lambda *_a, **_k: list(live)), \
-         patch(
-             "harness.auto_registry._enabled_picker_models",
-             lambda name: ["big-pickle"] if name == "opencode-zen" else [],
-         ):
-        from harness.auto_registry import sync_agentic_registry
-        sync_agentic_registry()
-
-    ids = {m["id"] for m in json.loads(models_path.read_text())["models"]}
-    assert ids == {"agentic/big-pickle"}
-    assert "agentic/x-preview-f-free" not in ids
-    assert "agentic/gpt-5.5" not in ids
+    if "exact" in expect:
+        assert ids == expect["exact"]
+    for mid in expect.get("include", []):
+        assert mid in ids
+    for mid in expect.get("exclude", []):
+        assert mid not in ids
+    if expect.get("no_agentic"):
+        assert not any(mid.startswith("agentic/") for mid in ids)
+    if "mimo" in expect:
+        assert any("mimo" in mid.lower() for mid in ids) is expect["mimo"]
 
 
 def test_enabled_codex_astra_stays_when_live_listing_omits_it(monkeypatch, tmp_path):

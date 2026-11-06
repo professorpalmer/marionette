@@ -3,6 +3,8 @@ that analysis. The agentic adapter parks degraded final_text in a VERIFICATION
 artifact's stdout; without promotion the pilot digest hides it as plumbing and
 the swarm reads as 'completed without structured findings' despite real work.
 """
+import pytest
+
 from pmharness.bridge import (
     _compact_artifact,
     _promote_degraded_prose,
@@ -32,23 +34,53 @@ def test_prose_verification_is_promoted_when_no_signal():
     assert findings[0].get("promoted_from") == "verification"
 
 
-def test_no_promotion_when_real_findings_exist():
-    compact = [
-        {"type": "finding", "headline": "real finding", "empty_headline": False},
-        {"type": "verification", "headline": "some long verification prose here that is over forty chars", "empty_headline": False},
-    ]
-    out = _promote_degraded_prose(compact)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: [
+                {"type": "finding", "headline": "real finding", "empty_headline": False},
+                {"type": "verification", "headline": "some long verification prose here that is over forty chars", "empty_headline": False},
+            ],
+            id="hand_dict",
+        ),
+        pytest.param(
+            lambda: [
+                _compact_artifact(_Artifact("finding", {"claim": "a real structured finding"})),
+                _compact_artifact(_Artifact("verification", {"stdout": "Y" * 2000})),
+            ],
+            id="compact_artifact_long_body",
+        ),
+    ],
+)
+def test_real_finding_blocks_promotion(build):
+    out = _promote_degraded_prose(build())
     # Exactly the one real finding; the verification prose is NOT promoted.
     assert sum(1 for a in out if a.get("type") == "finding") == 1
 
 
-def test_short_verification_not_promoted():
-    compact = [
-        {"type": "routing", "headline": "", "empty_headline": True},
-        {"type": "verification", "headline": "passed", "empty_headline": False},
-    ]
-    out = _promote_degraded_prose(compact)
-    assert not any(a.get("type") == "finding" for a in out), "one-word status must not become a finding"
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(
+            lambda: [
+                {"type": "routing", "headline": "", "empty_headline": True},
+                {"type": "verification", "headline": "passed", "empty_headline": False},
+            ],
+            id="hand_dict_one_word",
+        ),
+        pytest.param(
+            lambda: [
+                _compact_artifact(_Artifact("routing", {})),
+                _compact_artifact(_Artifact("verification", {"stdout": "too short"})),
+            ],
+            id="compact_artifact_under_40",
+        ),
+    ],
+)
+def test_short_verification_not_promoted(build):
+    out = _promote_degraded_prose(build())
+    assert not any(a.get("type") == "finding" for a in out), "short status must not become a finding"
 
 
 def test_empty_input_is_safe():
@@ -84,26 +116,6 @@ def test_headline_clipped_but_body_full_in_compact():
     assert len(c["headline"]) <= 240
     assert c["body"] == long_prose
     assert len(c["body"]) == 3000
-
-
-def test_no_double_promote_with_real_signal_and_long_body():
-    long_prose = "Y" * 2000
-    compact = [
-        _compact_artifact(_Artifact("finding", {"claim": "a real structured finding"})),
-        _compact_artifact(_Artifact("verification", {"stdout": long_prose})),
-    ]
-    out = _promote_degraded_prose(compact)
-    # The real finding wins; the verification prose is NOT promoted.
-    assert sum(1 for a in out if a.get("type") == "finding") == 1
-
-
-def test_short_body_under_40_not_promoted():
-    compact = [
-        _compact_artifact(_Artifact("routing", {})),
-        _compact_artifact(_Artifact("verification", {"stdout": "too short"})),
-    ]
-    out = _promote_degraded_prose(compact)
-    assert not any(a.get("type") == "finding" for a in out)
 
 
 def test_no_model_goal_echo_not_promoted_or_completed():

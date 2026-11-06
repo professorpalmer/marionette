@@ -1,7 +1,7 @@
 """Persistent run_ipython kernel — hermetic tests (stdlib fallback, no IPython required)."""
 from __future__ import annotations
 
-import tempfile
+import pytest
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
@@ -39,34 +39,47 @@ def test_plan_mode_skips_run_ipython():
     assert plan_mode_blocks("run_ipython")
 
 
-def test_kernel_state_persists_across_executions(tmp_path):
-    kernel = PersistentPythonKernel(str(tmp_path))
+@pytest.fixture
+def kernel(tmp_path):
+    k = PersistentPythonKernel(str(tmp_path))
+    yield k
+    k.close()
+
+
+@pytest.fixture
+def session(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = HarnessConfig(
+        driver="stub-oracle-v2",
+        state_dir=str(tmp_path / "state"),
+        repo=str(repo),
+    )
+    s = ConversationalSession(cfg)
+    yield s
+    k = getattr(s, "_ipython_kernel", None)
+    if k is not None:
+        k.close()
+
+
+def test_kernel_state_persists_across_executions(kernel):
     r1 = kernel.execute("a = 41")
     assert r1.ok, r1.error
     r2 = kernel.execute("a + 1")
     assert r2.ok, r2.error
     assert "42" in r2.output
-    kernel.close()
 
 
-def test_kernel_print_and_error(tmp_path):
-    kernel = PersistentPythonKernel(str(tmp_path))
+def test_kernel_print_and_error(kernel):
     r = kernel.execute("print('hi')")
     assert r.ok
     assert "hi" in r.output
     bad = kernel.execute("raise ValueError('boom')")
     assert not bad.ok
     assert "boom" in (bad.error + bad.output)
-    kernel.close()
 
 
-def test_session_kernel_shared(tmp_path):
-    cfg = HarnessConfig(
-        driver="stub-oracle-v2",
-        state_dir=tempfile.mkdtemp(prefix="ipy-"),
-        repo=str(tmp_path),
-    )
-    session = ConversationalSession(cfg)
+def test_session_kernel_shared(session):
     k1 = get_or_create_kernel(session)
     k1.execute("shared = 'yes'")
     k2 = get_or_create_kernel(session)
@@ -75,13 +88,7 @@ def test_session_kernel_shared(tmp_path):
     assert r.ok and "yes" in r.output
 
 
-def test_do_run_ipython_dispatch(tmp_path):
-    cfg = HarnessConfig(
-        driver="stub-oracle-v2",
-        state_dir=tempfile.mkdtemp(prefix="ipy-"),
-        repo=str(tmp_path),
-    )
-    session = ConversationalSession(cfg)
+def test_do_run_ipython_dispatch(session):
     # Bind mixin method explicitly (MRO already includes it on ConversationalSession).
     act = PilotAction(kind="run_ipython", content="2 + 2")
     ok, status, val = ToolDispatchMixin._do_run_ipython(session, act)

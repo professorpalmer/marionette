@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -246,6 +247,40 @@ def test_api_usage_excludes_unowned_cli_store_jobs(tmp_path, monkeypatch):
         httpd.shutdown()
 
 
+def test_usage_get_returns_expected_shape(tmp_path):
+    httpd, port = _api_server(str(tmp_path))
+    try:
+        try:
+            urllib.request.urlopen(
+                urllib.request.Request(f"http://127.0.0.1:{port}/api/usage", method="GET"),
+                timeout=10,
+            )
+            assert False, "should have failed with 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+
+        resp = _api_get(port, "/api/usage", server._TOKEN)
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+
+        assert "session" in data
+        assert "jobs" in data
+        session_data = data["session"]
+        assert "tokens_used" in session_data
+        assert "est_cost_usd" in session_data
+        assert "driver" in session_data
+        assert "price_in" in session_data
+        assert "price_out" in session_data
+        assert isinstance(session_data["tokens_used"], int)
+        assert isinstance(session_data["est_cost_usd"], (int, float))
+        assert isinstance(session_data["driver"], str)
+        assert isinstance(session_data["price_in"], (int, float))
+        assert isinstance(session_data["price_out"], (int, float))
+        assert isinstance(data["jobs"], list)
+    finally:
+        httpd.shutdown()
+
+
 def test_session_total_includes_task_stamp_not_unstamped_legacy(
     tmp_path, monkeypatch
 ):
@@ -389,10 +424,6 @@ def test_duplicate_job_id_across_stores_counted_once(tmp_path, monkeypatch):
         monkeypatch.setattr(
             "harness.cli_job_merge.open_cli_durable_state",
             lambda workspace_root="": _FakeCliState(),
-        )
-        monkeypatch.setattr(
-            "harness.job_scoping.filter_store_jobs",
-            lambda rows, store, **kwargs: rows,
         )
         monkeypatch.setattr(
             server,

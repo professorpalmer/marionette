@@ -1,17 +1,15 @@
-"""Regression tests for worker/swarm prompt-cache attribution to the parent session.
+"""Regression tests for worker/swarm token attribution to the parent session.
 
-Cache reads happening inside a worker's inner ConversationalSession
-(session._tokens_cached) must survive back up to the parent session's
-_tokens_cached counter, because server.py's cache_savings_usd computation reads
-_tokens_cached off the pilot. Without this wiring, all swarm/worker cache hits
-are invisible in the session cost total.
+A background worker's spend (in, out and cached prompt tokens) must reach the
+parent session meters on the patch path AND on the 'no changes produced' path.
+server.py's cache_savings_usd reads _tokens_cached off the pilot, and cost
+prices _tokens_out at the output rate, so a dropped counter hides real spend.
 
 These tests exercise:
   (a) WorkerResult carries a tokens_cached field with a safe default,
-  (b) the success-path attribution logic (mirrored from
-      ConversationalSession's worker success branch) increments the parent's
-      _tokens_cached by exactly the worker's tokens_cached without
-      double-counting into _tokens_used,
+  (b) the real background worker branches (patch and no patch) add the
+      worker's in, out and cached tokens to the parent meters without
+      adding cached tokens to _tokens_used a second time,
   (c) _add_worker_tokens_from_artifacts sums tokens_cached across artifacts
       and feeds the parent's _tokens_cached (not _tokens_used).
 """
@@ -34,81 +32,64 @@ def test_worker_result_carries_tokens_cached_field():
     assert r_explicit.tokens_cached == 123
 
 
-def test_worker_result_tokens_cached_missing_defaults_to_zero_via_getattr():
-    """Downstream attribution reads tokens_cached via getattr with a 0 fallback;
-    make sure a bare result yields 0 rather than raising or leaking None."""
-    r = WorkerResult(ok=True)
-    assert int(getattr(r, "tokens_cached", 0) or 0) == 0
+def _run_worker(monkeypatch, tmp_path, result):
+    """Drive the real background worker branch. Stub only the edit engine,
+    the git status probe and the git patch apply."""
+    session = ConversationalSession(
+        HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    )
+    job_id = "job_attr"
+    session._register_local_job(
+        job_id, goal="edit a.py", role="implement", engine="native",
+    )
+    monkeypatch.setattr(
+        "harness.worktree_seed._list_git_status_porcelain_paths",
+        lambda _repo: [],
+    )
+    monkeypatch.setattr(session, "_run_edit_worker_bounded", lambda *a, **k: result)
+    monkeypatch.setattr(
+        session, "_apply_worker_patch", lambda *a, **k: (False, [], "stub apply"),
+    )
+    session._run_provider_worker_background(job_id, "edit a.py")
+    return session
 
 
-def test_success_attribution_increases_parent_tokens_cached():
-    """Mirror the success-path attribution block in
-    ConversationalSession._run_native_edit_worker: a WorkerResult carrying
-    tokens_cached must bump the parent session's _tokens_cached by exactly that
-    amount, WITHOUT double-counting tokens_used."""
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-
-    assert session._tokens_cached == 0
-    assert session._tokens_used == 0
-    assert session._tokens_in == 0
-    assert session._tokens_out == 0
-
+def test_success_patch_attribution_meters_parent_tokens(monkeypatch, tmp_path):
+    """The patch branch adds in, out and cached to the parent meters.
+    Cached tokens are a subset of tokens_in, so _tokens_used is in + out."""
     res = WorkerResult(
         ok=True,
-        patch="dummy",
+        patch="--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n",
+        files_changed=["a.py"],
         tokens_in=1000,
         tokens_out=200,
         tokens_cached=750,
     )
-
-    # Exact copy of the success-path attribution logic (no _apply_lock needed
-    # in-test since we are single-threaded here).
-    tokens_in = res.tokens_in
-    tokens_out = res.tokens_out
-    tokens_cached = int(getattr(res, "tokens_cached", 0) or 0)
-    session._tokens_used += tokens_out + tokens_in
-    session._tokens_in += tokens_in
-    session._tokens_out += tokens_out
-    session._tokens_cached += tokens_cached
-
-    assert session._tokens_cached == 750
-    # tokens_cached is a SUBSET of tokens_in, so _tokens_used must only
-    # reflect in+out (1200), not in+out+cached (1950).
-    assert session._tokens_used == 1200
-    assert session._tokens_in == 1000
-    assert session._tokens_out == 200
+    s = _run_worker(monkeypatch, tmp_path, res)
+    assert (s._tokens_in, s._tokens_out, s._tokens_cached, s._tokens_used) == (
+        1000, 200, 750, 1200,
+    )
 
 
-def test_no_patch_attribution_increases_parent_tokens_cached():
-    """The no-patch (worker failed to produce a diff) branch must ALSO propagate
-    tokens_cached -- worker exploration still burns cache-eligible prompt
-    tokens even when the patch is empty."""
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-
+def test_no_patch_attribution_meters_parent_tokens(monkeypatch, tmp_path):
+    """A worker with no patch still spent tokens. The failure branch meters
+    them on the session and on the queued job result."""
     res = WorkerResult(
         ok=False,
+        error="no changes produced",
         summary="no changes produced",
         tokens_in=400,
         tokens_out=50,
         tokens_cached=300,
     )
-
-    # Exact copy of the no-patch attribution logic.
-    _nc_t_in = int(getattr(res, "tokens_in", 0) or 0)
-    _nc_t_out = int(getattr(res, "tokens_out", 0) or 0)
-    _nc_t_cached = int(getattr(res, "tokens_cached", 0) or 0)
-    if _nc_t_in or _nc_t_out or _nc_t_cached:
-        session._tokens_used += _nc_t_out + _nc_t_in
-        session._tokens_in += _nc_t_in
-        session._tokens_out += _nc_t_out
-        session._tokens_cached += _nc_t_cached
-
-    assert session._tokens_cached == 300
-    assert session._tokens_used == 450  # 400 in + 50 out; cached NOT double-counted
-    assert session._tokens_in == 400
-    assert session._tokens_out == 50
+    s = _run_worker(monkeypatch, tmp_path, res)
+    assert (s._tokens_in, s._tokens_out, s._tokens_cached, s._tokens_used) == (
+        400, 50, 300, 450,
+    )
+    item = s._swarm_results.get_nowait()["result"]
+    assert (item["tokens_in"], item["tokens_out"], item["tokens_cached"]) == (
+        400, 50, 300,
+    )
 
 
 def test_add_worker_tokens_from_artifacts_sums_tokens_cached():
@@ -131,22 +112,3 @@ def test_add_worker_tokens_from_artifacts_sums_tokens_cached():
     # tokens_used must NOT include tokens_cached (would double-count against
     # tokens_in which already contains cached reads).
     assert session._tokens_used == 900
-
-
-def test_add_worker_tokens_from_artifacts_missing_tokens_cached_defaults_zero():
-    """Backward-compat: artifacts written by older worker code lack
-    tokens_cached; the aggregator must treat that as 0 and not crash."""
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-
-    artifacts = [
-        {"task_id": "t1", "tokens_in": 100, "tokens_out": 10},  # no tokens_cached key
-        {"payload": {"task_id": "t2", "tokens_in": 200, "tokens_out": 20}},
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-
-    assert sum_in == 300
-    assert sum_out == 30
-    assert sum_cached == 0
-    assert session._tokens_cached == 0
-    assert session._tokens_used == 330

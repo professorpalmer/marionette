@@ -501,12 +501,3 @@ def test_dispatch_returns_pending_batch_receipt(session):
     found = find_command_batch_by_action(sess, "a-dispatch")
     assert found is not None
     assert found["status"] == "completed"
-
-
-def test_run_parallel_semantics_untouched_by_command_batch():
-    # Structural: command batch is a distinct kind and must not alias run_parallel.
-    act = PilotAction(kind="run_command_batch", commands=["echo 1", "echo 2"])
-    assert act.kind != "run_parallel"
-    assert act.goals == []
-    with pytest.raises(Exception):
-        PilotAction(kind="run_parallel", goals=[]).validate()

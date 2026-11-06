@@ -14,22 +14,25 @@ next to ``legacy_stream_query_token_ok`` in harness/server.py).
 """
 import json
 import threading
-import time
 import urllib.error
 import urllib.request
 
 import pytest
 
 
-def _serve():
+@pytest.fixture(scope="module")
+def served():
     import harness.server as srv
     from http.server import ThreadingHTTPServer
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    time.sleep(0.1)
-    return srv, httpd, port
+    try:
+        yield srv, port
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def _request(port, path, method="GET"):
@@ -103,73 +106,53 @@ def test_gate_rejects_other_paths_and_verbs():
 
 # ---- end-to-end through the Handler gate ------------------------------------
 
-def test_legacy_stream_get_with_query_token_passes_auth_gate(monkeypatch):
-    srv, httpd, port = _serve()
+def test_legacy_stream_get_with_query_token_passes_auth_gate(monkeypatch, served):
+    srv, port = served
     _stub_streams(monkeypatch, srv)
-    try:
-        for path in ("/api/chat", "/api/auto", "/api/run"):
-            resp = _request(port, f"{path}?token={srv._TOKEN}")
-            assert resp.status == 200, f"{path} must accept legacy loopback query auth"
-            assert json.loads(resp.read())["via"] == "stream-stub"
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
+    for path in ("/api/chat", "/api/auto", "/api/run"):
+        resp = _request(port, f"{path}?token={srv._TOKEN}")
+        assert resp.status == 200, f"{path} must accept legacy loopback query auth"
+        assert json.loads(resp.read())["via"] == "stream-stub"
 
 
-def test_legacy_stream_get_with_wrong_query_token_403s_and_redacts(monkeypatch):
-    srv, httpd, port = _serve()
+def test_legacy_stream_get_with_wrong_query_token_403s_and_redacts(monkeypatch, served):
+    srv, port = served
     _stub_streams(monkeypatch, srv)
     supplied = "attacker-guess-token"
-    try:
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _request(port, f"/api/chat?token={supplied}")
+    assert ei.value.code == 403
+    body = ei.value.read().decode("utf-8", errors="ignore")
+    assert supplied not in body, "supplied token must never be echoed"
+    assert srv._TOKEN not in body, "real token must never be emitted"
+
+
+def test_query_token_still_403s_on_non_stream_get_apis(served):
+    srv, port = served
+    for path in ("/api/memory", "/api/config", "/api/chat/events"):
         with pytest.raises(urllib.error.HTTPError) as ei:
-            _request(port, f"/api/chat?token={supplied}")
-        assert ei.value.code == 403
-        body = ei.value.read().decode("utf-8", errors="ignore")
-        assert supplied not in body, "supplied token must never be echoed"
-        assert srv._TOKEN not in body, "real token must never be emitted"
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-
-
-def test_query_token_still_403s_on_non_stream_get_apis():
-    srv, httpd, port = _serve()
-    try:
-        for path in ("/api/memory", "/api/config", "/api/chat/events"):
-            with pytest.raises(urllib.error.HTTPError) as ei:
-                _request(port, f"{path}?token={srv._TOKEN}")
-            assert ei.value.code == 403, f"{path} must keep rejecting query tokens"
-            body = ei.value.read().decode("utf-8", errors="ignore")
-            assert srv._TOKEN not in body
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-
-
-def test_query_token_still_403s_on_post_verbs():
-    srv, httpd, port = _serve()
-    try:
-        with pytest.raises(urllib.error.HTTPError) as ei:
-            _request(port, f"/api/chat?token={srv._TOKEN}", method="POST")
-        assert ei.value.code == 403, "query auth must never unlock POST"
+            _request(port, f"{path}?token={srv._TOKEN}")
+        assert ei.value.code == 403, f"{path} must keep rejecting query tokens"
         body = ei.value.read().decode("utf-8", errors="ignore")
         assert srv._TOKEN not in body
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
 
 
-def test_header_auth_on_stream_routes_still_works(monkeypatch):
-    srv, httpd, port = _serve()
+def test_query_token_still_403s_on_post_verbs(served):
+    srv, port = served
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _request(port, f"/api/chat?token={srv._TOKEN}", method="POST")
+    assert ei.value.code == 403, "query auth must never unlock POST"
+    body = ei.value.read().decode("utf-8", errors="ignore")
+    assert srv._TOKEN not in body
+
+
+def test_header_auth_on_stream_routes_still_works(monkeypatch, served):
+    srv, port = served
     _stub_streams(monkeypatch, srv)
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/api/chat",
-            headers={"X-Harness-Token": srv._TOKEN},
-            method="GET",
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        assert resp.status == 200
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/chat",
+        headers={"X-Harness-Token": srv._TOKEN},
+        method="GET",
+    )
+    resp = urllib.request.urlopen(req, timeout=10)
+    assert resp.status == 200

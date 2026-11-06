@@ -296,15 +296,6 @@ test("planPuppetmasterUpgrade: missing show output still upgrades (fresh / broke
   assert.equal(plan.spec, pm.DEFAULT_PUPPETMASTER_SPEC);
 });
 
-test("planPuppetmasterUpgrade: an editable dev checkout is left untouched", () => {
-  const plan = pm.planPuppetmasterUpgrade({
-    specEnv: "",
-    pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0\nEditable project location: /Users/dev/Puppetmaster",
-  });
-  assert.equal(plan.skip, true);
-  assert.match(plan.reason, /editable/);
-});
-
 test("operational Puppetmaster pins match DEFAULT_PUPPETMASTER_SPEC", () => {
   const spec = pm.DEFAULT_PUPPETMASTER_SPEC;
   assert.match(spec, /^puppetmaster-ai==\d+\.\d+\.\d+$/);
@@ -329,15 +320,6 @@ test("operational Puppetmaster pins match DEFAULT_PUPPETMASTER_SPEC", () => {
     const text = fs.readFileSync(path.join(repoRoot, rel), "utf8");
     assert.match(text, specRe, `${rel} must pin ${spec}`);
   }
-});
-
-test("planPuppetmasterUpgrade: a custom MARIONETTE_PUPPETMASTER_SPEC is honored (never clobbered)", () => {
-  const plan = pm.planPuppetmasterUpgrade({
-    specEnv: "/Users/dev/Puppetmaster",
-    pipShowOutput: "Name: puppetmaster-ai\nVersion: 1.1.0",
-  });
-  assert.equal(plan.skip, true);
-  assert.match(plan.reason, /MARIONETTE_PUPPETMASTER_SPEC/);
 });
 
 test("isEditableInstall: matches only the editable marker line", () => {

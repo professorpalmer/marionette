@@ -69,24 +69,50 @@ def _pin_agentic_only_allowlist(monkeypatch) -> None:
     )
 
 
-def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
+def _wire_agentic_swarm(
+    monkeypatch, tmp_path, *, orchestrator=_FakeOrchestrator, allowlist=None, **env,
+):
     _CapturingWorkerSpec._last_captured = []
     monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
+    for key, value in env.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    if allowlist is None:
+        _pin_agentic_only_allowlist(monkeypatch)
+    else:
+        monkeypatch.setattr(
+            "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
+            lambda **_k: allowlist,
+        )
     monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
+    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", orchestrator)
     monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
 
+
+def _capture_agentic_swarm(
+    monkeypatch, tmp_path, intent, *, orchestrator=_FakeOrchestrator,
+    allowlist=None, worker_mode=None, **env,
+):
+    _wire_agentic_swarm(
+        monkeypatch, tmp_path, orchestrator=orchestrator, allowlist=allowlist, **env,
+    )
+    kwargs = {} if worker_mode is None else {"worker_mode": worker_mode}
+    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"), **kwargs)
+    assert result is not None
+    assert _CapturingWorkerSpec._last_captured
+    return _CapturingWorkerSpec._last_captured[0].payload
+
+
+def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
         roles=["pipeline-mapper"],
     )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    assert _CapturingWorkerSpec._last_captured
-    payload = _CapturingWorkerSpec._last_captured[0].payload
+    payload = _capture_agentic_swarm(monkeypatch, tmp_path, intent)
     assert payload.get("auto_route") is True
     assert not payload.get("model")
     assert not payload.get("pinned_model")
@@ -97,24 +123,13 @@ def test_agentic_swarm_pins_allowed_adapters(monkeypatch, tmp_path):
 
 
 def test_execute_intent_explicit_subprocess_reaches_orchestrator(monkeypatch, tmp_path):
-    _CapturingWorkerSpec._last_captured = []
     _FakeOrchestrator.last_worker_mode = "unset"
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
         roles=["pipeline-mapper"],
     )
-    result = bridge.execute_intent(
-        intent, state_dir=str(tmp_path / "state"), worker_mode="subprocess",
-    )
-    assert result is not None
+    _capture_agentic_swarm(monkeypatch, tmp_path, intent, worker_mode="subprocess")
     assert _FakeOrchestrator.last_worker_mode == "subprocess"
 
 
@@ -126,14 +141,7 @@ def test_execute_intent_system_exit_does_not_kill_backend(monkeypatch, tmp_path)
         def run(self, goal, specs=None, worker_mode=None, label=None, **_kwargs):
             raise SystemExit(77)
 
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _ExitingOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
+    _wire_agentic_swarm(monkeypatch, tmp_path, orchestrator=_ExitingOrchestrator)
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
@@ -144,23 +152,14 @@ def test_execute_intent_system_exit_does_not_kill_backend(monkeypatch, tmp_path)
 
 
 def test_execute_intent_omitted_worker_mode_stays_inline(monkeypatch, tmp_path):
-    _CapturingWorkerSpec._last_captured = []
     _FakeOrchestrator.last_worker_mode = "unset"
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
         roles=["pipeline-mapper"],
         worker_mode="subprocess",
     )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
+    _capture_agentic_swarm(monkeypatch, tmp_path, intent)
     assert _FakeOrchestrator.last_worker_mode == "inline"
 
 
@@ -168,12 +167,16 @@ def test_swarm_allowed_adapters_includes_cursor_when_settings_enable_it(
     monkeypatch, tmp_path,
 ):
     """Models-enabled Cursor Grok must not be rejected by an agentic-only lock."""
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist.resolve_swarm_worker_allowlist",
-        lambda **_k: {
+    intent = DriverIntent(
+        action="run_swarm",
+        goal="Audit provider capability honesty in Settings",
+        roles=["explore"],
+    )
+    payload = _capture_agentic_swarm(
+        monkeypatch,
+        tmp_path,
+        intent,
+        allowlist={
             "allowed_adapters": ["agentic", "cursor"],
             "prefer_plan_billed": False,
             "primary_adapter": "agentic",
@@ -181,140 +184,53 @@ def test_swarm_allowed_adapters_includes_cursor_when_settings_enable_it(
             "platform_lock": ["agentic", "cursor"],
         },
     )
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
-    intent = DriverIntent(
-        action="run_swarm",
-        goal="Audit provider capability honesty in Settings",
-        roles=["explore"],
-    )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    payload = _CapturingWorkerSpec._last_captured[0].payload
     assert payload.get("allowed_adapters") == ["agentic", "cursor"]
     assert payload.get("prefer_plan_billed") is False
     assert _CapturingWorkerSpec._last_captured[0].adapter == "agentic"
 
 
-def test_agentic_swarm_stamps_token_budget_from_env(monkeypatch, tmp_path):
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "123456")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
-    intent = DriverIntent(
-        action="run_swarm",
-        goal="Trace the live scoring pipeline for a points flicker",
-        roles=["pipeline-mapper"],
-    )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    payload = _CapturingWorkerSpec._last_captured[0].payload
-    assert payload.get("token_budget") == 123456
-
-
-def test_agentic_swarm_floors_degenerate_token_budget(monkeypatch, tmp_path):
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "1")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
-    intent = DriverIntent(
-        action="run_swarm",
-        goal="Trace the live scoring pipeline for a points flicker",
-        roles=["pipeline-mapper"],
-    )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    payload = _CapturingWorkerSpec._last_captured[0].payload
-    assert payload.get("token_budget") == 250000
-
-
-def test_agentic_swarm_unlimited_token_budget(monkeypatch, tmp_path):
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_WORKER_TOKEN_BUDGET", "unlimited")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-
-    intent = DriverIntent(
-        action="run_swarm",
-        goal="Trace the live scoring pipeline for a points flicker",
-        roles=["pipeline-mapper"],
-    )
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    payload = _CapturingWorkerSpec._last_captured[0].payload
-    assert payload.get("token_budget") == 0
-
-
-def _capture_agentic_swarm(monkeypatch, tmp_path, intent, **env):
-    _CapturingWorkerSpec._last_captured = []
-    monkeypatch.setenv("HARNESS_SWARM_ADAPTER", "agentic")
-    monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
-    for key, value in env.items():
-        if value is None:
-            monkeypatch.delenv(key, raising=False)
-        else:
-            monkeypatch.setenv(key, value)
-    _pin_agentic_only_allowlist(monkeypatch)
-    monkeypatch.setattr("puppetmaster.workers.WorkerSpec", _CapturingWorkerSpec)
-    monkeypatch.setattr("puppetmaster.orchestrator.Orchestrator", _FakeOrchestrator)
-    monkeypatch.setattr(bridge, "_warn_if_unindexed", lambda *_a, **_k: None)
-    result = bridge.execute_intent(intent, state_dir=str(tmp_path / "state"))
-    assert result is not None
-    assert _CapturingWorkerSpec._last_captured
-    return _CapturingWorkerSpec._last_captured[0].payload
-
-
-def test_agentic_swarm_stamps_medium_reasoning_when_unset(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("env_budget", "expected"),
+    [
+        pytest.param("123456", 123456, id="stamps_token_budget_from_env"),
+        pytest.param("1", 250000, id="floors_degenerate_token_budget"),
+        pytest.param("unlimited", 0, id="unlimited_token_budget"),
+    ],
+)
+def test_agentic_swarm_token_budget(monkeypatch, tmp_path, env_budget, expected):
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
         roles=["pipeline-mapper"],
     )
     payload = _capture_agentic_swarm(
-        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT=None,
+        monkeypatch, tmp_path, intent, HARNESS_WORKER_TOKEN_BUDGET=env_budget,
     )
-    assert payload.get("reasoning_effort") == "medium"
+    assert payload.get("token_budget") == expected
 
 
-def test_agentic_swarm_intent_pin_wins_over_settings(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("intent_effort", "env_effort", "expected"),
+    [
+        pytest.param(None, None, "medium", id="stamps_medium_reasoning_when_unset"),
+        pytest.param("high", "low", "high", id="intent_pin_wins_over_settings"),
+        pytest.param(None, "low", "low", id="settings_low_stamps_low"),
+    ],
+)
+def test_agentic_swarm_reasoning_effort(
+    monkeypatch, tmp_path, intent_effort, env_effort, expected,
+):
+    extra = {} if intent_effort is None else {"reasoning_effort": intent_effort}
     intent = DriverIntent(
         action="run_swarm",
         goal="Trace the live scoring pipeline for a points flicker",
         roles=["pipeline-mapper"],
-        reasoning_effort="high",
+        **extra,
     )
     payload = _capture_agentic_swarm(
-        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT="low",
+        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT=env_effort,
     )
-    assert payload.get("reasoning_effort") == "high"
-
-
-def test_agentic_swarm_settings_low_stamps_low(monkeypatch, tmp_path):
-    intent = DriverIntent(
-        action="run_swarm",
-        goal="Trace the live scoring pipeline for a points flicker",
-        roles=["pipeline-mapper"],
-    )
-    payload = _capture_agentic_swarm(
-        monkeypatch, tmp_path, intent, HARNESS_SWARM_REASONING_EFFORT="low",
-    )
-    assert payload.get("reasoning_effort") == "low"
+    assert payload.get("reasoning_effort") == expected
 
 
 def test_agentic_swarm_explicit_model_pin_disables_auto_route(monkeypatch, tmp_path):
@@ -763,7 +679,6 @@ def test_run_swarm_settings_singleton_blocks_disabled_catalog_peer(monkeypatch, 
         lambda: ["openai-codex:gpt-5.6-luna"],
     )
     monkeypatch.setattr(swa, "_agentic_eligible", lambda: True)
-    monkeypatch.setattr(swa, "_cursor_platform_ready", lambda: False)
     monkeypatch.setattr(
         swa,
         "_platform_locked_adapters",

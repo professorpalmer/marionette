@@ -30,18 +30,20 @@ def test_content_filter_maps_to_finish_reason():
     assert _codex_continuation_kind(finish, text, tools) is None
 
 
-def test_reasoning_only_incomplete_needs_nudge():
-    assert _codex_continuation_kind("incomplete", "", []) == "nudge"
-    assert _CODEX_INCOMPLETE_NUDGE.startswith("[System:")
-
-
-def test_partial_text_incomplete_needs_length_continue():
-    assert _codex_continuation_kind("incomplete", "partial answer", []) == "length"
-
-
-def test_incomplete_with_tools_does_not_continue():
-    tools = [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]
-    assert _codex_continuation_kind("incomplete", "", tools) is None
+@pytest.mark.parametrize("text, tools, expected", [
+    pytest.param("", [], "nudge", id="reasoning-only-needs-nudge"),
+    pytest.param("partial answer", [], "length", id="partial-text-needs-length-continue"),
+    pytest.param(
+        "",
+        [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}],
+        None,
+        id="with-tools-does-not-continue",
+    ),
+])
+def test_codex_continuation_kind(text, tools, expected):
+    assert _codex_continuation_kind("incomplete", text, tools) == expected
+    if expected == "nudge":
+        assert _CODEX_INCOMPLETE_NUDGE.startswith("[System:")
 
 
 def test_consume_sse_captures_incomplete_details():

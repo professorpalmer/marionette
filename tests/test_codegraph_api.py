@@ -41,11 +41,9 @@ def test_codegraph_get_without_token():
         httpd.shutdown()
 
 
-def test_codegraph_get_graceful_when_no_repo():
+def test_codegraph_get_graceful_when_no_repo(monkeypatch):
     httpd, port, srv = _server()
-    # Save original repo
-    orig_repo = srv._cfg.repo
-    srv._cfg.repo = ""  # simulate no repo
+    monkeypatch.setattr(srv._cfg, "repo", "")
     try:
         resp = _get(port, "/api/codegraph", {"X-Harness-Token": srv._TOKEN})
         assert resp.status == 200
@@ -59,7 +57,6 @@ def test_codegraph_get_graceful_when_no_repo():
         assert data["last_indexed"] is None
         assert data["repo"] == ""
     finally:
-        srv._cfg.repo = orig_repo
         httpd.shutdown()
 
 
@@ -76,12 +73,11 @@ def test_codegraph_reindex_rejected_without_token():
         httpd.shutdown()
 
 
-def test_codegraph_reindex_indexing_state():
+def test_codegraph_reindex_indexing_state(monkeypatch):
     httpd, port, srv = _server()
-    orig_repo = srv._cfg.repo
-    # Setup simulated directory that exists to avoid 400 No Open Workspace
+    # Use a directory that exists, to avoid 400 No Open Workspace.
     import os
-    srv._cfg.repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    monkeypatch.setattr(srv._cfg, "repo", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     try:
         resp = _post(port, "/api/codegraph/reindex", {},
                      {"Content-Type": "application/json", "X-Harness-Token": srv._TOKEN})
@@ -95,7 +91,6 @@ def test_codegraph_reindex_indexing_state():
         get_data = json.loads(get_resp.read().decode())
         assert get_data["status"] == "indexing"
     finally:
-        srv._cfg.repo = orig_repo
         httpd.shutdown()
 
 

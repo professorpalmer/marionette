@@ -175,24 +175,29 @@ def test_grounded_never_raises_even_when_pilot_missing():
 # ---------------- integration: handler splices grounded above raw -----------
 
 def test_handler_envelope_carries_grounded_above_raw(monkeypatch):
-    """End-to-end shape check on the branch content: given a configured wiki
-    whose .query returns a known blob and a fake pilot that produces a cited
-    answer, the string the handler would append to history carries BOTH the
-    grounded answer AND the raw result (as supporting context)."""
+    """The real query_wiki branch appends the grounded answer, then citations, then the raw result."""
+    from harness.pilot import PilotAction
+    from harness.send_loop_phases import dispatch_local_action
+
     session = _session()
     session.pilot = _FakePilot(reply="The default driver is local [1].")
-
     raw = "Wiki search results:\n- Driver decision (driver-decision): local adapter default."
-    grounded = session._grounded_wiki_answer("default driver?", raw)
+    asked = []
 
-    # Reconstruct exactly what the handler splices when grounded is non-empty
-    # (see the query_wiki branch in harness/conversation.py).
-    surfaced = (
-        f"(query_wiki 'default driver?' returned)\n"
-        f"{grounded}\n\n"
-        f"--- raw wiki result ---\n{raw}"
-    )
-    assert "The default driver is local [1]." in surfaced
-    assert "Citations:" in surfaced
-    assert "--- raw wiki result ---" in surfaced
-    assert "Wiki search results:" in surfaced  # raw kept as supporting context
+    def query(question):
+        asked.append(question)
+        return raw
+
+    monkeypatch.setattr(session, "_wiki", types.SimpleNamespace(configured=True, query=query))
+    act = PilotAction(kind="query_wiki", arguments={"question": "default driver?"})
+
+    events = list(dispatch_local_action(session, act, "w1", False, []))
+
+    assert asked == ["default driver?"]
+    assert [e.kind for e in events] == ["action_result"]
+    surfaced = session._history[-1]["content"]
+    assert surfaced.startswith("(query_wiki 'default driver?' returned)\n")
+    answer_at = surfaced.index("The default driver is local [1].")
+    cites_at = surfaced.index("Citations:")
+    raw_at = surfaced.index("--- raw wiki result ---\n" + raw)
+    assert answer_at < cites_at < raw_at

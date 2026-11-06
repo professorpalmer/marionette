@@ -6,17 +6,27 @@ Steals Prime Agent's *persistent kernel* insight without IPython monoculture:
 native file/shell/swarm tools stay first-class; this is one extra tool for
 stateful probes (variables survive across turns in the same session).
 
-Uses IPython's InteractiveShell when installed; otherwise falls back to a
-stdlib ``code.InteractiveInterpreter`` so the harness stays usable without a
-new hard dependency (Marionette remains stdlib-first).
+Each kernel is a child process (``harness/ipython_child.py``). A cell used to
+run in a backend thread: it changed the cwd and stdout of the whole backend,
+and a cell that passed its time limit kept the kernel lock for ever. Now a
+time limit interrupts the cell and the namespace stays. A cell that ignores
+the interrupt ends the child, and the next cell starts a new one. The child
+gets ``model_child_env``, so it does not see provider keys.
+
+The child uses IPython's InteractiveShell when it is installed, else a stdlib
+exec loop, so Marionette stays stdlib-first.
 """
 
-import ast
-import contextlib
-import io
+import itertools
+import json
 import os
+import queue
+import signal
+import subprocess
+import sys
 import threading
-import traceback
+import time
+import weakref
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -24,6 +34,11 @@ DEFAULT_TIMEOUT_SEC = 60.0
 DEFAULT_OUTPUT_CAP = 64 * 1024
 MAX_IPYTHON_DEPTH = 2
 _ipython_depth = threading.local()
+
+_CHILD_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipython_child.py")
+_START_TIMEOUT_SEC = 30.0
+# Time a cell gets to stop after the interrupt before the child is ended.
+_INTERRUPT_GRACE_SEC = 3.0
 
 
 @dataclass
@@ -44,32 +59,79 @@ def _clamp(text: str, cap: int = DEFAULT_OUTPUT_CAP) -> str:
     return text[:cap] + f"\n… [truncated {omitted} chars]"
 
 
-def _split_last_expression(source: str):
-    """Return (exec_source, eval_source_or_None) for last-line display."""
+def _end_child(proc: "subprocess.Popen[str]") -> None:
+    if proc.poll() is not None:
+        return
     try:
-        tree = ast.parse(source, mode="exec")
-    except SyntaxError:
-        return source, None
-    if not tree.body:
-        return source, None
-    last = tree.body[-1]
-    if not isinstance(last, ast.Expr):
-        return source, None
-    exec_body = tree.body[:-1]
-    if not hasattr(ast, "unparse"):
-        return source, None
-    try:
-        if exec_body:
-            exec_mod = ast.Module(body=exec_body, type_ignores=[])
-            if hasattr(ast, "fix_missing_locations"):
-                ast.fix_missing_locations(exec_mod)
-            exec_src = ast.unparse(exec_mod)
-        else:
-            exec_src = ""
-        eval_src = ast.unparse(last.value)
+        proc.kill()
+        proc.wait(timeout=5)
     except Exception:
-        return source, None
-    return exec_src, eval_src
+        pass
+
+
+def _read_replies(stream, replies: "queue.Queue[Optional[dict]]") -> None:
+    for line in stream:
+        try:
+            replies.put(json.loads(line))
+        except ValueError:
+            continue
+    replies.put(None)
+
+
+class _Child:
+    """One kernel process and the thread that reads its replies."""
+
+    def __init__(self, cwd: str) -> None:
+        from .child_env import model_child_env
+
+        self.proc = subprocess.Popen(
+            [sys.executable, "-I", _CHILD_SCRIPT],
+            cwd=cwd,
+            env=model_child_env(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+        self.replies: "queue.Queue[Optional[dict]]" = queue.Queue()
+        # The reader must not hold self: a live thread would keep the finalizer from ending the child.
+        threading.Thread(
+            target=_read_replies, args=(self.proc.stdout, self.replies),
+            name="marionette-ipython-reader", daemon=True,
+        ).start()
+        self._finalizer = weakref.finalize(self, _end_child, self.proc)
+        ready = self.next_reply(_START_TIMEOUT_SEC)
+        if not ready or not ready.get("ready"):
+            self.end()
+            raise RuntimeError("python kernel did not start")
+        self.backend = str(ready.get("backend") or "stdlib")
+
+    def next_reply(self, timeout: float) -> Optional[dict]:
+        try:
+            return self.replies.get(timeout=max(0.1, timeout))
+        except queue.Empty:
+            return None
+
+    def send(self, request: dict) -> None:
+        self.proc.stdin.write(json.dumps(request) + "\n")
+        self.proc.stdin.flush()
+
+    def interrupt(self) -> bool:
+        if os.name == "nt" or self.proc.poll() is not None:
+            return False
+        try:
+            self.proc.send_signal(signal.SIGINT)
+            return True
+        except OSError:
+            return False
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def end(self) -> None:
+        self._finalizer()
 
 
 class PersistentPythonKernel:
@@ -77,27 +139,11 @@ class PersistentPythonKernel:
 
     def __init__(self, cwd: str) -> None:
         self.cwd = os.path.realpath(cwd) if cwd else os.getcwd()
-        self._ns: dict = {"__name__": "__main__"}
+        self._lock = threading.Lock()
+        self._child: Optional[_Child] = None
         self._backend = "stdlib"
-        self._ipython_shell: Any = None
-        self._lock = threading.RLock()
+        self._ids = itertools.count(1)
         self._closed = False
-        self._try_init_ipython()
-
-    def _try_init_ipython(self) -> None:
-        try:
-            from IPython.core.interactiveshell import InteractiveShell
-        except Exception:
-            return
-        try:
-            # Fresh shell — do not touch InteractiveShell.instance() singleton.
-            shell = InteractiveShell(user_ns=self._ns)
-            self._ipython_shell = shell
-            self._ns = shell.user_ns
-            self._backend = "ipython"
-        except Exception:
-            self._ipython_shell = None
-            self._backend = "stdlib"
 
     @property
     def backend(self) -> str:
@@ -106,8 +152,9 @@ class PersistentPythonKernel:
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            self._ipython_shell = None
-            self._ns.clear()
+            if self._child is not None:
+                self._child.end()
+                self._child = None
 
     def execute(
         self,
@@ -125,151 +172,83 @@ class PersistentPythonKernel:
             return KernelResult(
                 ok=False, output="", error="empty code", backend=self._backend,
             )
-
-        box: dict = {"result": None, "error": None}
-
-        def _target() -> None:
-            try:
-                box["result"] = self._execute_locked(source)
-            except Exception as exc:
-                box["error"] = exc
-
-        thread = threading.Thread(target=_target, name="marionette-ipython", daemon=True)
-        thread.start()
-        thread.join(timeout=max(0.1, float(timeout)))
-        if thread.is_alive():
-            return KernelResult(
-                ok=False,
-                output="",
-                error=f"execution timed out after {timeout:.0f}s",
-                backend=self._backend,
-                timed_out=True,
-            )
-        if box["error"] is not None:
-            return KernelResult(
-                ok=False,
-                output="",
-                error=_clamp(f"{type(box['error']).__name__}: {box['error']}", output_cap),
-                backend=self._backend,
-            )
-        result = box["result"]
-        assert isinstance(result, KernelResult)
-        return KernelResult(
-            ok=result.ok,
-            output=_clamp(result.output, output_cap),
-            error=_clamp(result.error, output_cap),
-            backend=result.backend,
-            timed_out=result.timed_out,
-        )
-
-    def _execute_locked(self, source: str) -> KernelResult:
         with self._lock:
-            prev_cwd = os.getcwd()
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            try:
-                os.chdir(self.cwd)
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    if self._ipython_shell is not None:
-                        return self._run_ipython(source, stdout, stderr)
-                    return self._run_stdlib(source, stdout, stderr)
-            finally:
-                try:
-                    os.chdir(prev_cwd)
-                except Exception:
-                    pass
+            return self._execute_locked(source, float(timeout), output_cap)
 
-    def _run_ipython(
-        self, source: str, stdout: io.StringIO, stderr: io.StringIO,
-    ) -> KernelResult:
-        shell = self._ipython_shell
+    def _execute_locked(self, source: str, timeout: float, cap: int) -> KernelResult:
         try:
-            result = shell.run_cell(source, store_history=False)
-        except Exception:
-            err = traceback.format_exc()
+            child = self._live_child()
+        except Exception as exc:
             return KernelResult(
-                ok=False,
-                output=_combine(stdout.getvalue(), stderr.getvalue(), ""),
-                error=err,
-                backend="ipython",
+                ok=False, output="", error=f"python kernel could not start: {exc}",
+                backend=self._backend,
             )
-        out = _combine(stdout.getvalue(), stderr.getvalue(), "")
-        if result is not None and getattr(result, "result", None) is not None:
-            try:
-                display = repr(result.result)
-            except Exception:
-                display = str(result.result)
-            out = _combine(out, "", display)
-        err_text = ""
-        if result is not None and getattr(result, "error_in_exec", None):
-            err_text = str(result.error_in_exec)
+        request_id = next(self._ids)
+        try:
+            child.send({"id": request_id, "code": source, "cwd": self.cwd, "cap": cap})
+        except (OSError, ValueError):
+            self._drop_child()
             return KernelResult(
-                ok=False, output=out, error=err_text or "execution error",
-                backend="ipython",
+                ok=False, output="", error="python kernel exited; run the cell again",
+                backend=self._backend,
             )
-        success = True
-        if result is not None and hasattr(result, "success"):
-            success = bool(result.success)
+        reply = self._reply_for(child, request_id, timeout)
+        if reply is None and child.alive():
+            interrupted = child.interrupt()
+            reply = self._reply_for(child, request_id, _INTERRUPT_GRACE_SEC) if interrupted else None
+            if reply is None:
+                self._drop_child()
+                return KernelResult(
+                    ok=False, output="",
+                    error=(
+                        f"Stopped at the {timeout:g} s limit. The cell did not stop on "
+                        "the interrupt, so the kernel restarted and its variables are gone."
+                    ),
+                    backend=self._backend, timed_out=True,
+                )
+            return KernelResult(
+                ok=False, output=_clamp(reply.get("output") or "", cap),
+                error=f"Interrupted at the {timeout:g} s limit. Variables are kept.",
+                backend=self._backend, timed_out=True,
+            )
+        if reply is None:
+            self._drop_child()
+            return KernelResult(
+                ok=False, output="",
+                error="python kernel exited during the cell; variables are gone",
+                backend=self._backend,
+            )
+        if reply.get("interrupted"):
+            return KernelResult(
+                ok=False, output=_clamp(reply.get("output") or "", cap),
+                error="interrupted", backend=self._backend,
+            )
         return KernelResult(
-            ok=success, output=out, error="" if success else (err_text or "failed"),
-            backend="ipython",
+            ok=bool(reply.get("ok")),
+            output=_clamp(reply.get("output") or "", cap),
+            error=_clamp(reply.get("error") or "", cap),
+            backend=self._backend,
         )
 
-    def _run_stdlib(
-        self, source: str, stdout: io.StringIO, stderr: io.StringIO,
-    ) -> KernelResult:
-        import code
+    def _reply_for(self, child: _Child, request_id: int, timeout: float) -> Optional[dict]:
+        deadline = time.monotonic() + timeout
+        while True:
+            reply = child.next_reply(deadline - time.monotonic())
+            if reply is None or reply.get("id") == request_id:
+                return reply
+            if time.monotonic() >= deadline:
+                return None
 
-        interp = code.InteractiveInterpreter(locals=self._ns)
-        exec_src, eval_src = _split_last_expression(source)
-        try:
-            if exec_src.strip():
-                compiled = compile(exec_src, "<run_ipython>", "exec")
-                interp.runcode(compiled)
-            display = ""
-            if eval_src is not None:
-                try:
-                    value = eval(compile(eval_src, "<run_ipython>", "eval"), self._ns, self._ns)
-                except Exception:
-                    interp.showtraceback()
-                    value = None
-                else:
-                    if value is not None:
-                        display = repr(value)
-                        self._ns["_"] = value
-            elif not exec_src.strip():
-                # Whole source was a single expression that unparse couldn't
-                # peel (e.g. 3.9) — exec as-is.
-                compiled = compile(source, "<run_ipython>", "exec")
-                interp.runcode(compiled)
-            out = _combine(stdout.getvalue(), stderr.getvalue(), display)
-            # InteractiveInterpreter writes tracebacks to stderr via showtraceback.
-            err_blob = stderr.getvalue()
-            if "Traceback" in err_blob and not display and not stdout.getvalue().strip():
-                return KernelResult(
-                    ok=False, output=out, error=err_blob.strip() or "error",
-                    backend="stdlib",
-                )
-            return KernelResult(ok=True, output=out, error="", backend="stdlib")
-        except Exception:
-            err = traceback.format_exc()
-            return KernelResult(
-                ok=False,
-                output=_combine(stdout.getvalue(), stderr.getvalue(), ""),
-                error=err,
-                backend="stdlib",
-            )
+    def _live_child(self) -> _Child:
+        if self._child is None or not self._child.alive():
+            self._child = _Child(self.cwd)
+            self._backend = self._child.backend
+        return self._child
 
-
-def _combine(stdout: str, stderr: str, display: str) -> str:
-    parts = []
-    if stdout:
-        parts.append(stdout.rstrip("\n"))
-    if stderr:
-        parts.append(stderr.rstrip("\n"))
-    if display:
-        parts.append(display)
-    return "\n".join(p for p in parts if p)
+    def _drop_child(self) -> None:
+        if self._child is not None:
+            self._child.end()
+            self._child = None
 
 
 def get_or_create_kernel(session: Any) -> PersistentPythonKernel:

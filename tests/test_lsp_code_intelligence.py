@@ -342,15 +342,9 @@ def test_tool_argv_passthrough_on_posix(monkeypatch):
     assert argv == ["/proj/node_modules/.bin/tsc", "--noEmit"]
 
 
-def test_nested_tsc_uses_package_tsconfig_and_cwd(monkeypatch, tmp_path):
-    """Repo root has no tsconfig; nested webapp tsc must run against webapp/."""
-    monkeypatch.setattr(lsp.shutil, "which", lambda _: None)
-    webapp = tmp_path / "webapp"
-    webapp.mkdir()
-    (webapp / "package.json").write_text("{}", encoding="utf-8")
-    (webapp / "tsconfig.json").write_text("{}", encoding="utf-8")
-    tsc = _touch_tool(webapp / "node_modules" / ".bin" / "tsc")
-
+@pytest.fixture
+def tsc_capture(monkeypatch):
+    """Record the argv and cwd of the tsc run and return empty output."""
     called: dict = {}
 
     def fake_capture(cmd, *, cwd, timeout_s):
@@ -359,6 +353,18 @@ def test_nested_tsc_uses_package_tsconfig_and_cwd(monkeypatch, tmp_path):
         return 0, ""
 
     monkeypatch.setattr(lsp, "_run_command_capture", fake_capture)
+    return called
+
+
+def test_nested_tsc_uses_package_tsconfig_and_cwd(monkeypatch, tmp_path, tsc_capture):
+    """Repo root has no tsconfig; nested webapp tsc must run against webapp/."""
+    monkeypatch.setattr(lsp.shutil, "which", lambda _: None)
+    webapp = tmp_path / "webapp"
+    webapp.mkdir()
+    (webapp / "package.json").write_text("{}", encoding="utf-8")
+    (webapp / "tsconfig.json").write_text("{}", encoding="utf-8")
+    tsc = _touch_tool(webapp / "node_modules" / ".bin" / "tsc")
+    called = tsc_capture
 
     report = lsp.get_lsp_report(
         language="typescript",
@@ -377,7 +383,7 @@ def test_nested_tsc_uses_package_tsconfig_and_cwd(monkeypatch, tmp_path):
     )
 
 
-def test_path_tsc_uses_nested_webapp_tsconfig_and_cwd(monkeypatch, tmp_path):
+def test_path_tsc_uses_nested_webapp_tsconfig_and_cwd(monkeypatch, tmp_path, tsc_capture):
     """PATH tsc still uses shallowest package tsconfig when root has none."""
     path_tsc = "/usr/bin/tsc-from-path"
     monkeypatch.setattr(
@@ -387,15 +393,7 @@ def test_path_tsc_uses_nested_webapp_tsconfig_and_cwd(monkeypatch, tmp_path):
     webapp.mkdir()
     (webapp / "package.json").write_text("{}", encoding="utf-8")
     (webapp / "tsconfig.json").write_text("{}", encoding="utf-8")
-
-    called: dict = {}
-
-    def fake_capture(cmd, *, cwd, timeout_s):
-        called["cmd"] = list(cmd)
-        called["cwd"] = cwd
-        return 0, ""
-
-    monkeypatch.setattr(lsp, "_run_command_capture", fake_capture)
+    called = tsc_capture
 
     report = lsp.get_lsp_report(
         language="typescript",
@@ -414,7 +412,7 @@ def test_path_tsc_uses_nested_webapp_tsconfig_and_cwd(monkeypatch, tmp_path):
     )
 
 
-def test_root_tsconfig_takes_precedence_over_nested_package(monkeypatch, tmp_path):
+def test_root_tsconfig_takes_precedence_over_nested_package(monkeypatch, tmp_path, tsc_capture):
     """Explicit root tsconfig wins even when nested webapp also has one."""
     monkeypatch.setattr(lsp.shutil, "which", lambda _: None)
     (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
@@ -423,17 +421,9 @@ def test_root_tsconfig_takes_precedence_over_nested_package(monkeypatch, tmp_pat
     (webapp / "package.json").write_text("{}", encoding="utf-8")
     (webapp / "tsconfig.json").write_text("{}", encoding="utf-8")
     tsc = _touch_tool(webapp / "node_modules" / ".bin" / "tsc")
+    called = tsc_capture
 
-    called: dict = {}
-
-    def fake_capture(cmd, *, cwd, timeout_s):
-        called["cmd"] = list(cmd)
-        called["cwd"] = cwd
-        return 0, ""
-
-    monkeypatch.setattr(lsp, "_run_command_capture", fake_capture)
-
-    _ = lsp.get_lsp_report(
+    _ =lsp.get_lsp_report(
         language="typescript",
         mode="diagnostics",
         root=str(tmp_path),
@@ -448,7 +438,7 @@ def test_root_tsconfig_takes_precedence_over_nested_package(monkeypatch, tmp_pat
     assert called["cmd"][0] == tsc
 
 
-def test_nested_windows_cmd_tsc_project_argv_safe(monkeypatch, tmp_path):
+def test_nested_windows_cmd_tsc_project_argv_safe(monkeypatch, tmp_path, tsc_capture):
     """Windows .cmd shim keeps cmd.exe /c argv while using nested project."""
     monkeypatch.setattr(lsp.shutil, "which", lambda _: None)
     monkeypatch.setattr(lsp.os, "name", "nt")
@@ -457,17 +447,9 @@ def test_nested_windows_cmd_tsc_project_argv_safe(monkeypatch, tmp_path):
     (webapp / "package.json").write_text("{}", encoding="utf-8")
     (webapp / "tsconfig.json").write_text("{}", encoding="utf-8")
     tsc_cmd = _touch_tool(webapp / "node_modules" / ".bin" / "tsc.cmd")
+    called = tsc_capture
 
-    called: dict = {}
-
-    def fake_capture(cmd, *, cwd, timeout_s):
-        called["cmd"] = list(cmd)
-        called["cwd"] = cwd
-        return 0, ""
-
-    monkeypatch.setattr(lsp, "_run_command_capture", fake_capture)
-
-    _ = lsp.get_lsp_report(
+    _ =lsp.get_lsp_report(
         language="typescript",
         mode="diagnostics",
         root=str(tmp_path),

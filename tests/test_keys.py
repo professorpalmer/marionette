@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer
 import pytest
-import tempfile
+
 
 def _server():
     import harness.server as srv
@@ -46,8 +46,29 @@ def _startup_mutated_env_vars():
     return sorted(names)
 
 
+@pytest.fixture
+def keys_env(monkeypatch):
+    """Point the state dir (and optional home) at test paths, then reload harness.keys."""
+    def load(state_dir, *, home=None, keys_file=None, disconnected_file=None):
+        import importlib
+        from harness import keys as K
+
+        monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+        if home is not None:
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.setenv("USERPROFILE", str(home))
+        importlib.reload(K)
+        if keys_file is not None:
+            monkeypatch.setattr(K, "_KEYS_FILE", str(keys_file))
+        if disconnected_file is not None:
+            monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(disconnected_file))
+        return K
+
+    return load
+
+
 @pytest.fixture(autouse=True)
-def setup_env(request, monkeypatch):
+def setup_env(request, monkeypatch, tmp_path_factory):
     prior = {name: os.environ.get(name) for name in _startup_mutated_env_vars()}
 
     # Register early so restore runs after per-test monkeypatch undo (LIFO).
@@ -63,7 +84,7 @@ def setup_env(request, monkeypatch):
     for name in prior:
         monkeypatch.delenv(name, raising=False)
 
-    tmp_dir = tempfile.mkdtemp()
+    tmp_dir = str(tmp_path_factory.mktemp("keys-state"))
     monkeypatch.setenv("HARNESS_STATE_DIR", tmp_dir)
     try:
         from harness.credential_pool import clear_pools_for_tests
@@ -173,7 +194,7 @@ def test_api_settings_endpoints_with_key(monkeypatch):
         httpd.shutdown()
 
 
-def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
+def test_legacy_keys_fallback_when_state_dir_empty(keys_env, tmp_path):
     """Upgraded installs with keys only in ~/.pmharness/keys.json stay readable."""
     home = tmp_path / ".pmharness"
     home.mkdir()
@@ -183,14 +204,7 @@ def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
     legacy_file.write_text(
         json.dumps({"openrouter": "sk-or-legacy-1234"}), encoding="utf-8"
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+    K = keys_env(state_dir, home=tmp_path, keys_file=legacy_file)
 
     # Writes stay in the state dir; the legacy file is only folded in on read.
     assert K.get_keys_file_path() == str(state_dir / "keys.json")
@@ -200,7 +214,7 @@ def test_legacy_keys_fallback_when_state_dir_empty(monkeypatch, tmp_path):
     assert status["masked"] == "....1234"
 
 
-def test_legacy_and_state_keys_merge_per_provider(monkeypatch, tmp_path):
+def test_legacy_and_state_keys_merge_per_provider(monkeypatch, keys_env, tmp_path):
     """Legacy openrouter + state anthropic must both survive; state wins ties."""
     home = tmp_path / ".pmharness"
     home.mkdir()
@@ -216,17 +230,12 @@ def test_legacy_and_state_keys_merge_per_provider(monkeypatch, tmp_path):
         json.dumps({"anthropic": "sk-ant-state-key-2", "gemini": "state-wins-9999"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     for ev in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.delenv(ev, raising=False)
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
-    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(home / "disconnected.json"))
+    K = keys_env(
+        state_dir, home=tmp_path, keys_file=legacy_file,
+        disconnected_file=home / "disconnected.json",
+    )
 
     merged = K._read_keys()
     assert merged["openrouter"] == "sk-or-legacy-openrouter-1"
@@ -248,7 +257,7 @@ def test_legacy_and_state_keys_merge_per_provider(monkeypatch, tmp_path):
     assert json.loads(legacy_file.read_text(encoding="utf-8"))["gemini"] == "legacy-loses"
 
 
-def test_legacy_merge_then_api_settings_endpoints_order(monkeypatch, tmp_path):
+def test_legacy_merge_then_api_settings_endpoints_order(monkeypatch, keys_env, tmp_path):
     """Order-sensitive pair: legacy merge must not leak keys into settings GET."""
     home = tmp_path / ".pmharness"
     home.mkdir()
@@ -264,15 +273,10 @@ def test_legacy_merge_then_api_settings_endpoints_order(monkeypatch, tmp_path):
         json.dumps({"anthropic": "sk-ant-state-key-2", "gemini": "state-wins-9999"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
-    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(home / "disconnected.json"))
+    K = keys_env(
+        state_dir, home=tmp_path, keys_file=legacy_file,
+        disconnected_file=home / "disconnected.json",
+    )
 
     K.load_api_keys_on_startup("openrouter")
     assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-legacy-openrouter-1"
@@ -280,8 +284,9 @@ def test_legacy_merge_then_api_settings_endpoints_order(monkeypatch, tmp_path):
     # Simulate autouse teardown between the two order-sensitive tests.
     for name in _startup_mutated_env_vars():
         os.environ.pop(name, None)
-    fresh_state = tempfile.mkdtemp()
-    monkeypatch.setenv("HARNESS_STATE_DIR", fresh_state)
+    fresh_state = tmp_path / "fresh-state"
+    fresh_state.mkdir()
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(fresh_state))
 
     monkeypatch.setenv("HARNESS_DRIVER", "stub-oracle-v2")
     httpd, port, srv = _server()
@@ -294,7 +299,7 @@ def test_legacy_merge_then_api_settings_endpoints_order(monkeypatch, tmp_path):
         httpd.shutdown()
 
 
-def test_sibling_prefix_home_does_not_read_legacy_keys(monkeypatch, tmp_path):
+def test_sibling_prefix_home_does_not_read_legacy_keys(keys_env, tmp_path):
     """~/.pmharness_shadow must not inherit real ~/.pmharness/keys.json."""
     shadow_home = tmp_path / ".pmharness_shadow"
     shadow_home.mkdir()
@@ -306,21 +311,14 @@ def test_sibling_prefix_home_does_not_read_legacy_keys(monkeypatch, tmp_path):
     real_keys.write_text(
         json.dumps({"openrouter": "sk-or-real-leak-from-sibling"}), encoding="utf-8"
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(real_keys))
+    K = keys_env(state_dir, home=tmp_path, keys_file=real_keys)
 
     assert K.legacy_keys_file_path() == ""
     assert K.migrate_legacy_keys_into_state() == []
     assert K._read_keys() == {}
 
 
-def test_sibling_prefix_home_does_not_read_legacy_disconnected(monkeypatch, tmp_path):
+def test_sibling_prefix_home_does_not_read_legacy_disconnected(keys_env, tmp_path):
     """~/.pmharness_shadow must not inherit real ~/.pmharness/disconnected.json."""
     shadow_home = tmp_path / ".pmharness_shadow"
     shadow_home.mkdir()
@@ -330,20 +328,13 @@ def test_sibling_prefix_home_does_not_read_legacy_disconnected(monkeypatch, tmp_
     real_home.mkdir()
     real_disconnected = real_home / "disconnected.json"
     real_disconnected.write_text(json.dumps(["openrouter", "anthropic"]), encoding="utf-8")
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(real_disconnected))
+    K = keys_env(state_dir, home=tmp_path, disconnected_file=real_disconnected)
 
     assert K._disconnected_file_path() == str(state_dir / "disconnected.json")
     assert K.get_disconnected() == set()
 
 
-def test_inspect_mode_does_not_fold_legacy_keys(monkeypatch, tmp_path):
+def test_inspect_mode_does_not_fold_legacy_keys(monkeypatch, keys_env, tmp_path):
     """HARNESS_INSPECT under ~/.pmharness/inspect must not inherit machine keys."""
     home = tmp_path / ".pmharness"
     home.mkdir()
@@ -353,15 +344,8 @@ def test_inspect_mode_does_not_fold_legacy_keys(monkeypatch, tmp_path):
     legacy_file.write_text(
         json.dumps({"openrouter": "sk-or-production-secret"}), encoding="utf-8"
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(inspect_state))
     monkeypatch.setenv("HARNESS_INSPECT", "1")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+    K = keys_env(inspect_state, home=tmp_path, keys_file=legacy_file)
 
     assert K.inspect_mode() is True
     assert K.legacy_keys_file_path() == ""
@@ -369,25 +353,7 @@ def test_inspect_mode_does_not_fold_legacy_keys(monkeypatch, tmp_path):
     assert K._read_keys() == {}
 
 
-def test_ephemeral_state_dir_has_no_legacy_keys_path(monkeypatch, tmp_path):
-    """Temp / test state dirs must never resolve a legacy keys path."""
-    state_dir = tmp_path / "ephemeral-state"
-    state_dir.mkdir()
-    legacy_file = tmp_path / "keys.json"
-    legacy_file.write_text(json.dumps({"openrouter": "sk-or-legacy-leak"}))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
-
-    assert K.legacy_keys_file_path() == ""
-    assert K.migrate_legacy_keys_into_state() == []
-    assert K._read_keys() == {}
-
-
-def test_ephemeral_state_dir_ignores_legacy_keys(monkeypatch, tmp_path):
+def test_ephemeral_state_dir_ignores_legacy_keys(keys_env, tmp_path):
     """Temp / test HARNESS_STATE_DIR must not read or write ~/.pmharness/keys.json."""
     state_dir = tmp_path / "ephemeral-state"
     state_dir.mkdir()
@@ -395,30 +361,23 @@ def test_ephemeral_state_dir_ignores_legacy_keys(monkeypatch, tmp_path):
     legacy_file.write_text(
         json.dumps({"openrouter": "sk-or-legacy-leak"}), encoding="utf-8"
     )
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
+    K = keys_env(state_dir, keys_file=legacy_file)
 
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
-
+    assert K.legacy_keys_file_path() == ""
+    assert K.migrate_legacy_keys_into_state() == []
+    assert K._read_keys() == {}
     assert K.get_keys_file_path() == str(state_dir / "keys.json")
     assert K.get_api_key_status("openrouter")["has_key"] is False
 
 
-def test_state_dir_keys_preferred_over_legacy(monkeypatch, tmp_path):
+def test_state_dir_keys_preferred_over_legacy(keys_env, tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     state_file = state_dir / "keys.json"
     state_file.write_text(json.dumps({"openrouter": "sk-or-state-key"}))
     legacy_file = tmp_path / "keys.json"
     legacy_file.write_text(json.dumps({"openrouter": "sk-or-legacy-key"}))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_KEYS_FILE", str(legacy_file))
+    K = keys_env(state_dir, keys_file=legacy_file)
 
     assert K.get_keys_file_path() == str(state_file)
     status = K.get_api_key_status("openrouter")
@@ -426,7 +385,7 @@ def test_state_dir_keys_preferred_over_legacy(monkeypatch, tmp_path):
     assert status["masked"] == "....-key"
 
 
-def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
+def test_legacy_disconnected_fallback(keys_env, tmp_path):
     """Legacy ~/.pmharness/disconnected.json still applies when state is under
     that home tree and the state-dir file is missing."""
     home = tmp_path / ".pmharness"
@@ -435,31 +394,19 @@ def test_legacy_disconnected_fallback(monkeypatch, tmp_path):
     state_dir.mkdir()
     legacy_file = home / "disconnected.json"
     legacy_file.write_text(json.dumps(["openrouter"]))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(legacy_file))
+    K = keys_env(state_dir, home=tmp_path, disconnected_file=legacy_file)
 
     assert K._disconnected_file_path() == str(legacy_file)
     assert "openrouter" in K.get_disconnected()
 
 
-def test_ephemeral_state_dir_ignores_legacy_disconnected(monkeypatch, tmp_path):
+def test_ephemeral_state_dir_ignores_legacy_disconnected(keys_env, tmp_path):
     """Temp / test HARNESS_STATE_DIR must not inherit ~/.pmharness disconnects."""
     state_dir = tmp_path / "ephemeral-state"
     state_dir.mkdir()
     legacy_file = tmp_path / "disconnected.json"
     legacy_file.write_text(json.dumps(["anthropic", "openrouter"]))
-    monkeypatch.setenv("HARNESS_STATE_DIR", str(state_dir))
-
-    import importlib
-    from harness import keys as K
-    importlib.reload(K)
-    monkeypatch.setattr(K, "_DISCONNECTED_FILE", str(legacy_file))
+    K = keys_env(state_dir, disconnected_file=legacy_file)
 
     assert K._disconnected_file_path() == str(state_dir / "disconnected.json")
     assert K.get_disconnected() == set()

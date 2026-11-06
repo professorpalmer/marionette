@@ -1677,16 +1677,6 @@ describe("createApplyStreamEvent waitHint lifecycle", () => {
     apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
     expect(state.waitHint).toBeNull();
   });
-
-  it("keeps driver failure wait hints when the turn settles in error", () => {
-    const { state, apply } = makeWaitHintDeps();
-    apply({
-      kind: "notice",
-      data: { kind: "wait", message: "driver openrouter:deepseek failed" },
-    });
-    apply({ kind: "error", data: { error: "all routes failed" } });
-    expect(state.waitHint).toBe("driver openrouter:deepseek failed");
-  });
 });
 
 describe("message_delta cover gate without eager setState updaters", () => {

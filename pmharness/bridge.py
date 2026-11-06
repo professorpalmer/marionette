@@ -1392,41 +1392,6 @@ def _resolve_prewalk_implement_adapter(requested: str = "") -> str:
     return pick_implement_adapter(enabled, requested or None)
 
 
-def _build_prewalk_cli_argv(
-    goal: str,
-    *,
-    cwd: str,
-    allow_dirty: bool = True,
-    allow_non_worktree: bool = True,
-    adapter: str = "",
-    plan_adapter: str = "",
-    timeout_seconds: Optional[int] = None,
-    worker_mode: str = "subprocess",
-    label: str = "",
-) -> list:
-    """Build ``python -m puppetmaster prewalk ...`` argv (sans interpreter).
-
-    Kept as a pure command builder so tests can assert the CLI shape without
-    spawning Cursor / a live worker.
-    """
-    cmd = ["prewalk", goal, "--cwd", cwd or "."]
-    if adapter:
-        cmd.extend(["--adapter", adapter])
-    if plan_adapter:
-        cmd.extend(["--plan-adapter", plan_adapter])
-    if timeout_seconds is not None:
-        cmd.extend(["--timeout-seconds", str(int(timeout_seconds))])
-    if allow_dirty:
-        cmd.append("--allow-dirty")
-    if allow_non_worktree:
-        cmd.append("--allow-non-worktree")
-    if worker_mode:
-        cmd.extend(["--worker-mode", worker_mode])
-    if label:
-        cmd.extend(["--label", label])
-    return cmd
-
-
 def _payload_with_swarm_reasoning(payload: dict, intent: DriverIntent) -> dict:
     """Stamp worker reasoning: explicit intent pin, else Settings blanket."""
     out = dict(payload or {})

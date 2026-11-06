@@ -108,27 +108,28 @@ def test_project_local_job_shape_parity():
     assert row["actions"][0]["action_id"] == "a1"
 
 
-def test_project_local_job_artifacts_complete_true_with_real_finding():
-    row = project_local_job_for_swarm_live(_sample_local_job(
-        artifacts=[
+@pytest.mark.parametrize("artifacts, expected", [
+    pytest.param(
+        [
             {"type": "ROUTING", "headline": "Routed to cheap-model"},
             {"type": "finding", "headline": "Router drops rejected alternatives"},
         ],
-    ))
-    assert row["artifacts_complete"] is True
+        True,
+        id="real_finding",
+    ),
+    pytest.param([], False, id="empty"),
+    pytest.param(
+        [{"type": "placeholder", "headline": "pending"}],
+        False,
+        id="placeholder_only",
+    ),
+])
+def test_project_local_job_artifacts_complete(artifacts, expected):
+    row = project_local_job_for_swarm_live(_sample_local_job(artifacts=artifacts))
+    assert row["artifacts_complete"] is expected
 
 
-def test_project_local_job_artifacts_complete_false_when_empty():
-    row = project_local_job_for_swarm_live(_sample_local_job(artifacts=[]))
-    assert row["artifacts_complete"] is False
-
-
-def test_project_local_job_artifacts_complete_false_for_placeholder_only():
-    row = project_local_job_for_swarm_live(_sample_local_job(
-        artifacts=[{"type": "placeholder", "headline": "pending"}],
-    ))
-    assert row["artifacts_complete"] is False
-
+def test_project_local_job_keeps_provider_cost_fields():
     row = project_local_job_for_swarm_live(_sample_local_job(
         status="completed",
         est_cost_usd=0.42,
@@ -140,18 +141,6 @@ def test_project_local_job_artifacts_complete_false_for_placeholder_only():
     assert row["cost_provenance"] == "provider"
     assert row["tokens"] == 12_500
     assert row["tasks"][0]["instruction"] == ""
-
-
-def test_project_partial_and_timed_out_waves_are_terminal():
-    for status in ("partial", "timed_out"):
-        row = project_local_job_for_swarm_live(_sample_local_job(
-            id="local-wave-x",
-            status=status,
-            role="parallel_wave",
-            adapter="parallel_wave",
-        ))
-        assert row["status"] == status
-        assert row["tasks"][0]["instruction"] == ""
 
 
 def test_project_partial_and_timed_out_waves_are_terminal():
@@ -201,14 +190,6 @@ def test_project_user_cancelled_job():
     ))
     assert row["status"] == "cancelled"
     assert row["artifacts"][0]["headline"] == "Cancelled by user"
-
-
-def test_merge_skips_duplicate_store_ids():
-    store = [{"id": "local-dup", "goal": "store wins", "status": "complete"}]
-    local = [_sample_local_job(id="local-dup", goal="local loses")]
-    merged = merge_local_jobs_into_swarm_live(store, local)
-    assert len(merged) == 1
-    assert merged[0]["goal"] == "store wins"
 
 
 def test_merge_replaces_placeholder_by_exact_dispatch_identity():
@@ -320,13 +301,6 @@ def test_merge_appends_unique_local_rows():
         for j in merged
         if str(j["id"]).startswith("local-")
     )
-
-
-def test_stable_id_through_projection():
-    row = project_local_job_for_swarm_live(_sample_local_job(id="local-stable-99"))
-    again = project_local_job_for_swarm_live(_sample_local_job(id="local-stable-99"))
-    assert row["id"] == "local-stable-99"
-    assert again["id"] == row["id"]
 
 
 def test_terminal_parent_reconciles_nonterminal_child_tasks():

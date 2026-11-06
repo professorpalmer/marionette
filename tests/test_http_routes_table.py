@@ -115,11 +115,6 @@ def test_preauth_wiki_connect_not_in_get_table():
     assert "/api/wiki/connect" not in get
 
 
-def test_guarded_api_sample_not_in_public_allowlist():
-    """No public GET allowlist remains on Handler."""
-    assert not getattr(srv.Handler, "_PUBLIC_GET_PATHS", None)
-
-
 def test_sessions_relocate_is_the_only_mutating_relocate_path():
     """POST table has relocate; move is not a live mutating alias."""
     post, _ = _fresh_route_tables()

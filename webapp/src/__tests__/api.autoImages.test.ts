@@ -50,3 +50,22 @@ describe("api.auto images", () => {
     expect(String(streamMock.mock.calls[0]?.[0])).toContain("/api/auto?mid=stash1");
   });
 });
+
+describe("api auth OAuth helpers", () => {
+  beforeEach(() => {
+    postJSONMock.mockClear();
+  });
+
+  it("post to the /api/auth/oauth routes, not /api/providers/oauth", async () => {
+    await api.startAuthOAuth("openai-codex");
+    await api.pollAuthOAuth("sess-1", "openai-codex");
+    await api.completeAuthOAuth("sess-1", "code-9");
+    await api.cancelAuthOAuth("sess-1");
+    expect(postJSONMock.mock.calls).toEqual([
+      ["/api/auth/oauth/start", { provider: "openai-codex", label: "" }],
+      ["/api/auth/oauth/poll", { session_id: "sess-1", provider: "openai-codex" }],
+      ["/api/auth/oauth/complete", { session_id: "sess-1", code: "code-9", provider: "anthropic" }],
+      ["/api/auth/oauth/cancel", { session_id: "sess-1", provider: "" }],
+    ]);
+  });
+});

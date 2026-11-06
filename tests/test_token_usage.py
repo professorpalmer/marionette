@@ -73,7 +73,7 @@ def test_expand_leaves_openai_full_prompt_alone():
 
 
 def test_coerce_cursor_cli_uncached_plus_cache_buckets():
-    tin, tout, cost, cached, write = coerce_token_usage_record(
+    detail = coerce_token_usage_record(
         {
             "usage": {
                 "inputTokens": 7,
@@ -82,12 +82,16 @@ def test_coerce_cursor_cli_uncached_plus_cache_buckets():
                 "cacheWriteTokens": 39_331,
             }
         }
-    ).as_tuple()
+    )
+    tin, tout, cost, cached, write = detail.as_tuple()
     assert tin == 7 + 147_695 + 39_331
+    assert detail.tokens_in == tin
     assert tout == 412
     assert cost is None
     assert cached == 147_695
     assert write == 39_331
+    assert detail.reasoning_tokens.basis == "absent"
+    assert detail.modality_dict() == {}
 
 
 def test_coerce_nested_result_usage():
@@ -110,7 +114,7 @@ def test_coerce_nested_result_usage():
 
 
 def test_coerce_anthropic_uncached_plus_cache_creation():
-    tin, tout, _cost, cached, write = coerce_token_usage_record(
+    detail = coerce_token_usage_record(
         {
             "usage": {
                 "input_tokens": 100,
@@ -119,10 +123,16 @@ def test_coerce_anthropic_uncached_plus_cache_creation():
                 "cache_creation_input_tokens": 200,
             }
         }
-    ).as_tuple()
+    )
+    tin, tout, _cost, cached, write = detail.as_tuple()
     assert tin == 100 + 5_000 + 200
+    assert detail.tokens_in == tin
     assert (cached, write) == (5_000, 200)
     assert tout == 20
+    assert detail.reasoning_tokens.basis == "absent"
+    assert detail.image_tokens.basis == "absent"
+    assert detail.encrypted_opaque_tokens.basis == "absent"
+    assert detail.modality_dict() == {}
 
 
 def test_openai_reasoning_tokens_extract_only():
@@ -191,40 +201,6 @@ def test_codex_reasoning_output_tokens_top_level():
     )
     assert detail.reasoning_tokens == ModalityBucket(basis="provider", count=3)
     assert (detail.tokens_in, detail.tokens_out) == (10, 5)
-
-
-def test_anthropic_usage_does_not_invent_modalities():
-    detail = coerce_token_usage_record(
-        {
-            "usage": {
-                "input_tokens": 100,
-                "output_tokens": 20,
-                "cache_read_input_tokens": 5_000,
-                "cache_creation_input_tokens": 200,
-            }
-        }
-    )
-    assert detail.tokens_in == 100 + 5_000 + 200
-    assert detail.reasoning_tokens.basis == "absent"
-    assert detail.image_tokens.basis == "absent"
-    assert detail.encrypted_opaque_tokens.basis == "absent"
-    assert detail.modality_dict() == {}
-
-
-def test_cursor_shape_does_not_invent_modalities():
-    detail = coerce_token_usage_record(
-        {
-            "usage": {
-                "inputTokens": 7,
-                "outputTokens": 412,
-                "cacheReadTokens": 147_695,
-                "cacheWriteTokens": 39_331,
-            }
-        }
-    )
-    assert detail.tokens_in == 7 + 147_695 + 39_331
-    assert detail.reasoning_tokens.basis == "absent"
-    assert detail.modality_dict() == {}
 
 
 def test_tuple_api_unchanged_with_modalities_present():

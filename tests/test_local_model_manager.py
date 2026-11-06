@@ -49,6 +49,11 @@ from harness.local_model_manager import (
 )
 
 
+_CATALOG_PLATFORMS = (
+    "macos-arm64", "macos-x64", "linux-x64", "linux-arm64", "windows-x64", "windows-arm64",
+)
+
+
 def _tiny_catalog(tmp_path, payload=b"runtime-bytes"):
     digest = hashlib.sha256(payload).hexdigest()
     model = b"gguf-bytes"
@@ -60,48 +65,14 @@ def _tiny_catalog(tmp_path, payload=b"runtime-bytes"):
             "release": "test",
             "binary": "llama-server",
             "assets": {
-                "macos-arm64": {
+                platform: {
                     "filename": "runtime.tar.gz",
                     "url": "http://fixture.test/runtime.tar.gz",
                     "sha256": digest,
                     "size": len(payload),
                     "archive": "tar.gz",
-                },
-                "macos-x64": {
-                    "filename": "runtime.tar.gz",
-                    "url": "http://fixture.test/runtime.tar.gz",
-                    "sha256": digest,
-                    "size": len(payload),
-                    "archive": "tar.gz",
-                },
-                "linux-x64": {
-                    "filename": "runtime.tar.gz",
-                    "url": "http://fixture.test/runtime.tar.gz",
-                    "sha256": digest,
-                    "size": len(payload),
-                    "archive": "tar.gz",
-                },
-                "linux-arm64": {
-                    "filename": "runtime.tar.gz",
-                    "url": "http://fixture.test/runtime.tar.gz",
-                    "sha256": digest,
-                    "size": len(payload),
-                    "archive": "tar.gz",
-                },
-                "windows-x64": {
-                    "filename": "runtime.tar.gz",
-                    "url": "http://fixture.test/runtime.tar.gz",
-                    "sha256": digest,
-                    "size": len(payload),
-                    "archive": "tar.gz",
-                },
-                "windows-arm64": {
-                    "filename": "runtime.tar.gz",
-                    "url": "http://fixture.test/runtime.tar.gz",
-                    "sha256": digest,
-                    "size": len(payload),
-                    "archive": "tar.gz",
-                },
+                }
+                for platform in _CATALOG_PLATFORMS
             },
         },
         "models": [{
@@ -118,6 +89,20 @@ def _tiny_catalog(tmp_path, payload=b"runtime-bytes"):
             "min_disk_bytes": 1,
         }],
     }, payload, model
+
+
+def _install_runtime(mgr, root, model_bytes, *, exe_name="llama-server", **runtime_fields):
+    """Put a runtime exe and the model file in place and mark both ready."""
+    runtime = root / "runtime" / "test"
+    runtime.mkdir(parents=True)
+    exe = runtime / exe_name
+    exe.write_text("x", encoding="utf-8")
+    (root / "models").mkdir()
+    model_path = root / "models" / "model.gguf"
+    model_path.write_bytes(model_bytes)
+    mgr._set_component("runtime", status="ready", path=str(exe), **runtime_fields)
+    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    return exe, model_path
 
 
 class _RangeBody:
@@ -287,16 +272,10 @@ def test_start_uses_injected_popen_and_ready(tmp_path, monkeypatch):
         clock=lambda: 1.0,
         ready_timeout=1.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / ("llama-server.exe" if os.name == "nt" else "llama-server")
-    exe.write_text("x", encoding="utf-8")
-    models = root / "models"
-    models.mkdir()
-    model_path = models / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe))
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    exe, model_path = _install_runtime(
+        mgr, root, model_bytes,
+        exe_name="llama-server.exe" if os.name == "nt" else "llama-server",
+    )
 
     spawned = {}
 
@@ -606,16 +585,7 @@ def test_readiness_requires_alias(tmp_path, monkeypatch):
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=clock, ready_timeout=2.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    models = root / "models"
-    models.mkdir()
-    model_path = models / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe))
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    _install_runtime(mgr, root, model_bytes)
 
     class _Proc:
         pid = 77
@@ -652,15 +622,7 @@ def test_readiness_fails_if_child_exits(tmp_path, monkeypatch):
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=lambda: 1.0, ready_timeout=1.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    (root / "models").mkdir()
-    model_path = root / "models" / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe))
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    _install_runtime(mgr, root, model_bytes)
 
     class _Dead:
         pid = 88
@@ -756,7 +718,9 @@ def test_probe_redirect_refuses_public():
     req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
     with pytest.raises(urllib.error.HTTPError) as exc:
         handler.redirect_request(req, None, 302, "Found", {}, "https://example.com/steal")
-    assert "Public" in str(exc.value) or "blocked" in str(exc.value).lower() or exc.value.code == 302
+    assert exc.value.msg == "Probe endpoints must not redirect"
+    # .url raises KeyError on Python 3.9 when the error has no body; .filename does not.
+    assert exc.value.filename == "https://example.com/steal"
 
 
 def test_probe_redirect_refuses_metadata():
@@ -932,13 +896,6 @@ def test_external_survives_manager_restart(tmp_path, monkeypatch):
 def lm_reach(endpoint_id):
     from harness.local_models import local_secret_reach
     return local_secret_reach(endpoint_id)
-
-
-def test_probe_redirect_refuses_public_even_when_remote_accepted():
-    handler = ProbeRedirectHandler()
-    req = urllib.request.Request("http://127.0.0.1:8080/v1/models")
-    with pytest.raises(urllib.error.HTTPError):
-        handler.redirect_request(req, None, 302, "Found", {}, "https://example.com/steal")
 
 
 def test_assert_probe_hop_allows_confirmed_public(monkeypatch):
@@ -1293,15 +1250,7 @@ def test_start_restarts_unhealthy_matching_process(tmp_path, monkeypatch, stop_e
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=lambda: 1.0, ready_timeout=1.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    (root / "models").mkdir()
-    model_path = root / "models" / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe))
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    exe, model_path = _install_runtime(mgr, root, model_bytes)
     monkeypatch.setattr(
         "harness.local_model_manager.process_matches_identity",
         lambda pid, ident: True,
@@ -1564,28 +1513,26 @@ def test_concurrent_install_and_start_rejected(tmp_path, monkeypatch):
     worker.join(1)
 
 
-def test_cpu_asset_keeps_ngl_zero_when_nvidia_present(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend, platform, nvidia, expected_ngl", [
+    pytest.param("cpu", "linux-x64", True, "0", id="cpu_asset_ngl_zero_when_nvidia_present"),
+    pytest.param("metal", "macos-arm64", False, "99", id="metal_asset_ngl_99"),
+])
+def test_asset_backend_sets_ngl(tmp_path, monkeypatch, backend, platform, nvidia, expected_ngl):
     monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
     catalog, _, model_bytes = _tiny_catalog(tmp_path)
     for key, asset in catalog["runtime"]["assets"].items():
-        asset["backend"] = "cpu"
-        asset["platform"] = key
-    monkeypatch.setattr("harness.local_models.detect_accelerator", lambda: "cuda")
-    monkeypatch.setattr("harness.local_model_manager.shutil.which", lambda name: "/usr/bin/nvidia-smi")
+        asset["backend"] = backend
+        if nvidia:
+            asset["platform"] = key
+    if nvidia:
+        monkeypatch.setattr("harness.local_models.detect_accelerator", lambda: "cuda")
+        monkeypatch.setattr("harness.local_model_manager.shutil.which", lambda name: "/usr/bin/nvidia-smi")
     root = tmp_path / "lm"
     mgr = LocalModelManager(
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=lambda: 1.0, ready_timeout=1.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    (root / "models").mkdir()
-    model_path = root / "models" / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe), platform="linux-x64")
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    _install_runtime(mgr, root, model_bytes, platform=platform)
     spawned = {}
 
     class _Proc:
@@ -1601,44 +1548,7 @@ def test_cpu_asset_keeps_ngl_zero_when_nvidia_present(tmp_path, monkeypatch):
     mgr._probe_health = lambda *a, **k: True
     mgr.start()
     argv = spawned["argv"]
-    assert argv[argv.index("-ngl") + 1] == "0"
-
-
-def test_metal_asset_keeps_ngl_99(tmp_path, monkeypatch):
-    monkeypatch.setattr("harness.local_model_manager.find_free_port", lambda *a: 12345)
-    catalog, _, model_bytes = _tiny_catalog(tmp_path)
-    for key, asset in catalog["runtime"]["assets"].items():
-        asset["backend"] = "metal"
-    root = tmp_path / "lm"
-    mgr = LocalModelManager(
-        root=str(root), catalog=catalog, sleeper=lambda _s: None,
-        clock=lambda: 1.0, ready_timeout=1.0,
-    )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    (root / "models").mkdir()
-    model_path = root / "models" / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe), platform="macos-arm64")
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
-    spawned = {}
-
-    class _Proc:
-        pid = 78
-
-        def wait(self, timeout=None):
-            return 0
-
-        def kill(self):
-            return None
-
-    mgr.popen = lambda argv, **kwargs: spawned.update(argv=argv) or _Proc()
-    mgr._probe_health = lambda *a, **k: True
-    mgr.start()
-    argv = spawned["argv"]
-    assert argv[argv.index("-ngl") + 1] == "99"
+    assert argv[argv.index("-ngl") + 1] == expected_ngl
 
 
 def test_probe_uses_one_dns_pin(tmp_path, monkeypatch):
@@ -1759,15 +1669,7 @@ def test_concurrent_start_second_is_busy(tmp_path, monkeypatch):
         root=str(root), catalog=catalog, sleeper=lambda _s: None,
         clock=lambda: 1.0, ready_timeout=1.0,
     )
-    runtime = root / "runtime" / "test"
-    runtime.mkdir(parents=True)
-    exe = runtime / "llama-server"
-    exe.write_text("x", encoding="utf-8")
-    (root / "models").mkdir()
-    model_path = root / "models" / "model.gguf"
-    model_path.write_bytes(model_bytes)
-    mgr._set_component("runtime", status="ready", path=str(exe), platform="linux-x64")
-    mgr._set_component("model", status="ready", path=str(model_path), id="qwen-test")
+    _install_runtime(mgr, root, model_bytes, platform="linux-x64")
     started = threading.Event()
     release = threading.Event()
 

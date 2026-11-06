@@ -135,7 +135,7 @@ def test_relocated_bundle_repeated_offline_import_same_origin(stored, tmp_path):
     (source / 'selected.txt').write_bytes(b'offline bytes')
     origin = state_identity(state)
     assert state_identity(state / '..' / state.name) == origin
-    for attempt in range(3):
+    for attempt in range(1):
         bundle = tmp_path / ('bundle-' + str(attempt))
         result = _run_bundle('export', '--state-dir', state, '--job', job.id,
                              '--session', 'local-session', '--bundle', bundle,

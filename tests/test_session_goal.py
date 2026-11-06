@@ -1,15 +1,13 @@
 """Persistent sticky session GOAL — distinct from Schedule.objective / Job.goal."""
 from __future__ import annotations
 
-import tempfile
-
 from harness.config import HarnessConfig
 from harness.schedule_core import Schedule
 from harness.session_goal import SessionGoal, SessionGoalStore
 
 
-def test_session_goal_sticky_across_save_load():
-    state_dir = tempfile.mkdtemp()
+def test_session_goal_sticky_across_save_load(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionGoalStore(state_dir)
     goal = SessionGoal()
     goal.set("Ship the quality gate")
@@ -59,8 +57,8 @@ def test_session_goal_distinct_from_schedule_objective():
     assert schedule.objective == "Schedule cron objective"
 
 
-def test_session_goal_output_token_cap_roundtrip():
-    state_dir = tempfile.mkdtemp()
+def test_session_goal_output_token_cap_roundtrip(tmp_path):
+    state_dir = str(tmp_path)
     store = SessionGoalStore(state_dir)
     goal = SessionGoal()
     goal.set("Cap the child", output_token_cap=512)
@@ -99,7 +97,8 @@ def test_session_goal_on_conversational_session_roundtrip(monkeypatch, tmp_path)
         "harness.memory_store.MEMORY_PATH",
         tmp_path / "mem.json",
     )
-    state_dir = tempfile.mkdtemp()
+    state_dir = str(tmp_path / "state")
+    (tmp_path / "state").mkdir()
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=state_dir)
     from harness.conversation import ConversationalSession
 

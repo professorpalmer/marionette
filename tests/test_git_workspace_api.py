@@ -82,14 +82,3 @@ def test_workspace_git_status_and_diff(tmp_path):
         assert "hello" in diff["out"]
     finally:
         httpd.shutdown()
-
-
-def test_provision_git_status_without_repo_param(tmp_path):
-    httpd, port = _server(str(tmp_path))
-    try:
-        token = srv._TOKEN
-        body = json.loads(_get(port, "/api/git/status", token).read().decode())
-        assert "gh_available" in body
-        assert "connected" in body
-    finally:
-        httpd.shutdown()

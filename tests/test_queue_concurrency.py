@@ -181,8 +181,9 @@ def test_queue_drains_while_swarm_pending(tmp_path, monkeypatch):
         # Release the event to let the background job finish
         block_event.set()
         
-        # Wait a moment for background future to complete and put result
-        time.sleep(0.5)
+        deadline = time.monotonic() + 10
+        while session._swarm_results.empty() and time.monotonic() < deadline:
+            time.sleep(0.01)
         
         # Drain results
         drain_events = list(session.drain_swarm_results())

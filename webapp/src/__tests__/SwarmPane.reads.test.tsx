@@ -1,7 +1,7 @@
 import backend from './expertCurrent.backend.json';
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 
-import { beforeEach, expect, it, vi, afterEach } from "vitest";
+import { beforeEach, expect, it, vi, afterEach, onTestFinished } from "vitest";
 
 import SwarmPane from "../components/SwarmPane";
 
@@ -99,6 +99,8 @@ it('shows transport failure instead of an empty tracker and retries', async () =
 });
 
 it('does not clear a new scope error when an old retry succeeds', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  onTestFinished(() => { vi.useRealTimers(); });
   const f = await setup();
   f.selected.mockRejectedValueOnce(new Error('offline'));
   await inspect('Inspect A');
@@ -109,8 +111,9 @@ it('does not clear a new scope error when an old retry succeeds', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Retry', exact: true }));
   await waitFor(() => expect(f.selected).toHaveBeenCalledTimes(2));
   act(() => window.dispatchEvent(new CustomEvent('harness-session-changed', { detail: { sessionId: 'B' } })));
-  // The shared owner serializes reads; let the abandoned transport hit its bounded timeout.
-  await waitFor(() => expect(f.store.getSnapshot().working).toBe(false), { timeout: 2000 });
+  // The shared owner serializes reads; move the abandoned transport past its bounded timeout.
+  await act(() => vi.advanceTimersByTimeAsync(1000));
+  await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   const next = { ...selection, session_id: 'B' };
   await f.replace([expertSummary(next, 'Inspect B')]);
   f.selected.mockRejectedValueOnce(new Error('new scope offline'));

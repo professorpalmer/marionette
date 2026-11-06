@@ -129,11 +129,9 @@ def test_context_changes_inside_request_reject_acknowledgement(case, field):
 @pytest.mark.parametrize('count', [200, 201])
 def test_capacity_never_silently_selects_first_200(case, count):
     store, task, svc, body = case
-    tasks = [task]
-    for i in range(count - 1):
-        new = replace(task, id=f'extra-{i}', status=TaskStatus.COMPLETE)
-        store.save_task(new)
-        tasks.append(new)
+    extra = [replace(task, id=f'extra-{i}', status=TaskStatus.COMPLETE) for i in range(count - 1)]
+    store.save_tasks(extra)
+    tasks = [task, *extra]
     body['selection']['bindings'] = [asdict(task_binding(t)) for t in tasks[:200]]
     code, result = post_swarm_cancel(body, svc)
     if count == 200:

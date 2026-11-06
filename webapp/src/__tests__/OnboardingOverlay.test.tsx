@@ -1,8 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import OnboardingOverlay from "../components/OnboardingOverlay";
-import overlaySrc from "../components/OnboardingOverlay.tsx?raw";
-import apiSrc from "../lib/api.ts?raw";
 import { api } from "../lib/api";
 import { FEATURED_OAUTH_ORDER } from "../lib/onboardingProviders";
 import {
@@ -75,21 +73,6 @@ describe("OnboardingOverlay featured vs key rows", () => {
       label: "claude-max",
     });
     vi.mocked(api.cancelAuthOAuth).mockResolvedValue({ ok: true });
-  });
-
-  it("wires OAuth to existing /api/auth/oauth helpers, not /api/providers/oauth", () => {
-    expect(overlaySrc).toContain("startAuthOAuth");
-    expect(overlaySrc).toContain("pollAuthOAuth");
-    expect(overlaySrc).toContain("completeAuthOAuth");
-    expect(overlaySrc).toContain("cancelAuthOAuth");
-    expect(overlaySrc).not.toContain("/api/providers/oauth");
-    expect(apiSrc).toContain('"/api/auth/oauth/start"');
-    expect(apiSrc).toContain('"/api/auth/oauth/poll"');
-    expect(apiSrc).toContain('"/api/auth/oauth/complete"');
-    expect(apiSrc).toContain('"/api/auth/oauth/cancel"');
-    expect(apiSrc).not.toContain("/api/providers/oauth");
-    expect(overlaySrc).toContain("FeaturedProviderRow");
-    expect(overlaySrc).toContain("KeyProviderRow");
   });
 
   it("renders featured OAuth rows and key paste rows", async () => {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -56,11 +57,4 @@ def test_run_command_child_sees_no_provider_keys(tmp_path, monkeypatch):
     assert "CLAUDECODE" not in seen
     assert seen["GH_TOKEN"] == "user-gh"
     assert seen.get("PATH")
-
-
-def test_harness_process_keeps_its_keys(tmp_path, monkeypatch):
-    import os
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
-    _child_environ(tmp_path)
     assert os.environ["OPENROUTER_API_KEY"] == "sk-or-test"

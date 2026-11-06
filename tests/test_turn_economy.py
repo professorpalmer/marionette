@@ -38,33 +38,6 @@ def _economy(tmpdir: str, *, session_id: str = "sess-te", job_id: str | None = "
     )
 
 
-def test_module_keeps_autobudget_out():
-    path = os.path.join(os.path.dirname(__file__), "..", "harness", "turn_economy.py")
-    source = open(path, encoding="utf-8").read()
-    tree = ast.parse(source)
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imported.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                imported.add(node.module.split(".")[0])
-                for alias in node.names:
-                    imported.add(alias.name)
-    assert "autobudget" not in imported
-    assert "AutoBudget" not in imported
-    # Docstring may mention the exclusion; ensure no import/attribute usage.
-    assert not any(
-        isinstance(node, (ast.Name, ast.Attribute))
-        and (
-            (isinstance(node, ast.Name) and node.id == "AutoBudget")
-            or (isinstance(node, ast.Attribute) and node.attr == "AutoBudget")
-        )
-        for node in ast.walk(tree)
-    )
-
-
 def test_parse_output_directive_matches_parse_turn_budget():
     economy = TurnEconomy(state_dir=".", session_id="s")
     samples = [
@@ -82,21 +55,12 @@ def test_parse_output_directive_matches_parse_turn_budget():
 def test_resolve_append_only_matches_helpers(monkeypatch):
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "auto")
     economy = TurnEconomy(state_dir=".", session_id="s")
-    cases = [
-        ("http://localhost:11434/v1", "ollama"),
-        ("https://api.openai.com/v1", "gpt-4"),
-        ("https://openrouter.ai/api/v1", "openrouter"),
-    ]
-    for base_url, driver_name in cases:
-        expected = should_enable_append_only(
-            append_only_setting(), base_url, driver_name
-        )
-        assert economy.resolve_append_only(base_url, driver_name) is expected
+    assert economy.resolve_append_only() is should_enable_append_only(append_only_setting())
 
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "off")
-    assert economy.resolve_append_only("http://localhost:11434", "ollama") is False
+    assert economy.resolve_append_only() is False
     monkeypatch.setenv("HARNESS_APPEND_ONLY_CONTEXT", "on")
-    assert economy.resolve_append_only("https://api.openai.com/v1", "gpt-4") is True
+    assert economy.resolve_append_only() is True
 
 
 def test_persist_tool_result_matches_maybe_persist_result():
@@ -227,13 +191,6 @@ def test_advise_compaction_without_snapshot_matches_advice_payload(tmp_path):
     assert economy.advise_compaction(96_000) == advice_payload(
         str(tmp_path), "advise-sess", 96_000
     )
-
-
-def test_default_config_when_omitted(tmp_path):
-    economy = TurnEconomy(state_dir=str(tmp_path), session_id="s")
-    assert isinstance(economy.config, BudgetConfig)
-    assert economy.session_id == "s"
-    assert economy.job_id is None
 
 
 def test_usage_fields_match_payload_helpers(tmp_path):

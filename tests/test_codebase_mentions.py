@@ -146,7 +146,7 @@ def test_expand_codebase_mention_failure_honesty():
         assert "cg boom" in block
 
 
-def test_at_codebase_resolution_on_send_success(owned_server):
+def test_at_codebase_resolution_on_send_success(owned_server, monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
         mock_pilot = owned_server._pilot
@@ -168,7 +168,7 @@ def test_at_codebase_resolution_on_send_success(owned_server):
         ):
             httpd, port, srv_inst = _server()
             try:
-                srv_inst._cfg.repo = real_tmp
+                monkeypatch.setattr(srv_inst._cfg, "repo", real_tmp)
                 headers = {
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,
@@ -202,7 +202,7 @@ def test_at_codebase_resolution_on_send_success(owned_server):
                 httpd.shutdown()
 
 
-def test_at_codebase_resolution_on_send_skip_unavailable(owned_server):
+def test_at_codebase_resolution_on_send_skip_unavailable(owned_server, monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         real_tmp = os.path.realpath(tmpdir)
         mock_pilot = owned_server._pilot
@@ -216,7 +216,7 @@ def test_at_codebase_resolution_on_send_skip_unavailable(owned_server):
         ):
             httpd, port, srv_inst = _server()
             try:
-                srv_inst._cfg.repo = real_tmp
+                monkeypatch.setattr(srv_inst._cfg, "repo", real_tmp)
                 headers = {
                     "Content-Type": "application/json",
                     "X-Harness-Token": srv_inst._TOKEN,

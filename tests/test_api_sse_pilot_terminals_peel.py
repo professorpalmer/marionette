@@ -16,10 +16,7 @@ from harness.api.sse import (
     get_chat_events,
     stream_chat_events,
 )
-from harness.api.streams import (
-    resolve_stashed_chat_message,
-    validate_upload_image_paths,
-)
+from harness.api.streams import validate_upload_image_paths
 from harness.api.terminals import TerminalServices, parse_terminal_start_offset, stream_terminal
 
 
@@ -628,25 +625,3 @@ def test_validate_upload_image_paths(tmp_path):
     assert "Invalid image path" in err[1]["error"]
 
 
-def test_resolve_stashed_chat_message():
-    stash = {
-        "m1": {"message": "hello", "images": ["/u/a.png", "/u/b.png"]},
-    }
-    msg, imgs = resolve_stashed_chat_message(
-        "m1", "ignored", "", lambda mid: stash.get(mid)
-    )
-    assert msg == "hello"
-    assert imgs == "/u/a.png|/u/b.png"
-
-    # Query images win when already present.
-    msg, imgs = resolve_stashed_chat_message(
-        "m1", "ignored", "/u/q.png", lambda mid: stash.get(mid)
-    )
-    assert msg == "hello"
-    assert imgs == "/u/q.png"
-
-    # Unknown mid falls through.
-    msg, imgs = resolve_stashed_chat_message(
-        "gone", "keep", "i.png", lambda mid: None
-    )
-    assert msg == "keep" and imgs == "i.png"

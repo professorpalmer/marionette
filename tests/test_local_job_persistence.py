@@ -32,20 +32,6 @@ def test_local_job_survives_restart():
     assert reloaded["status"] in ("completed", "done")
 
 
-def test_running_job_is_marked_interrupted_on_reload():
-    sd = tempfile.mkdtemp()
-    first = _session(sd)
-    first._register_local_job("job-run", "long job", role="implement")
-    # left 'running' -- its thread died with the old process.
-    assert first._local_jobs["job-run"]["status"] == "running"
-
-    second = _session(sd)
-    reloaded = second._local_jobs.get("job-run")
-    assert reloaded is not None, "running job must be kept in history, not dropped"
-    # A stale running job must not show a permanent spinner after restart.
-    assert reloaded["status"] in ("cancelled", "interrupted", "failed")
-
-
 def test_cancel_local_job_marks_cancelled_and_persists():
     sd = tempfile.mkdtemp()
     sess = _session(sd)

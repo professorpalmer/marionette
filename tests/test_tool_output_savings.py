@@ -16,7 +16,6 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from harness.tool_output_savings import (
-    CHARS_PER_TOKEN,
     ToolOutputSavingsLedger,
     aggregate_jsonl_records,
     estimate_tokens,
@@ -372,12 +371,6 @@ def test_job_id_column_added_to_legacy_db(tmp_path):
     )
     summary = ledger.summarize(job_id="job_legacy")
     assert summary.record_count == 1
-
-
-@pytest.mark.parametrize("chars_per_token", [CHARS_PER_TOKEN])
-def test_cross_platform_char_token_ratio_documented(chars_per_token):
-    """Guard the deterministic ratio used on Windows and macOS alike."""
-    assert chars_per_token == 4
 
 
 def _write_pm_offload_jsonl(cli_dir, *, job_id: str, tool_call_id: str,

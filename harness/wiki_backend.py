@@ -161,9 +161,17 @@ def _venv_bin(venv_dir: str, name: str) -> str:
 _LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
+def _log_path() -> str:
+    """The log sits in the harness state root, so a test state dir isolates it."""
+    root = (os.environ.get("HARNESS_STATE_DIR") or "").strip()
+    if not root:
+        root = os.path.join(os.path.expanduser("~"), ".pmharness")
+    return os.path.join(root, "wiki-backend.log")
+
+
 def _log_handle():
     try:
-        log_path = os.path.expanduser(os.path.join("~", ".pmharness", "wiki-backend.log"))
+        log_path = _log_path()
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         try:
             if os.path.getsize(log_path) > _LOG_MAX_BYTES:

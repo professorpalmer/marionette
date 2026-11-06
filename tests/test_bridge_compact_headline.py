@@ -14,6 +14,8 @@ is genuinely empty of usable text. This exercises _compact_artifact directly on
 artifact-shaped objects -- pure/hermetic, no Puppetmaster import.
 """
 
+import pytest
+
 from pmharness.bridge import _compact_artifact
 
 
@@ -24,32 +26,23 @@ class _FakeArtifact:
         self.confidence = confidence
 
 
-def test_report_key_becomes_headline():
-    a = _FakeArtifact(payload={"report": "auth token is logged in plaintext"})
-    c = _compact_artifact(a)
-    assert c["headline"] == "auth token is logged in plaintext"
-    assert c["empty_headline"] is False
-
-
-def test_message_key_becomes_headline():
-    a = _FakeArtifact(payload={"message": "race condition in cache eviction"})
-    c = _compact_artifact(a)
-    assert c["headline"] == "race condition in cache eviction"
-    assert c["empty_headline"] is False
-
-
-def test_risk_artifact_surfaces_payload_risk():
-    a = _FakeArtifact(type_="risk", payload={"risk": "SQL injection in query builder"})
-    c = _compact_artifact(a)
-    assert c["headline"] == "SQL injection in query builder"
-    assert c["empty_headline"] is False
-
-
-def test_arbitrary_string_key_still_surfaces():
-    # A key not in the canonical list: last-resort first-non-empty-string value.
-    a = _FakeArtifact(payload={"weird_custom_field": "unbounded recursion here"})
-    c = _compact_artifact(a)
-    assert c["headline"] == "unbounded recursion here"
+@pytest.mark.parametrize(
+    ("type_", "key", "text"),
+    [
+        pytest.param("finding", "report", "auth token is logged in plaintext",
+                     id="report_key_becomes_headline"),
+        pytest.param("finding", "message", "race condition in cache eviction",
+                     id="message_key_becomes_headline"),
+        pytest.param("risk", "risk", "SQL injection in query builder",
+                     id="risk_artifact_surfaces_payload_risk"),
+        # A key not in the canonical list: last-resort first-non-empty-string value.
+        pytest.param("finding", "weird_custom_field", "unbounded recursion here",
+                     id="arbitrary_string_key_still_surfaces"),
+    ],
+)
+def test_payload_text_becomes_headline(type_, key, text):
+    c = _compact_artifact(_FakeArtifact(type_=type_, payload={key: text}))
+    assert c["headline"] == text
     assert c["empty_headline"] is False
 
 

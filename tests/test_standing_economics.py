@@ -13,6 +13,34 @@ from harness.api.usage_meters import (
     standing_economics_enabled,
 )
 
+_SONNET = "anthropic/claude-sonnet-4"
+_SMALL_FLOOR = [
+    {"name": "System prompt", "tokens": 5_000},
+    {"name": "Tool definitions", "tokens": 5_000},
+]
+
+
+def _use_sonnet_pilot(monkeypatch, categories, *, activity_age=None, cache_read=None):
+    """Patch usage_meters to a Sonnet pilot with these context categories.
+
+    activity_age is seconds since the last prompt cache activity. None leaves
+    the activity attributes off the pilot.
+    """
+    import time
+
+    import harness.api.usage_meters as um
+
+    fields = {
+        "config": SimpleNamespace(driver=_SONNET),
+        "get_context_usage": lambda: {"categories": list(categories)},
+    }
+    if activity_age is not None:
+        fields["_last_prompt_cache_activity_at"] = time.time() - activity_age
+        fields["_last_turn_cache_read_tokens"] = cache_read
+    pilot = SimpleNamespace(**fields)
+    monkeypatch.setattr(um, "_pilot", lambda: pilot)
+    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver=_SONNET))
+
 
 def test_standing_economics_flag_defaults_off(monkeypatch):
     monkeypatch.delenv("HARNESS_STANDING_ECONOMICS", raising=False)
@@ -47,28 +75,17 @@ def test_standing_fields_omitted_when_flag_off(monkeypatch):
 def test_standing_fields_estimated_floor_and_warm_ttl(monkeypatch):
     monkeypatch.setenv("HARNESS_STANDING_ECONOMICS", "1")
     monkeypatch.delenv("HARNESS_ANTHROPIC_CACHE_TTL", raising=False)
-
-    import time
-
-    now = time.time()
-    pilot = SimpleNamespace(
-        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
-        _last_prompt_cache_activity_at=now - 600,  # 10 minutes ago
-        _last_turn_cache_read_tokens=12_000,
-        get_context_usage=lambda: {
-            "categories": [
-                {"name": "System prompt", "tokens": 10_000},
-                {"name": "Tool definitions", "tokens": 20_000},
-                {"name": "Rules", "tokens": 1_000},
-                {"name": "Conversation", "tokens": 50_000},
-            ]
-        },
+    _use_sonnet_pilot(
+        monkeypatch,
+        [
+            {"name": "System prompt", "tokens": 10_000},
+            {"name": "Tool definitions", "tokens": 20_000},
+            {"name": "Rules", "tokens": 1_000},
+            {"name": "Conversation", "tokens": 50_000},
+        ],
+        activity_age=600,  # 10 minutes ago
+        cache_read=12_000,
     )
-
-    import harness.api.usage_meters as um
-
-    monkeypatch.setattr(um, "_pilot", lambda: pilot)
-    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver="anthropic/claude-sonnet-4"))
 
     payload = _standing_economics_fields(3.0)
     assert payload["standing_economics_basis"] == "estimated"
@@ -87,27 +104,8 @@ def test_standing_fields_estimated_floor_and_warm_ttl(monkeypatch):
 def test_standing_fields_refuse_cached_value_after_expiry(monkeypatch):
     monkeypatch.setenv("HARNESS_STANDING_ECONOMICS", "1")
     monkeypatch.delenv("HARNESS_ANTHROPIC_CACHE_TTL", raising=False)
-
-    import time
-
-    now = time.time()
-    pilot = SimpleNamespace(
-        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
-        # Older than 1h TTL.
-        _last_prompt_cache_activity_at=now - 4_000,
-        _last_turn_cache_read_tokens=12_000,
-        get_context_usage=lambda: {
-            "categories": [
-                {"name": "System prompt", "tokens": 5_000},
-                {"name": "Tool definitions", "tokens": 5_000},
-            ]
-        },
-    )
-
-    import harness.api.usage_meters as um
-
-    monkeypatch.setattr(um, "_pilot", lambda: pilot)
-    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver="anthropic/claude-sonnet-4"))
+    # Older than 1h TTL.
+    _use_sonnet_pilot(monkeypatch, _SMALL_FLOOR, activity_age=4_000, cache_read=12_000)
 
     payload = _standing_economics_fields(3.0)
     assert payload["prompt_cache_state"] == "expired"
@@ -122,26 +120,7 @@ def test_standing_fields_omit_cache_when_prompt_cache_disabled(monkeypatch):
     monkeypatch.setenv("HARNESS_STANDING_ECONOMICS", "1")
     monkeypatch.setenv("HARNESS_PROMPT_CACHE", "0")
     monkeypatch.delenv("HARNESS_ANTHROPIC_CACHE_TTL", raising=False)
-
-    import time
-
-    now = time.time()
-    pilot = SimpleNamespace(
-        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
-        _last_prompt_cache_activity_at=now - 600,
-        _last_turn_cache_read_tokens=12_000,
-        get_context_usage=lambda: {
-            "categories": [
-                {"name": "System prompt", "tokens": 5_000},
-                {"name": "Tool definitions", "tokens": 5_000},
-            ]
-        },
-    )
-
-    import harness.api.usage_meters as um
-
-    monkeypatch.setattr(um, "_pilot", lambda: pilot)
-    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver="anthropic/claude-sonnet-4"))
+    _use_sonnet_pilot(monkeypatch, _SMALL_FLOOR, activity_age=600, cache_read=12_000)
 
     payload = _standing_economics_fields(3.0)
     assert payload["standing_floor_cost_usd"] == pytest.approx(0.03)
@@ -154,21 +133,7 @@ def test_standing_fields_refuse_cached_floor_without_activity(monkeypatch):
     monkeypatch.setenv("HARNESS_STANDING_ECONOMICS", "1")
     monkeypatch.delenv("HARNESS_PROMPT_CACHE", raising=False)
     monkeypatch.delenv("HARNESS_ANTHROPIC_CACHE_TTL", raising=False)
-
-    pilot = SimpleNamespace(
-        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
-        get_context_usage=lambda: {
-            "categories": [
-                {"name": "System prompt", "tokens": 5_000},
-                {"name": "Tool definitions", "tokens": 5_000},
-            ]
-        },
-    )
-
-    import harness.api.usage_meters as um
-
-    monkeypatch.setattr(um, "_pilot", lambda: pilot)
-    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver="anthropic/claude-sonnet-4"))
+    _use_sonnet_pilot(monkeypatch, _SMALL_FLOOR)
 
     payload = _standing_economics_fields(3.0)
     assert payload["standing_floor_cost_usd"] == pytest.approx(0.03)
@@ -180,26 +145,7 @@ def test_standing_fields_refuse_cached_floor_on_prompt_miss_without_cache_read(m
     """Recent prompt activity without cache read must not claim cached-floor value."""
     monkeypatch.setenv("HARNESS_STANDING_ECONOMICS", "1")
     monkeypatch.delenv("HARNESS_ANTHROPIC_CACHE_TTL", raising=False)
-
-    import time
-
-    now = time.time()
-    pilot = SimpleNamespace(
-        config=SimpleNamespace(driver="anthropic/claude-sonnet-4"),
-        _last_prompt_cache_activity_at=now - 60,
-        _last_turn_cache_read_tokens=0,
-        get_context_usage=lambda: {
-            "categories": [
-                {"name": "System prompt", "tokens": 5_000},
-                {"name": "Tool definitions", "tokens": 5_000},
-            ]
-        },
-    )
-
-    import harness.api.usage_meters as um
-
-    monkeypatch.setattr(um, "_pilot", lambda: pilot)
-    monkeypatch.setattr(um, "_cfg", lambda: SimpleNamespace(driver="anthropic/claude-sonnet-4"))
+    _use_sonnet_pilot(monkeypatch, _SMALL_FLOOR, activity_age=60, cache_read=0)
 
     payload = _standing_economics_fields(3.0)
     assert payload["standing_floor_cost_usd"] == pytest.approx(0.03)

@@ -120,7 +120,6 @@ def test_append_action_result_suffixes_nudge_without_extra_row(tmp_path):
 
 def test_reminder_does_not_replace_loop_guard_veto():
     from harness.pilot_guards import (
-        LOOP_REPEAT_CAP,
         TurnGuardState,
         check_loop_guard,
         record_action_execution,
@@ -134,4 +133,3 @@ def test_reminder_does_not_replace_loop_guard_veto():
     record_action_execution(state, "web_search", act)
     verdict = check_loop_guard(state, "web_search", act)
     assert verdict.suppress is True
-    assert LOOP_REPEAT_CAP >= 2

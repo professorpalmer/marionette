@@ -10,7 +10,6 @@ the hole cannot silently reopen.
 """
 import json
 import threading
-import time
 import urllib.error
 import urllib.request
 
@@ -24,7 +23,6 @@ def _serve():
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    time.sleep(0.1)
     return srv, httpd, port
 
 
@@ -84,7 +82,7 @@ def test_protected_get_accepts_valid_token():
     try:
         resp = _get(port, "/api/memory", token=srv._TOKEN)
         assert resp.status == 200
-        json.loads(resp.read())  # valid JSON body
+        assert isinstance(json.loads(resp.read()), dict)
     finally:
         httpd.shutdown()
         httpd.server_close()

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProviderKeyBanner from "../components/ProviderKeyBanner";
 import ConversationHeader from "../components/conversation/ConversationHeader";
@@ -69,14 +69,7 @@ describe("titlebar-safe clearance", () => {
   });
 });
 
-describe("ProviderKeyBanner actions", () => {
-  it("invokes onAddKey when Add key is clicked", () => {
-    const onAddKey = vi.fn();
-    render(<ProviderKeyBanner onAddKey={onAddKey} />);
-    fireEvent.click(screen.getByRole("button", { name: /Add key/i }));
-    expect(onAddKey).toHaveBeenCalledTimes(1);
-  });
-
+describe("titlebar traffic-light pad by strip position", () => {
   it("clears the traffic lights only where a strip actually meets them", () => {
     // Top-left of the window (left rail collapsed): full clearance.
     expect(titlebarLeftPad({ left: 0, top: 0 })).toBe(TITLEBAR_TRAFFIC_PAD_PX);

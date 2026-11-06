@@ -71,16 +71,20 @@ class _SwarmOncePilot:
         )
 
 
-def test_plumbing_only_swarm_marks_failed_and_registers_tracker(monkeypatch):
+def _send_audit(monkeypatch, result):
     monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
     monkeypatch.setattr(
         "harness.send_loop_phases.execute_intent",
-        lambda intent, **kw: _plumbing_result(),
+        lambda intent, **kw: result,
     )
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
     s.pilot = _SwarmOncePilot()
-    events = list(s.send("please audit"))
+    return s, list(s.send("please audit"))
+
+
+def test_plumbing_only_swarm_marks_failed_and_registers_tracker(monkeypatch):
+    s, events = _send_audit(monkeypatch, _plumbing_result())
 
     pending = [e for e in events if e.kind == "swarm_pending"]
     assert pending, "sync swarm must emit swarm_pending for the tracker"
@@ -101,15 +105,7 @@ def test_plumbing_only_swarm_marks_failed_and_registers_tracker(monkeypatch):
 
 
 def test_signal_swarm_marks_applied_true(monkeypatch):
-    monkeypatch.setattr("harness.edit_engines.workers_ready", lambda: True)
-    monkeypatch.setattr(
-        "harness.send_loop_phases.execute_intent",
-        lambda intent, **kw: _signal_result(),
-    )
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    s = ConversationalSession(cfg)
-    s.pilot = _SwarmOncePilot()
-    events = list(s.send("please audit"))
+    _s, events = _send_audit(monkeypatch, _signal_result())
     results = [e for e in events if e.kind == "swarm_result"]
     assert results
     badge = results[0].data["result"]

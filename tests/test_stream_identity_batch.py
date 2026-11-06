@@ -215,28 +215,32 @@ class _RaiseOnSecondGet:
         raise AssertionError("second queue get before first yield")
 
 
-def test_drain_yields_first_identity_answer_before_second_get():
-    q = _RaiseOnSecondGet(
-        ("delta", {"text": "Hello", "stream_id": "a1", "channel": "answer"}),
-    )
-    ev = next(drain_stream_queue(q))
-    assert ev.kind == "message_delta"
-    assert ev.data["text"] == "Hello"
-    assert ev.data.get("stream_id") == "a1"
-    assert ev.data.get("channel") == "answer"
-    assert q.calls == 1
+# channel -> (queue kind, SSE event kind)
+_CHANNEL_KINDS = {
+    "answer": ("delta", "message_delta"),
+    "reasoning": ("reasoning", "thinking"),
+}
 
 
-def test_drain_yields_first_identity_reasoning_before_second_get():
+@pytest.mark.parametrize(
+    ("channel", "text", "stream_id"),
+    [
+        pytest.param("answer", "Hello", "a1", id="answer"),
+        pytest.param("reasoning", "Think", "rs1", id="reasoning"),
+    ],
+)
+def test_drain_yields_first_identity_frame_before_second_get(channel, text, stream_id):
+    kind, event_kind = _CHANNEL_KINDS[channel]
     q = _RaiseOnSecondGet(
-        ("reasoning", {"text": "Think", "stream_id": "rs1", "channel": "reasoning"}),
+        (kind, {"text": text, "stream_id": stream_id, "channel": channel}),
     )
     ev = next(drain_stream_queue(q))
-    assert ev.kind == "thinking"
-    assert ev.data["text"] == "Think"
-    assert ev.data.get("stream_id") == "rs1"
-    assert ev.data.get("channel") == "reasoning"
-    assert ev.data.get("delta") is True
+    assert ev.kind == event_kind
+    assert ev.data["text"] == text
+    assert ev.data.get("stream_id") == stream_id
+    assert ev.data.get("channel") == channel
+    if channel == "reasoning":
+        assert ev.data.get("delta") is True
     assert q.calls == 1
 
 
@@ -267,30 +271,44 @@ def test_drain_still_holds_first_identity_progress_until_later_get():
         raise AssertionError("progress must not yield before a second queue get")
 
 
-def test_drain_batches_second_same_identity_answer_until_done(monkeypatch):
-    """Second same-identity answer stays batched until the terminal get.
+@pytest.mark.parametrize(
+    ("channel", "texts", "stream_id"),
+    [
+        pytest.param("answer", ("Hello", " world"), "a1", id="answer"),
+        pytest.param("reasoning", ("Why ", "not"), "rs1", id="reasoning"),
+    ],
+)
+def test_drain_batches_second_same_identity_frame_until_done(
+    monkeypatch, channel, texts, stream_id,
+):
+    """Second same-identity delta stays batched until the terminal get.
 
-    Final texts ``['Hello', ' world']`` are also what first-framing every
-    delta would produce — ``get_calls`` is what proves the hold.
+    Final texts are also what first-framing every delta would produce;
+    ``get_calls`` is what proves the hold.
     """
+    kind, event_kind = _CHANNEL_KINDS[channel]
     monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
     q = _CountingGetQueue()
     resp = type("R", (), {"meta": {}})()
-    q.put(("delta", {"text": "Hello", "stream_id": "a1", "channel": "answer"}))
-    q.put(("delta", {"text": " world", "stream_id": "a1", "channel": "answer"}))
+    for text in texts:
+        q.put((kind, {"text": text, "stream_id": stream_id, "channel": channel}))
     q.put(("done", resp))
 
     gen = drain_stream_queue(q)
     first = next(gen)
-    assert first.kind == "message_delta"
-    assert first.data["text"] == "Hello"
-    assert first.data.get("stream_id") == "a1"
+    assert first.kind == event_kind
+    assert first.data["text"] == texts[0]
+    assert first.data.get("stream_id") == stream_id
+    if channel == "reasoning":
+        assert first.data.get("delta") is True
     assert q.get_calls == 1
 
     second = next(gen)
-    assert second.kind == "message_delta"
-    assert second.data["text"] == " world"
-    assert second.data.get("stream_id") == "a1"
+    assert second.kind == event_kind
+    assert second.data["text"] == texts[1]
+    assert second.data.get("stream_id") == stream_id
+    if channel == "reasoning":
+        assert second.data.get("delta") is True
     # Held until the generator reads ``done`` (3rd get). First-framing the
     # second delta would yield it on get 2.
     assert q.get_calls == 3
@@ -298,40 +316,12 @@ def test_drain_batches_second_same_identity_answer_until_done(monkeypatch):
     extras, (streamed, got) = _finish_gen(gen)
     assert [e.kind for e in extras] == ["stream_item_done"]
     assert not (extras[0].data or {}).get("stream_id")
-    assert streamed == "Hello world"
-    assert got is resp
-    assert q.get_calls == 3
-
-
-def test_drain_batches_second_same_identity_reasoning_until_done(monkeypatch):
-    """Second same-identity reasoning stays batched until the terminal get."""
-    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
-    q = _CountingGetQueue()
-    resp = type("R", (), {"meta": {}})()
-    q.put(("reasoning", {"text": "Why ", "stream_id": "rs1", "channel": "reasoning"}))
-    q.put(("reasoning", {"text": "not", "stream_id": "rs1", "channel": "reasoning"}))
-    q.put(("done", resp))
-
-    gen = drain_stream_queue(q)
-    first = next(gen)
-    assert first.kind == "thinking"
-    assert first.data["text"] == "Why "
-    assert first.data.get("stream_id") == "rs1"
-    assert first.data.get("delta") is True
-    assert q.get_calls == 1
-
-    second = next(gen)
-    assert second.kind == "thinking"
-    assert second.data["text"] == "not"
-    assert second.data.get("stream_id") == "rs1"
-    assert second.data.get("delta") is True
-    assert q.get_calls == 3
-
-    extras, (streamed, got) = _finish_gen(gen)
-    assert [e.kind for e in extras] == ["stream_item_done"]
-    assert not (extras[0].data or {}).get("stream_id")
-    assert streamed == ""
-    assert got.meta["streamed_reasoning"] == "Why not"
+    if channel == "answer":
+        assert streamed == "".join(texts)
+        assert got is resp
+    else:
+        assert streamed == ""
+        assert got.meta["streamed_reasoning"] == "".join(texts)
     assert q.get_calls == 3
 
 
@@ -382,67 +372,43 @@ def test_drain_flushes_before_tool_hint_barrier():
     )
 
 
-def test_drain_batches_answer_word_deltas_without_exhausting_sse_ring(monkeypatch):
-    """520 same-identity answer words: first frame immediate, rest batched."""
+@pytest.mark.parametrize("channel", ["answer", "reasoning"])
+def test_drain_batches_channel_word_deltas_without_exhausting_sse_ring(monkeypatch, channel):
+    """520 same-identity words: first frame immediate, rest batched."""
+    kind, event_kind = _CHANNEL_KINDS[channel]
+    stream_id = f"msg_{channel}"
     monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
     q: queue.Queue = queue.Queue()
     words = [f"w{i} " for i in range(520)]
     for w in words:
         q.put((
-            "delta",
+            kind,
             {
                 "text": w,
-                "stream_id": "msg_answer",
-                "channel": "answer",
-                "output_index": 1,
-            },
-        ))
-    q.put(("done", type("R", (), {"meta": {}})()))
-
-    events, (streamed, _resp) = _collect_drain(q)
-    deltas = [e for e in events if e.kind == "message_delta"]
-    assert deltas[0].data["text"] == words[0]
-    # Immediate first frame + char-threshold batches — never one frame per word.
-    assert 2 <= len(deltas) < 80
-    assert len(deltas) < _SSE_RING_CAP // 2
-    joined = "".join(d.data["text"] for d in deltas)
-    assert joined == "".join(words)
-    assert all(d.data.get("stream_id") == "msg_answer" for d in deltas)
-    assert all(d.data.get("channel") == "answer" for d in deltas)
-    assert _replay_joined(deltas, "message_delta") == joined
-    assert streamed == joined
-
-
-def test_drain_batches_reasoning_word_deltas_without_exhausting_sse_ring(monkeypatch):
-    """520 same-identity reasoning words: first frame immediate, rest batched."""
-    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
-    q: queue.Queue = queue.Queue()
-    words = [f"w{i} " for i in range(520)]
-    for w in words:
-        q.put((
-            "reasoning",
-            {
-                "text": w,
-                "stream_id": "msg_reasoning",
-                "channel": "reasoning",
+                "stream_id": stream_id,
+                "channel": channel,
                 "output_index": 1,
             },
         ))
     q.put(("done", type("R", (), {"meta": {}})()))
 
     events, (streamed, resp) = _collect_drain(q)
-    thinking = [e for e in events if e.kind == "thinking"]
-    assert thinking[0].data["text"] == words[0]
-    assert 2 <= len(thinking) < 80
-    assert len(thinking) < _SSE_RING_CAP // 2
-    joined = "".join(t.data["text"] for t in thinking)
+    frames = [e for e in events if e.kind == event_kind]
+    assert frames[0].data["text"] == words[0]
+    # Immediate first frame + char-threshold batches — never one frame per word.
+    assert 2 <= len(frames) < 80
+    assert len(frames) < _SSE_RING_CAP // 2
+    joined = "".join(f.data["text"] for f in frames)
     assert joined == "".join(words)
-    assert all(t.data.get("stream_id") == "msg_reasoning" for t in thinking)
-    assert all(t.data.get("channel") == "reasoning" for t in thinking)
-    assert all(t.data.get("delta") is True for t in thinking)
-    assert _replay_joined(thinking, "thinking") == joined
-    assert streamed == ""
-    assert resp.meta["streamed_reasoning"] == joined
+    assert all(f.data.get("stream_id") == stream_id for f in frames)
+    assert all(f.data.get("channel") == channel for f in frames)
+    assert _replay_joined(frames, event_kind) == joined
+    if channel == "answer":
+        assert streamed == joined
+    else:
+        assert all(f.data.get("delta") is True for f in frames)
+        assert streamed == ""
+        assert resp.meta["streamed_reasoning"] == joined
 
 
 def test_drain_identity_change_after_first_frame_flushes_held_answer(monkeypatch):

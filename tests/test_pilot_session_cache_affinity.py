@@ -5,6 +5,8 @@ import queue
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
+import pytest
+
 from harness.send_loop_phases import (
     maybe_attach_pilot_session_id,
     pilot_accepts_session_id,
@@ -22,33 +24,36 @@ def _stream_session(pilot, harness_session_id: str, *, messages=None):
     )
 
 
-def test_pilot_accepts_session_id_explicit_param():
-    def chat_stream(messages, *, session_id=None, on_delta):
-        pass
-
-    assert pilot_accepts_session_id(chat_stream) is True
+def _explicit_param_stream(messages, *, session_id=None, on_delta):
+    pass
 
 
-def test_pilot_accepts_session_id_kwargs_driver():
-    def chat_stream(messages, **kwargs):
-        pass
-
-    assert pilot_accepts_session_id(chat_stream) is True
+def _kwargs_stream(messages, **kwargs):
+    pass
 
 
-def test_pilot_accepts_session_id_legacy_driver():
-    def chat_stream(
-        messages,
-        *,
-        tools=None,
-        system=None,
-        on_delta,
-        on_reasoning_delta=None,
-        on_tool_hint=None,
-    ):
-        pass
+def _legacy_stream(
+    messages,
+    *,
+    tools=None,
+    system=None,
+    on_delta,
+    on_reasoning_delta=None,
+    on_tool_hint=None,
+):
+    pass
 
-    assert pilot_accepts_session_id(chat_stream) is False
+
+@pytest.mark.parametrize(
+    "chat_stream, accepts",
+    [
+        pytest.param(_explicit_param_stream, True, id="explicit_param"),
+        pytest.param(_kwargs_stream, True, id="kwargs_driver"),
+        pytest.param(_legacy_stream, False, id="legacy_driver"),
+    ],
+)
+def test_pilot_accepts_session_id(chat_stream, accepts):
+    assert pilot_accepts_session_id(chat_stream) is accepts
 
 
 def test_maybe_attach_skips_empty_session_id():
@@ -88,31 +93,6 @@ def test_run_stream_passes_stable_session_id_across_turns():
             q.get_nowait()
 
     assert seen == ["marionette-chat-7", "marionette-chat-7"]
-
-
-def test_run_stream_resume_turn_reuses_same_session_id():
-    """Resume keeps harness_session_id on the session object — same cache key."""
-    seen: List[Optional[str]] = []
-
-    def chat_stream(messages, **kwargs):
-        seen.append(kwargs.get("session_id"))
-        return SimpleNamespace(text="ok")
-
-    pilot = SimpleNamespace(chat_stream=chat_stream, supports_streaming=True)
-    session = _stream_session(pilot, "resume-sess-1")
-
-    q1: queue.Queue = queue.Queue()
-    run_stream(session, q1, [], "sys")
-    while not q1.empty():
-        q1.get_nowait()
-
-    # Resume path reuses the same session runner; harness_session_id unchanged.
-    q2: queue.Queue = queue.Queue()
-    run_stream(session, q2, [], "sys")
-    while not q2.empty():
-        q2.get_nowait()
-
-    assert seen == ["resume-sess-1", "resume-sess-1"]
 
 
 def test_run_stream_different_chat_sessions_get_different_ids():
@@ -164,62 +144,53 @@ def test_run_stream_legacy_driver_receives_no_session_id_kwarg():
     assert val.text == "ok"
 
 
-def test_run_stream_kwargs_driver_receives_session_id():
-    captured: dict = {}
-
-    def chat_stream(messages, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(text="ok")
-
-    session = _stream_session(
-        SimpleNamespace(chat_stream=chat_stream),
-        "kwargs-sess",
-    )
-    q: queue.Queue = queue.Queue()
-    run_stream(session, q, [], "sys")
-    while not q.empty():
-        q.get_nowait()
-    assert captured["session_id"] == "kwargs-sess"
-
-
-def test_sync_chat_path_attaches_session_id():
-    captured: dict = {}
-
-    def chat(messages, **kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(text="ok", error=None)
-
+@pytest.mark.parametrize(
+    "call", [_kwargs_stream, _explicit_param_stream], ids=["kwargs", "explicit_param"],
+)
+def test_sync_path_attaches_session_id(call):
     kwargs: dict = {"tools": [], "system": "sys"}
-    maybe_attach_pilot_session_id(kwargs, chat, "sync-sess-9")
-    chat([{"role": "user", "content": "hi"}], **kwargs)
-    assert captured["session_id"] == "sync-sess-9"
+    maybe_attach_pilot_session_id(kwargs, call, "sync-sess-9")
+    assert kwargs == {"tools": [], "system": "sys", "session_id": "sync-sess-9"}
 
 
-def test_sync_complete_path_attaches_session_id():
-    captured: dict = {}
+class _RecordingSummarizer:
+    """Pilot with only complete(). It records the kwargs of each call."""
 
-    def complete(prompt, *, system=None, session_id=None):
-        captured["session_id"] = session_id
-        captured["system"] = system
-        return SimpleNamespace(text="ok", error=None)
+    model = "live-model"
 
-    kwargs: dict = {"system": "sys"}
-    maybe_attach_pilot_session_id(kwargs, complete, "complete-sess-3")
-    complete("ping", **kwargs)
-    assert captured["session_id"] == "complete-sess-3"
+    def __init__(self, calls):
+        self.calls = calls
+
+    def fork_for_compaction(self, *, model):
+        return _RecordingSummarizer(self.calls)
+
+    def complete(self, prompt, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(text="summary of old turns", error=None)
 
 
-def test_compaction_complete_path_excludes_session_id():
-    """Summarizers call complete() directly — must not inherit chat affinity."""
-    captured: dict = {}
+def test_compaction_complete_path_excludes_session_id(tmp_path, monkeypatch):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
 
-    def complete(prompt, *, system=None, session_id=None):
-        captured["session_id"] = session_id
-        return SimpleNamespace(text="summary", error=None)
+    monkeypatch.setattr("harness.compaction_mixin.MIN_COMPACTABLE_TOKENS", 0)
+    monkeypatch.setenv("HARNESS_COMPACTION_RESIDUAL", "summary")
+    monkeypatch.setenv("HARNESS_COMPACTION_MODEL", "summary-model")
+    session = ConversationalSession(HarnessConfig(
+        driver="stub-oracle-v2", state_dir=str(tmp_path), max_context_tokens=4000,
+    ))
+    session.harness_session_id = "chat-affinity-1"
+    calls: list = []
+    session.pilot = _RecordingSummarizer(calls)
+    session._history = [{"role": "system", "content": "system"}] + [
+        {"role": "user", "content": f"message {i} " + "x" * 500} for i in range(30)
+    ]
 
-    # Mirror compaction_mixin: no maybe_attach_pilot_session_id.
-    complete("fold history", system="compaction summarizer")
-    assert captured["session_id"] is None
+    list(session._maybe_compact_history(force=True))
+
+    assert len(calls) == 1
+    assert "session_id" not in calls[0]
+    assert calls[0]["system"]
 
 
 def test_codex_build_body_sets_prompt_cache_key_from_session_id():

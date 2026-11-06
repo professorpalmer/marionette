@@ -9,6 +9,7 @@ Wave 6 offline full-auto safety gate: modules listed in
 run ``pytest -m full_auto_safety`` as a named invariant gate without live keys.
 """
 import socket
+import socketserver
 import os
 import shutil
 import stat
@@ -35,6 +36,17 @@ _FULL_AUTO_SAFETY_MODULES = frozenset({
 })
 
 os.environ["PMHARNESS_MCP_ALLOW_PRIVATE"] = "1"
+
+# shutdown() waits up to one serve_forever poll (default 0.5 s). About 76 test
+# files start a server thread with the default, so each teardown cost 0.5 s.
+_real_serve_forever = socketserver.BaseServer.serve_forever
+
+
+def _serve_forever_fast_shutdown(self, poll_interval=0.01):
+    return _real_serve_forever(self, poll_interval)
+
+
+socketserver.BaseServer.serve_forever = _serve_forever_fast_shutdown
 
 # Windows: git marks object files read-only, which makes shutil.rmtree fail
 # with PermissionError on every temp-git-repo teardown. Wrap rmtree once here
@@ -201,11 +213,21 @@ def _lingering_children() -> list:
                 capture_output=True, text=True, timeout=20,
             ).stdout
         else:
-            out = _sp.run(["ps", "-o", "pid=,command=", "--ppid", str(pid)],
-                          capture_output=True, text=True, timeout=20).stdout
+            # --ppid is GNU only: on macOS it fails and the guard saw no children.
+            # -ww: without it GNU ps cuts the command and the exclusion below misses.
+            rows = _sp.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,command="],
+                           capture_output=True, text=True, timeout=20).stdout
+            kids = []
+            for line in rows.splitlines():
+                fields = line.split(None, 2)
+                # multiprocessing ends its own resource_tracker at interpreter exit.
+                if (len(fields) == 3 and fields[1] == str(pid)
+                        and "multiprocessing.resource_tracker" not in fields[2]):
+                    kids.append(f"{fields[0]} {fields[2]}")
+            out = "\n".join(kids)
     except Exception:
         return []
-    return [line.strip() for line in out.splitlines() if line.strip() and "Get-CimInstance" not in line and " ps -o" not in line]
+    return [line.strip() for line in out.splitlines() if line.strip() and "Get-CimInstance" not in line and " ps -A" not in line]
 
 
 def _report_lingering_work() -> None:

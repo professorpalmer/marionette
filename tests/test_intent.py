@@ -137,13 +137,8 @@ def test_valid_run_prewalk():
     assert i.goal == "plan then implement the cache fix"
 
 
-def test_run_prewalk_requires_goal():
-    with pytest.raises(IntentError):
-        validate_intent({"action": "run_prewalk"})
-
-
 def test_is_prewalk_goal_detects_plan_then_implement():
-    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+    from pmharness.intent import is_prewalk_goal
 
     for goal in (
         "prewalk: add a settings toggle",
@@ -153,11 +148,10 @@ def test_is_prewalk_goal_detects_plan_then_implement():
         "quality plan then cheap implement of the parser",
     ):
         assert is_prewalk_goal(goal), goal
-        assert classify_dispatch_action(goal) == "run_prewalk", goal
 
 
 def test_is_prewalk_goal_rejects_ordinary_asks():
-    from pmharness.intent import is_prewalk_goal, classify_dispatch_action
+    from pmharness.intent import is_prewalk_goal
 
     for goal in (
         "Audit the platform for quality",
@@ -166,14 +160,6 @@ def test_is_prewalk_goal_rejects_ordinary_asks():
         "",
     ):
         assert not is_prewalk_goal(goal), goal
-    assert classify_dispatch_action("Audit the platform") == "run_swarm"
-    assert classify_dispatch_action("Implement the cache fix") == "run_swarm"
-    assert classify_dispatch_action("") is None
-
-
-def test_run_swarm_requires_goal():
-    with pytest.raises(IntentError):
-        validate_intent({"action": "run_swarm"})
 
 
 def test_answer_and_stop_need_no_goal():
@@ -181,19 +167,19 @@ def test_answer_and_stop_need_no_goal():
     assert validate_intent({"action": "stop"}).action == "stop"
 
 
-def test_bad_action():
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param({"action": "run_prewalk"}, id="prewalk_no_goal"),
+        pytest.param({"action": "run_swarm"}, id="swarm_no_goal"),
+        pytest.param({"action": "explode"}, id="bad_action"),
+        pytest.param({"action": "run_swarm", "goal": "x", "worker_mode": "rocket"}, id="bad_worker_mode"),
+        pytest.param({"action": "run_swarm", "goal": "x", "roles": ["nope"]}, id="unknown_role"),
+    ],
+)
+def test_invalid_intent_raises(raw):
     with pytest.raises(IntentError):
-        validate_intent({"action": "explode"})
-
-
-def test_bad_worker_mode():
-    with pytest.raises(IntentError):
-        validate_intent({"action": "run_swarm", "goal": "x", "worker_mode": "rocket"})
-
-
-def test_unknown_role_rejected():
-    with pytest.raises(IntentError):
-        validate_intent({"action": "run_swarm", "goal": "x", "roles": ["nope"]})
+        validate_intent(raw)
 
 
 def test_known_roles_pass():

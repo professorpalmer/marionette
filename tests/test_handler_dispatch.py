@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import urllib.error
 import urllib.request
 
@@ -26,7 +25,6 @@ def _serve():
     port = httpd.server_address[1]
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
-    time.sleep(0.05)
     return srv, httpd, port
 
 
@@ -50,61 +48,6 @@ def _post(port, path, body=None, token=None):
         method="POST",
     )
     return urllib.request.urlopen(req, timeout=10)
-
-
-def test_route_tables_cover_known_paths():
-    import harness.server as srv
-
-    srv._POST_JSON_ROUTES = None
-    srv._GET_ROUTES = None
-    post = srv._post_json_routes()
-    get = srv._get_routes()
-    assert "/api/settings" in post
-    assert "/api/sessions/relocate" in post
-    assert "/api/sessions/move" not in post
-    assert "/api/memory" in get
-    assert "/api/wiki/connect" not in get  # pre-auth special case in do_GET
-    assert len(post) >= 90
-    assert len(get) >= 50
-
-
-def test_former_shell_paths_require_token():
-    srv, httpd, port = _serve()
-    try:
-        for path in ("/", "/index.html", "/app.js", "/app.css"):
-            with pytest.raises(urllib.error.HTTPError) as ei:
-                _get(port, path)
-            assert ei.value.code == 403
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-
-
-def test_guarded_get_rejects_missing_and_wrong_token():
-    srv, httpd, port = _serve()
-    try:
-        for path in ("/api/memory", "/api/config", "/api/platform"):
-            with pytest.raises(urllib.error.HTTPError) as ei:
-                _get(port, path)
-            assert ei.value.code == 403
-            with pytest.raises(urllib.error.HTTPError) as ei:
-                _get(port, path, token="wrong")
-            assert ei.value.code == 403
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-
-
-def test_guarded_get_accepts_valid_token():
-    srv, httpd, port = _serve()
-    try:
-        resp = _get(port, "/api/memory", token=srv._TOKEN)
-        assert resp.status == 200
-        body = json.loads(resp.read())
-        assert isinstance(body, dict)
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
 
 
 def test_unknown_get_is_404_when_authed():

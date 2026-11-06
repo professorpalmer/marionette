@@ -1,8 +1,11 @@
 """v0.9.306: persistent allowlist, turn identity, smart_approve verdicts."""
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
+
+import pytest
 
 from harness.approval_identity import approval_turn, get_approval_turn_id
 from harness.command_allowlist import (
@@ -41,10 +44,11 @@ def test_turn_identity_is_contextvar_scoped() -> None:
     assert get_approval_turn_id() is None
 
 
-def test_smart_approve_allowlist_wins_even_for_danger(tmp_path: Path) -> None:
-    danger = "rm -rf /tmp/scratch-ok"
+@pytest.mark.parametrize("danger", ["rm -rf /tmp/scratch-ok", "sudo reboot"])
+def test_smart_approve_allowlist_wins_even_for_danger(tmp_path: Path, danger: str) -> None:
     assert classify_command(danger).danger is True
     assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "pending"
+    assert allowlist_contains(danger, state_dir=str(tmp_path)) is False
     assert allowlist_add(danger, state_dir=str(tmp_path))
     assert smart_approve(danger, state_dir=str(tmp_path))["action"] == "approve"
 
@@ -59,25 +63,32 @@ def test_smart_approve_amendment_then_pending() -> None:
     assert smart_approve(ssh)["action"] == "pending"
 
 
-def test_danger_without_allowlist_stays_pending(tmp_path: Path) -> None:
-    """Do not auto-run danger unless the allowlist already has the command."""
-    cmd = "sudo reboot"
-    assert classify_command(cmd).danger is True
-    assert smart_approve(cmd, state_dir=str(tmp_path))["action"] == "pending"
-    assert allowlist_contains(cmd, state_dir=str(tmp_path)) is False
-
-
 def test_decide_reads_turn_identity_and_persists_allowlist(tmp_path: Path) -> None:
-    """Mirrors decide_command_approval side effects without importing conversation."""
+    from harness.command_approval_identity import ApprovalExpectation
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    state_dir = str(tmp_path / "st")
+    session = ConversationalSession(HarnessConfig(repo=str(tmp_path), state_dir=state_dir))
+    session.harness_session_id = "session-a"
     cmd = "ssh prod reboot"
-    pending = {"command": cmd}
+    cmd_hash = hashlib.sha256(cmd.encode()).hexdigest()
+    pending = session.register_pending_command_approval(
+        command=cmd, command_hash=cmd_hash, action_id="call-1",
+    )
+    workspace = pending["workspace_root"]
+    assert smart_approve(cmd, state_dir=state_dir, workspace_root=workspace)["action"] == "pending"
+
     with approval_turn("t-42"):
-        result = dict(pending)
-        turn_id = get_approval_turn_id()
-        if turn_id:
-            result["turn_id"] = turn_id
-        assert allowlist_add(cmd, state_dir=str(tmp_path))
+        result = session.decide_command_approval(
+            command_hash=cmd_hash,
+            workspace_root=workspace,
+            expected=ApprovalExpectation(pending["action_id"], pending["approval_id"]),
+            approve=True,
+        )
+
     assert result["turn_id"] == "t-42"
+    assert result["command"] == cmd
     assert get_approval_turn_id() is None
-    assert allowlist_contains(cmd, state_dir=str(tmp_path))
-    assert smart_approve(cmd, state_dir=str(tmp_path))["action"] == "approve"
+    assert allowlist_contains(cmd, state_dir=state_dir, workspace_root=workspace)
+    assert smart_approve(cmd, state_dir=state_dir, workspace_root=workspace)["action"] == "approve"

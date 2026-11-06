@@ -62,13 +62,16 @@ def test_child_add_swarm_raises_parent_swarms_used():
 
 
 def test_child_inherits_ceilings_and_current_totals():
-    parent = AutoBudget(max_tokens=999, max_swarms=7, killswitch_path="/nope").start()
+    parent = AutoBudget(
+        max_tokens=999, max_swarms=7, max_seconds=120, killswitch_path="/nope",
+    ).start()
     parent.add_tokens(400)
     parent.add_swarm()
     child = parent.child()
     # Child inherits the ceilings...
     assert child.max_tokens == 999
     assert child.max_swarms == 7
+    assert child.max_seconds == 120
     assert child.killswitch_path == "/nope"
     # ...and the tree's CURRENT position (spend that happened before it existed).
     assert child.tokens_used == 400
@@ -117,9 +120,11 @@ def test_child_honours_parent_already_tripped_halt():
     governor = AutoBudget(max_tokens=100).start()
     governor.add_tokens(150)
     assert governor.check() is not None  # parent trips first
+    assert "token ceiling" in governor.check()
     child = governor.child()
     # Even a brand-new child inherits the tripped halt of the shared ceiling.
     assert child.check() is not None
+    assert "token ceiling" in child.check()
 
 
 def test_swarm_ceiling_caps_across_children():

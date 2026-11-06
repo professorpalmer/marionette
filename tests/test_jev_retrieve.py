@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from harness.jev.judge import Judgment, clear_cache
+from harness.jev.judge import Judgment
 from harness.jev.retrieve import select_turn_skills
 from harness.skill_retrieve import format_retrieved_skill_bodies
 
@@ -111,7 +111,3 @@ def test_trailer_jev_named_skill_not_overlap(monkeypatch, tmp_path):
     assert "WRAP_BODY_UNIQUE" in out
     assert "ROUTER_BODY_UNIQUE" not in out
     assert "session-wrap" in out
-
-
-def test_clear_cache_isolated():
-    clear_cache()

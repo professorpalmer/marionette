@@ -255,10 +255,10 @@ def test_batch_child_wait_is_event_driven_not_a_poll(tmp_path):
     calls = []
     real = cb.lookup_command_job
     with patch.object(cb, 'lookup_command_job', side_effect=lambda *a: calls.append(1) or real(*a)):
-        receipt = start_command_batch(sess, [python_shell_command('import time; time.sleep(1.5)')], 'wait-action')
+        receipt = start_command_batch(sess, [python_shell_command('import time; time.sleep(0.4)')], 'wait-action')
         settled = _wait_batch_terminal(sess, receipt['batch_id'])
     assert settled['children'][0]['status'] == 'completed'
-    # A 1.5 s child polled at 20 ms made ~75 lookups.
+    # A 0.4 s child polled at 20 ms makes about 20 lookups.
     assert len(calls) <= 10, len(calls)
 
 

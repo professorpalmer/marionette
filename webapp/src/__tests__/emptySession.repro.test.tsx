@@ -42,25 +42,17 @@ function expectEmptyFeed() {
 }
 
 describe("empty session folds", () => {
-  it("empty items → zero Working... and zero fold chrome", () => {
-    render(<TranscriptList {...listProps([])} />);
-    expectEmptyFeed();
-  });
-
-  it("Working... assistant crumb stays hidden and mounts no folds", () => {
-    const items: Item[] = [
+  it.each<[string, Item[]]>([
+    ["no items", []],
+    ["one Working... crumb", [
       { kind: "msg", msg: { role: "assistant", text: "Working..." } },
-    ];
-    render(<TranscriptList {...listProps(items)} />);
-    expectEmptyFeed();
-  });
-
-  it("three Working... assistant crumbs still paint nothing", () => {
-    const items: Item[] = [
+    ]],
+    ["three Working... crumbs", [
       { kind: "msg", msg: { role: "assistant", text: "Working..." } },
       { kind: "msg", msg: { role: "assistant", text: "Working.." } },
       { kind: "msg", msg: { role: "assistant", text: "working..." } },
-    ];
+    ]],
+  ])("%s paints no Working... and no fold chrome", (_name, items) => {
     render(<TranscriptList {...listProps(items)} />);
     expectEmptyFeed();
   });

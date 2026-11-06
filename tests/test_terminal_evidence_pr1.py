@@ -7,6 +7,7 @@ synthesis manifest. First-N / handle-first projections are not authority.
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 from unittest.mock import patch
 
@@ -244,6 +245,7 @@ def test_ephemeral_state_cleanup_does_not_drop_snapshot_refs(tmp_path):
     job_id = "job_pr1_snap"
     rows = _canonical_rows(job_id, n=9)
     session = _session(tmp_path)
+    shutil.rmtree(session.config.state_dir)
     session._swarm_results.put({
         "job_id": job_id,
         "objective": "late drain",

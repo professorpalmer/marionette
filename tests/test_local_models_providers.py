@@ -584,6 +584,9 @@ def test_managed_transport_timeout_recovery_keeps_lease(monkeypatch, method):
     from contextlib import contextmanager
     from types import SimpleNamespace
     from harness.managed_local_driver import ManagedLocalDriver
+    from pmharness.drivers import retry
+    # with_retry binds time.sleep as a keyword default, so patch the default.
+    monkeypatch.setitem(retry.with_retry.__kwdefaults__, 'sleep', lambda _s: None)
     active = []
     class Manager:
         @contextmanager

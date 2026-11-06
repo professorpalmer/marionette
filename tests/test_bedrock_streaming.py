@@ -383,11 +383,3 @@ def test_pm_stream_routes_kind_and_preserves_cache(monkeypatch):
     assert resp.meta["cache_read_tokens"] == 40
     assert resp.meta["cache_write_tokens"] == 5
     assert resp.tokens_in == 50
-
-
-def test_module_docstring_no_longer_claims_non_sse_only():
-    import pmharness.drivers.bedrock as mod
-
-    doc = mod.__doc__ or ""
-    assert "non-SSE" not in doc
-    assert "ConverseStream" in doc or "converse-stream" in doc

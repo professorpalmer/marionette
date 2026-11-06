@@ -58,6 +58,9 @@ def test_edited_file_is_stale(tmp_path):
 
 
 def test_added_file_is_stale(tmp_path):
+    # Design choice: a false-positive reindex (cheap, debounced, background) is
+    # better than a false-negative stale index (it misleads the pilot). Any
+    # real source-tree change must be detected.
     repo = _mk_repo(tmp_path)
     (repo / "src" / "c.py").write_text("print('c')\n")
     _set_mtime(repo / "src" / "c.py", _NEWER_T)
@@ -100,14 +103,3 @@ def test_edits_inside_skipped_dirs_do_not_descend(tmp_path):
     # node_modules is pruned from the walk, so its churn is invisible. The repo
     # root + src dirs are unchanged -> not stale.
     assert _codegraph_is_stale(str(repo)) is False
-
-
-def test_bias_is_toward_detecting_change(tmp_path):
-    # Documented design choice: a false-positive reindex (cheap, debounced,
-    # background) is preferable to a false-negative stale index (misleads the
-    # pilot). Any real source-tree mutation should be detected.
-    repo = _mk_repo(tmp_path)
-    (repo / "src" / "new_module.py").write_text("x = 1" + chr(10))
-    _set_mtime(repo / "src" / "new_module.py", _NEWER_T)
-    _set_mtime(repo / "src", _NEWER_T)
-    assert _codegraph_is_stale(str(repo)) is True

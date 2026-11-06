@@ -128,44 +128,6 @@ def _agentic_eligible() -> bool:
         return False
 
 
-def _cursor_platform_ready() -> bool:
-    try:
-        from .provider_capabilities import cursor_platform_workers_ready
-
-        return bool(cursor_platform_workers_ready())
-    except Exception as e:
-        _diag("swarm_worker_allowlist.cursor_ready", e)
-        return False
-
-
-def adapters_from_visibility(specs: Optional[list[str]] = None) -> set[str]:
-    """Map Models-enabled / catalog-visible specs onto product worker adapters."""
-    from .provider_capabilities import worker_capability
-
-    rows = list(specs) if specs is not None else _enabled_or_visible_specs()
-    out: set[str] = set()
-    for spec in rows:
-        provider = _provider_of_spec(spec)
-        model = _model_of_spec(spec)
-        if not provider and not model:
-            continue
-        cap = worker_capability(provider) if provider else "pilot_only"
-        if cap == "full_stack":
-            # Full-stack HTTP providers sync into the agentic worker catalog.
-            # Native openai adapter is only offered when the provider is openai
-            # AND agentic is unavailable; otherwise keep agentic as the wire.
-            out.add("agentic")
-            if provider in ("openai",) and not _agentic_eligible():
-                out.add("openai")
-        elif cap == "platform_worker" and provider == "cursor":
-            out.add("cursor")
-        elif _looks_like_cursor_worker_model(provider, model):
-            # cursor-cli Grok/Composer toggles are pilot-auth, but they express
-            # intent that platform Cursor workers should be allowed when ready.
-            out.add("cursor")
-    return out
-
-
 def allowed_model_ids_from_specs(
     specs: Optional[list[str]] = None,
 ) -> list[str]:

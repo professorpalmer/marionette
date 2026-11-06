@@ -78,3 +78,28 @@ describe("closed palette and motion vocabulary", () => {
     expect(pane).not.toMatch(/style=\{\{\s*background:/);
   });
 });
+
+describe("index.css layout and focus guards", () => {
+  it("keeps the composer picker content-sized so Queue/Interrupt/Steer have a lane", () => {
+    const css = read("index.css");
+    expect(css).toMatch(/\.composer-toolbar \{[^}]*flex-wrap:\s*nowrap;/);
+    expect(css).toMatch(/\.composer-toolbar-actions \{[^}]*flex:\s*1 1 auto;/);
+    expect(css).toMatch(/\.composer-toolbar-send \{[^}]*flex:\s*0 0 auto;/);
+    expect(css).toMatch(/\.pilot-picker-slot \{[^}]*flex:\s*0 1 auto;/);
+    expect(css).not.toMatch(/\.pilot-picker-slot \{[^}]*flex:\s*1 1 /);
+  });
+
+  it("keeps the accent focus box off text fields", () => {
+    const css = read("index.css");
+    expect(css).toContain("Text fields keep caret + border");
+    expect(css).toMatch(
+      /:where\(button, a\[href\], summary, \[tabindex\]:not\(input\):not\(select\):not\(textarea\):not\(\[contenteditable="true"\]\)\)/,
+    );
+    expect(css).not.toMatch(
+      /:where\(button, a\[href\], input, select, textarea, summary, \[tabindex\], \[contenteditable="true"\]\):focus-visible/,
+    );
+    expect(css).toMatch(
+      /:where\(input, select, textarea, \[contenteditable="true"\]\):focus-visible \{[\s\S]*outline-width: 0;/,
+    );
+  });
+});

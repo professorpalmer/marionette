@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import urllib.request
 
+import pytest
+
 from pmharness.drivers.openai_compat import OpenAICompatDriver
 
 
@@ -82,48 +84,47 @@ def _capture_chat(monkeypatch, driver, *, stream=False):
     return captured
 
 
-def test_openrouter_chat_sends_parallel_tool_calls(monkeypatch):
-    captured = _capture_chat(
-        monkeypatch, _driver("https://openrouter.ai/api/v1"),
-    )
-    assert captured["parallel_tool_calls"] is True
-    assert captured["tools"] == _TOOLS
+_ABSENT = object()
+_OPENROUTER = "https://openrouter.ai/api/v1"
+_OPENCODE_GO = "https://opencode.ai/zen/go/v1"
+_USAGE = {"include_usage": True}
 
 
-def test_openrouter_chat_stream_sends_parallel_tool_calls(monkeypatch):
-    captured = _capture_chat(
-        monkeypatch, _driver("https://openrouter.ai/api/v1"), stream=True,
-    )
-    assert captured["parallel_tool_calls"] is True
-    assert captured["stream_options"] == {"include_usage": True}
-
-
-def test_opencode_go_chat_omits_parallel_tool_calls(monkeypatch):
-    captured = _capture_chat(
-        monkeypatch, _driver("https://opencode.ai/zen/go/v1"),
-    )
-    assert "parallel_tool_calls" not in captured
-
-
-def test_opencode_go_chat_stream_omits_parallel_tool_calls(monkeypatch):
-    captured = _capture_chat(
-        monkeypatch, _driver("https://opencode.ai/zen/go/v1"), stream=True,
-    )
-    assert "parallel_tool_calls" not in captured
-    assert "stream_options" not in captured
-
-
-def test_openai_chat_stream_keeps_stream_options(monkeypatch):
-    captured = _capture_chat(
-        monkeypatch, _driver("https://api.openai.com/v1"), stream=True,
-    )
-    assert captured["stream_options"] == {"include_usage": True}
-    assert "parallel_tool_calls" not in captured
-
-
-def test_unknown_relay_omits_parallel_tool_calls(monkeypatch):
-    captured = _capture_chat(monkeypatch, _driver("http://x/v1"))
-    assert "parallel_tool_calls" not in captured
+@pytest.mark.parametrize("base_url, stream, expected", [
+    pytest.param(
+        _OPENROUTER, False, {"parallel_tool_calls": True, "tools": _TOOLS},
+        id="openrouter_chat_sends",
+    ),
+    pytest.param(
+        _OPENROUTER, True, {"parallel_tool_calls": True, "stream_options": _USAGE},
+        id="openrouter_chat_stream_sends",
+    ),
+    pytest.param(
+        _OPENCODE_GO, False, {"parallel_tool_calls": _ABSENT},
+        id="opencode_go_chat_omits",
+    ),
+    pytest.param(
+        _OPENCODE_GO, True, {"parallel_tool_calls": _ABSENT, "stream_options": _ABSENT},
+        id="opencode_go_chat_stream_omits",
+    ),
+    pytest.param(
+        "https://api.openai.com/v1", True,
+        {"stream_options": _USAGE, "parallel_tool_calls": _ABSENT},
+        id="openai_chat_stream_keeps_stream_options",
+    ),
+    pytest.param(
+        "http://x/v1", False, {"parallel_tool_calls": _ABSENT},
+        id="unknown_relay_omits",
+    ),
+])
+def test_parallel_tool_calls_by_relay(monkeypatch, base_url, stream, expected):
+    captured = _capture_chat(monkeypatch, _driver(base_url), stream=stream)
+    for key, want in expected.items():
+        if want is _ABSENT:
+            assert key not in captured
+        else:
+            assert captured[key] == want
+            assert type(captured[key]) is type(want)
 
 
 def test_openrouter_without_tools_omits_parallel_tool_calls(monkeypatch):

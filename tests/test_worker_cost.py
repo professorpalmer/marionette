@@ -59,92 +59,59 @@ def test_provider_worker_preserves_explicit_tokens_in():
     assert result.tokens_out == 380
 
 
-def test_add_worker_tokens_from_artifacts_basic():
+@pytest.mark.parametrize("artifacts,sum_in,sum_out,tokens_used", [
+    pytest.param(
+        [
+            {"task_id": "task_1", "tokens_in": 100, "tokens_out": 20},
+            {"task_id": "task_2", "tokens_in": 150, "tokens_out": 30},
+        ],
+        250, 50, 300, id="basic",
+    ),
+    pytest.param(
+        [
+            {"payload": {"task_id": "task_1", "tokens_in": 120, "tokens_out": 15}},
+            {"payload": {"task_id": "task_2", "tokens_in": 80, "tokens_out": 10}},
+        ],
+        200, 25, 225, id="nested",
+    ),
+    # One task_id counts once, with the maximum tokens seen.
+    pytest.param(
+        [
+            {"task_id": "task_1", "tokens_in": 100, "tokens_out": 20},
+            {"payload": {"task_id": "task_1", "tokens_in": 150, "tokens_out": 20}},
+            {"task_id": "task_2", "tokens_in": 50, "tokens_out": 5},
+        ],
+        200, 25, 225, id="dedupe_task_id",
+    ),
+    # Without a task_id, rows with the same token values count once.
+    pytest.param(
+        [
+            {"tokens_in": 100, "tokens_out": 20},
+            {"tokens_in": 100, "tokens_out": 20},
+            {"tokens_in": 50, "tokens_out": 5},
+        ],
+        150, 25, 175, id="no_task_id",
+    ),
+    # Old worker artifacts have no tokens_cached key: it counts as 0.
+    pytest.param(
+        [
+            {"task_id": "t1", "tokens_in": 100, "tokens_out": 10},
+            {"payload": {"task_id": "t2", "tokens_in": 200, "tokens_out": 20}},
+        ],
+        300, 30, 330, id="mixed_shapes_without_tokens_cached",
+    ),
+])
+def test_add_worker_tokens_from_artifacts(artifacts, sum_in, sum_out, tokens_used):
     cfg = HarnessConfig()
     session = ConversationalSession(cfg)
     assert session._tokens_used == 0
 
-    # Top-level shapes
-    artifacts = [
-        {"task_id": "task_1", "tokens_in": 100, "tokens_out": 20},
-        {"task_id": "task_2", "tokens_in": 150, "tokens_out": 30}
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-    assert sum_in == 250
-    assert sum_out == 50
-    assert sum_cached == 0
-    assert session._tokens_used == 300
-
-
-def test_add_worker_tokens_from_artifacts_nested():
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-    assert session._tokens_used == 0
-
-    # Nested payload shapes
-    artifacts = [
-        {
-            "payload": {
-                "task_id": "task_1",
-                "tokens_in": 120,
-                "tokens_out": 15
-            }
-        },
-        {
-            "payload": {
-                "task_id": "task_2",
-                "tokens_in": 80,
-                "tokens_out": 10
-            }
-        }
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-    assert sum_in == 200
-    assert sum_out == 25
-    assert sum_cached == 0
-    assert session._tokens_used == 225
-
-
-def test_add_worker_tokens_from_artifacts_dedupe_task_id():
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-    assert session._tokens_used == 0
-
-    # Same task_id should deduplicate and take maximum tokens seen
-    artifacts = [
-        {"task_id": "task_1", "tokens_in": 100, "tokens_out": 20},
-        {
-            "payload": {
-                "task_id": "task_1",
-                "tokens_in": 150,
-                "tokens_out": 20
-            }
-        },
-        {"task_id": "task_2", "tokens_in": 50, "tokens_out": 5}
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-    assert sum_in == 200  # task_1 (150) + task_2 (50)
-    assert sum_out == 25  # task_1 (20) + task_2 (5)
-    assert sum_cached == 0
-    assert session._tokens_used == 225
-
-
-def test_add_worker_tokens_from_artifacts_no_task_id():
-    cfg = HarnessConfig()
-    session = ConversationalSession(cfg)
-    assert session._tokens_used == 0
-
-    # Artifacts without task_id should deduplicate by their token values to prevent double counting
-    artifacts = [
-        {"tokens_in": 100, "tokens_out": 20},
-        {"tokens_in": 100, "tokens_out": 20},
-        {"tokens_in": 50, "tokens_out": 5}
-    ]
-    sum_in, sum_out, sum_cached = session._add_worker_tokens_from_artifacts(artifacts)
-    assert sum_in == 150
-    assert sum_out == 25
-    assert sum_cached == 0
-    assert session._tokens_used == 175
+    got_in, got_out, got_cached = session._add_worker_tokens_from_artifacts(artifacts)
+    assert got_in == sum_in
+    assert got_out == sum_out
+    assert got_cached == 0
+    assert session._tokens_cached == 0
+    assert session._tokens_used == tokens_used
 
 
 def test_add_worker_tokens_from_artifacts_defensive_parsing():

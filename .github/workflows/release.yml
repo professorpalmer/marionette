@@ -47,7 +47,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # GitHub retired macos-14 ('macos-14-arm64-us-default' is not supported).
+          - os: macos-15
             platform: mac
           - os: windows-latest
             platform: win

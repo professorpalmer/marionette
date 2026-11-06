@@ -14,6 +14,16 @@ from harness.stream_performance_store import copy_stream_performance
 from test_openai_compat_stream_terminals import _driver, _data, _SseResp
 
 
+@pytest.fixture(autouse=True)
+def retry_sleeps(monkeypatch):
+    """Record retry backoff instead of a real sleep. The tests count requests."""
+    from pmharness.drivers.retry import with_retry
+
+    slept = []
+    monkeypatch.setitem(with_retry.__kwdefaults__, "sleep", slept.append)
+    return slept
+
+
 def _response(text="Finished", error=None, **meta):
     return DriverResponse(text=text, error=error, meta=meta)
 

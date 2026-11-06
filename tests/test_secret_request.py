@@ -2,11 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from harness.pilot import PilotAction
-from harness.send_loop_phases import LOCAL_ACTION_KINDS, dispatch_local_action
-
-
-def test_request_secret_is_local_kind():
-    assert "request_secret" in LOCAL_ACTION_KINDS
+from harness.send_loop_phases import dispatch_local_action
 
 
 def test_dispatch_request_secret_emits_card_and_not_secret(monkeypatch, tmp_path):

@@ -384,43 +384,6 @@ def record_memory_layer_snapshot(
         pass
 
 
-def layer_snapshot_at(
-    state_dir: str,
-    session_id: str,
-    turn: int,
-) -> Optional[dict[str, Any]]:
-    """Newest recorded snapshot for ``turn`` in ``session_id``, or None."""
-    if not state_dir or turn <= 0:
-        return None
-    path = _journal_path(state_dir)
-    if not os.path.isfile(path):
-        return None
-    sid = session_id or "default"
-    newest: Optional[dict[str, Any]] = None
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                if record.get("session_id") != sid:
-                    continue
-                if int(record.get("turn", -1)) != int(turn):
-                    continue
-                snap = record.get("snapshot")
-                if isinstance(snap, dict):
-                    newest = snap
-    except Exception:
-        return None
-    return newest
-
-
 def latest_layer_snapshot(state_dir: str, session_id: str) -> dict[str, Any]:
     """Most recent snapshot for ``session_id``, or ``{}`` when absent."""
     if not state_dir:

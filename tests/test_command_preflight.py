@@ -10,6 +10,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from harness.command_preflight import (
     classify_env_prerequisite_failure,
     resolve_command_preflight,
@@ -131,17 +133,13 @@ def test_env_assignment_prefix_python_rewrites(tmp_path):
     assert result["argv"][:4] == ["FOO=1", str(venv_py), "-m", "pytest"]
 
 
-def test_cd_left_alone(tmp_path):
+@pytest.mark.parametrize("command", [
+    pytest.param("cd webapp", id="cd"),
+    pytest.param("python -m pytest -q && echo done", id="shell-and"),
+    pytest.param("python -m pytest -q | tee out.log", id="pipeline"),
+])
+def test_shell_constructs_are_not_rewritten(tmp_path, command):
     _venv_python(tmp_path)
-    command = "cd webapp"
-    result = resolve_command_preflight(command, str(tmp_path))
-    assert result["rewritten"] is False
-    assert result["command"] == command
-
-
-def test_shell_and_left_alone(tmp_path):
-    _venv_python(tmp_path)
-    command = "python -m pytest -q && echo done"
     result = resolve_command_preflight(command, str(tmp_path))
     assert result["rewritten"] is False
     assert result["command"] == command
@@ -194,14 +192,6 @@ def test_empty_and_malformed_commands_return_original(tmp_path):
     malformed = resolve_command_preflight('echo "unterminated', str(tmp_path))
     assert malformed["rewritten"] is False
     assert malformed["command"] == 'echo "unterminated'
-
-
-def test_pipeline_is_not_rewritten(tmp_path):
-    _venv_python(tmp_path)
-    command = "python -m pytest -q | tee out.log"
-    result = resolve_command_preflight(command, str(tmp_path))
-    assert result["rewritten"] is False
-    assert result["command"] == command
 
 
 def test_npm_prefix_flag_is_not_rewritten(tmp_path):

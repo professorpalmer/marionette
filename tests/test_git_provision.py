@@ -74,7 +74,8 @@ def test_device_flow_start_request():
         assert req.full_url == "https://github.com/login/device/code"
         assert req.get_header("Accept") == "application/json"
 
-def test_provision_wiki_repo_create_and_seed():
+def test_provision_wiki_repo_create_and_seed(monkeypatch):
+    monkeypatch.setattr("harness.git_provision.time.sleep", lambda _s: None)
     provisioner = GitProvisioner()
     
     calls = []
@@ -160,5 +161,6 @@ def test_get_api_git_status_success_with_token():
             data = json.loads(resp.read().decode())
             assert data["connected"] is True
             assert data["wiki_repo"] == "test-user/my-portable-llm-wiki"
+            assert "gh_available" in data
     finally:
         httpd.shutdown()

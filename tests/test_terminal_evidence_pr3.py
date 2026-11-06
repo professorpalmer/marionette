@@ -310,14 +310,6 @@ def test_compact_delta_digest_cites_every_source_artifact():
     assert "FETCH" not in text
 
 
-def test_handle_first_formatter_is_gone():
-    try:
-        import harness.worker_handles as wh
-    except ImportError:
-        return
-    assert not hasattr(wh, "format_handle_first_result")
-
-
 def test_peek_artifact_schema_is_inspect_known_handle_only():
     from harness.pilot import build_tools_schema
 

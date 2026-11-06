@@ -19,7 +19,7 @@ from harness.plugin_registry import (
     disable_plugin,
     discover_plugins,
     enable_plugin,
-    install_from_path,
+    install_from_source,
     list_enabled_mcp_servers,
     list_enabled_plugin_skills,
     plugin_record_to_dict,
@@ -158,7 +158,7 @@ def test_default_disabled_registers_nothing(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _valid_package(tmp_path / "src-plugin")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     assert record.enabled is False
     assert list_enabled_plugin_skills() == []
     assert list_enabled_mcp_servers() == {}
@@ -171,7 +171,7 @@ def test_enable_mounts_namespaced_skills_and_mcp(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _valid_package(tmp_path / "src-plugin")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     enabled = enable_plugin(record.id)
     assert enabled.enabled is True
 
@@ -218,7 +218,7 @@ def test_enable_mounts_namespaced_skills_and_mcp(
 def test_install_requires_absolute_path(plugins_home: Path, tmp_path: Path) -> None:
     _valid_package(tmp_path / "src-plugin")
     with pytest.raises(AgentPluginError, match="absolute"):
-        install_from_path("src-plugin")
+        install_from_source("src-plugin")
 
 
 def test_remote_only_plugin_enable_contributes_no_mcp(
@@ -239,7 +239,7 @@ def test_remote_only_plugin_enable_contributes_no_mcp(
             },
         },
     )
-    record = install_from_path(str(root))
+    record = install_from_source(str(root))
     enable_plugin(record.id)
     assert list_enabled_mcp_servers() == {}
     package = load_agent_plugin(
@@ -304,7 +304,7 @@ def test_install_writes_content_stamp_and_enable_loads(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _valid_package(tmp_path / "src-plugin")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     assert record.content_sha256
     assert record.content_sha256 == compute_plugin_content_sha256(Path(record.path))
 
@@ -321,7 +321,7 @@ def test_stamp_mismatch_rejects_enable_and_warns_on_discover(
     plugins_home: Path, tmp_path: Path
 ) -> None:
     source = _valid_package(tmp_path / "src-plugin")
-    record = install_from_path(str(source))
+    record = install_from_source(str(source))
     plugin_root = Path(record.path)
     (plugin_root / "skills" / "summarize" / "SKILL.md").write_text(
         (plugin_root / "skills" / "summarize" / "SKILL.md").read_text(encoding="utf-8")

@@ -569,29 +569,6 @@ def filter_store_jobs_with_tasks(
     return visible, tasks_by_job
 
 
-def filter_store_jobs(
-    jobs: list[dict],
-    store,
-    *,
-    active_session_id: str,
-    repo_root: str,
-    registered_job_ids: Iterable[str] | None = None,
-    source: str = "harness",
-    allow_registered_heal: bool = True,
-) -> list[dict]:
-    """Return ``jobs`` rows owned by Marionette."""
-    visible, _tasks = filter_store_jobs_with_tasks(
-        jobs,
-        store,
-        active_session_id=active_session_id,
-        repo_root=repo_root,
-        registered_job_ids=registered_job_ids,
-        source=source,
-        allow_registered_heal=allow_registered_heal,
-    )
-    return visible
-
-
 def filter_local_jobs(
     local_jobs: list[dict],
     *,

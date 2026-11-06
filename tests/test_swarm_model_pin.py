@@ -4,43 +4,7 @@ from __future__ import annotations
 
 import json
 
-
-def test_pin_candidates_remap_cursor_luna_to_opencode_dots():
-    from harness.swarm_model_pin import pin_candidates
-
-    cands = pin_candidates("cursor/gpt-5-6-luna")
-    assert "cursor/gpt-5-6-luna" in cands
-    assert "gpt-5-6-luna" in cands
-    assert "gpt-5.6-luna" in cands
-    assert "agentic/gpt-5.6-luna" in cands
-
-
-def test_pin_candidates_include_opencode_go_deepseek_aliases():
-    from harness.swarm_model_pin import pin_candidates
-
-    for pin in (
-        "opencode-go:deepseek-v4-flash",
-        "agentic/deepseek-v4-flash",
-        "agentic/opencode/deepseek-v4-flash",
-        "deepseek-v4-flash",
-    ):
-        cands = [c.lower() for c in pin_candidates(pin)]
-        blob = " ".join(cands)
-        assert "deepseek-v4-flash" in blob
-        assert "agentic/opencode-go/deepseek-v4-flash" in blob
-        assert "glm-5.2" not in blob
-
-
-def test_pin_candidates_map_opencode_go_deepseek_flash_live_id():
-    from harness.swarm_model_pin import pin_candidates
-
-    for pin in ("opencode-go:deepseek-flash", "deepseek-flash", "agentic/deepseek-flash"):
-        cands = [c.lower() for c in pin_candidates(pin)]
-        blob = " ".join(cands)
-        assert "deepseek-flash" in blob
-        assert "deepseek-v4-flash" in blob
-        assert "agentic/opencode-go/deepseek-flash" in blob
-        assert "glm-5.2" not in blob
+import pytest
 
 
 def test_resolve_opencode_go_deepseek_flash_pin_against_v4_registry(
@@ -208,44 +172,24 @@ def test_resolve_unknown_pin_demotes_instead_of_raising(monkeypatch, tmp_path):
     assert out["resolved"] == ""
 
 
-def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("ready", "keyed"),
+    [
+        pytest.param(True, {"openrouter"}, id="openrouter_keyed"),
+        pytest.param(False, set(), id="no_keyed_provider"),
+    ],
+)
+def test_resolve_direct_openrouter_agentic_pin_strict(monkeypatch, tmp_path, ready, keyed):
     models_path = tmp_path / "models.json"
     models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
     monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
     monkeypatch.setattr(
         "harness.auto_registry.ensure_keyed_provider_registry_health",
-        lambda: {"ready": True},
+        lambda: {"ready": ready},
     )
     monkeypatch.setattr(
         "harness.auto_registry.keyed_agentic_providers",
-        lambda: {"openrouter"},
-    )
-    monkeypatch.setattr(
-        "puppetmaster.model_registry.apply_model_pin",
-        lambda payload, model, *, adapter, registry=None: {
-            **(payload or {}),
-            "model": model,
-        },
-    )
-
-    from harness.swarm_model_pin import resolve_agentic_model_pin
-
-    pin, error = resolve_agentic_model_pin("openrouter/stealth/ox-alpha")
-    assert pin is None
-    assert "not in keyed worker registry" in error
-
-
-def test_resolve_direct_agentic_pin_requires_keyed_provider(monkeypatch, tmp_path):
-    models_path = tmp_path / "models.json"
-    models_path.write_text(json.dumps({"models": []}), encoding="utf-8")
-    monkeypatch.setenv("PUPPETMASTER_MODELS_PATH", str(models_path))
-    monkeypatch.setattr(
-        "harness.auto_registry.ensure_keyed_provider_registry_health",
-        lambda: {"ready": False},
-    )
-    monkeypatch.setattr(
-        "harness.auto_registry.keyed_agentic_providers",
-        lambda: set(),
+        lambda: set(keyed),
     )
     monkeypatch.setattr(
         "puppetmaster.model_registry.apply_model_pin",
@@ -318,15 +262,6 @@ def test_implement_and_parallel_wire_model_pin_accept_nested_arguments():
     )
     assert implement.model == "openrouter/stealth/ox-alpha"
     assert parallel.model == "openrouter/stealth/ox-alpha"
-
-
-def test_pin_candidates_include_openai_codex_colon_form():
-    from harness.swarm_model_pin import pin_candidates
-
-    cands = pin_candidates("openai-codex:gpt-5.6-luna")
-    assert "gpt-5.6-luna" in cands
-    assert "agentic/gpt-5.6-luna" in cands
-    assert "agentic/openai-codex/gpt-5.6-luna" in cands
 
 
 def test_resolve_openai_codex_colon_pin_to_namespaced_row(monkeypatch, tmp_path):
@@ -436,30 +371,6 @@ def test_resolve_cursor_pin_is_rejected_even_when_union_is_requested(monkeypatch
     assert out["demoted"] is True
     assert out["adapter"] == ""
     assert out["resolved"] == ""
-
-
-def test_settings_enabled_pin_specs_requires_exact_astra_id():
-    from harness.swarm_model_pin import settings_enabled_pin_specs
-
-    enabled = [
-        "openai-codex:gpt-5.6-sol",
-        "openai-codex:gpt-5.6-luna",
-        "openai-codex:gpt-6-astra",
-    ]
-    # A similarly named generation is not the requested model.
-    assert settings_enabled_pin_specs(
-        "agentic/openai-codex/gpt-5.6-astra", enabled=enabled,
-    ) == []
-    assert settings_enabled_pin_specs(
-        "openai-codex:gpt-6-astra", enabled=enabled,
-    ) == ["openai-codex:gpt-6-astra"]
-    assert settings_enabled_pin_specs(
-        "agentic/openai-codex/gpt-5.6-sol", enabled=enabled,
-    ) == ["openai-codex:gpt-5.6-sol"]
-    assert settings_enabled_pin_specs("agentic/openai-codex/gpt-5.6-astra", enabled=[
-        "openai-codex:gpt-5.6-sol",
-        "openai-codex:gpt-5.6-luna",
-    ]) == []
 
 
 def test_resolve_gpt56_astra_pin_does_not_remap_to_gpt6_astra(monkeypatch, tmp_path):
@@ -659,7 +570,6 @@ def test_luna_max_aliases_normalize_to_gpt56_luna_with_max_effort():
     from harness.swarm_model_pin import (
         is_luna_max_pin,
         normalize_swarm_model_pin_request,
-        pin_candidates,
     )
 
     for pin in (
@@ -674,13 +584,11 @@ def test_luna_max_aliases_normalize_to_gpt56_luna_with_max_effort():
         assert "luna-pro" not in out.lower(), (pin, out)
         assert out.endswith("gpt-5.6-luna") or out == "gpt-5.6-luna" or out.endswith(":gpt-5.6-luna") or "/gpt-5.6-luna" in out, (pin, out)
         assert meta.get("reasoning_effort_hint") == "max", (pin, meta)
-        assert "gpt-5.6-luna-pro" not in pin_candidates(pin)
 
 
 def test_codex_oauth_pro_pins_remap_to_base_family():
     from harness.swarm_model_pin import (
         normalize_swarm_model_pin_request,
-        pin_candidates,
         remap_codex_oauth_pro_model,
     )
 
@@ -691,12 +599,6 @@ def test_codex_oauth_pro_pins_remap_to_base_family():
     out, meta = normalize_swarm_model_pin_request("openai-codex:gpt-5.6-luna-pro")
     assert out == "openai-codex:gpt-5.6-luna"
     assert meta.get("codex_pro_remap")
-
-    cands = pin_candidates("agentic/openai-codex/gpt-5.6-sol-pro")
-    assert "agentic/openai-codex/gpt-5.6-sol" in cands
-    assert all("sol-pro" not in c or c.endswith("sol-pro") is False or True for c in cands)
-    # Remapped base must lead; never prefer *-pro for Codex OAuth dispatch.
-    assert cands[0] == "agentic/openai-codex/gpt-5.6-sol"
 
 
 def test_resolve_luna_max_pin_stamps_reasoning_effort_max(monkeypatch, tmp_path):

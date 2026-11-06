@@ -253,7 +253,9 @@ def test_detail_exact_scope_and_budget(env):
     store, reader, ctx, selection, _ = env
     j = job(store)
     expected = dict(tasks=set(), artifacts=set())
-    for i in range(206):
+    page_rows = 50
+    # Two full pages plus one row: each lane needs at least three pages.
+    for i in range(2 * page_rows + 1):
         t = Task(j.id, 'test', 'body', id=f'task_{i:04d}')
         a = Artifact(j.id, t.id, ArtifactType.FINDING, 'test', {'claim': 'recorded', 'passed': True}, 1.0, ['fixture'])
         store.save_task(t)
@@ -278,7 +280,7 @@ def test_detail_exact_scope_and_budget(env):
             assert len(json.dumps(current).encode()) <= 98304
             assert current['cancellation_authority'] is False
             chunk = current[lane]
-            assert len(chunk['rows']) <= 50 and chunk['page']['scanned'] <= 51
+            assert len(chunk['rows']) <= page_rows and chunk['page']['scanned'] <= page_rows + 1
             ids.extend(r['id'] for r in chunk['rows'])
             assert len(ids) == len(set(ids))
             token = chunk['page']['next_cursor']
@@ -804,6 +806,8 @@ def test_list_read_retries_a_lock_burst(env, monkeypatch, mode):
 @pytest.mark.parametrize('scan_outcome', ['unavailable', 'cursor_expired'])
 def test_exact_rows_fail_closed_when_scan_unavailable(env, monkeypatch, scan_outcome):
     store, reader, ctx, source, _ = env
+    # The forced outcome never clears; the suite-wide 20 retries only add sleep.
+    monkeypatch.setattr('harness.job_readmodel.SNAPSHOT_RETRIES', 3)
     parent = job(store)
     ref = store.job_ref(parent.id)
     monkeypatch.setattr(reader, '_session_known_job_refs', lambda *_: [ref])
@@ -995,6 +999,8 @@ def test_store_created_after_view_still_needs_refresh(tmp_path):
 
 @pytest.mark.parametrize('outcome', ['unavailable', 'cursor_expired'])
 def test_no_progress_page_never_carries_a_cursor(env, monkeypatch, outcome):
+    # The forced outcome never clears; the suite-wide 20 retries only add sleep.
+    monkeypatch.setattr('harness.job_readmodel.SNAPSHOT_RETRIES', 3)
     # A locked store mid-traversal answers 'unavailable' and echoes the caller's PM
     # cursor. The wire contract is next_cursor=None for no-progress pages: the client
     # keeps its own cursor and retries. Echoing it made the renderer reject the page.

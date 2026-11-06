@@ -6,8 +6,9 @@ start record the stub keeps the old wording.
 """
 from __future__ import annotations
 
-import json
 import tempfile
+
+import pytest
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession, _is_stub_tool_result
@@ -90,8 +91,16 @@ def test_record_for_another_id_does_not_change_wording():
     assert s._history[-1]["content"] == "(no result: interrupted — x)"
 
 
-def _replace_case(stub_content: str) -> None:
-    stub = {"role": "tool", "tool_call_id": "toolu_A", "content": stub_content}
+@pytest.mark.parametrize("make_stub", [
+    pytest.param(lambda: _stub_for(started=False), id="not_started"),
+    pytest.param(lambda: _stub_for(started=True), id="outcome_unknown"),
+    pytest.param(
+        lambda: ConversationalSession._interruption_stub("toolu_A", "x")["content"],
+        id="unknown_state",
+    ),
+])
+def test_real_result_replaces_stub(make_stub):
+    stub = {"role": "tool", "tool_call_id": "toolu_A", "content": make_stub()}
     assert _is_stub_tool_result(stub)
 
     # Append path: the real result replaces the stub in place.
@@ -113,87 +122,3 @@ def _replace_case(stub_content: str) -> None:
     s2._sanitize_tool_pairs()
     got2 = _results(s2, "toolu_A")
     assert [m["content"] for m in got2] == ["late real"]
-
-
-def test_real_result_replaces_not_started_stub():
-    _replace_case(_stub_for(started=False))
-
-
-def test_real_result_replaces_outcome_unknown_stub():
-    _replace_case(_stub_for(started=True))
-
-
-def test_real_result_replaces_unknown_state_stub():
-    _replace_case(ConversationalSession._interruption_stub("toolu_A", "x")["content"])
-
-
-class _Resp:
-    def __init__(self, text, meta=None):
-        self.text = text
-        self.error = None
-        self.meta = meta or {}
-        self.tokens_out = 5
-        self.tokens_in = 5
-
-
-class _CancelMidSpreePilot:
-    """Stop arrives with the tool calls, before any of them start."""
-    supports_streaming = False
-
-    def __init__(self, session):
-        self.session = session
-        self.calls = 0
-
-    def chat(self, hist, tools=None, system=""):
-        self.calls += 1
-        if self.calls == 1:
-            self.session._cancel.set()
-            return _Resp("", {"tool_calls": [
-                {"id": f"toolu_{x}", "type": "function",
-                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}}
-                for x in "ABC"
-            ]})
-        return _Resp('{"say":"done","actions":[]}')
-
-
-def test_live_stop_marks_abandoned_siblings_not_started(tmp_path):
-    s = _session(repo=str(tmp_path))
-    s.pilot = _CancelMidSpreePilot(s)
-    list(s.send("run several tools"))
-    by_id = {m.get("tool_call_id"): m["content"] for m in s._history if m.get("role") == "tool"}
-    # Stop is checked before each action, so none of the three ran.
-    for tcid in ("toolu_A", "toolu_B", "toolu_C"):
-        assert "not started" in by_id[tcid]
-        assert "safe to call it again" in by_id[tcid]
-        assert s._tool_call_start_state(tcid) is False
-
-
-class _SteerMidSpreePilot:
-    """A runs, then a steer abandons B and C before they start."""
-    supports_streaming = False
-
-    def __init__(self, session):
-        self.session = session
-        self.calls = 0
-
-    def chat(self, hist, tools=None, system=""):
-        self.calls += 1
-        if self.calls == 1:
-            self.session.enqueue_steer("change direction")
-            return _Resp("", {"tool_calls": [
-                {"id": f"toolu_{x}", "type": "function",
-                 "function": {"name": "list_dir", "arguments": json.dumps({"path": "."})}}
-                for x in "ABC"
-            ]})
-        return _Resp('{"say":"Steered.","actions":[]}')
-
-
-def test_live_steer_keeps_real_result_and_marks_rest_not_started(tmp_path):
-    s = _session(repo=str(tmp_path))
-    s.pilot = _SteerMidSpreePilot(s)
-    list(s.send("run several tools"))
-    by_id = {m.get("tool_call_id"): m["content"] for m in s._history if m.get("role") == "tool"}
-    assert not _is_stub_tool_result({"content": by_id["toolu_A"]})
-    for tcid in ("toolu_B", "toolu_C"):
-        assert "not started" in by_id[tcid]
-        assert "superseded by a user steer" in by_id[tcid]

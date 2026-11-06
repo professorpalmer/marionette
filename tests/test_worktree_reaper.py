@@ -17,33 +17,11 @@ def _isolate_worktree_module_dependencies(monkeypatch):
     private_os = SimpleNamespace(**vars(os))
     private_os.path = SimpleNamespace(**vars(os.path))
     monkeypatch.setattr(wt, "os", private_os)
-    monkeypatch.setattr(wt, "sys", SimpleNamespace(**vars(sys)))
     monkeypatch.setattr(wt, "subprocess", SimpleNamespace(**vars(subprocess)))
 
 
 def setup_function():
     wt.clear_managed_process_registry_for_tests()
-
-
-def test_cwd_under_rejects_sibling(tmp_path):
-    # pmedit-89 must NOT match pmedit-8941d0fa (prefix-without-separator trap).
-    base = tmp_path
-    short = os.path.join(str(base), "pmedit-89")
-    long = os.path.join(str(base), "pmedit-8941d0fa")
-    os.makedirs(short)
-    os.makedirs(long)
-    child = os.path.join(long, "sub")
-    os.makedirs(child)
-
-    assert wt._cwd_under(long, long) is True
-    assert wt._cwd_under(child, long) is True
-    assert wt._cwd_under(short, long) is False   # sibling, not under
-    assert wt._cwd_under(long, short) is False
-
-
-def test_cwd_under_bad_inputs():
-    assert wt._cwd_under("", "/x") is False
-    assert wt._cwd_under("/x", "") is False
 
 
 def _managed_worktree_path(tmp_path) -> str:
@@ -84,7 +62,7 @@ def test_reap_posix_signals_only_registered_pids(tmp_path, monkeypatch):
 
 
 def test_simulated_process_dependencies_do_not_mutate_host_modules(monkeypatch):
-    host = (os.name, sys.platform, os.kill, subprocess.run)
+    host = (os.name, os.kill, subprocess.run)
 
     def fake_kill(*_args, **_kwargs):
         return None
@@ -94,12 +72,11 @@ def test_simulated_process_dependencies_do_not_mutate_host_modules(monkeypatch):
 
     with monkeypatch.context() as patch:
         patch.setattr(wt.os, "name", "nt")
-        patch.setattr(wt.sys, "platform", "win32")
         patch.setattr(wt.os, "kill", fake_kill)
         patch.setattr(wt.subprocess, "run", fake_run)
-        observed = (os.name, sys.platform, os.kill, subprocess.run)
+        observed = (os.name, os.kill, subprocess.run)
 
-    assert (os.name, sys.platform, os.kill, subprocess.run) == host
+    assert (os.name, os.kill, subprocess.run) == host
     assert observed == host
 
 
@@ -129,29 +106,6 @@ def test_reap_windows_taskkills_only_registered_pids(tmp_path, monkeypatch):
     for cmd in taskkills:
         pid = int(cmd[2])
         assert pid not in (1, me, parent)
-
-
-def test_reap_skips_foreign_process_with_matching_cwd(tmp_path, monkeypatch):
-    """Cwd-under-worktree alone must not cause a kill -- only registered PIDs."""
-    monkeypatch.setattr(wt.os, "name", "nt")
-    wtpath = os.path.realpath(_managed_worktree_path(tmp_path))
-    foreign = 515151
-
-    monkeypatch.setattr(wt, "_worktree_pid_cwds", lambda: [
-        (foreign, os.path.join(wtpath, "sub")),
-    ])
-
-    taskkills: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        if cmd and cmd[0] == "taskkill":
-            taskkills.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-
-    assert wt.reap_worktree_processes(wtpath) == 0
-    assert taskkills == []
 
 
 def test_managed_worktree_root_resolves_nested_cwd(tmp_path):
@@ -216,162 +170,6 @@ def test_unregister_prevents_pid_reuse_kill(tmp_path, monkeypatch):
     monkeypatch.setattr(wt.os, "kill", fake_kill)
     assert wt.reap_worktree_processes(wtpath) == 0
     assert killed == []
-
-
-def test_worktree_pid_cwds_routes_to_windows_branch(monkeypatch):
-    monkeypatch.setattr(wt.os, "name", "nt")
-    calls: list[str] = []
-
-    def fake_windows():
-        calls.append("windows")
-        return []
-
-    def fake_posix():
-        calls.append("posix")
-        return []
-
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_windows", fake_windows)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_posix", fake_posix)
-
-    assert wt._worktree_pid_cwds() == []
-    assert calls == ["windows"]
-
-
-def test_worktree_pid_cwds_routes_to_posix_branch(monkeypatch):
-    monkeypatch.setattr(wt.os, "name", "posix")
-    calls: list[str] = []
-
-    def fake_windows():
-        calls.append("windows")
-        return []
-
-    def fake_posix():
-        calls.append("posix")
-        return []
-
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_windows", fake_windows)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_posix", fake_posix)
-
-    assert wt._worktree_pid_cwds() == []
-    assert calls == ["posix"]
-
-
-def test_parse_lsof_cwd_output():
-    stdout = "p12345\nn/tmp/worktree\np67890\nn/home/user\n"
-    assert wt._parse_lsof_cwd_output(stdout) == [
-        (12345, "/tmp/worktree"),
-        (67890, "/home/user"),
-    ]
-    assert wt._parse_lsof_cwd_output("") == []
-    assert wt._parse_lsof_cwd_output("pnotanint\nn/ignored\n") == []
-
-
-def test_posix_lsof_success_returns_parsed_pairs(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        assert cmd[:4] == ["lsof", "-a", "-d", "cwd"]
-        return subprocess.CompletedProcess(
-            cmd, 0, "p4242\nn/var/wt/sub\n", "",
-        )
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-    assert wt._worktree_pid_cwds_lsof() == [(4242, "/var/wt/sub")]
-
-
-def test_posix_lsof_success_empty_skips_proc_fallback(monkeypatch):
-    proc_called: list[bool] = []
-
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    def fake_proc():
-        proc_called.append(True)
-        return [(999, "/proc/fallback")]
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
-    monkeypatch.setattr(wt.sys, "platform", "linux")
-
-    assert wt._worktree_pid_cwds_posix() == []
-    assert proc_called == []
-
-
-def test_posix_lsof_failure_linux_falls_back_to_proc(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("lsof")
-
-    def fake_proc():
-        return [(111, "/wt/orphan"), (222, "/elsewhere")]
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
-    monkeypatch.setattr(wt.sys, "platform", "linux")
-
-    assert wt._worktree_pid_cwds_posix() == [(111, "/wt/orphan"), (222, "/elsewhere")]
-
-
-def test_posix_lsof_nonzero_linux_falls_back_to_proc(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        return subprocess.CompletedProcess(cmd, 1, "", "permission denied")
-
-    def fake_proc():
-        return [(333, "/wt/from-proc")]
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
-    monkeypatch.setattr(wt.sys, "platform", "linux")
-
-    assert wt._worktree_pid_cwds_posix() == [(333, "/wt/from-proc")]
-
-
-def test_posix_lsof_failure_darwin_returns_empty(monkeypatch):
-    proc_called: list[bool] = []
-
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("lsof")
-
-    def fake_proc():
-        proc_called.append(True)
-        return [(444, "/should-not-run")]
-
-    monkeypatch.setattr(wt.subprocess, "run", fake_run)
-    monkeypatch.setattr(wt, "_worktree_pid_cwds_proc_linux", fake_proc)
-    monkeypatch.setattr(wt.sys, "platform", "darwin")
-
-    assert wt._worktree_pid_cwds_posix() == []
-    assert proc_called == []
-
-
-def test_proc_linux_enumerates_cwds(monkeypatch):
-    def fake_listdir(path):
-        assert path.replace("\\", "/") == "/proc"
-        return ["1", "self", "4242", "not-a-pid", "5678"]
-
-    def fake_isdir(path):
-        return path.replace("\\", "/") == "/proc"
-
-    def fake_readlink(path):
-        norm = path.replace("\\", "/")
-        if norm == "/proc/4242/cwd":
-            return "/tmp/worktree-a"
-        if norm == "/proc/5678/cwd":
-            raise PermissionError("denied")
-        raise OSError("missing")
-
-    monkeypatch.setattr("harness.worktrees.os.listdir", fake_listdir)
-    monkeypatch.setattr("harness.worktrees.os.path.isdir", fake_isdir)
-    monkeypatch.setattr("harness.worktrees.os.readlink", fake_readlink)
-
-    assert wt._worktree_pid_cwds_proc_linux() == [(4242, "/tmp/worktree-a")]
-
-
-def test_proc_linux_returns_empty_on_error(monkeypatch):
-    monkeypatch.setattr("harness.worktrees.os.path.isdir", lambda path: True)
-    monkeypatch.setattr(
-        "harness.worktrees.os.listdir",
-        lambda path: (_ for _ in ()).throw(OSError("boom")),
-    )
-
-    assert wt._worktree_pid_cwds_proc_linux() == []
 
 
 def test_reap_leaves_a_recycled_pid_alone(tmp_path, monkeypatch):

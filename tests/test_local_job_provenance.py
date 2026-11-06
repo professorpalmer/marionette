@@ -22,7 +22,9 @@ from harness.internal_uri import (
 )
 from harness.job_scoping import job_label_for_session, stamp_task_payload
 from harness.local_job_artifacts import (
+    READ_ONLY_JOB_ROLES,
     artifacts_are_complete,
+    is_read_only_job_role,
     resolve_execution_provenance,
     terminal_artifact_type,
 )
@@ -345,9 +347,26 @@ def test_local_job_uri_rejects_other_session_and_other_repo(session, tmp_path):
         )
 
 
+def test_read_only_job_roles_include_qa_and_analysis():
+    for role in (
+        "analysis", "review", "explore", "read_only", "readonly",
+        "audit", "search", "qa",
+    ):
+        assert role in READ_ONLY_JOB_ROLES
+        assert is_read_only_job_role(role) is True
+    assert is_read_only_job_role("QA") is True
+    assert is_read_only_job_role(" analysis ") is True
+    assert is_read_only_job_role("implement") is False
+    assert is_read_only_job_role("") is False
+    assert is_read_only_job_role(None) is False
+
+
 def test_terminal_artifact_type_matrix():
     assert terminal_artifact_type(
         ok=True, cancelled=False, role="explore", has_file_evidence=True,
+    ) == "analysis"
+    assert terminal_artifact_type(
+        ok=True, cancelled=False, role="qa", has_file_evidence=True,
     ) == "analysis"
     assert terminal_artifact_type(
         ok=True, cancelled=False, role="implement", has_file_evidence=True,

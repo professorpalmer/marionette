@@ -377,24 +377,29 @@ def _send_session(tmp_path, monkeypatch, pilot, *, sid="sess-send"):
     return session
 
 
+class _OncePilot:
+    """Pilot whose every chat call returns one fixed say and no actions."""
+
+    def __init__(self, name: str, say: str) -> None:
+        self.name = name
+        self.say = say
+        self.calls = 0
+
+    def chat(self, messages, tools=None, system=None):
+        self.calls += 1
+        return DriverResponse(
+            text=json.dumps({"say": self.say, "actions": []}),
+            tokens_out=2,
+            latency_ms=1.0,
+            meta={"finish_reason": "stop"},
+        )
+
+    def complete(self, prompt, system=None):
+        return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
+
+
 def test_send_records_one_receipt_per_provider_call(monkeypatch, tmp_path):
-    class Once:
-        name = "once"
-        calls = 0
-
-        def chat(self, messages, tools=None, system=None):
-            self.calls += 1
-            return DriverResponse(
-                text='{"say": "hi", "actions": []}',
-                tokens_out=2,
-                latency_ms=1.0,
-                meta={"finish_reason": "stop"},
-            )
-
-        def complete(self, prompt, system=None):
-            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
-
-    pilot = Once()
+    pilot = _OncePilot("once", "hi")
     session = _send_session(tmp_path, monkeypatch, pilot)
     events = list(session.send("hello there"))
     assert not any(getattr(e, "kind", None) == "error" for e in events)
@@ -543,23 +548,9 @@ def test_sink_failure_does_not_change_send_hot_path(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Store, "record", boom)
 
-    class Once:
-        name = "once-boom"
-        calls = 0
-
-        def chat(self, messages, tools=None, system=None):
-            self.calls += 1
-            return DriverResponse(
-                text='{"say": "still works", "actions": []}',
-                tokens_out=2,
-                latency_ms=1.0,
-                meta={"finish_reason": "stop"},
-            )
-
-        def complete(self, prompt, system=None):
-            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
-
-    session = _send_session(tmp_path, monkeypatch, Once(), sid="sess-hot")
+    session = _send_session(
+        tmp_path, monkeypatch, _OncePilot("once-boom", "still works"), sid="sess-hot",
+    )
     events = list(session.send("please work"))
     kinds = [getattr(e, "kind", None) for e in events]
     assert "error" not in kinds
@@ -568,23 +559,9 @@ def test_sink_failure_does_not_change_send_hot_path(monkeypatch, tmp_path):
 
 
 def test_receipts_never_enter_history_display_or_transcript(monkeypatch, tmp_path):
-    class Once:
-        name = "once-leak"
-        calls = 0
-
-        def chat(self, messages, tools=None, system=None):
-            self.calls += 1
-            return DriverResponse(
-                text='{"say": "visible", "actions": []}',
-                tokens_out=2,
-                latency_ms=1.0,
-                meta={"finish_reason": "stop"},
-            )
-
-        def complete(self, prompt, system=None):
-            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
-
-    session = _send_session(tmp_path, monkeypatch, Once(), sid="sess-leak")
+    session = _send_session(
+        tmp_path, monkeypatch, _OncePilot("once-leak", "visible"), sid="sess-leak",
+    )
     list(session.send("do not leak receipts"))
     history_blob = json.dumps(session._history, default=str)
     display_blob = json.dumps(session._display_transcript, default=str)
@@ -899,23 +876,9 @@ def test_complete_success_records_one_receipt(monkeypatch, tmp_path):
 
 
 def test_receipt_turn_index_and_user_ordinal(monkeypatch, tmp_path):
-    class Once:
-        name = "ordinals"
-        calls = 0
-
-        def chat(self, messages, tools=None, system=None):
-            self.calls += 1
-            return DriverResponse(
-                text='{"say": "turn", "actions": []}',
-                tokens_out=2,
-                latency_ms=1.0,
-                meta={"finish_reason": "stop"},
-            )
-
-        def complete(self, prompt, system=None):
-            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
-
-    session = _send_session(tmp_path, monkeypatch, Once(), sid="sess-ordinal")
+    session = _send_session(
+        tmp_path, monkeypatch, _OncePilot("ordinals", "turn"), sid="sess-ordinal",
+    )
     list(session.send("first"))
     list(session.send("second"))
     rows = StreamPerformanceReceiptStore(str(tmp_path)).list_receipts("sess-ordinal")
@@ -941,23 +904,7 @@ def test_missing_session_id_skips_receipt_write(monkeypatch, tmp_path):
     perf_dir = tmp_path / "stream_performance"
     assert not perf_dir.exists() or list(perf_dir.glob("*.json")) == []
 
-    class Once:
-        name = "no-sid"
-        calls = 0
-
-        def chat(self, messages, tools=None, system=None):
-            self.calls += 1
-            return DriverResponse(
-                text='{"say": "ok", "actions": []}',
-                tokens_out=2,
-                latency_ms=1.0,
-                meta={"finish_reason": "stop"},
-            )
-
-        def complete(self, prompt, system=None):
-            return DriverResponse(text="summary", tokens_out=1, latency_ms=1.0)
-
-    live = _send_session(tmp_path, monkeypatch, Once(), sid="")
+    live = _send_session(tmp_path, monkeypatch, _OncePilot("no-sid", "ok"), sid="")
     events = list(live.send("no session id"))
     assert not any(getattr(e, "kind", None) == "error" for e in events)
     assert live.pilot.calls == 1
@@ -1373,8 +1320,22 @@ def test_default_cap_keeps_newest_200(tmp_path):
     store = StreamPerformanceReceiptStore(str(tmp_path))
     sid = "sess-cap"
     assert store.max_receipts == MAX_RECEIPTS_PER_SESSION
-    for i in range(MAX_RECEIPTS_PER_SESSION + 5):
-        store.record(sid, _receipt(sid, provider_step=i, captured_at=float(i)))
+    store.record(sid, _receipt(sid, provider_step=0, captured_at=0.0))
+    path = Path(receipt_file_path(str(tmp_path), sid))
+    seeded = [
+        _receipt(sid, provider_step=i, captured_at=float(i))
+        for i in range(MAX_RECEIPTS_PER_SESSION + 4)
+    ]
+    path.write_text(
+        json.dumps({
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "session_id": sid,
+            "receipts": seeded,
+        }),
+        encoding="utf-8",
+    )
+    last = MAX_RECEIPTS_PER_SESSION + 4
+    store.record(sid, _receipt(sid, provider_step=last, captured_at=float(last)))
     rows = store.list_receipts(sid)
     assert len(rows) == MAX_RECEIPTS_PER_SESSION
     assert rows[0]["provider_step"] == 5

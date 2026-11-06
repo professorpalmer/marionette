@@ -18,56 +18,50 @@ from harness.command_policy import (
 
 # ---- resolve_timeout ----------------------------------------------------------
 
-def test_timeout_default_when_unset():
-    assert resolve_timeout({}) == DEFAULT_TIMEOUT
-
-def test_timeout_explicit_seconds():
-    assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": "600"}) == 600
-
-def test_timeout_zero_is_unbounded():
-    assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": "0"}) is None
-
-def test_timeout_off_keywords_unbounded():
-    for v in ("none", "off", "unbounded", "infinite", "NONE", "Off"):
-        assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": v}) is None
-
-def test_timeout_negative_is_unbounded():
-    assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": "-1"}) is None
-
-def test_timeout_malformed_falls_back_to_default():
-    # fail safe, not fail open: garbage -> default bound, never unbounded
-    assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": "banana"}) == DEFAULT_TIMEOUT
-
-def test_timeout_empty_string_is_default():
-    assert resolve_timeout({"HARNESS_COMMAND_TIMEOUT": ""}) == DEFAULT_TIMEOUT
+@pytest.mark.parametrize("env_value, expected", [
+    pytest.param(None, DEFAULT_TIMEOUT, id="unset-is-default"),
+    pytest.param("600", 600, id="explicit-seconds"),
+    pytest.param("0", None, id="zero-is-unbounded"),
+    pytest.param("-1", None, id="negative-is-unbounded"),
+    pytest.param("", DEFAULT_TIMEOUT, id="empty-string-is-default"),
+    # Fail safe, not fail open: garbage gives the default bound, never unbounded.
+    pytest.param("banana", DEFAULT_TIMEOUT, id="malformed-falls-back-to-default"),
+    pytest.param("none", None, id="off-keyword-none"),
+    pytest.param("off", None, id="off-keyword-off"),
+    pytest.param("unbounded", None, id="off-keyword-unbounded"),
+    pytest.param("infinite", None, id="off-keyword-infinite"),
+    pytest.param("NONE", None, id="off-keyword-NONE"),
+    pytest.param("Off", None, id="off-keyword-Off"),
+])
+def test_resolve_timeout(env_value, expected):
+    env = {} if env_value is None else {"HARNESS_COMMAND_TIMEOUT": env_value}
+    assert resolve_timeout(env) == expected
 
 
-def test_hard_ceiling_default_when_unset():
-    assert resolve_hard_ceiling({}) == DEFAULT_HARD_CEILING
+@pytest.mark.parametrize("env_value, expected", [
+    pytest.param(None, DEFAULT_HARD_CEILING, id="unset-is-default"),
+    pytest.param("0", None, id="off-0"),
+    pytest.param("none", None, id="off-none"),
+    pytest.param("off", None, id="off-off"),
+    pytest.param("unbounded", None, id="off-unbounded"),
+    pytest.param("infinite", None, id="off-infinite"),
+    pytest.param("banana", DEFAULT_HARD_CEILING, id="malformed-falls-back"),
+])
+def test_resolve_hard_ceiling(env_value, expected):
+    env = {} if env_value is None else {"HARNESS_COMMAND_HARD_CEILING": env_value}
+    assert resolve_hard_ceiling(env) == expected
 
 
-def test_hard_ceiling_off_is_truly_unbounded():
-    for v in ("0", "none", "off", "unbounded", "infinite"):
-        assert resolve_hard_ceiling({"HARNESS_COMMAND_HARD_CEILING": v}) is None
-
-
-def test_hard_ceiling_malformed_falls_back():
-    assert resolve_hard_ceiling({"HARNESS_COMMAND_HARD_CEILING": "banana"}) == DEFAULT_HARD_CEILING
-
-
-def test_effective_timeout_explicit_wins_over_ceiling():
-    env = {"HARNESS_COMMAND_TIMEOUT": "600", "HARNESS_COMMAND_HARD_CEILING": "900"}
-    assert effective_command_timeout(env) == 600
-
-
-def test_effective_timeout_applies_ceiling_when_unbounded():
-    env = {"HARNESS_COMMAND_TIMEOUT": "0"}
-    assert effective_command_timeout(env) == DEFAULT_HARD_CEILING
-
-
-def test_effective_timeout_truly_unbounded_when_ceiling_off():
-    env = {"HARNESS_COMMAND_TIMEOUT": "0", "HARNESS_COMMAND_HARD_CEILING": "0"}
-    assert effective_command_timeout(env) is None
+@pytest.mark.parametrize("env, expected", [
+    pytest.param({"HARNESS_COMMAND_TIMEOUT": "600", "HARNESS_COMMAND_HARD_CEILING": "900"}, 600,
+                 id="explicit-wins-over-ceiling"),
+    pytest.param({"HARNESS_COMMAND_TIMEOUT": "0"}, DEFAULT_HARD_CEILING,
+                 id="ceiling-applies-when-unbounded"),
+    pytest.param({"HARNESS_COMMAND_TIMEOUT": "0", "HARNESS_COMMAND_HARD_CEILING": "0"}, None,
+                 id="truly-unbounded-when-ceiling-off"),
+])
+def test_effective_command_timeout(env, expected):
+    assert effective_command_timeout(env) == expected
 
 
 # ---- classify_command: DANGER must be caught ----------------------------------
@@ -172,11 +166,8 @@ def test_force_push_suggests_force_with_lease(cmd, want):
     assert suggested_amendment(cmd) == want
 
 
-def test_force_with_lease_has_no_amendment():
-    assert suggested_amendment("git push --force-with-lease origin main") is None
-
-
 @pytest.mark.parametrize("cmd", [
+    "git push --force-with-lease origin main",
     "git push origin main",
     "rm -rf /",
     "ssh prod reboot",

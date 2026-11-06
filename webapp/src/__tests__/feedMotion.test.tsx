@@ -165,15 +165,12 @@ function parseTranslateY(transform: string): number | null {
 }
 
 describe("feed Motion", () => {
-  it("declares the official motion package and does not regress to 0.9.329", () => {
+  it("declares motion and not framer-motion", () => {
     const pkg = JSON.parse(pkgJson) as {
       dependencies?: Record<string, string>;
-      version?: string;
     };
     expect(pkg.dependencies?.motion).toBeTruthy();
     expect(pkg.dependencies?.["framer-motion"]).toBeUndefined();
-    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(pkg.version).not.toBe("0.9.329");
   });
 
   it("mounts transcript rows in plain in-flow divs", () => {

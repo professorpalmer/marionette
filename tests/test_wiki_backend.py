@@ -293,6 +293,28 @@ def test_missing_venv_triggers_repair_at_most_once(isolated_state, monkeypatch):
     assert repairs == [backend]  # second call is throttled
 
 
+def test_backend_log_writes_to_state_dir_not_home(isolated_state, tmp_path, monkeypatch):
+    home, state = isolated_state
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    backend = _fake_backend(str(home), with_uvicorn=False)
+    monkeypatch.setenv("MARIONETTE_WIKI_DIR", backend)
+    monkeypatch.setenv("WIKI_API_BASE", "http://127.0.0.1:8000")
+    monkeypatch.delenv("MARIONETTE_NO_WIKI", raising=False)
+    monkeypatch.setattr(wiki_backend, "_healthz", lambda *args, **kwargs: False)
+    monkeypatch.setattr(wiki_backend, "_uvicorn_importable", lambda: False)
+    monkeypatch.setattr(wiki_backend.shutil, "which", lambda name: None)
+    monkeypatch.setattr(wiki_backend, "_venv_repair_attempted", True)
+
+    wiki_backend.ensure_wiki_backend_running(wait_secs=0.1)
+
+    log = state / "wiki-backend.log"
+    assert "no usable python for uvicorn" in log.read_text(encoding="utf-8")
+    assert not (fake_home / ".pmharness").exists()
+
+
 def test_venv_repair_builds_with_validated_base_python(tmp_path, monkeypatch):
     backend = str(tmp_path / "backend")
     os.makedirs(backend)

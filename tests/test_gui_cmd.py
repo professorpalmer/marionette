@@ -7,8 +7,8 @@ import json
 from harness import cli
 
 
-def test_default_path_still_runs_task(capsys):
-    code = cli.main(["--driver", "stub-oracle-v2", "--state-dir", "/tmp/guicmd-t",
+def test_default_path_still_runs_task(capsys, tmp_path):
+    code = cli.main(["--driver", "stub-oracle-v2", "--state-dir", str(tmp_path),
                      "What does JSON stand for?"])
     assert "FINAL [answer]" in capsys.readouterr().out
     assert code == 0
@@ -29,9 +29,3 @@ def test_gui_subcommand_starts_server(monkeypatch, tmp_path):
     # test with --force
     cli.main(["gui", "--port", "8910", "--host", "127.0.0.1", "--force"])
     assert captured == {"host": "127.0.0.1", "port": 8910, "force": True}
-
-
-def test_gui_help_does_not_crash():
-    import pytest
-    with pytest.raises(SystemExit):
-        cli.main(["gui", "--help"])

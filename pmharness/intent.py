@@ -153,20 +153,6 @@ def is_prewalk_goal(goal: str) -> bool:
     return any(signal in text for signal in _PREWALK_SIGNALS)
 
 
-def classify_dispatch_action(goal: str) -> Optional[str]:
-    """Map a free-form goal to a dispatch action the bridge understands.
-
-    Returns ``"run_prewalk"`` for plan-then-implement asks, ``"run_swarm"`` for
-    other non-empty goals, or ``None`` when the goal is empty. Pure -- no PM.
-    """
-    text = (goal or "").strip()
-    if not text:
-        return None
-    if is_prewalk_goal(text):
-        return "run_prewalk"
-    return "run_swarm"
-
-
 def infer_roles(goal: str) -> list:
     """Pick a role set from the goal when the driver supplied none.
 

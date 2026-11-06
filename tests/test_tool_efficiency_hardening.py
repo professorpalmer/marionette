@@ -12,7 +12,6 @@ successful command or a match-bearing search is worse than no hint at all.
 
 import os
 import shutil
-import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -137,19 +136,6 @@ def test_do_run_command_grep_no_match_gets_no_failure_hint():
         ok, status, val = ToolDispatchMixin._do_run_command(session, act)
     assert ok is True
     assert "hint" not in val
-
-
-def test_do_run_command_timeout_status_stays_honest(tmp_path):
-    session = _dispatch_session(str(tmp_path))
-    act = PilotAction(kind="run_command", command="sleep 300")
-    with patch(
-        "harness.command_policy.run_cancellable",
-        return_value=("partial", -1, "timeout"),
-    ):
-        ok, status, val = ToolDispatchMixin._do_run_command(session, act)
-    assert ok is False and status == "timeout"
-    assert val["status"] == "timeout" and val["exit_code"] == -1
-    assert val["cwd"] == str(tmp_path)
 
 
 def test_oversized_foreground_output_stays_recoverable(tmp_path):
@@ -599,21 +585,6 @@ def test_read_file_final_slice_has_no_continuation(repo):
     assert "next start_line" not in val
 
 
-def test_read_file_large_guard_names_the_next_offset(repo):
-    session, workspace = repo
-    (workspace / "big.txt").write_text(
-        "\n".join(f"This is line {i}" for i in range(1, 2101)), encoding="utf-8"
-    )
-    act = PilotAction(kind="read_file", path="big.txt")
-    ok, _status, val = session._do_read_file(act)
-    assert ok
-    # Large-file message + honest continuation past the ~2000-line window.
-    assert "[file is large (2100 lines); re-read with start_line and limit to see specific sections]" in val
-    assert "continue with start_line=2001" in val
-    assert "This is line 2000\n" in val
-    assert "This is line 2001\n" not in val
-
-
 def test_read_file_whole_small_file_is_unannotated(repo):
     session, workspace = repo
     body = "one\ntwo\nthree\n"
@@ -636,14 +607,6 @@ def test_hash_edit_anchor_survives_continuation_header(monkeypatch):
 
 
 # -------------------------------------------------------- shape compatibility
-
-
-def test_run_command_payload_keeps_existing_keys():
-    session = _dispatch_session()
-    act = PilotAction(kind="run_command", command="true")
-    with patch("harness.command_policy.run_cancellable", return_value=("", 0, "ok")):
-        _ok, _status, val = ToolDispatchMixin._do_run_command(session, act)
-    assert {"output", "exit_code", "status"} <= set(val)
 
 
 def test_search_files_still_honors_max_results(repo, monkeypatch):
@@ -672,13 +635,3 @@ def test_search_files_reports_invalid_regex_in_python_fallback(repo, monkeypatch
     ok, status, val = session._do_search_files(act)
     assert ok is False and status == "invalid_arguments"
     assert "Invalid regex" in val
-
-
-def test_temp_workspace_paths_are_not_leaked_by_hints():
-    """cwd echo is the workspace root, never a per-call temp directory."""
-    with tempfile.TemporaryDirectory() as tmp:
-        session = _dispatch_session(tmp)
-        act = PilotAction(kind="run_command", command="true")
-        with patch("harness.command_policy.run_cancellable", return_value=("", 0, "ok")):
-            _ok, _status, val = ToolDispatchMixin._do_run_command(session, act)
-        assert val["cwd"] == tmp

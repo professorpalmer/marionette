@@ -20,9 +20,7 @@ from harness.session_fts import (
     index_session_artifacts,
     index_session_preview,
     index_session_transcript,
-    remove_artifact_from_index,
     remove_session_from_index,
-    reindex_store_artifacts,
     search_sessions,
 )
 from puppetmaster.models import Artifact, ArtifactType, Task
@@ -214,24 +212,6 @@ def test_stale_preview_replaced_on_reindex():
         assert "new preview" in hits[0]["snippet"] or hits[0]["match_kind"] == "preview"
 
 
-def test_stale_artifact_removed():
-    with tempfile.TemporaryDirectory() as state_dir:
-        index_session_artifacts(
-            state_dir,
-            "sess-drop",
-            [{"id": "gone-art", "headline": "ephemeral jupiter finding"}],
-            job_id="job-drop",
-        )
-        assert search_sessions(state_dir, "jupiter")
-        assert remove_artifact_from_index(
-            state_dir,
-            "job-drop",
-            "gone-art",
-            session_id="sess-drop",
-        )
-        assert search_sessions(state_dir, "jupiter") == []
-
-
 def test_malformed_fts_query_is_operator_safe():
     assert _fts_match_query('foo OR bar') == '"foo" AND "OR" AND "bar"'
     assert _fts_match_query('***') == ""
@@ -296,22 +276,6 @@ def test_best_effort_hooks_never_raise(monkeypatch):
         assert best_effort_index_job_artifacts(state_dir, "job-1", session_id="sess-x") is False
         assert index_session_preview(state_dir, "", "text") is False
         assert index_session_preview(state_dir, "sess-x", "text") is False
-
-
-def test_reindex_store_artifacts_read_only_projection():
-    with tempfile.TemporaryDirectory() as state_dir:
-        ids = _seed_job_with_artifact(
-            state_dir,
-            "sess-store",
-            "store-backed neptune routing regression",
-        )
-        stats = reindex_store_artifacts(state_dir)
-        assert stats["indexed"] == 1
-        hits = search_sessions(state_dir, "neptune routing")
-        assert hits
-        assert hits[0]["session_id"] == "sess-store"
-        assert hits[0]["match_kind"] == "artifact"
-        assert ids["artifact_id"]
 
 
 def _session_services(state_dir: str) -> SessionServices:

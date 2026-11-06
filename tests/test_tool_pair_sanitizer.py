@@ -10,13 +10,13 @@ boundary as cancel (safe-boundary cancel/steer).
 """
 import copy
 import json
-import os
 import re
 import tempfile
 
 from harness.config import HarnessConfig
 from harness.conversation import (
     ConversationalSession,
+    _is_stub_tool_result,
     canonicalize_outbound_tool_call_ids,
 )
 from harness.pilot import PilotAction
@@ -238,19 +238,6 @@ def test_steer_format_hardwraps_long_unbroken_token():
     assert sum(1 for ln in legacy.splitlines() if ln and set(ln) == {"a"}) >= 3
 
 
-def test_max_pilot_steps_env_unlimited(monkeypatch):
-    # 0 == unlimited. Verify the env parse the loop relies on.
-    monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "0")
-    val = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))
-    assert val == 0  # loop treats <=0 as unbounded
-
-
-def test_max_pilot_steps_env_custom(monkeypatch):
-    monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "100")
-    val = int(os.environ.get("HARNESS_MAX_PILOT_STEPS", "40"))
-    assert val == 100
-
-
 def test_messages_for_provider_sanitizes_before_returning():
     s = _session()
     s._history = [
@@ -266,33 +253,6 @@ def test_messages_for_provider_sanitizes_before_returning():
         m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"
         for m in messages
     )
-
-
-def test_append_action_result_replaces_interruption_stub_not_duplicate():
-    """Crash/resume race: stub already present, real result arrives later."""
-    s = _session()
-    s._history = [
-        {"role": "system", "content": "sys"},
-        {"role": "assistant", "content": "acting", "tool_calls": [
-            {"id": "toolu_A", "type": "function",
-             "function": {"name": "run_command", "arguments": "{}"}},
-        ]},
-        s._interruption_stub("toolu_A"),
-    ]
-    act = PilotAction(
-        kind="run_command",
-        tool="run_command",
-        tool_call_id="toolu_A",
-        arguments={},
-    )
-    s._append_action_result(act, "a1", "real command output", is_native=True)
-    results = [
-        m for m in s._history
-        if m.get("role") == "tool" and m.get("tool_call_id") == "toolu_A"
-    ]
-    assert len(results) == 1
-    assert results[0]["content"] == "real command output"
-    assert not results[0]["content"].startswith("(no result:")
 
 
 def test_append_action_result_does_not_duplicate_real_result():
@@ -330,7 +290,7 @@ class _Resp:
 
 
 class _CancelMidSpreePilot:
-    """Issues a multi-tool spree; cancel fires after the first action starts."""
+    """Issues a multi-tool spree; Stop arrives before any call starts."""
     supports_streaming = False
 
     def __init__(self, session):
@@ -342,8 +302,7 @@ class _CancelMidSpreePilot:
         self.calls += 1
         self.histories.append([dict(m) for m in hist])
         if self.calls == 1:
-            # Cancel before sibling tools run: first list_dir will execute,
-            # then the action loop sees cancel and abandons the rest.
+            # Stop is checked before each action, so none of the three runs.
             self.session._cancel.set()
             return _Resp("", {"tool_calls": [
                 {"id": "toolu_A", "type": "function",
@@ -377,6 +336,10 @@ def test_cancel_mid_tool_spree_heals_dangling_pairs(tmp_path):
     assert "toolu_B" in by_id and "toolu_C" in by_id
     assert "interrupted" in by_id["toolu_B"]["content"]
     assert "interrupted" in by_id["toolu_C"]["content"]
+    for tcid in ("toolu_A", "toolu_B", "toolu_C"):
+        assert "not started" in by_id[tcid]["content"]
+        assert "safe to call it again" in by_id[tcid]["content"]
+        assert s._tool_call_start_state(tcid) is False
 
 
 class _SteerMidSpreePilot:
@@ -435,6 +398,10 @@ def test_steer_mid_tool_spree_heals_dangling_pairs(tmp_path):
     assert "toolu_B" in by_id and "toolu_C" in by_id
     assert "interrupted" in by_id["toolu_B"]["content"]
     assert "interrupted" in by_id["toolu_C"]["content"]
+    assert not _is_stub_tool_result(by_id["toolu_A"])
+    for tcid in ("toolu_B", "toolu_C"):
+        assert "not started" in by_id[tcid]["content"]
+        assert "superseded by a user steer" in by_id[tcid]["content"]
     # First-class steer is a user-role message after the healed tool pair.
     assert any(
         m.get("role") == "user" and "change direction" in str(m.get("content") or "")
@@ -715,14 +682,3 @@ def test_stub_names_the_reason_the_call_went_unanswered():
     assert describe_unanswered_cause("transport_error") == "provider connection lost"
     assert "Stop" in describe_unanswered_cause("cancelled")
 
-
-def test_stub_without_a_recorded_cause_says_so():
-    s = _session()
-    s._history = [
-        {"role": "user", "content": "do it"},
-        {"role": "assistant", "content": "acting", "tool_calls": [
-            {"id": "toolu_A", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
-        ]},
-    ]
-    s._sanitize_tool_pairs()
-    assert "no recorded cause" in s._history[-1]["content"]

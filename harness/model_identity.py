@@ -143,15 +143,3 @@ def filter_rejected_excluding_selected(
     return out
 
 
-def format_model_ref(engine: str, model_id: str) -> Dict[str, str]:
-    """Structured view of a model stamp for envelope / display / price paths."""
-    eng = (engine or "").strip().lower()
-    if eng not in ENGINE_LABELS:
-        eng = leading_engine(model_id) or ""
-    display = envelope_model_id(eng, model_id)
-    return {
-        "engine": eng or leading_engine(display),
-        "registry_id": collapse_engine_prefixes(model_id) or display,
-        "display_id": display,
-        "price_id": price_lookup_id(display or model_id),
-    }

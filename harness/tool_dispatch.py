@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from ._exec import _puppetmaster_cmd
@@ -103,6 +104,41 @@ _SEARCH_SKIP_DIRS = frozenset({
 })
 # Zero-match probes only need to prove existence, not enumerate everything.
 _PROBE_MATCH_CAP = 50
+
+
+@dataclass(frozen=True)
+class _LineWindow:
+    text: str
+    total_lines: int
+    total_chars: int
+
+
+def _read_line_window(stream: Any, keep_from: int, keep_to: Optional[int], char_cap: int) -> _LineWindow:
+    """One pass over a text stream: count every line, keep lines [keep_from, keep_to).
+
+    read_file used to load the whole file and join a second copy before it
+    sliced. A large log then cost twice its size in memory for a 2000-line
+    window. Pieces are at most 1 MiB, so a file with no newline is bounded
+    too. Kept text stops just past ``char_cap``: the caller cuts at the cap.
+    """
+    kept: list = []
+    kept_chars = 0
+    line = 0
+    total_chars = 0
+    open_line = False
+    while True:
+        piece = stream.readline(1 << 20)
+        if not piece:
+            break
+        total_chars += len(piece)
+        in_window = line >= keep_from and (keep_to is None or line < keep_to)
+        if in_window and kept_chars <= char_cap:
+            kept.append(piece)
+            kept_chars += len(piece)
+        open_line = not piece.endswith("\n")
+        if not open_line:
+            line += 1
+    return _LineWindow("".join(kept), line + (1 if open_line else 0), total_chars)
 
 
 def _slice_bounds(
@@ -321,8 +357,8 @@ class ToolDispatchMixin:
             registered_job_ids=list(getattr(self, "_session_job_ids", []) or []),
         )
 
-    def _read_text_lines(self, target_path: str) -> list:
-        """Text-mode lines; a sealed spill under the results root is opened first."""
+    def _open_text(self, target_path: str):
+        """Text stream; a sealed spill under the results root is opened first."""
         from .seal import is_envelope, read_file
 
         with open(target_path, "rb") as f:
@@ -330,9 +366,8 @@ class ToolDispatchMixin:
         spill_root = os.path.join(os.path.abspath(self._state_dir_or_tempdir), "pmharness-results")
         if is_envelope(head) and is_safe_path(target_path, spill_root):
             raw = io.BytesIO(read_file(target_path, owner=getattr(self, "harness_session_id", "") or ""))
-            return io.TextIOWrapper(raw, encoding="utf-8", errors="replace").readlines()
-        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-            return f.readlines()
+            return io.TextIOWrapper(raw, encoding="utf-8", errors="replace")
+        return open(target_path, "r", encoding="utf-8", errors="replace")
 
     def _do_read_file(self, act: PilotAction) -> tuple[bool, str, str]:
         if is_internal_uri(act.path):
@@ -386,11 +421,6 @@ class ToolDispatchMixin:
                     + result_text
                 )
 
-            lines = self._read_text_lines(target_path)
-            
-            total_lines = len(lines)
-            raw_text = "".join(lines)
-            
             start_line_raw = getattr(act, "start_line", None)
             limit_raw = getattr(act, "limit", None)
             
@@ -407,16 +437,25 @@ class ToolDispatchMixin:
                     limit = int(limit_raw)
                 except ValueError:
                     pass
-            
+
+            ranged = start_line is not None or limit is not None
+            if ranged:
+                keep_from = max(0, (start_line if start_line is not None else 1) - 1)
+                keep_to = keep_from + limit if limit is not None else None
+            else:
+                keep_from, keep_to = 0, _READ_FILE_DEFAULT_WINDOW_LINES
+            with self._open_text(target_path) as stream:
+                window = _read_line_window(stream, keep_from, keep_to, _READ_FILE_BYTE_CEILING)
+            total_lines = window.total_lines
+
             oversized = (
-                len(raw_text) > _READ_FILE_LARGE_BYTE_TRIGGER
+                window.total_chars > _READ_FILE_LARGE_BYTE_TRIGGER
                 or total_lines > _READ_FILE_LARGE_LINE_TRIGGER
             )
             s_idx = e_idx = None
-            if oversized and start_line is None and limit is None:
-                head_lines = lines[:_READ_FILE_DEFAULT_WINDOW_LINES]
-                shown = len(head_lines)
-                content = "".join(head_lines)
+            if oversized and not ranged:
+                shown = min(total_lines, _READ_FILE_DEFAULT_WINDOW_LINES)
+                content = window.text
                 content += (
                     f"\n\n[file is large ({total_lines} lines); "
                     "re-read with start_line and limit to see specific sections]"
@@ -426,13 +465,11 @@ class ToolDispatchMixin:
                         f"\n[truncated after line {shown}; "
                         f"continue with start_line={shown + 1}]"
                     )
+            elif ranged:
+                s_idx, e_idx = _slice_bounds(start_line, limit, total_lines)
+                content = _slice_header(s_idx + 1, e_idx, total_lines) + window.text
             else:
-                if start_line is not None or limit is not None:
-                    s_idx, e_idx = _slice_bounds(start_line, limit, total_lines)
-                    sliced_lines = lines[s_idx:e_idx]
-                    content = _slice_header(s_idx + 1, e_idx, total_lines) + "".join(sliced_lines)
-                else:
-                    content = raw_text
+                content = window.text
 
             if len(content) > _READ_FILE_BYTE_CEILING:
                 content = (

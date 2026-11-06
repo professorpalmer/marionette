@@ -30,7 +30,11 @@ class FakePilot:
         )
 
 
-def test_adaptive_steps_productive_runs_past_10():
+def test_adaptive_steps_productive_runs_past_10(monkeypatch):
+    monkeypatch.setattr(
+        "harness.command_policy.run_cancellable",
+        lambda command, **_kwargs: (command.split()[-1], 0, "ok"),
+    )
     temp_dir = tempfile.mkdtemp()
     try:
         cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=temp_dir)

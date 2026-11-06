@@ -7,15 +7,8 @@ from harness.pilot_guards import (
     TurnGuardState,
     check_loop_guard,
     dedupe_dispatch_actions,
-    normalize_objective_key,
     record_action_execution,
 )
-
-
-def test_normalize_objective_collapses_path_spellings():
-    a = normalize_objective_key(r"Rewrite backend at C:\Ashita\addons\kotoba")
-    b = normalize_objective_key("Rewrite backend at C:/Ashita/addons/kotoba.")
-    assert a == b
 
 
 def test_dedupe_dispatch_actions_keeps_first_implement():

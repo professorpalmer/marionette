@@ -25,19 +25,16 @@ def test_parse_pilot_turn_thinking():
     assert t4.thinking == ""
 
 
-def test_clean_say_applied_to_thinking():
-    # A thinking with an [INFO] line or USER:( echo should be cleaned using clean_say
-    # clean_say strips log lines like [INFO] ... or USER: (run_command ...completed)
-    raw_thinking = "Analyzing code...\n[INFO] background task running\nUSER: (run_command 'ls' completed with exit code 0)\nLet's write a file."
-    t = parse_pilot_turn(f'{{"thinking":{repr(raw_thinking)}, "say":"Done", "actions":[]}}')
-    
-    # We test that the conversation cleaning behaves as expected.
+def test_clean_say_strips_log_and_echo_lines_from_parsed_thinking():
+    # Unit test of clean_say on parsed thinking text. It removes [INFO] log lines
+    # and USER: (run_command ...) echo lines and keeps the prose.
     from harness.text_clean import clean_say
-    cleaned = clean_say(t.thinking)
-    assert "[INFO]" not in cleaned
-    assert "USER: (" not in cleaned
-    assert "Analyzing code..." in cleaned
-    assert "Let's write a file." in cleaned
+
+    raw_thinking = "Analyzing code...\n[INFO] background task running\nUSER: (run_command 'ls')\nLet's write a file."
+    t = parse_pilot_turn(f'{{"thinking":{repr(raw_thinking)}, "say":"Done", "actions":[]}}')
+    assert t.thinking == raw_thinking
+
+    assert clean_say(t.thinking) == "Analyzing code...\nLet's write a file."
 
 
 class _ThinkingScriptedPilot:
@@ -56,13 +53,17 @@ class _ThinkingScriptedPilot:
         return DriverResponse(text=txt, tokens_out=10, latency_ms=1.0)
 
 
-def test_conversation_does_not_emit_thinking_event_when_present():
+@pytest.mark.parametrize(
+    "with_thinking",
+    [pytest.param(True, id="present"), pytest.param(False, id="absent")],
+)
+def test_conversation_does_not_emit_thinking_event(with_thinking):
     # Post-answer reasoning UI was removed: even when the pilot JSON includes
     # a thinking field, we never emit a ConvEvent("thinking", ...) -- the
     # answer is enough and streaming would otherwise paint reasoning after it.
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     s = ConversationalSession(cfg)
-    s.pilot = _ThinkingScriptedPilot(with_thinking=True)
+    s.pilot = _ThinkingScriptedPilot(with_thinking=with_thinking)
     events = list(s.send("Test thinking"))
 
     thinking_events = [e for e in events if e.kind == "thinking"]
@@ -73,16 +74,6 @@ def test_conversation_does_not_emit_thinking_event_when_present():
         if h.get("role") == "assistant":
             assert h["content"] == "I am stopping."
             assert "I think" not in h["content"]
-
-
-def test_conversation_does_not_emit_thinking_event_when_absent():
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
-    s = ConversationalSession(cfg)
-    s.pilot = _ThinkingScriptedPilot(with_thinking=False)
-    events = list(s.send("Test thinking"))
-
-    thinking_events = [e for e in events if e.kind == "thinking"]
-    assert len(thinking_events) == 0
 
 
 def test_openai_compat_reasoning_param(monkeypatch):

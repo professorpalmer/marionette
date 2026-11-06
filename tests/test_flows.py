@@ -637,7 +637,7 @@ def test_real_flow_runs_shell_node_and_wakes_done(tmp_path, routing, monkeypatch
             wakes = flows.due_wakes(session)
             if wakes:
                 break
-            time.sleep(0.5)
+            time.sleep(0.05)
         assert [w.status for w in wakes] == ["done"], wakes
         steps = wakes[0].summary["steps"]
         assert steps[-1]["node"] == "check" and steps[-1]["verdict"] == "PASS"

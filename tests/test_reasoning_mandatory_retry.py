@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 
+from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
+from pmharness.drivers.base import DriverResponse
 from harness.send_loop import (
     OVERFLOW_RETRY_MAX_ATTEMPTS,
     PROVIDER_ATTEMPT_ABORT,
@@ -113,14 +114,67 @@ def test_iter_provider_attempt_recovery_overflow_last_attempt_aborts():
     assert events
 
 
-def test_send_locked_inner_honors_provider_attempt_recovery_actions():
-    src = inspect.getsource(ConversationalSession._send_locked_inner)
-    retry_at = src.find("PROVIDER_ATTEMPT_RETRY")
-    abort_at = src.find("PROVIDER_ATTEMPT_ABORT")
-    helper_at = src.find("iter_provider_attempt_recovery")
-    assert helper_at != -1
-    assert retry_at != -1
-    assert abort_at != -1
-    assert helper_at < retry_at < abort_at
-    assert "continue" in src[retry_at:retry_at + 80]
-    assert "return" in src[abort_at:abort_at + 80]
+class _ScriptedPilot:
+    name = "scripted-reasoning"
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = 0
+
+    def chat(self, messages, tools=None, system=None):
+        self.calls += 1
+        return self.replies.pop(0)
+
+
+def _send_session(tmp_path, monkeypatch, pilot):
+    monkeypatch.setattr(
+        "harness.send_loop.profile_skips_auto_inject",
+        lambda session, user_message="": (True, True),
+    )
+    session = ConversationalSession(HarnessConfig(
+        driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path),
+    ))
+    session.harness_session_id = "sess-reasoning"
+    session.pilot = pilot
+    monkeypatch.setattr(session, "_resolve_append_only", lambda: False)
+    monkeypatch.setattr(session, "_get_codegraph_context", lambda msg: "")
+    # Compaction frees no bytes, so an overflow cannot retry.
+    monkeypatch.setattr(session, "_maybe_compact_history", lambda **k: iter(()))
+    return session
+
+
+def _failed(error):
+    return DriverResponse(text="", error=error, meta={"finish_reason": "error"})
+
+
+def _answer():
+    return DriverResponse(
+        text='{"say": "all done", "actions": []}',
+        tokens_out=1, latency_ms=1.0, meta={"finish_reason": "stop"},
+    )
+
+
+def test_send_retries_once_after_reasoning_mandatory_error(tmp_path, monkeypatch):
+    pilot = _ScriptedPilot([_failed("HTTP 400: reasoning is mandatory"), _answer()])
+    session = _send_session(tmp_path, monkeypatch, pilot)
+
+    events = list(session.send("hi"))
+
+    assert pilot.calls == 2
+    assert pilot._omit_reasoning_disable is True
+    assert [e for e in events if e.kind == "error"] == []
+    assert len([e for e in events if e.kind == "assistant_done"]) == 1
+
+
+def test_send_aborts_overflow_without_a_second_call(tmp_path, monkeypatch):
+    pilot = _ScriptedPilot([
+        _failed("HTTP 400: maximum context length exceeded"), _answer(),
+    ])
+    session = _send_session(tmp_path, monkeypatch, pilot)
+
+    events = list(session.send("hi"))
+
+    assert pilot.calls == 1
+    errors = [e for e in events if e.kind == "error"]
+    assert errors
+    assert "context" in errors[0].data["error"].lower()

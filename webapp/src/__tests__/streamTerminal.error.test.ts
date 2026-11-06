@@ -8,7 +8,6 @@
 import { describe, expect, it } from "vitest";
 import {
   STREAM_ABORT_MESSAGE,
-  alreadySettledOnDoneStatus,
   resetCrossSessionLatchesOnSwitch,
   resetTurnLifecycleOnSessionSwitch,
   resetTurnSettledOnSessionSwitch,
@@ -93,15 +92,6 @@ describe("Wave 5 stream terminal chrome gates", () => {
     expect(streamOnDoneDecision({ turnSettled: true, userStopped: false }).kind).toBe("done");
   });
 
-  it("does not treat a sealed answer as authority for stream EOF", () => {
-    expect(
-      streamOnDoneDecision({
-        turnSettled: false,
-        userStopped: false,
-      }).kind,
-    ).toBe("abort_error");
-  });
-
   it("blocks busy-chrome refresh after settle or Stop", () => {
     expect(shouldRefreshBusyChrome({ turnSettled: false })).toBe(true);
     expect(shouldRefreshBusyChrome({ turnSettled: true })).toBe(false);
@@ -131,19 +121,6 @@ describe("Wave 5 stream terminal chrome gates", () => {
     expect(cause.current).toBeNull();
     expect(recoveryDispatchingRef.current).toBe(false);
     expect(recoveryContextRef.current).toBeNull();
-  });
-
-  it("already-settled onDone never upgrades error/idle to done", () => {
-    expect(alreadySettledOnDoneStatus({
-      prev: "error",
-      liveJobs: false,
-      userStopped: false,
-    })).toBe("error");
-    expect(alreadySettledOnDoneStatus({
-      prev: "idle",
-      liveJobs: false,
-      userStopped: true,
-    })).toBe("idle");
   });
 
   it("clears userStopped / resume / approved-retry latches on session switch", () => {

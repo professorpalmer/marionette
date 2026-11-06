@@ -10,6 +10,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from harness.cli_job_merge import (
     is_marionette_host_scratch_dir,
     job_read_key,
@@ -467,6 +469,7 @@ def test_ensure_workspace_project_store_creates_sqlite(tmp_path, monkeypatch):
     repo = tmp_path / "fresh-kit"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    monkeypatch.delenv("PUPPETMASTER_STATE_DIR", raising=False)
     monkeypatch.setattr(
         "puppetmaster.state.app_state_root",
         lambda: tmp_path / "pm-root",
@@ -586,7 +589,7 @@ def test_api_swarm_live_excludes_unstamped_cli_jobs(tmp_path, monkeypatch):
             )
         ])
         monkeypatch.setattr(srv._pilot, "live_local_jobs", lambda: [])
-        srv._cfg.repo = str(repo)
+        monkeypatch.setattr(srv._cfg, "repo", str(repo))
 
         scoped = urllib.parse.quote(str(repo), safe="")
         data = json.loads(
@@ -596,6 +599,31 @@ def test_api_swarm_live_excludes_unstamped_cli_jobs(tmp_path, monkeypatch):
         assert cli_rows == []
     finally:
         httpd.shutdown()
+
+
+@pytest.fixture
+def scoped_server(monkeypatch):
+    """Point the server globals at one repo and store. Monkeypatch restores them."""
+    import harness.server as srv
+
+    def apply(repo, harness_store, cli_dir=None, active_session="sess-live", jobs=()):
+        monkeypatch.setattr(srv, "_jobs_snapshot", lambda: list(jobs))
+        monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
+        if cli_dir is not None:
+            monkeypatch.setattr(
+                "harness.cli_job_merge.resolve_cli_state_dir",
+                lambda workspace_root="": str(cli_dir),
+            )
+        monkeypatch.setattr(
+            "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
+            lambda **kwargs: [],
+        )
+        monkeypatch.setattr(srv._cfg, "repo", str(repo))
+        monkeypatch.setattr(srv._sessions, "_active", active_session)
+        monkeypatch.setattr(srv._pilot, "harness_session_id", active_session, raising=False)
+        return srv
+
+    return apply
 
 
 def _save_unstamped_external_task(store, job_id: str, cwd: str):
@@ -620,10 +648,8 @@ def _seed_unstamped_cli_store(tmp_path, repo_root: str, goal: str = "external cl
     return store, str(cli_dir), job.id
 
 
-def test_scoped_jobs_snapshot_unstamped_external_cli_absent(tmp_path, monkeypatch):
+def test_scoped_jobs_snapshot_unstamped_external_cli_absent(tmp_path, monkeypatch, scoped_server):
     """External Cursor MCP row (cwd only) must not appear on Marionette surfaces."""
-    import harness.server as srv
-
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -632,29 +658,15 @@ def test_scoped_jobs_snapshot_unstamped_external_cli_absent(tmp_path, monkeypatc
 
     monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-test")
     monkeypatch.setenv("HARNESS_CLI_COST_MERGE", "1")
-    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
-    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
-    monkeypatch.setattr(
-        "harness.cli_job_merge.resolve_cli_state_dir",
-        lambda workspace_root="": str(cli_dir),
-    )
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        lambda **kwargs: [],
-    )
-    srv._cfg.repo = str(repo)
-    srv._sessions._active = "sess-live"
-    srv._pilot.harness_session_id = "sess-live"
+    scoped_server(repo, harness_store, cli_dir=cli_dir)
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     cli_rows = [r for r in rows if r.get("id") == cli_job_id]
     assert cli_rows == []
 
 
-def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeypatch):
+def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeypatch, scoped_server):
     """Task payload stamps alone can own CLI economics when merge opt-in is on."""
-    import harness.server as srv
-
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -678,19 +690,7 @@ def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeyp
 
     monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-test")
     monkeypatch.setenv("HARNESS_CLI_COST_MERGE", "1")
-    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
-    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
-    monkeypatch.setattr(
-        "harness.cli_job_merge.resolve_cli_state_dir",
-        lambda workspace_root="": str(cli_dir),
-    )
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        lambda **kwargs: [],
-    )
-    srv._cfg.repo = str(repo)
-    srv._sessions._active = "sess-live"
-    srv._pilot.harness_session_id = "sess-live"
+    scoped_server(repo, harness_store, cli_dir=cli_dir)
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     cli_rows = [r for r in rows if r.get("id") == job.id]
@@ -699,37 +699,21 @@ def test_scoped_jobs_snapshot_task_only_marionette_stamp_owned(tmp_path, monkeyp
     assert cli_rows[0]["session_id"] == "sess-live"
 
 
-def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, monkeypatch):
-    import harness.server as srv
-
+def test_scoped_jobs_snapshot_merges_cli_source(tmp_path, scoped_server):
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
     harness_store = create_store("sqlite", str(harness_dir))
     _cli_store, cli_dir, cli_job_id = _seed_cli_store(tmp_path, str(repo))
 
-    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
-    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
-    monkeypatch.setattr(
-        "harness.cli_job_merge.resolve_cli_state_dir",
-        lambda workspace_root="": str(cli_dir),
-    )
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        lambda **kwargs: [],
-    )
-    srv._cfg.repo = str(repo)
-    monkeypatch.setattr(srv._sessions, "_active", "")
-    srv._pilot.harness_session_id = ""
+    scoped_server(repo, harness_store, cli_dir=cli_dir, active_session="")
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     assert [r["id"] for r in rows if r.get("id") == cli_job_id] == []
 
 
-def test_scoped_jobs_snapshot_keeps_marionette_cli_without_app_run_id(tmp_path, monkeypatch):
+def test_scoped_jobs_snapshot_keeps_marionette_cli_without_app_run_id(tmp_path, monkeypatch, scoped_server):
     """Visibility uses origin+session, not the process app_run_id."""
-    import harness.server as srv
-
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -752,27 +736,13 @@ def test_scoped_jobs_snapshot_keeps_marionette_cli_without_app_run_id(tmp_path, 
     ))
 
     monkeypatch.setenv("HARNESS_APP_RUN_ID", "run-after-restart")
-    monkeypatch.setattr(srv, "_jobs_snapshot", lambda: [])
-    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
-    monkeypatch.setattr(
-        "harness.cli_job_merge.resolve_cli_state_dir",
-        lambda workspace_root="": str(cli_dir),
-    )
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        lambda **kwargs: [],
-    )
-    srv._cfg.repo = str(repo)
-    srv._sessions._active = "sess-live"
-    srv._pilot.harness_session_id = "sess-live"
+    scoped_server(repo, harness_store, cli_dir=cli_dir)
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     assert [r["id"] for r in rows] == [job.id]
 
 
-def test_scoped_jobs_snapshot_keeps_registered_unstamped_harness_job(tmp_path, monkeypatch):
-    import harness.server as srv
-
+def test_scoped_jobs_snapshot_keeps_registered_unstamped_harness_job(tmp_path, monkeypatch, scoped_server):
     repo = tmp_path / "repo"
     repo.mkdir()
     harness_dir = tmp_path / "harness-state"
@@ -780,20 +750,12 @@ def test_scoped_jobs_snapshot_keeps_registered_unstamped_harness_job(tmp_path, m
     job = harness_store.create_job("legacy heal")
     _save_task(harness_store, job.id, str(repo))
 
-    monkeypatch.setattr(
-        srv,
-        "_jobs_snapshot",
-        lambda: [{"id": job.id, "goal": "legacy heal", "status": "running", "adapter": "agentic"}],
-    )
-    monkeypatch.setattr(srv._session, "state", lambda: SimpleNamespace(store=harness_store))
-    monkeypatch.setattr(
-        "harness.cli_job_merge.merge_running_cli_jobs_all_projects",
-        lambda **kwargs: [],
+    srv = scoped_server(
+        repo,
+        harness_store,
+        jobs=[{"id": job.id, "goal": "legacy heal", "status": "running", "adapter": "agentic"}],
     )
     monkeypatch.setattr(srv._pilot, "_session_job_ids", [job.id], raising=False)
-    srv._cfg.repo = str(repo)
-    srv._sessions._active = "sess-live"
-    srv._pilot.harness_session_id = "sess-live"
 
     rows = _scoped_jobs_snapshot(repo_root=str(repo))
     assert [r["id"] for r in rows] == [job.id]

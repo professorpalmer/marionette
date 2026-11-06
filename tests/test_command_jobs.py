@@ -31,7 +31,7 @@ from harness.command_jobs import (
 )
 from harness.local_job_swarm_view import project_local_job_for_swarm_live
 from harness.local_jobs import LocalJobsMixin
-from harness.pilot import PilotAction, parse_tool_calls
+from harness.pilot import PilotAction, PilotError, parse_tool_calls
 from harness.send_loop_phases import dispatch_local_action
 
 
@@ -374,7 +374,7 @@ def test_background_dispatch_returns_pending_receipt(session):
 
 
 def test_background_false_on_non_command_fails_validate():
-    with pytest.raises(Exception):
+    with pytest.raises(PilotError, match="background=true is only valid on run_command"):
         PilotAction(kind="read_file", path="x.py", background=True).validate()
 
 

@@ -12,10 +12,12 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
+import pytest
+
 from harness.job_scoping import (
     cwd_under_repo,
     filter_local_jobs,
-    filter_store_jobs,
+    filter_store_jobs_with_tasks,
     inspect_store_job_ownership,
     job_label_for_session,
     job_owned_by_marionette,
@@ -162,40 +164,39 @@ def test_owned_job_visible_without_cwd_or_active_session_match():
     )
 
 
-def test_running_job_visible_when_session_matches():
-    label = job_label_for_session("sess-a")
-    tasks = [SimpleNamespace(payload={"cwd": "/somewhere/else", "session_id": "sess-a"})]
-    assert job_visible_for_view(
-        session_id="sess-a",
+@pytest.mark.parametrize(
+    ("session_id", "label", "tasks", "active", "repo", "expected"),
+    [
+        pytest.param(
+            "sess-a",
+            job_label_for_session("sess-a"),
+            [SimpleNamespace(payload={"cwd": "/somewhere/else", "session_id": "sess-a"})],
+            "sess-a",
+            "/work/b",
+            True,
+            id="session_matches",
+        ),
+        pytest.param(
+            "",
+            None,
+            [SimpleNamespace(payload={"cwd": "/work/a/project"})],
+            "sess-b",
+            "/work/a",
+            False,
+            id="legacy_cwd_matches",
+        ),
+        pytest.param("", None, [], "sess-b", "/work/b", False, id="orphan_without_session_or_cwd"),
+    ],
+)
+def test_running_job_visibility(session_id, label, tasks, active, repo, expected):
+    assert bool(job_visible_for_view(
+        session_id=session_id,
         label=label,
         tasks=tasks,
-        active_session_id="sess-a",
-        repo_root="/work/b",
+        active_session_id=active,
+        repo_root=repo,
         status="running",
-    )
-
-
-def test_running_job_not_visible_when_legacy_cwd_matches():
-    tasks = [SimpleNamespace(payload={"cwd": "/work/a/project"})]
-    assert not job_visible_for_view(
-        session_id="",
-        label=None,
-        tasks=tasks,
-        active_session_id="sess-b",
-        repo_root="/work/a",
-        status="running",
-    )
-
-
-def test_running_orphan_not_visible_without_session_or_cwd():
-    assert not job_visible_for_view(
-        session_id="",
-        label=None,
-        tasks=[],
-        active_session_id="sess-b",
-        repo_root="/work/b",
-        status="running",
-    )
+    )) is expected
 
 
 def test_registered_job_id_visible_without_stamps():
@@ -263,46 +264,55 @@ def test_pre_origin_session_owned_on_harness_not_cli():
     )
 
 
-def test_running_local_job_owned_by_session_stamp():
-    rows = [
-        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
-        {"id": "local-2", "status": "complete", "session_id": "sess-a", "cwd": "/elsewhere"},
-    ]
-    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
-    assert [j["id"] for j in visible] == ["local-1", "local-2"]
-
-
-def test_session_stamped_local_jobs_remain_owned_across_sessions():
-    rows = [
-        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/work/b/sub"},
-        {"id": "local-2", "status": "completed", "session_id": "sess-a", "cwd": "/work/b/sub"},
-    ]
-    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
-    assert [j["id"] for j in visible] == ["local-1", "local-2"]
-
-
-def test_running_local_job_visible_when_session_matches():
-    rows = [
-        {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
-    ]
-    visible = filter_local_jobs(rows, active_session_id="sess-a", repo_root="/work/b")
-    assert [j["id"] for j in visible] == ["local-1"]
-
-
-def test_running_local_job_not_visible_when_legacy_cwd_matches():
-    rows = [
-        {"id": "local-1", "status": "running", "cwd": "/work/a/sub"},
-    ]
-    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/a")
-    assert [j["id"] for j in visible] == []
-
-
-def test_running_local_orphan_not_visible_without_session_or_cwd():
-    rows = [
-        {"id": "local-orphan", "status": "running"},
-    ]
-    visible = filter_local_jobs(rows, active_session_id="sess-b", repo_root="/work/b")
-    assert [j["id"] for j in visible] == []
+@pytest.mark.parametrize(
+    ("rows", "active", "repo", "expected_ids"),
+    [
+        pytest.param(
+            [
+                {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"},
+                {"id": "local-2", "status": "complete", "session_id": "sess-a", "cwd": "/elsewhere"},
+            ],
+            "sess-b",
+            "/work/b",
+            ["local-1", "local-2"],
+            id="owned_by_session_stamp",
+        ),
+        pytest.param(
+            [
+                {"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/work/b/sub"},
+                {"id": "local-2", "status": "completed", "session_id": "sess-a", "cwd": "/work/b/sub"},
+            ],
+            "sess-b",
+            "/work/b",
+            ["local-1", "local-2"],
+            id="stamped_owned_across_sessions",
+        ),
+        pytest.param(
+            [{"id": "local-1", "status": "running", "session_id": "sess-a", "cwd": "/elsewhere"}],
+            "sess-a",
+            "/work/b",
+            ["local-1"],
+            id="session_matches",
+        ),
+        pytest.param(
+            [{"id": "local-1", "status": "running", "cwd": "/work/a/sub"}],
+            "sess-b",
+            "/work/a",
+            [],
+            id="legacy_cwd_matches",
+        ),
+        pytest.param(
+            [{"id": "local-orphan", "status": "running"}],
+            "sess-b",
+            "/work/b",
+            [],
+            id="orphan_without_session_or_cwd",
+        ),
+    ],
+)
+def test_filter_local_jobs_visibility(rows, active, repo, expected_ids):
+    visible = filter_local_jobs(rows, active_session_id=active, repo_root=repo)
+    assert [j["id"] for j in visible] == expected_ids
 
 
 def test_registered_local_job_visible_without_session_stamp():
@@ -326,7 +336,7 @@ def test_registered_heal_without_active_session_omits_sessionless_row(tmp_path):
     job = store.create_job("legacy heal")
     _save_task(store, job.id, str(repo))
     rows = [{"id": job.id, "goal": "legacy heal", "status": "running"}]
-    visible = filter_store_jobs(
+    visible, _tasks = filter_store_jobs_with_tasks(
         rows,
         store,
         active_session_id="",
@@ -392,13 +402,13 @@ def test_filter_store_jobs_keeps_owned_drops_legacy(tmp_path):
         {"id": legacy.id, "goal": "legacy", "status": "complete", "adapter": "agentic"},
     ]
 
-    scoped_a = filter_store_jobs(rows, store, active_session_id="sess-a", repo_root=str(repo_a))
+    scoped_a = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-a", repo_root=str(repo_a))[0]
     ids_a = {j["id"] for j in scoped_a}
     assert job_a.id in ids_a
     assert job_b.id in ids_a
     assert legacy.id not in ids_a
 
-    scoped_b = filter_store_jobs(rows, store, active_session_id="sess-b", repo_root=str(repo_b))
+    scoped_b = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-b", repo_root=str(repo_b))[0]
     ids_b = {j["id"] for j in scoped_b}
     assert job_b.id in ids_b
     assert job_a.id in ids_b
@@ -419,7 +429,7 @@ def test_filter_store_jobs_keeps_pre_origin_harness_session(tmp_path):
     )
     store.save_task(task)
     rows = [{"id": job.id, "goal": "legacy sess", "status": "complete"}]
-    visible = filter_store_jobs(rows, store, active_session_id="sess-b", repo_root=str(repo))
+    visible = filter_store_jobs_with_tasks(rows, store, active_session_id="sess-b", repo_root=str(repo))[0]
     assert [j["id"] for j in visible] == [job.id]
     assert visible[0]["session_id"] == "sess-a"
 

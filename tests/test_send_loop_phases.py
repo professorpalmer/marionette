@@ -1,15 +1,13 @@
-"""Characterization tests for send_loop_phases peel from _send_locked_inner.
+"""Characterization tests for the send_loop_phases helpers.
 
-Locks the extracted helper contracts (queue kinds, stream drain, metering,
+Locks the helper contracts (queue kinds, stream drain, metering,
 action-goal labels, prefetch pool, stdout job_id scrape, idle steer/queue
-drain, read-only/local tool-result assembly, auto-verify) and asserts those
-helpers are module-level callables invoked from the mixin turn kernel — so
-unit tests can target them directly without nested closures.
+drain, read-only/local tool-result assembly, auto-verify) and the growth
+fence on the residual ``_send_locked_inner`` body in send_loop.py.
 """
 
 from __future__ import annotations
 
-import ast
 import inspect
 import json
 import queue
@@ -49,99 +47,29 @@ from harness.send_loop_phases import (
     STREAM_IDLE_STUCK_SEC,
 )
 
-PHASE_HELPERS = (
-    "run_stream",
-    "dispatch_pilot_provider_call",
-    "run_prefetch",
-    "run_parallel_prefetch",
-    "stream_swarm",
-    "read_stdout_thread",
-    "action_display_goal",
-    "drain_stream_queue",
-    "meter_pilot_step",
-    "record_provider_stream_receipt",
-    "account_provider_attempt",
-    "record_provider_dispatch_error_receipt",
-    "drain_idle_turn",
-    "dispatch_readonly_action",
-    "dispatch_local_action",
-    "run_auto_verify",
-    "apply_provider_terminal",
-    "classified_finish_kwargs",
-    "emit_classified_provider_error",
-    "settle_provider_step_terminal",
-    "emit_loop_exit_close",
-    "emit_stagnation_halt",
-    "stamp_sync_complete_terminal",
-    "native_tools_blocked",
-)
+_SEND_LOOP = Path(__file__).resolve().parents[1] / "harness" / "send_loop.py"
+_METHOD_MARKER = "def _send_locked_inner"
+# Ratchet: max(700, ceil(623 * 1.05)) at introduction — 623 lines from def to EOF.
+_MAX_SEND_LOCKED_INNER_LINES = 700
 
 
-def test_phase_helpers_are_module_level_callables():
-    import harness.send_loop_phases as phases
-
-    for name in PHASE_HELPERS:
-        fn = getattr(phases, name)
-        assert callable(fn)
-        assert fn.__module__ == "harness.send_loop_phases"
-
-
-def test_send_locked_inner_no_longer_nests_phase_helpers():
-    """The peel must remove the named nested defs from the turn kernel AST."""
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    nested_names: set[str] = set()
-
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef) or node.name != "SendLoopMixin":
-            continue
-        for item in node.body:
-            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if item.name != "_send_locked_inner":
-                continue
-            for child in ast.walk(item):
-                if (
-                    isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and child is not item
-                ):
-                    nested_names.add(child.name)
-
-    # Historical nested name was `_stream_swarm`; extracted as `stream_swarm`.
-    forbidden = set(PHASE_HELPERS) | {"_stream_swarm"}
-    assert not (nested_names & forbidden), nested_names & forbidden
+def _send_locked_inner_line_count() -> int:
+    text = _SEND_LOOP.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = next(
+        i for i, line in enumerate(lines) if line.lstrip().startswith(_METHOD_MARKER)
+    )
+    # _send_locked_inner is the last method in SendLoopMixin; count to EOF.
+    return len(lines) - start
 
 
-def test_mixin_still_owns_public_orchestration_surface():
-    for name in ("send", "_send_locked", "_send_locked_inner"):
-        attr = getattr(SendLoopMixin, name)
-        assert attr.__qualname__ == f"SendLoopMixin.{name}"
-
-
-def test_mixin_calls_new_phase_helpers():
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    assert "dispatch_pilot_provider_call(" in src
-    assert "account_provider_attempt(" in src
-    assert "record_provider_dispatch_error_receipt(" in src
-    assert "drain_idle_turn(" in src
-    assert "settle_provider_step_terminal(" in src
-    assert "emit_loop_exit_close(" in src
-    assert "emit_stagnation_halt(" in src
-    assert "classified_finish_kwargs(" in src
-    assert "native_tools_blocked(" in src
-    assert "classify_provider_terminal(" not in src
-    assert "blocking_terminal_message(" not in src
-    assert "loop_exit_message(" not in src
-    assert "run_auto_verify(" in src
-    assert "execute_turn_actions(" in src
-    assert "reset_timing_before_step(" in src
-    assert "yield_timed_phase(" in src
-    # Action-spree fan-out (prefetch / readonly / local) lives in send_loop_actions.
-    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
-    assert "action_display_goal(" in actions_src
-    assert "run_parallel_prefetch(" in actions_src
-    assert "dispatch_readonly_action(" in actions_src
-    assert "dispatch_local_action(" in actions_src
+def test_send_locked_inner_within_growth_fence():
+    current = _send_locked_inner_line_count()
+    assert current <= _MAX_SEND_LOCKED_INNER_LINES, (
+        f"_send_locked_inner grew to {current} lines "
+        f"(max {_MAX_SEND_LOCKED_INNER_LINES}). "
+        "Peel new logic out instead of expanding the residual body."
+    )
 
 
 def test_send_locked_inner_excludes_yield_suspension_from_phase_timers():
@@ -230,57 +158,6 @@ def test_plan_append_only_user_message_byte_order(tmp_path, monkeypatch):
     multimodal = next(c for c in contents if isinstance(c, list))
     assert multimodal[0]["text"] == expected
     assert multimodal[1]["type"] == "image_url"
-
-
-def test_send_locked_inner_no_longer_inlines_readonly_branches():
-    """Read-only tool-result assembly must live in dispatch_readonly_action."""
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    inner = None
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "SendLoopMixin":
-            for item in node.body:
-                if (
-                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and item.name == "_send_locked_inner"
-                ):
-                    inner = item
-                    break
-    assert inner is not None
-    segment = ast.get_source_segment(src, inner) or ""
-    assert "---- read_file branch" not in segment
-    assert "---- list_dir branch" not in segment
-    assert "execute_turn_actions(" in segment
-    assert "drain_idle_turn(" in segment
-    assert "run_auto_verify(" in segment
-    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
-    assert "dispatch_readonly_action(" in actions_src
-
-
-def test_send_locked_inner_no_longer_inlines_local_branches():
-    """Local tool-result assembly must live in dispatch_local_action."""
-    src = Path(inspect.getsourcefile(SendLoopMixin)).read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    inner = None
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "SendLoopMixin":
-            for item in node.body:
-                if (
-                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and item.name == "_send_locked_inner"
-                ):
-                    inner = item
-                    break
-    assert inner is not None
-    segment = ast.get_source_segment(src, inner) or ""
-    assert "---- open_project branch" not in segment
-    assert "---- write_file branch" not in segment
-    assert "---- hash_edit branch" not in segment
-    assert "---- MCP tool call branch" not in segment
-    assert "execute_turn_actions(" in segment
-    actions_src = Path("harness/send_loop_actions.py").read_text(encoding="utf-8")
-    assert "dispatch_local_action(" in actions_src
-    assert "LOCAL_ACTION_KINDS" in actions_src
 
 
 def test_run_stream_puts_done_on_success():
@@ -512,27 +389,6 @@ def test_read_stdout_thread_tolerates_stdout_errors():
     }
     read_stdout_thread(p_info)  # must not raise
     assert p_info["job_id"] is None
-
-
-def test_run_stream_usable_as_thread_target():
-    q: queue.Queue = queue.Queue()
-    resp = SimpleNamespace(text="ok")
-    history = [{"role": "system"}, {"role": "user", "content": "hi"}]
-    session = SimpleNamespace(
-        pilot=SimpleNamespace(
-            chat_stream=lambda messages, **kwargs: resp,
-        ),
-        _history=history,
-        _elide_stale_reads=lambda msgs: msgs,
-        _messages_for_provider=lambda: history[1:],
-    )
-    t = threading.Thread(
-        target=run_stream, args=(session, q, [], "sys"), daemon=True
-    )
-    t.start()
-    t.join(timeout=2)
-    assert not t.is_alive()
-    assert q.get(timeout=1)[0] == "done"
 
 
 def test_read_only_kinds_covers_prefetchable_tools():

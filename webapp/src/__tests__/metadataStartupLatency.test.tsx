@@ -1,4 +1,3 @@
-import { writeFileSync } from 'node:fs';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import wire from './metadataActive.backend.json';
@@ -91,12 +90,6 @@ it('measures the real owner first queued observation and finite startup request 
   expect(f.calls.length - before).toBe(16);
   expect(f.calls.slice(before).some(c => c.lane === 'history')).toBe(false);
   expect(f.calls.slice(before).some(c => c.state?.startsWith('sibling'))).toBe(false);
-});
-it('records the baseline owner delay', async () => {
-  const f = fixture(); f.mount(); await advance(0);
-  for (let i = 0; i < 40 && !screen.getByRole('status').textContent?.includes('job_existing-queued'); i++) await advance(1000);
-  if (process.env.METADATA_TIMING_OUTPUT) writeFileSync(process.env.METADATA_TIMING_OUTPUT, JSON.stringify({ visibleByMs: Date.now(), calls: f.calls }, null, 2));
-  expect(screen.getByRole('status')).toHaveTextContent('job_existing-queued');
 });
 it.each(['hidden', 'dispose', 'ABA'] as const)('held request admits no backlog and %s stops its startup continuation', async mode => {
   const f = fixture(); f.hold('/api/jobs/metadata'); const app = f.mount(); await advance(4000);

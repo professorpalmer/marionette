@@ -44,40 +44,11 @@ def test_annotate_provider_row_stamps_labels():
     assert "workers" in row["worker_capability_hint"].lower()
 
 
-def test_product_worker_adapter_does_not_fall_back_to_cursor(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.keyed_agentic_providers",
-        lambda: set(),
-    )
-    monkeypatch.setattr(
-        "harness.provider_capabilities.cursor_platform_workers_ready",
-        lambda env=None: True,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_adapter.resolve_bridge_swarm_adapter",
-        lambda configured=None, repo_cwd="": "agentic",
-    )
+def test_product_worker_adapter_does_not_fall_back_to_cursor():
     from harness.swarm_worker_route import resolve_product_worker_adapter
 
     assert resolve_product_worker_adapter() == "agentic"
-
-
-def test_product_worker_adapter_prefers_keyed_agentic(monkeypatch):
-    monkeypatch.setattr(
-        "harness.auto_registry.keyed_agentic_providers",
-        lambda: {"openrouter"},
-    )
-    monkeypatch.setattr(
-        "harness.provider_capabilities.cursor_platform_workers_ready",
-        lambda env=None: True,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_adapter.resolve_bridge_swarm_adapter",
-        lambda configured=None, repo_cwd="": "agentic",
-    )
-    from harness.swarm_worker_route import resolve_product_worker_adapter
-
-    assert resolve_product_worker_adapter() == "agentic"
+    assert resolve_product_worker_adapter("cursor") == "agentic"
 
 
 # ---------------------------------------------------------------------------

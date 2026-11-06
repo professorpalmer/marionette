@@ -44,7 +44,11 @@ def test_harness_eval_runs_swarms_without_the_env_flag(monkeypatch, capsys, tmp_
     monkeypatch.delenv("HARNESS_ALLOW_DEMO_SWARM", raising=False)
     monkeypatch.setenv("HARNESS_REPO", str(tmp_path))
     from harness.eval_cmd import run_eval
+    from pmharness import episode_v2
 
+    # One swarm episode proves the flag; each real swarm costs about 2 s.
+    keep = {"invest_vague", "trivial_explicit"}
+    monkeypatch.setattr(episode_v2, "EPISODES_V2", [e for e in episode_v2.EPISODES_V2 if e.id in keep])
     assert run_eval(["--stage", "v2"]) == 0
     out = capsys.readouterr().out
     invest = next(line for line in out.splitlines() if line.strip().startswith("invest_vague"))

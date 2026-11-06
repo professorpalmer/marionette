@@ -1,10 +1,7 @@
 """Tests for pilot reachability (Gemini native and MoA planner virtual model)."""
-import os
 from harness import providers as prov
 from pmharness.drivers.gemini import GeminiDriver
 from pmharness.drivers.moa import MoADriver
-from pmharness.drivers.anthropic import AnthropicDriver
-from pmharness.drivers.openai_compat import OpenAICompatDriver
 
 
 def test_native_gemini_reachability(monkeypatch):
@@ -45,16 +42,3 @@ def test_moa_reachability(monkeypatch):
     assert isinstance(d2, MoADriver)
     assert d2.name == "moa-planner"
     assert d2.reach == "openrouter"
-
-
-def test_existing_behavior_intact(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
-
-    d1 = prov.build_pilot("anthropic:claude-opus-4-8")
-    assert isinstance(d1, AnthropicDriver)
-    assert d1.model == "claude-opus-4-8"
-
-    d2 = prov.build_pilot("openrouter:qwen/qwen3-coder-30b-a3b-instruct")
-    assert isinstance(d2, OpenAICompatDriver)
-    assert "qwen3-coder-30b" in d2.model

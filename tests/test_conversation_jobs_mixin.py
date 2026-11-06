@@ -1,9 +1,4 @@
-"""Smoke + characterization tests for the ConversationJobsMixin extraction.
-
-Guards the mechanical move of await/apply, provider-worker background, and
-swarm-drain helpers out of harness.conversation into harness.conversation_jobs.
-If the class-hierarchy wiring or the MRO ever regresses, these fail loudly.
-"""
+"""ConversationJobsMixin: await/apply, provider-worker background, swarm drain."""
 
 import json
 import subprocess
@@ -12,57 +7,6 @@ from unittest.mock import patch
 
 from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
-from harness.conversation_jobs import ConversationJobsMixin
-
-
-MOVED_METHODS = (
-    "_await_and_apply_job",
-    "_run_provider_worker_background",
-    "drain_swarm_results",
-)
-
-
-def test_session_inherits_mixin():
-    assert issubclass(ConversationalSession, ConversationJobsMixin)
-    assert ConversationJobsMixin in ConversationalSession.__mro__
-
-
-def test_moved_methods_present_on_session():
-    for name in MOVED_METHODS:
-        assert hasattr(ConversationalSession, name), name
-        attr = getattr(ConversationalSession, name)
-        assert callable(attr), name
-
-
-def test_moved_methods_resolve_to_mixin():
-    for name in MOVED_METHODS:
-        attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__ == f"ConversationJobsMixin.{name}", (
-            name,
-            attr.__qualname__,
-        )
-
-
-def test_mixin_defines_no_init():
-    assert "__init__" not in ConversationJobsMixin.__dict__
-
-
-def test_methods_defined_on_mixin_module():
-    for name in MOVED_METHODS:
-        assert name in ConversationJobsMixin.__dict__, name
-        assert name not in ConversationalSession.__dict__, name
-
-
-def test_local_jobs_not_folded_into_conversation_jobs():
-    from harness.local_jobs import LocalJobsMixin
-
-    for name in ("_register_local_job", "_finish_local_job", "live_local_jobs"):
-        attr = getattr(ConversationalSession, name)
-        assert attr.__qualname__ == f"LocalJobsMixin.{name}", (
-            name,
-            attr.__qualname__,
-        )
-        assert name not in ConversationJobsMixin.__dict__
 
 
 def test_background_job_applies_patch_to_worker_repo(tmp_path):

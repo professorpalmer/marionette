@@ -276,6 +276,7 @@ def test_degraded_swarm_reports_surfaced_plumbing_count(monkeypatch):
     action_result = next(e for e in events if e.kind == "action_result").data
     assert action_result["num"] == 1
     assert action_result["types"] == ["verification"]
+    assert [a["headline"] for a in action_result["artifacts"]] == ["no structured findings (timeout)"]
 
     badge = next(e for e in events if e.kind == "swarm_result").data["result"]
     assert badge["applied"] is False
@@ -309,6 +310,34 @@ def test_substantive_findings_still_report_applied(monkeypatch):
     badge = next(e for e in events if e.kind == "swarm_result").data["result"]
     assert badge["applied"] is True
     assert badge["summary"] == "1 findings via agentic (2 artifacts)"
+
+
+def test_dispatch_orders_signal_before_plumbing(monkeypatch):
+    """A live swarm returns routing and verification first. Findings must lead the result."""
+    plumbing = (
+        [{"type": "routing", "headline": f"route {i}"} for i in range(5)]
+        + [{"type": "verification", "headline": f"check {i}"} for i in range(5)]
+    )
+    findings = [
+        {"type": "finding", "headline": f"harness/router.py:{i} drops the receipt",
+         "body": f"harness/router.py:{i} drops the receipt before it is written."}
+        for i in range(12)
+    ]
+    result = SimpleNamespace(
+        job_id="job_order",
+        adapter="agentic",
+        mode="swarm",
+        num_artifacts=22,
+        artifact_types=["finding", "routing", "verification"],
+        artifacts=plumbing + findings,
+        auth_failure="",
+        summary="12 findings",
+    )
+
+    _session_obj, events = _run_dispatch(monkeypatch, result)
+
+    shown = next(e for e in events if e.kind == "action_result").data["artifacts"]
+    assert [a["headline"] for a in shown] == [f["headline"] for f in findings]
 
 
 def test_pilot_result_is_bounded_to_current_job_evidence(monkeypatch):

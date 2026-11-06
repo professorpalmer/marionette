@@ -2,101 +2,40 @@ from __future__ import annotations
 
 """Settings + platform worker allowlist for product swarms."""
 
+import pytest
 
-def test_visibility_maps_openrouter_to_agentic():
-    from harness.swarm_worker_allowlist import adapters_from_visibility
-
-    adapters = adapters_from_visibility(["openrouter:moonshotai/kimi-k3"])
-    assert adapters == {"agentic"}
+_KIMI = "openrouter:moonshotai/kimi-k3"
+_GROK = "cursor-cli:cursor-grok-4.5-high"
 
 
-def test_visibility_maps_cursor_cli_grok_to_cursor():
-    from harness.swarm_worker_allowlist import adapters_from_visibility
-
-    adapters = adapters_from_visibility(
-        ["cursor-cli:cursor-grok-4.5-high", "openrouter:moonshotai/kimi-k3"]
-    )
-    assert adapters == {"agentic", "cursor"}
-
-
-def test_allowlist_includes_cursor_when_settings_enable_grok(monkeypatch):
+@pytest.mark.parametrize(
+    ("specs", "locked"),
+    [
+        pytest.param([_KIMI, _GROK], {"agentic", "cursor"}, id="grok_enabled_cursor_unlocked"),
+        pytest.param([_KIMI], {"agentic", "cursor"}, id="only_agentic_enabled"),
+        pytest.param([_KIMI, _GROK], {"agentic"}, id="platform_lock_excludes_cursor"),
+    ],
+)
+def test_allowlist_is_agentic_only_when_agentic_is_eligible(monkeypatch, specs, locked):
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._enabled_or_visible_specs",
-        lambda: [
-            "openrouter:moonshotai/kimi-k3",
-            "cursor-cli:cursor-grok-4.5-high",
-        ],
+        lambda: list(specs),
     )
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._agentic_eligible",
         lambda: True,
     )
     monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready",
-        lambda: True,
-    )
-    monkeypatch.setattr(
         "harness.swarm_worker_allowlist._platform_locked_adapters",
-        lambda: frozenset({"agentic", "cursor"}),
-    )
-    from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
-
-    out = resolve_swarm_worker_allowlist()
-    assert out["allowed_adapters"] == ["agentic"]
-    assert out["prefer_plan_billed"] is False
-    assert out["primary_adapter"] == "agentic"
-
-
-def test_allowlist_agentic_only_when_only_agentic_enabled(monkeypatch):
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._enabled_or_visible_specs",
-        lambda: ["openrouter:moonshotai/kimi-k3"],
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._agentic_eligible",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._platform_locked_adapters",
-        lambda: frozenset({"agentic", "cursor"}),
-    )
-    from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
-
-    out = resolve_swarm_worker_allowlist()
-    assert out["allowed_adapters"] == ["agentic"]
-    assert out["prefer_plan_billed"] is False
-
-
-def test_allowlist_intersects_platform_lock(monkeypatch):
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._enabled_or_visible_specs",
-        lambda: [
-            "openrouter:moonshotai/kimi-k3",
-            "cursor-cli:cursor-grok-4.5-high",
-        ],
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._agentic_eligible",
-        lambda: True,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready",
-        lambda: True,
-    )
-    # Platform lock disables cursor — Settings intent alone must not unlock it.
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._platform_locked_adapters",
-        lambda: frozenset({"agentic"}),
+        lambda: frozenset(locked),
     )
     from harness.swarm_worker_allowlist import resolve_swarm_worker_allowlist
 
     out = resolve_swarm_worker_allowlist()
     assert out["allowed_adapters"] == ["agentic"]
     assert "cursor" not in out["allowed_adapters"]
+    assert out["prefer_plan_billed"] is False
+    assert out["primary_adapter"] == "agentic"
 
 
 def test_enabled_specs_keep_cursor_cli_intent_when_pilots_drop_it(monkeypatch):
@@ -121,7 +60,6 @@ def test_enabled_specs_keep_cursor_cli_intent_when_pilots_drop_it(monkeypatch):
         lambda: ["openrouter:moonshotai/kimi-k3"],
     )
     monkeypatch.setattr(swa, "_agentic_eligible", lambda: True)
-    monkeypatch.setattr(swa, "_cursor_platform_ready", lambda: True)
     monkeypatch.setattr(
         swa,
         "_platform_locked_adapters",
@@ -250,10 +188,6 @@ def test_prefer_plan_billed_true_only_when_cursor_only(monkeypatch):
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._agentic_eligible",
         lambda: False,
-    )
-    monkeypatch.setattr(
-        "harness.swarm_worker_allowlist._cursor_platform_ready",
-        lambda: True,
     )
     monkeypatch.setattr(
         "harness.swarm_worker_allowlist._platform_locked_adapters",

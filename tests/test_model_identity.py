@@ -5,7 +5,6 @@ from harness.model_identity import (
     collapse_engine_prefixes,
     envelope_model_id,
     filter_rejected_excluding_selected,
-    format_model_ref,
     is_engine_only_model_id,
     model_ids_equal,
     price_lookup_id,
@@ -69,13 +68,6 @@ def test_filter_rejected_excludes_selected_under_identity():
         rejected, "agentic/deepseek/deepseek-v4-pro",
     )
     assert [r["model"] for r in out] == ["agentic/deepseek/deepseek-v4-flash"]
-
-
-def test_format_model_ref_fields():
-    ref = format_model_ref("agentic", "agentic/agentic/deepseek/deepseek-v4-pro")
-    assert ref["display_id"] == "agentic/deepseek/deepseek-v4-pro"
-    assert ref["price_id"] == "deepseek/deepseek-v4-pro"
-    assert ref["engine"] == "agentic"
 
 
 def test_is_engine_only_model_id():

@@ -19,6 +19,15 @@ def _client():
     return StdioMcpClient(name="fake", command=sys.executable, args=[FAKE])
 
 
+@pytest.fixture
+def fake_manager(tmp_path):
+    """A manager with the fake stdio server saved but not started. Stops all servers after."""
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    yield m
+    m.stop_all()
+
+
 def test_mixed_tools_list_payload_keeps_only_valid_rows():
     result = {
         "tools": [
@@ -124,19 +133,14 @@ def test_manager_config_roundtrip(tmp_path):
     assert "fake" not in m.load_config()
 
 
-def test_manager_start_call_status(tmp_path):
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    try:
-        tools = m.start_server("fake")
-        assert {t.name for t in tools} == {"echo", "add"}
-        st = m.status()
-        assert st[0]["running"] and st[0]["tools"] == 2
-        out = m.call("fake.echo", {"text": "hi"})
-        assert out["content"][0]["text"] == "hi"
-    finally:
-        m.stop_all()
+def test_manager_start_call_status(fake_manager):
+    m = fake_manager
+    tools = m.start_server("fake")
+    assert {t.name for t in tools} == {"echo", "add"}
+    st = m.status()
+    assert st[0]["running"] and st[0]["tools"] == 2
+    out = m.call("fake.echo", {"text": "hi"})
+    assert out["content"][0]["text"] == "hi"
 
 
 def test_manager_start_all_reports_errors(tmp_path):
@@ -152,11 +156,9 @@ def test_manager_start_all_reports_errors(tmp_path):
         m.stop_all()
 
 
-def test_lazy_boot_status_idle_and_discovered_empty(tmp_path):
+def test_lazy_boot_status_idle_and_discovered_empty(fake_manager):
     """Configured-but-never-started servers are idle, not errors; tools empty."""
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m = fake_manager
     st = m.status()
     assert len(st) == 1
     assert st[0]["name"] == "fake"
@@ -167,88 +169,68 @@ def test_lazy_boot_status_idle_and_discovered_empty(tmp_path):
     assert m.discovered_tools() == []
 
 
-def test_status_lifecycle_running_stopped_and_error(tmp_path):
+def test_status_lifecycle_running_stopped_and_error(fake_manager):
     """lifecycle distinguishes idle, running, operator-stopped, and start errors."""
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m = fake_manager
     m.save_server("bad", {"command": "no-such-cmd-xyz-lifecycle"})
+    idle = next(s for s in m.status() if s["name"] == "fake")
+    assert idle["lifecycle"] == "idle"
+    assert idle["running"] is False
+
+    m.start_server("fake")
+    running = next(s for s in m.status() if s["name"] == "fake")
+    assert running["lifecycle"] == "running"
+    assert running["running"] is True
+
+    m.stop_server("fake")
+    stopped = next(s for s in m.status() if s["name"] == "fake")
+    assert stopped["lifecycle"] == "stopped"
+    assert stopped["running"] is False
+    assert not stopped["error"]
+
     try:
-        idle = next(s for s in m.status() if s["name"] == "fake")
-        assert idle["lifecycle"] == "idle"
-        assert idle["running"] is False
-
-        m.start_server("fake")
-        running = next(s for s in m.status() if s["name"] == "fake")
-        assert running["lifecycle"] == "running"
-        assert running["running"] is True
-
-        m.stop_server("fake")
-        stopped = next(s for s in m.status() if s["name"] == "fake")
-        assert stopped["lifecycle"] == "stopped"
-        assert stopped["running"] is False
-        assert not stopped["error"]
-
-        try:
-            m.start_server("bad")
-        except McpError:
-            pass
-        errored = next(s for s in m.status() if s["name"] == "bad")
-        assert errored["lifecycle"] == "error"
-        assert errored["running"] is False
-        assert errored["error"]
-    finally:
-        m.stop_all()
+        m.start_server("bad")
+    except McpError:
+        pass
+    errored = next(s for s in m.status() if s["name"] == "bad")
+    assert errored["lifecycle"] == "error"
+    assert errored["running"] is False
+    assert errored["error"]
 
 
-def test_ensure_server_starts_only_when_not_alive(tmp_path):
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    try:
-        tools = m.ensure_server("fake")
-        assert {t.name for t in tools} == {"echo", "add"}
-        assert m.status()[0]["running"]
-        # Second call must not restart (same tool set, still alive).
-        again = m.ensure_server("fake")
-        assert {t.name for t in again} == {"echo", "add"}
-        assert m.status()[0]["running"]
-    finally:
-        m.stop_all()
+def test_ensure_server_starts_only_when_not_alive(fake_manager):
+    m = fake_manager
+    tools = m.ensure_server("fake")
+    assert {t.name for t in tools} == {"echo", "add"}
+    assert m.status()[0]["running"]
+    # Second call must not restart (same tool set, still alive).
+    again = m.ensure_server("fake")
+    assert {t.name for t in again} == {"echo", "add"}
+    assert m.status()[0]["running"]
 
 
-def test_call_starts_missing_client_without_prior_start(tmp_path):
+def test_call_starts_missing_client_without_prior_start(fake_manager):
     """Lazy connect: call() starts a configured idle server on first use."""
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    try:
-        assert m.discovered_tools() == []
-        out = m.call("fake.echo", {"text": "hi"})
-        assert out["content"][0]["text"] == "hi"
-        assert m.status()[0]["running"]
-        assert any(t.qualified == "fake.echo" for t in m.discovered_tools())
-    finally:
-        m.stop_all()
+    m = fake_manager
+    assert m.discovered_tools() == []
+    out = m.call("fake.echo", {"text": "hi"})
+    assert out["content"][0]["text"] == "hi"
+    assert m.status()[0]["running"]
+    assert any(t.qualified == "fake.echo" for t in m.discovered_tools())
 
 
-def test_manager_refresh_reconnects(tmp_path):
+def test_manager_refresh_reconnects(fake_manager):
     """Refresh must stop then start so a previously-failed server can recover."""
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    try:
-        m.start_server("fake")
-        assert m.status()[0]["running"]
-        tools = m.refresh_server("fake")
-        assert {t.name for t in tools} == {"echo", "add"}
-        st = m.status()[0]
-        assert st["running"] and st["tools"] == 2 and not st["error"]
-        # manage_mcp refresh action mirrors the HTTP endpoint.
-        out = m.manage("refresh", name="fake")
-        assert out["ok"] and out.get("refreshed") and out["tools"] == 2
-    finally:
-        m.stop_all()
+    m = fake_manager
+    m.start_server("fake")
+    assert m.status()[0]["running"]
+    tools = m.refresh_server("fake")
+    assert {t.name for t in tools} == {"echo", "add"}
+    st = m.status()[0]
+    assert st["running"] and st["tools"] == 2 and not st["error"]
+    # manage_mcp refresh action mirrors the HTTP endpoint.
+    out = m.manage("refresh", name="fake")
+    assert out["ok"] and out.get("refreshed") and out["tools"] == 2
 
 
 def test_manager_refresh_clears_stale_error(tmp_path):
@@ -271,22 +253,16 @@ def test_manager_refresh_clears_stale_error(tmp_path):
         m.stop_all()
 
 
-def test_post_mcp_refresh_handler(tmp_path):
+def test_post_mcp_refresh_handler(fake_manager):
     from harness.api.mcp import McpServices, post_mcp_refresh
 
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
     hatches: list = []
-    svc = McpServices(mcp=m, on_tools_changed=lambda: hatches.append(True))
-    try:
-        code, body = post_mcp_refresh({"name": "fake"}, svc)
-        assert code == 200 and body["ok"] and body["tools"] == 2
-        assert hatches, "refresh must hatch the frozen tools[] snapshot"
-        code, body = post_mcp_refresh({"name": "missing"}, svc)
-        assert code == 200 and not body["ok"] and "error" in body
-    finally:
-        m.stop_all()
+    svc = McpServices(mcp=fake_manager, on_tools_changed=lambda: hatches.append(True))
+    code, body = post_mcp_refresh({"name": "fake"}, svc)
+    assert code == 200 and body["ok"] and body["tools"] == 2
+    assert hatches, "refresh must hatch the frozen tools[] snapshot"
+    code, body = post_mcp_refresh({"name": "missing"}, svc)
+    assert code == 200 and not body["ok"] and "error" in body
 
 
 def test_get_mcp_uses_discovered_tools_alive_only():
@@ -424,27 +400,20 @@ def test_allowed_tools_filters_discovery_and_blocks_call(tmp_path):
         m.stop_all()
 
 
-def test_allowed_tools_absent_means_all_tools(tmp_path):
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
-    try:
-        tools = m.start_server("fake")
-        assert {t.name for t in tools} == {"echo", "add"}
-        st = next(s for s in m.status() if s["name"] == "fake")
-        assert "allowed_tools" not in st
-    finally:
-        m.stop_all()
+def test_allowed_tools_absent_means_all_tools(fake_manager):
+    m = fake_manager
+    tools = m.start_server("fake")
+    assert {t.name for t in tools} == {"echo", "add"}
+    st = next(s for s in m.status() if s["name"] == "fake")
+    assert "allowed_tools" not in st
 
 
-def test_refresh_interrupted_by_concurrent_stop(tmp_path, monkeypatch):
+def test_refresh_interrupted_by_concurrent_stop(fake_manager, monkeypatch):
     """A stop mid-refresh must not leave the server running afterward."""
     import threading
     import time
 
-    cfgp = tmp_path / "mcp.json"
-    m = McpManager(config_path=str(cfgp))
-    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m = fake_manager
     m.start_server("fake")
     assert m.status()[0]["running"]
 
@@ -477,7 +446,6 @@ def test_refresh_interrupted_by_concurrent_stop(tmp_path, monkeypatch):
     # Give the superseded start a moment to tear down its client.
     time.sleep(0.2)
     assert not m.status()[0]["running"]
-    m.stop_all()
 
 
 def test_stdio_cancel_unblocks_without_killing_server():
@@ -556,4 +524,42 @@ def test_start_reaps_child_when_handshake_times_out(tmp_path):
         for proc in spawned:
             if proc.poll() is None:
                 proc.kill()
+
+
+class _McpPilot:
+    """Says it'll use a tool, fires one call_mcp, then finishes."""
+    name = "mcp-pilot"
+    def __init__(self): self.n = 0
+    def complete(self, prompt, *, system=None):
+        from pmharness.drivers.openai_compat import DriverResponse
+
+        self.n += 1
+        if self.n == 1:
+            t = '{"say":"calling echo","actions":[{"kind":"call_mcp","tool":"fake.echo","arguments":{"text":"pong"}}]}'
+        else:
+            t = '{"say":"Done.","actions":[]}'
+        return DriverResponse(text=t, tokens_out=10, latency_ms=1.0)
+
+
+@pytest.mark.swarm  # constructs a ConversationalSession (pilot build)
+def test_pilot_calls_mcp_tool(tmp_path):
+    """Pilot -> call_mcp -> MCP manager end-to-end (fake stdio server, no network)."""
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path))
+    s = ConversationalSession(cfg)
+    s.pilot = _McpPilot()
+    m = McpManager(config_path=str(tmp_path / "mcp.json"))
+    m.save_server("fake", {"command": sys.executable, "args": [FAKE]})
+    m.start_server("fake")
+    s._mcp = m
+    try:
+        events = list(s.send("use the echo tool"))
+        results = [e for e in events if e.kind == "action_result"]
+        assert results, "expected an action_result from the mcp call"
+        assert results[0].data.get("adapter") == "mcp"
+        assert "pong" in results[0].data["artifacts"][0]["headline"]
+    finally:
+        m.stop_all()
 

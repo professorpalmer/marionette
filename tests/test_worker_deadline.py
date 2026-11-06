@@ -21,25 +21,29 @@ def _session():
 
 
 def test_bounded_worker_returns_none_on_timeout(monkeypatch):
-    monkeypatch.setenv("HARNESS_WORKER_DEADLINE_SECONDS", "0.3")
+    monkeypatch.setenv("HARNESS_WORKER_DEADLINE_SECONDS", "0.1")
     s = _session()
 
     started = threading.Event()
+    release = threading.Event()
 
     def _slow(*args, **kwargs):
         started.set()
-        time.sleep(5)  # far past the deadline
+        release.wait(5)  # far past the deadline
         return WorkerResult(ok=True, summary="too late")
 
     monkeypatch.setattr(edit_engines, "run_edit_worker", _slow)
 
     t0 = time.monotonic()
-    res = s._run_edit_worker_bounded("do the thing", "")
-    elapsed = time.monotonic() - t0
+    try:
+        res = s._run_edit_worker_bounded("do the thing", "")
+        elapsed = time.monotonic() - t0
 
-    assert res is None                 # timed out -> caller frees the pool slot
-    assert started.is_set()            # the work really started
-    assert elapsed < 3                 # returned near the deadline, not after 5s
+        assert res is None                 # timed out -> caller frees the pool slot
+        assert started.is_set()            # the work really started
+        assert elapsed < 3                 # returned near the deadline, not after 5s
+    finally:
+        release.set()
 
 
 def test_bounded_worker_passes_through_success(monkeypatch):

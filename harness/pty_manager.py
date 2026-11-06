@@ -204,15 +204,6 @@ def _resolve_cwd(cwd: Optional[str]) -> str:
     return os.path.expanduser("~")
 
 
-def _append_to_buffer(buffer: bytearray, lock: threading.Lock, data: bytes) -> None:
-    if not data:
-        return
-    with lock:
-        buffer.extend(data)
-        if len(buffer) > _BUFFER_CAP:
-            del buffer[: len(buffer) - _BUFFER_CAP]
-
-
 def clamp_pty_dims(
     cols: int,
     rows: int,

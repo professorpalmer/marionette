@@ -11,7 +11,6 @@ from harness.memory_layers import (
     JOURNAL_FILENAME,
     LAYER_IDS,
     estimate_l0_hot_chars,
-    layer_snapshot_at,
     latest_layer_snapshot,
     measure_l1_session,
     measure_l2_workspace,
@@ -101,15 +100,6 @@ def test_measurement_never_raises_on_bad_paths():
         assert snap[layer_id]["entries"] == 0
 
 
-def test_record_and_layer_snapshot_at(tmp_path):
-    state = str(tmp_path)
-    snap = snapshot_memory_layers(_FakeConversation([]), state, "s1")
-    record_memory_layer_snapshot(state, "s1", 1, snap)
-    read_back = layer_snapshot_at(state, "s1", 1)
-    assert read_back is not None
-    assert read_back["L0"]["bytes"] == snap["L0"]["bytes"]
-
-
 def test_latest_layer_snapshot_empty_when_missing(tmp_path):
     assert latest_layer_snapshot(str(tmp_path), "s1") == {}
 
@@ -131,7 +121,6 @@ def test_send_records_memory_layers_journal():
         assert os.path.isfile(journal)
         snap = latest_layer_snapshot(tmpdir, "mem-layer-session")
         assert snap.get("L0", {}).get("bytes", 0) > 0
-        assert layer_snapshot_at(tmpdir, "mem-layer-session", 1) is not None
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

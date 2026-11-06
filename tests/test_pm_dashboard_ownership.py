@@ -32,7 +32,9 @@ class FakeProc:
 
 
 @pytest.fixture
-def board(monkeypatch, tmp_path):
+def board(monkeypatch, tmp_path, request):
+    """A fake board. Pass a runfile delay in seconds through indirect parametrize."""
+    runfile_delay = getattr(request, "param", 0.0)
     monkeypatch.setattr(pd, "_owned", {})
     monkeypatch.setattr(pd, "_ledger_path", str(tmp_path / "ledger.json"))
     monkeypatch.setattr(pd, "_exit_registered", True)
@@ -42,8 +44,12 @@ def board(monkeypatch, tmp_path):
     def spawn(state_dir, host, port, job_id, *, popen):
         proc = FakeProc()
         spawned.append((state_dir, proc))
-        threading.Timer(0.05, lambda: runfiles.__setitem__(
-            state_dir, {"pid": proc.pid, "host": host, "port": port})).start()
+        write = lambda: runfiles.__setitem__(
+            state_dir, {"pid": proc.pid, "host": host, "port": port})
+        if runfile_delay:
+            threading.Timer(runfile_delay, write).start()
+        else:
+            write()
         return proc
 
     def reuse(state_dir, host, port, all_projects):
@@ -62,6 +68,7 @@ def board(monkeypatch, tmp_path):
     return spawned, runfiles
 
 
+@pytest.mark.parametrize("board", [0.05], indirect=True)
 def test_concurrent_callers_spawn_one_board(board):
     spawned, _ = board
     out = []

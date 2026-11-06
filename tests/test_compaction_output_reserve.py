@@ -9,23 +9,23 @@ from harness.config import HarnessConfig
 from harness.conversation import ConversationalSession
 
 
-def test_no_reserve_keeps_75_percent():
-    assert compaction_trigger_tokens(128_000) == 96_000
-    assert compaction_trigger_tokens(128_000, None) == 96_000
-    assert compaction_trigger_tokens(128_000, 0) == 96_000
+_ABSENT = object()
 
 
-def test_local_reasoning_ceiling_lowers_trigger():
+@pytest.mark.parametrize("window, reserve, expected", [
+    pytest.param(128_000, _ABSENT, 96_000, id="no-reserve-absent-keeps-75-percent"),
+    pytest.param(128_000, None, 96_000, id="no-reserve-none-keeps-75-percent"),
+    pytest.param(128_000, 0, 96_000, id="no-reserve-zero-keeps-75-percent"),
     # Local pilot with a 40960 reasoning budget sends max_tokens = 40960 + 4096.
-    assert compaction_trigger_tokens(128_000, 45_056) == 128_000 - 45_056 - 2_560
-
-
-def test_small_reserve_on_large_window_keeps_75_percent():
-    assert compaction_trigger_tokens(1_000_000, 32_000) == 750_000
-
-
-def test_reserve_is_capped_at_half_the_window():
-    assert compaction_trigger_tokens(32_000, 45_056) == 32_000 - 16_000 - 2_048
+    pytest.param(128_000, 45_056, 128_000 - 45_056 - 2_560, id="local-reasoning-ceiling-lowers-trigger"),
+    pytest.param(1_000_000, 32_000, 750_000, id="small-reserve-on-large-window-keeps-75-percent"),
+    pytest.param(32_000, 45_056, 32_000 - 16_000 - 2_048, id="reserve-capped-at-half-the-window"),
+])
+def test_compaction_trigger_tokens(window, reserve, expected):
+    if reserve is _ABSENT:
+        assert compaction_trigger_tokens(window) == expected
+    else:
+        assert compaction_trigger_tokens(window, reserve) == expected
 
 
 class _Pilot:

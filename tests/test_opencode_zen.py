@@ -56,13 +56,6 @@ def test_zen_display_name_treats_wire_echo_as_uninformative():
     ) == "Custom Ox"
 
 
-def test_curated_fallback_is_verified_free_ids_only():
-    for model in zen.CURATED_FREE_MODELS:
-        assert "/" not in model
-        assert model == model.lower()
-        assert model.endswith("-free") or model in {"x-preview-f-free", "big-pickle"}
-
-
 def test_curated_fallback_includes_all_verified_live_free_ids():
     """Complete verified free fallback from current Zen /models probe."""
     expected = {
@@ -77,6 +70,10 @@ def test_curated_fallback_includes_all_verified_live_free_ids():
         "muse-spark-1.2-contributor-free",
     }
     assert set(zen.CURATED_FREE_MODELS) == expected
+    for model in zen.CURATED_FREE_MODELS:
+        assert "/" not in model
+        assert model == model.lower()
+        assert model.endswith("-free") or model in {"x-preview-f-free", "big-pickle"}
     assert zen.display_name_for("deepseek-v4-flash-free") == "DeepSeek V4 Flash Free"
     assert zen.display_name_for("laguna-s-2.1-free") == "Laguna S 2.1 Free"
 
@@ -199,85 +196,89 @@ def test_build_pilot_uses_go_key_env_when_zen_key_absent(monkeypatch):
     assert driver.api_key_env == go.API_KEY_ENV
 
 
-def test_catalog_exposes_ox_alpha_friendly_name(monkeypatch):
+_OX_PROVIDERS = [
+    pytest.param("opencode-go", go, "ox-alpha-free", go.API_KEY_ENV, "sk-go-test", id="go"),
+    pytest.param("opencode-zen", zen, "x-preview-f-free", zen.API_KEY_ENV, "sk-zen-test", id="zen"),
+]
+
+
+def _ox_catalog_row(monkeypatch, provider, wire, key_env, key, fetched, metadata):
+    monkeypatch.setenv(key_env, key)
     monkeypatch.setattr(
         prov, "available_providers",
-        lambda: [prov.get_provider("opencode-zen")],
+        lambda: [prov.get_provider(provider)],
     )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["x-preview-f-free"],
-    )
-    monkeypatch.setattr(
-        mf, "model_metadata",
-        lambda provider, slug: (
-            {"id": slug, "name": "Ox Alpha Free", "source": "live"}
-            if slug == "x-preview-f-free" else None
-        ),
-    )
+    monkeypatch.setattr(mf, "fetch_models", lambda p, k, **kw: list(fetched))
+    monkeypatch.setattr(mf, "model_metadata", metadata)
     entries = [
         row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-zen"
+        if row["provider"] == provider
     ]
-    ox = next(row for row in entries if row["model"] == "x-preview-f-free")
-    assert ox["spec"] == "opencode-zen:x-preview-f-free"
+    return next(row for row in entries if row["model"] == wire)
+
+
+@pytest.mark.parametrize(
+    "provider, wire, key_env, key, fetched, metadata",
+    [
+        pytest.param(
+            "opencode-go", "ox-alpha-free", go.API_KEY_ENV, "sk-go-test",
+            ["ox-alpha-free", "deepseek-v4-flash"],
+            lambda provider, slug: {"id": slug},
+            id="go",
+        ),
+        pytest.param(
+            "opencode-zen", "x-preview-f-free", zen.API_KEY_ENV, "sk-zen-test",
+            ["x-preview-f-free"],
+            lambda provider, slug: (
+                {"id": slug, "name": "Ox Alpha Free", "source": "live"}
+                if slug == "x-preview-f-free" else None
+            ),
+            id="zen",
+        ),
+    ],
+)
+def test_catalog_exposes_ox_alpha_friendly_name(
+    monkeypatch, provider, wire, key_env, key, fetched, metadata
+):
+    ox = _ox_catalog_row(monkeypatch, provider, wire, key_env, key, fetched, metadata)
+    assert ox["spec"] == f"{provider}:{wire}"
     assert ox["name"] == "Ox Alpha Free"
 
 
-def test_catalog_replaces_zen_wire_echo_name_with_ox_label(monkeypatch):
-    monkeypatch.setattr(
-        prov, "available_providers",
-        lambda: [prov.get_provider("opencode-zen")],
-    )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["x-preview-f-free"],
-    )
-    monkeypatch.setattr(
-        mf, "model_metadata",
-        lambda provider, slug: {"id": slug, "name": slug},
-    )
+@pytest.mark.parametrize("provider, module, wire, key_env, key", _OX_PROVIDERS)
+def test_catalog_replaces_wire_echo_name_with_ox_label(
+    monkeypatch, provider, module, wire, key_env, key
+):
     seen = {}
 
     def fake_overlay(model, *, allow_network=False):
         seen["called"] = True
         return {"name": "Ox Alpha Free", "source": "models.dev"}
 
-    monkeypatch.setattr(zen, "overlay_metadata", fake_overlay)
-    entries = [
-        row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-zen"
-    ]
-    ox = next(row for row in entries if row["model"] == "x-preview-f-free")
+    monkeypatch.setattr(module, "overlay_metadata", fake_overlay)
+    ox = _ox_catalog_row(
+        monkeypatch, provider, wire, key_env, key, [wire],
+        lambda p, slug: {"id": slug, "name": slug},
+    )
     assert seen.get("called") is True
     assert ox["name"] == "Ox Alpha Free"
 
 
-def test_catalog_keeps_informative_zen_native_name(monkeypatch):
-    monkeypatch.setattr(
-        prov, "available_providers",
-        lambda: [prov.get_provider("opencode-zen")],
-    )
-    monkeypatch.setattr(
-        mf, "fetch_models",
-        lambda provider, key, **kw: ["x-preview-f-free"],
-    )
-    monkeypatch.setattr(
-        mf, "model_metadata",
-        lambda provider, slug: {"id": slug, "name": "Native Ox Label"},
-    )
+@pytest.mark.parametrize("provider, module, wire, key_env, key", _OX_PROVIDERS)
+def test_catalog_keeps_informative_native_name(
+    monkeypatch, provider, module, wire, key_env, key
+):
     seen = []
 
     def fake_overlay(model, *, allow_network=False):
         seen.append(model)
         return {"name": "Overlay Must Not Win"}
 
-    monkeypatch.setattr(zen, "overlay_metadata", fake_overlay)
-    entries = [
-        row for row in mv.catalog(available_only=True)
-        if row["provider"] == "opencode-zen"
-    ]
-    ox = next(row for row in entries if row["model"] == "x-preview-f-free")
+    monkeypatch.setattr(module, "overlay_metadata", fake_overlay)
+    ox = _ox_catalog_row(
+        monkeypatch, provider, wire, key_env, key, [wire],
+        lambda p, slug: {"id": slug, "name": "Native Ox Label"},
+    )
     assert ox["name"] == "Native Ox Label"
     assert seen == []
 

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import json
-import tempfile
 from pathlib import Path
 
 from typing import Any
+
+import pytest
 
 from harness.memory_store import MemoryStore, MEMORY_CHAR_LIMIT
 from harness.rule_store import RuleStore
@@ -272,13 +273,21 @@ def test_render_block_stable_ties_and_whole_entry_selection(tmp_path):
     assert memory_lines == [f"- {tied[0]['text']}", f"- {tied[1]['text']}"]
 
 
-def test_conversational_session_memory_injection(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "session_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
+@pytest.fixture
+def memory_cfg(tmp_path, monkeypatch):
+    """Point the memory and rule stores at tmp_path. Return (cfg, memory path)."""
+    mem_path = tmp_path / "memory.json"
+    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", mem_path)
     monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    return HarnessConfig(driver="stub-oracle-v2", state_dir=str(state_dir)), mem_path
+
+
+def test_conversational_session_memory_injection(memory_cfg):
+    cfg, temp_mem_path = memory_cfg
 
     # Initialize with empty memory
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     session_empty = ConversationalSession(cfg)
     assert "# Durable memory" not in session_empty._history[0]["content"]
 
@@ -368,12 +377,8 @@ class _MemoryToolPilot:
             )
 
 
-def test_driving_memory_tool_through_action_loop(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "action_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
-    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
-
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_driving_memory_tool_through_action_loop(memory_cfg):
+    cfg, _ = memory_cfg
     session = ConversationalSession(cfg)
 
     # Verify memory is empty at start
@@ -430,12 +435,8 @@ def test_driving_memory_tool_through_action_loop(tmp_path, monkeypatch):
     assert entries[0].source == "agent"
 
 
-def test_memory_propose_skipped_in_autopilot(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "auto_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
-    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
-
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_memory_propose_skipped_in_autopilot(memory_cfg):
+    cfg, _ = memory_cfg
     session = ConversationalSession(cfg)
     session.pilot = _MemoryToolPilot({
         "action": "add",
@@ -455,12 +456,8 @@ def test_memory_propose_skipped_in_autopilot(tmp_path, monkeypatch):
     assert session._pending_memory_proposals == {}
 
 
-def test_memory_propose_accept_dismiss_dedupe(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "dedupe_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
-    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
-
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_memory_propose_accept_dismiss_dedupe(memory_cfg):
+    cfg, _ = memory_cfg
     session = ConversationalSession(cfg)
 
     session._turn_memory_queue = [
@@ -539,21 +536,15 @@ def test_memory_add_queues_normal_preference():
     assert "Queued for end-of-turn" in appended
 
 
-def test_memory_propose_accept_missing(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "missing_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
-    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_memory_propose_accept_missing(memory_cfg):
+    cfg, _ = memory_cfg
     session = ConversationalSession(cfg)
     assert session.accept_memory_proposal("nope")["ok"] is False
     assert session.dismiss_memory_proposal("nope")["ok"] is False
 
 
-def test_memory_propose_accept_is_idempotent(tmp_path, monkeypatch):
-    temp_mem_path = tmp_path / "idempotent_memory.json"
-    monkeypatch.setattr("harness.memory_store.MEMORY_PATH", temp_mem_path)
-    monkeypatch.setattr("harness.conversation.RuleStore", lambda *args, **kwargs: RuleStore(path=str(tmp_path / "rules.json")))
-    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+def test_memory_propose_accept_is_idempotent(memory_cfg):
+    cfg, _ = memory_cfg
     session = ConversationalSession(cfg)
     session._turn_memory_queue = [{"text": "Remember this kit", "category": "fact"}]
     props = session._flush_turn_memory_proposals()

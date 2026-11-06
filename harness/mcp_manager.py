@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from .mcp_client import StdioMcpClient, McpTool, McpError, McpRemoteError
+from .mcp_client import StdioMcpClient, McpTool, McpError, McpRemoteError, McpTimeoutError
 from .mcp_http_client import HttpMcpClient
 from .secure_files import restrict_to_owner
 from .diag import note as _diag
@@ -61,6 +61,9 @@ _MAX_INVOCATION_ERROR_CHARS = 200
 BREAKER_THRESHOLD = 3
 BREAKER_WINDOW_S = 60.0
 BREAKER_OPEN_S = 60.0
+# A stdio server that misses this many answers in a row is stuck: the breaker
+# alone sent each half-open probe to the same stuck process.
+RESTART_AFTER_TIMEOUTS = 2
 
 
 def _prepend_note(out: dict, note: str) -> dict:
@@ -189,6 +192,7 @@ class McpManager:
         self._clock = clock or time.time
         # Per-server consecutive transport failures: count, first_at, open_until.
         self._breakers: Dict[str, dict] = {}
+        self._timeouts: Dict[str, int] = {}
         self._clients: Dict[str, StdioMcpClient] = {}
         self._tools: Dict[str, McpTool] = {}   # qualified name -> tool
         self._lock = threading.Lock()
@@ -732,6 +736,30 @@ class McpManager:
     def _breaker_success(self, server: str) -> None:
         with self._lock:
             self._breakers.pop(server, None)
+            self._timeouts.pop(server, None)
+
+    def _retire_if_stuck(self, server: str, client: object) -> bool:
+        """Stop a stdio server after repeated timeouts. True when it was stopped.
+
+        The tools stay cached, so the next call starts the server again through
+        the lazy ``ensure_server`` path.
+        """
+        if not isinstance(client, StdioMcpClient):
+            return False
+        with self._lock:
+            count = self._timeouts.get(server, 0) + 1
+            if count < RESTART_AFTER_TIMEOUTS:
+                self._timeouts[server] = count
+                return False
+            self._timeouts.pop(server, None)
+            if self._clients.get(server) is not client:
+                return False
+            self._clients.pop(server, None)
+        try:
+            client.stop()
+        except Exception:
+            pass
+        return True
 
     def call(self, qualified: str, arguments: dict) -> dict:
         """Invoke a qualified MCP tool and record a per-server last_invocation.
@@ -775,6 +803,14 @@ class McpManager:
                 out = client.call_tool(tool_name, send_args)
             except McpRemoteError:
                 self._breaker_success(server)
+                raise
+            except McpTimeoutError as exc:
+                self._breaker_failure(server)
+                if self._retire_if_stuck(server, client):
+                    raise McpTimeoutError(
+                        f"{exc}. The server missed {RESTART_AFTER_TIMEOUTS} answers in a row, "
+                        "so it was stopped. The next call starts it again."
+                    ) from exc
                 raise
             except McpError:
                 self._breaker_failure(server)

@@ -4,9 +4,11 @@ No real Puppetmaster, no network -- session_factory/budget_factory are stubs,
 mirroring the _fake_result / _NeverDonePilot injection style of test_auto.py.
 """
 import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -386,6 +388,24 @@ def test_daemon_stop_cancels_and_interruptible_wait(tmp_path):
     assert cancels == [s.id]
     daemon._interruptible_wait(30)
     assert time.time() - started < 2.0
+
+
+def test_tick_wait_ignores_a_backward_wall_clock_jump():
+    """The scheduler tick wait does not stretch when the wall clock goes back."""
+    daemon = SchedulerDaemon(MagicMock())
+    wall = iter([10_000.0] + [9_000.0] * 10_000)
+    done = threading.Event()
+
+    def wait():
+        daemon._interruptible_wait(1)
+        done.set()
+
+    with patch("harness.scheduler.time.time", side_effect=lambda: next(wall)):
+        worker = threading.Thread(target=wait, daemon=True)
+        worker.start()
+        finished = done.wait(5)
+        daemon.stop()
+    assert finished, "a 1 s tick waited for the 1000 s clock jump"
 
 
 def test_daemon_stop_closes_store(tmp_path):
@@ -914,3 +934,25 @@ def test_daemon_stop_releases_live_claim(tmp_path):
     assert not got.claim_owner
     assert not got.claim_run_id
     assert (got.claim_lease_until or 0) == 0
+
+
+def test_lease_heartbeat_checks_cancel_about_once_a_second():
+    import harness.scheduler as sched_mod
+
+    class _Store:
+        checks = 0
+
+        def cancel_requested(self, _sid):
+            _Store.checks += 1
+            return False
+
+        def renew_claim(self, *_a):
+            return True
+
+    hb = sched_mod._ClaimLeaseHeartbeat(_Store(), "s", "r", 600, interval=30, cancel=lambda: None)
+    hb.start()
+    time.sleep(1.5)
+    hb.stop()
+    # A 30 s renew interval still polls cancel at the 1 s pace.
+    assert 1 <= _Store.checks <= 2
+    assert hb.cancelled is False

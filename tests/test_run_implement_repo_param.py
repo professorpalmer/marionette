@@ -3,11 +3,10 @@ Focused unit tests for the optional `repo` (target_dir) parameter added to
 `run_implement` and `run_parallel`.
 
 Covers, hermetically and with no network / no subprocess dispatch:
-  (a) PilotAction carries the repo field.
-  (b) build_tools_schema exposes `repo` as an OPTIONAL string property on
+  (a) build_tools_schema exposes `repo` as an OPTIONAL string property on
       both run_implement and run_parallel (present in properties, absent
       from required).
-  (c) The tool-call arg-mapping (_tool_name_to_action / parse_tool_calls)
+  (b) The tool-call arg-mapping (_tool_name_to_action / parse_tool_calls)
       maps `args["repo"]` (and the alias `target_dir`) onto the action.
 
 Stdlib-only, deterministic. No emojis.
@@ -17,7 +16,6 @@ import json
 import unittest
 
 from harness.pilot import (
-    PilotAction,
     build_tools_schema,
     _tool_name_to_action,
     parse_tool_calls,
@@ -30,29 +28,6 @@ def _tool_by_name(schema, name):
         if fn.get("name") == name:
             return fn
     return None
-
-
-class PilotActionRepoFieldTests(unittest.TestCase):
-    def test_pilot_action_has_repo_field_default_empty(self):
-        act = PilotAction(kind="run_implement", goal="do the thing")
-        self.assertTrue(hasattr(act, "repo"))
-        self.assertEqual(act.repo, "")
-
-    def test_pilot_action_carries_explicit_repo(self):
-        act = PilotAction(
-            kind="run_implement",
-            goal="do the thing",
-            repo="/tmp/some/repo",
-        )
-        self.assertEqual(act.repo, "/tmp/some/repo")
-
-    def test_pilot_action_repo_on_run_parallel(self):
-        act = PilotAction(
-            kind="run_parallel",
-            goals=["a", "b"],
-            repo="/tmp/other/repo",
-        )
-        self.assertEqual(act.repo, "/tmp/other/repo")
 
 
 class ToolsSchemaRepoPropertyTests(unittest.TestCase):

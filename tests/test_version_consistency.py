@@ -1,14 +1,7 @@
-"""Version stamps must not drift.
+"""Version format, the runtime pin location, uv.lock shape and embedded uv pins.
 
-Marionette is ONE product with three version stamps: the Electron shell
-(webapp/package.json -- electron-builder names the DMG from it), the Python rig
-(pyproject.toml), and harness.__version__. They drifted badly in the past
-(package.json 0.6.44 vs pyproject 0.6.5 vs __init__ 0.1.0), so a released build
-reported three different versions depending on where you looked. This guard fails
-CI the moment they diverge, forcing every release to bump all three in lockstep.
-
-stdlib-only on purpose (tomllib is 3.11+, CI also runs 3.9): the pyproject and
-__init__ versions are read with a small regex rather than a TOML/AST parser."""
+tests/test_runtime_pin.py checks that the version stamps and the Puppetmaster
+pins match."""
 
 import json
 import re
@@ -31,23 +24,6 @@ def _pyproject_version() -> str:
     match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
     assert match, "no `version = \"...\"` found in pyproject.toml"
     return match.group(1)
-
-
-def _init_version() -> str:
-    text = _read("harness/__init__.py")
-    match = re.search(r'(?m)^__version__\s*=\s*"([^"]+)"', text)
-    assert match, "no `__version__ = \"...\"` found in harness/__init__.py"
-    return match.group(1)
-
-
-def test_version_stamps_are_consistent():
-    pkg = _package_json_version()
-    pyproject = _pyproject_version()
-    init = _init_version()
-    assert pkg == pyproject == init, (
-        f"version drift: webapp/package.json={pkg}  pyproject.toml={pyproject}  "
-        f"harness.__version__={init} -- bump all three together for a release"
-    )
 
 
 def test_version_is_pep440_ish():
@@ -76,25 +52,6 @@ def test_pyproject_declares_pinned_puppetmaster_runtime_dependency():
         "(standalone install ownership)"
     )
     assert pin.group(1), "empty Puppetmaster pin"
-
-
-def test_puppetmaster_install_and_packaging_pins_match():
-    expected = re.search(
-        r'"(puppetmaster-ai==\d+\.\d+\.\d+)"',
-        _read("pyproject.toml"),
-    ).group(1)
-    paths = (
-        "scripts/install.sh", "scripts/install.ps1",
-        "scripts/doctor.sh", "scripts/doctor.ps1",
-        "webapp/electron/bootstrap.cjs", "webapp/electron/update-pm.cjs",
-        "harness/diag_bundle.py",
-        ".github/workflows/tests.yml", ".github/workflows/tests-full.yml",
-        ".github/workflows/release.yml", "README.md", "CONTRIBUTING.md",
-    )
-    for path in paths:
-        pins = re.findall(r"puppetmaster-ai==\d+\.\d+\.\d+", _read(path))
-        assert pins, f"{path} has no Puppetmaster pin"
-        assert set(pins) == {expected}, f"{path}: {pins} differs from {expected}"
 
 
 def _versions_env_pins():

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from harness.browser_reap import (
-    cmdline_is_marionette_browser,
     parse_posix_ps,
     parse_wmic_list,
     profile_ownership,
@@ -21,9 +20,9 @@ def test_matcher_accepts_this_homes_profiles():
         "/Users/t/.puppetmaster/browser-profiles/abcd",
         "/Users/T/.PMHARNESS/browser-profile",
     ):
-        assert cmdline_is_marionette_browser(
+        assert profile_ownership(
             CHROME + " --user-data-dir=" + path + " --remote-debugging-port=9333", **MAC
-        ), path
+        ) == "home", path
 
 
 def test_matcher_rejects_user_chrome_and_unrelated():
@@ -33,7 +32,7 @@ def test_matcher_rejects_user_chrome_and_unrelated():
         "python -m harness.cli gui --port 61156",
         CHROME + " --user-data-dir=/tmp/proof-audit/chrome-a --remote-debugging-port=9333",
     ):
-        assert not cmdline_is_marionette_browser(cmd, **MAC), cmd
+        assert profile_ownership(cmd, **MAC) != "home", cmd
 
 
 def test_sibling_install_under_another_home_is_not_ours():

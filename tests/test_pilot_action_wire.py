@@ -60,6 +60,7 @@ def test_invalid_action_skips_kind_membership():
 
 
 def test_envelope_native_parity_edit_file():
+    # Regression: before PR1, _coerce_actions dropped old_str and new_str.
     payload = {
         "path": "src/a.py",
         "old_str": "foo",
@@ -147,18 +148,6 @@ def test_parse_tool_calls_emits_invalid_action_type():
     assert len(actions) == 1
     assert isinstance(actions[0], InvalidAction)
     assert actions[0].kind == INVALID_ACTION_KIND
-
-
-def test_envelope_edit_file_no_longer_drops_old_str():
-    """Regression: pre-PR1 _coerce_actions dropped old_str/new_str so validate failed."""
-    acts = _coerce_actions([{
-        "kind": "edit_file",
-        "path": "x.py",
-        "old_str": "before",
-        "new_str": "after",
-    }])
-    assert acts[0].old_str == "before"
-    assert acts[0].new_str == "after"
 
 
 # --- PR2: dispatch narrowing -------------------------------------------------

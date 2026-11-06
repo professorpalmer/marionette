@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 
 import pytest
 
@@ -329,3 +331,58 @@ def test_run_agent_falls_back_to_binary_when_exec_unresolved(monkeypatch):
 
     assert captured["cmd"] == ["/fake/agent", "about"]
     assert captured  # run was invoked
+
+
+# An expired Cursor CLI status never blocks the caller on a Node spawn.
+
+def _fresh(monkeypatch):
+    monkeypatch.setattr(auth, "_status_cache", None)
+    monkeypatch.setattr(auth, "_status_cache_at", 0.0)
+    monkeypatch.setattr(auth, "_status_generation", 0)
+    monkeypatch.setattr(auth, "_status_refreshing", False)
+
+
+def test_expired_status_is_served_while_refreshing_in_background(monkeypatch):
+    _fresh(monkeypatch)
+    release = threading.Event()
+    probes = []
+
+    def probe():
+        probes.append(threading.current_thread().name)
+        if len(probes) > 1:
+            release.wait(5)
+        return {"authenticated": len(probes) > 1}
+
+    monkeypatch.setattr(auth, "_get_status_uncached", probe)
+    assert auth.get_status()["authenticated"] is False  # cold cache blocks once
+    monkeypatch.setattr(auth, "_status_cache_at", time.monotonic() - auth._STATUS_CACHE_TTL - 1)
+    started = time.monotonic()
+    assert auth.get_status()["authenticated"] is False  # stale, returned at once
+    assert time.monotonic() - started < 0.5
+    release.set()
+    deadline = time.monotonic() + 5
+    while auth.get_status()["authenticated"] is False and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert auth.get_status()["authenticated"] is True
+    assert probes[1] == "cursor-cli-status"
+
+
+def test_invalidation_discards_an_in_flight_refresh(monkeypatch):
+    _fresh(monkeypatch)
+    release = threading.Event()
+    monkeypatch.setattr(auth, "_get_status_uncached", lambda: {"authenticated": True})
+    auth.get_status()
+    monkeypatch.setattr(auth, "_status_cache_at", time.monotonic() - auth._STATUS_CACHE_TTL - 1)
+
+    def slow():
+        release.wait(5)
+        return {"authenticated": True}
+
+    monkeypatch.setattr(auth, "_get_status_uncached", slow)
+    auth.get_status()  # starts the background refresh
+    auth.invalidate_status_cache()  # logout lands while it runs
+    refreshers = [t for t in threading.enumerate() if t.name == "cursor-cli-status"]
+    release.set()
+    for refresher in refreshers:
+        refresher.join(5)
+    assert auth._status_cache is None

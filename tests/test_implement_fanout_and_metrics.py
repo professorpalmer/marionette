@@ -2,9 +2,11 @@ from __future__ import annotations
 
 """Fan-out guard + worktree seed + local-job routing previews."""
 
+import inspect
 import tempfile
 from pathlib import Path
 
+from harness import implement_guards
 from harness.implement_guards import (
     check_implement_workspace,
     check_oversized_single_file_rewrite,
@@ -140,6 +142,17 @@ def test_check_implement_workspace_kill_switch(tmp_path, monkeypatch):
     bare = tmp_path / "bare"
     bare.mkdir()
     assert check_implement_workspace(str(bare)) is None
+
+
+def test_no_workspace_guidance_uses_system_tempdir(monkeypatch):
+    monkeypatch.setenv("HARNESS_IMPLEMENT_GIT_GUARD", "1")
+    msg = check_implement_workspace("")
+    assert msg is not None
+    assert tempfile.gettempdir() in msg
+    assert "run_command" in msg
+    # Guidance must not hardcode a POSIX-only /tmp literal.
+    src = inspect.getsource(implement_guards.check_implement_workspace)
+    assert "/tmp" not in src
 
 
 def test_looks_like_analysis_only_goal():

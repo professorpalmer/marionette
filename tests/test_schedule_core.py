@@ -40,76 +40,75 @@ def _dt(y, mo, d, h, mi):
     return datetime(y, mo, d, h, mi)
 
 
-def test_all_wildcards_matches_everything():
-    c = CronExpr.parse("* * * * *")
-    assert c.matches(_dt(2024, 1, 1, 0, 0))
-    assert c.matches(_dt(2024, 6, 15, 13, 37))
-
-
-def test_exact_minute_hour():
-    c = CronExpr.parse("30 9 * * *")
-    assert c.matches(_dt(2024, 3, 4, 9, 30))
-    assert not c.matches(_dt(2024, 3, 4, 9, 31))
-    assert not c.matches(_dt(2024, 3, 4, 10, 30))
-
-
-def test_comma_list():
-    c = CronExpr.parse("0,30 * * * *")
-    assert c.matches(_dt(2024, 1, 1, 5, 0))
-    assert c.matches(_dt(2024, 1, 1, 5, 30))
-    assert not c.matches(_dt(2024, 1, 1, 5, 15))
-
-
-def test_range():
-    c = CronExpr.parse("0 9-17 * * *")
-    assert c.matches(_dt(2024, 1, 1, 9, 0))
-    assert c.matches(_dt(2024, 1, 1, 17, 0))
-    assert not c.matches(_dt(2024, 1, 1, 8, 0))
-    assert not c.matches(_dt(2024, 1, 1, 18, 0))
-
-
-def test_step_on_wildcard():
-    c = CronExpr.parse("*/15 * * * *")
-    for m in (0, 15, 30, 45):
-        assert c.matches(_dt(2024, 1, 1, 0, m))
-    assert not c.matches(_dt(2024, 1, 1, 0, 10))
-
-
-def test_step_on_range():
-    c = CronExpr.parse("0-30/10 * * * *")
-    for m in (0, 10, 20, 30):
-        assert c.matches(_dt(2024, 1, 1, 0, m))
-    assert not c.matches(_dt(2024, 1, 1, 0, 40))
-
-
-def test_sunday_zero_and_seven_both_match():
-    # 2024-01-07 is a Sunday.
-    sun = _dt(2024, 1, 7, 12, 0)
-    c0 = CronExpr.parse("0 12 * * 0")
-    c7 = CronExpr.parse("0 12 * * 7")
-    assert c0.matches(sun)
-    assert c7.matches(sun)
-    # Monday 2024-01-08 must not match a Sunday schedule.
-    assert not c0.matches(_dt(2024, 1, 8, 12, 0))
-
-
-def test_dom_dow_or_semantics():
-    # Both DOM and DOW restricted -> match if EITHER. day 15 OR Monday(dow 1).
-    c = CronExpr.parse("0 0 15 * 1")
-    # 2024-01-15 is a Monday: both true.
-    assert c.matches(_dt(2024, 1, 15, 0, 0))
-    # 2024-01-08 is a Monday, not the 15th: still matches (DOW).
-    assert c.matches(_dt(2024, 1, 8, 0, 0))
-    # 2024-02-15 is a Thursday, not Monday: still matches (DOM).
-    assert c.matches(_dt(2024, 2, 15, 0, 0))
-    # 2024-01-09 is a Tuesday, not the 15th: no match.
-    assert not c.matches(_dt(2024, 1, 9, 0, 0))
-
-
-def test_dom_only_restricted():
-    c = CronExpr.parse("0 0 1 * *")
-    assert c.matches(_dt(2024, 5, 1, 0, 0))
-    assert not c.matches(_dt(2024, 5, 2, 0, 0))
+@pytest.mark.parametrize(
+    ("expr", "hits", "misses"),
+    [
+        pytest.param(
+            "* * * * *",
+            [_dt(2024, 1, 1, 0, 0), _dt(2024, 6, 15, 13, 37)],
+            [],
+            id="all_wildcards",
+        ),
+        pytest.param(
+            "30 9 * * *",
+            [_dt(2024, 3, 4, 9, 30)],
+            [_dt(2024, 3, 4, 9, 31), _dt(2024, 3, 4, 10, 30)],
+            id="exact_minute_hour",
+        ),
+        pytest.param(
+            "0,30 * * * *",
+            [_dt(2024, 1, 1, 5, 0), _dt(2024, 1, 1, 5, 30)],
+            [_dt(2024, 1, 1, 5, 15)],
+            id="comma_list",
+        ),
+        pytest.param(
+            "0 9-17 * * *",
+            [_dt(2024, 1, 1, 9, 0), _dt(2024, 1, 1, 17, 0)],
+            [_dt(2024, 1, 1, 8, 0), _dt(2024, 1, 1, 18, 0)],
+            id="range",
+        ),
+        pytest.param(
+            "*/15 * * * *",
+            [_dt(2024, 1, 1, 0, m) for m in (0, 15, 30, 45)],
+            [_dt(2024, 1, 1, 0, 10)],
+            id="step_on_wildcard",
+        ),
+        pytest.param(
+            "0-30/10 * * * *",
+            [_dt(2024, 1, 1, 0, m) for m in (0, 10, 20, 30)],
+            [_dt(2024, 1, 1, 0, 40)],
+            id="step_on_range",
+        ),
+        # 2024-01-07 is a Sunday. Monday 2024-01-08 must not match a Sunday schedule.
+        pytest.param(
+            "0 12 * * 0",
+            [_dt(2024, 1, 7, 12, 0)],
+            [_dt(2024, 1, 8, 12, 0)],
+            id="sunday_zero",
+        ),
+        pytest.param("0 12 * * 7", [_dt(2024, 1, 7, 12, 0)], [], id="sunday_seven"),
+        # Both DOM and DOW restricted: match if EITHER (day 15 OR Monday).
+        # Hits: Mon 15th, Mon 8th (DOW), Thu Feb 15th (DOM). Miss: Tue 9th.
+        pytest.param(
+            "0 0 15 * 1",
+            [_dt(2024, 1, 15, 0, 0), _dt(2024, 1, 8, 0, 0), _dt(2024, 2, 15, 0, 0)],
+            [_dt(2024, 1, 9, 0, 0)],
+            id="dom_dow_or",
+        ),
+        pytest.param(
+            "0 0 1 * *",
+            [_dt(2024, 5, 1, 0, 0)],
+            [_dt(2024, 5, 2, 0, 0)],
+            id="dom_only",
+        ),
+    ],
+)
+def test_cron_matches(expr, hits, misses):
+    c = CronExpr.parse(expr)
+    for when in hits:
+        assert c.matches(when), when
+    for when in misses:
+        assert not c.matches(when), when
 
 
 @pytest.mark.parametrize("bad", [
