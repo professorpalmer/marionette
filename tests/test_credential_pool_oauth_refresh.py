@@ -8,6 +8,7 @@ import pytest
 
 from harness import credential_pool as cp
 from harness import keys as keys_mod
+from harness.oauth_anthropic import refresh_anthropic_tokens as _real_refresh
 
 
 @pytest.fixture
@@ -107,3 +108,73 @@ def test_refresh_request_shape(monkeypatch):
     out = oa.refresh_anthropic_tokens("rt-1")
     assert out == {"access_token": "a2", "expires_in": 60, "refresh_token": None}
     assert sent == [{"grant_type": "refresh_token", "client_id": oa._OAUTH_CLIENT_ID, "refresh_token": "rt-1"}]
+
+
+def _token_endpoint(monkeypatch, outcome):
+    """Fake both token URLs. ``outcome`` is an HTTP status or "network"."""
+    import io
+    import urllib.error
+    from harness import oauth_anthropic as oa
+
+    monkeypatch.setattr("harness.oauth_anthropic.refresh_anthropic_tokens", _real_refresh)
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        calls.append(req.full_url)
+        if outcome == "network":
+            raise urllib.error.URLError("connection refused")
+        raise urllib.error.HTTPError(req.full_url, outcome, "Bad Request", {},
+                                     io.BytesIO(b'{"error": "invalid_grant"}'))
+
+    monkeypatch.setattr(oa.urllib.request, "urlopen", fake_urlopen)
+    return calls
+
+
+def test_rejected_refresh_token_marks_entry_dead_and_stops_retries(pool, monkeypatch):
+    calls = _token_endpoint(monkeypatch, 400)
+    entry = _expired_entry()
+
+    for _ in range(3):
+        cp.resolve_entry("anthropic")
+        cp.report_failure("anthropic", entry.id, status_code=401, message="expired")
+
+    assert len(calls) == 2, "one try per token URL, then no more"
+    assert entry.last_status == cp.STATUS_DEAD
+    assert entry.last_error_message == cp.SIGN_IN_AGAIN
+    assert not cp.has_healthy_credential("anthropic")
+
+
+def test_network_failure_waits_before_the_next_refresh(pool, monkeypatch):
+    calls = _token_endpoint(monkeypatch, "network")
+    _expired_entry()
+
+    cp.resolve_entry("anthropic")
+    cp.resolve_entry("anthropic")
+    assert len(calls) == 2, "the second lookup must not spend another round trip"
+
+    monkeypatch.setattr(cp.time, "monotonic",
+                        lambda: 10.0 ** 9 + cp._OAUTH_REFRESH_RETRY_SECONDS)
+    cp.resolve_entry("anthropic")
+    assert len(calls) == 4
+
+
+def test_rejection_adopts_a_token_another_process_rotated(pool, monkeypatch):
+    import json
+    from harness import oauth_anthropic as oa
+
+    entry = _expired_entry()
+
+    def rotated_elsewhere(refresh_token):
+        store = cp._load_store()
+        for stored in store["pools"]["anthropic"]:
+            stored["access_token"] = "sk-ant-oat01-other-process"
+            stored["refresh_token"] = "rt-other"
+            stored["expires_at_ms"] = int(time.time() * 1000) + 3_600_000
+        with open(cp._pool_path(), "w", encoding="utf-8") as f:
+            json.dump(store, f)
+        raise oa.RefreshTokenRejected("HTTP 400")
+
+    monkeypatch.setattr("harness.oauth_anthropic.refresh_anthropic_tokens", rotated_elsewhere)
+    assert cp.refresh_oauth_entry(entry)
+    assert entry.access_token == "sk-ant-oat01-other-process"
+    assert entry.last_status == cp.STATUS_OK
