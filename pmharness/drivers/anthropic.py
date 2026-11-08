@@ -18,7 +18,10 @@ from . import http_pool
 from .request_boundary import http_request
 from .reasoning_envelope import capture_reasoning, replay_reasoning
 from .cache_refresh import CacheRefreshDriver, cache_foreground
-from .base import http_error_excerpt, tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT
+from .base import (
+    http_error_excerpt, tool_result_content, tool_result_semantics, DriverResponse, SYSTEM_PROMPT,
+    LENGTH_CONTINUE_PROMPT, length_attempt_meta,
+)
 from .prompt_cache import (
     _can_carry_marker,
     _mark_content_block,
@@ -197,6 +200,18 @@ def _anthropic_cache_meta(usage_fields: dict) -> dict:
         "raw_usage": usage_fields.get("raw_usage") or {},
     }
 
+
+# Follow-up requests after a text reply that hit max_tokens.
+_MAX_LENGTH_CONTINUES = 3
+
+
+def _length_cut_text(resp: DriverResponse) -> bool:
+    """True when ``resp`` is text with no tool call that the output limit cut."""
+    meta = resp.meta or {}
+    return (not resp.error
+            and meta.get("finish_reason") == "max_tokens"
+            and not meta.get("tool_calls")
+            and bool((resp.text or "").strip()))
 
 @metered
 class AnthropicDriver(CacheRefreshDriver):
@@ -711,8 +726,71 @@ class AnthropicDriver(CacheRefreshDriver):
         on_reasoning_delta=None,
         on_tool_hint=None,
         session_id: str | None = None,
+        is_cancelled=None,
     ) -> DriverResponse:
-        """Streaming counterpart of chat() over Anthropic's SSE Messages API.
+        """Stream one reply. A text reply cut at ``max_tokens`` is continued.
+
+        Up to ``_MAX_LENGTH_CONTINUES`` follow-up requests append the cut text
+        and ``LENGTH_CONTINUE_PROMPT``. Their text streams through the same
+        callbacks and joins the first reply. A reply with tool calls is never
+        continued: parse_tool_calls asks the model again for cut arguments.
+        """
+        # Each reply's text is stripped at its ends. Join the raw deltas so
+        # a cut at a space keeps the space that the user saw stream.
+        raw_text = []
+
+        def tee(piece):
+            raw_text.append(piece)
+            if on_delta is not None:
+                on_delta(piece)
+
+        stream = lambda msgs: self._stream_once(
+            msgs, tools=tools, system=system, on_delta=tee,
+            on_reasoning_delta=on_reasoning_delta, on_tool_hint=on_tool_hint,
+            session_id=session_id,
+        )
+        first = stream(messages)
+        attempts = [first]
+        working = list(messages)
+        while (_length_cut_text(attempts[-1])
+               and len(attempts) <= _MAX_LENGTH_CONTINUES
+               and not (is_cancelled is not None and is_cancelled())):
+            working = working + [
+                {"role": "assistant", "content": attempts[-1].text},
+                {"role": "user", "content": LENGTH_CONTINUE_PROMPT},
+            ]
+            attempts.append(stream(working))
+        if len(attempts) == 1:
+            return first
+        last = attempts[-1]
+        meta = length_attempt_meta(attempts, last)
+        meta["length_continues"] = len(attempts) - 1
+        meta["reasoning"] = "".join((a.meta or {}).get("reasoning") or "" for a in attempts)
+        meta["stream_started"] = True
+        if last.error and not last.text:
+            meta["continuation_error"] = last.error
+        return DriverResponse(
+            text=strip_think_blocks("".join(raw_text)),
+            tokens_in=sum(a.tokens_in for a in attempts),
+            tokens_out=sum(a.tokens_out for a in attempts),
+            latency_ms=sum(a.latency_ms for a in attempts),
+            model=self.name,
+            error=None if last.error and not last.text else last.error,
+            meta=meta,
+        )
+
+    def _stream_once(
+        self,
+        messages: list,
+        *,
+        tools: list | None = None,
+        system: str | None = None,
+        on_delta=None,
+        on_reasoning_delta=None,
+        on_tool_hint=None,
+        session_id: str | None = None,
+    ) -> DriverResponse:
+        """One request over Anthropic's SSE Messages API.
         Emits text deltas via on_delta(str) as they arrive, while assembling the
         full text + native tool_use calls so the return value matches chat()
         exactly. This is what makes Claude prose render token-by-token instead of
@@ -867,7 +945,7 @@ class AnthropicDriver(CacheRefreshDriver):
             if not full_text_pieces:
                 nxt = self._retry_after_http_error(e.code, detail)
                 if nxt:
-                    return self.chat_stream(
+                    return self._stream_once(
                         messages,
                         tools=tools,
                         system=system,

@@ -485,7 +485,7 @@ def test_timeout_recovery_preserves_explicit_retry_terminal(monkeypatch, finish)
 
 
 def test_length_continuation_sums_cost_and_cache_accounting():
-    from pmharness.drivers.openai_compat import _length_attempt_meta
+    from pmharness.drivers.base import length_attempt_meta
 
     first = _response(
         "Part one", stream_terminal="length", finish_reason="length",
@@ -495,7 +495,7 @@ def test_length_continuation_sums_cost_and_cache_accounting():
         "Part two", stream_terminal="stop", finish_reason="stop",
         provider_cost_usd=0.2, cache_read_tokens=8,
     )
-    meta = _length_attempt_meta([first, second], second)
+    meta = length_attempt_meta([first, second], second)
     assert meta["provider_cost_usd"] == pytest.approx(0.3)
     assert meta["cache_read_tokens"] == 16
 

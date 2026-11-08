@@ -21,7 +21,10 @@ from typing import Callable
 
 from . import http_pool
 from .request_boundary import http_request
-from .base import http_error_excerpt, DriverResponse, SYSTEM_PROMPT, chat_completions_messages
+from .base import (
+    http_error_excerpt, DriverResponse, SYSTEM_PROMPT, chat_completions_messages,
+    LENGTH_CONTINUE_PROMPT, length_attempt_meta,
+)
 from .prompt_cache import (
     apply_openai_compat_cache_control,
     maybe_attach_openrouter_session_id,
@@ -59,11 +62,6 @@ def prompt_progress_notice(progress: dict) -> str | None:
 _LENGTH_CHAT_FINISH = frozenset({"length", "max_tokens", "max_output_tokens"})
 _FILTER_CHAT_FINISH = frozenset({"content_filter"})
 _INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty", "error"})
-_OPENAI_LENGTH_CONTINUE = (
-    "[System: Your previous response was truncated by the output length "
-    "limit. Continue exactly where you left off. Do not restart or repeat "
-    "prior text. Finish the answer directly.]"
-)
 _OPENAI_MAX_LENGTH_CONTINUES = 3
 _LLAMA_CPP_USAGE_TAIL_SECONDS = 2.0
 _LLAMA_CPP_USAGE_TAIL_BYTES = 64 * 1024
@@ -92,44 +90,6 @@ def _length_continue_eligible(resp: DriverResponse) -> bool:
     if terminal not in _LENGTH_CHAT_FINISH:
         return False
     return bool((resp.text or "").strip())
-
-
-def _length_attempt_meta(responses: list[DriverResponse], terminal: DriverResponse) -> dict:
-    """Preserve terminal provenance while summing per-request accounting."""
-    meta = dict(terminal.meta or {})
-    source_meta = [response.meta or {} for response in responses]
-    for key in (
-        "cache_read_tokens", "cache_write_tokens",
-        "cache_write_5m_tokens", "cache_write_1h_tokens",
-    ):
-        values = [item.get(key) for item in source_meta]
-        if any(isinstance(value, int) and not isinstance(value, bool) for value in values):
-            meta[key] = sum(
-                value for value in values
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            )
-    costs = [
-        float(item["provider_cost_usd"]) for item in source_meta
-        if isinstance(item.get("provider_cost_usd"), (int, float))
-        and not isinstance(item.get("provider_cost_usd"), bool)
-        and float(item["provider_cost_usd"]) >= 0.0
-    ]
-    if costs:
-        meta["provider_cost_usd"] = sum(costs)
-    ttl_bases = {
-        str(item.get("cache_write_ttl_basis") or "").strip().lower()
-        for item in source_meta if str(item.get("cache_write_ttl_basis") or "").strip()
-    }
-    if ttl_bases:
-        meta["cache_write_ttl_basis"] = next(iter(ttl_bases)) if len(ttl_bases) == 1 else "inferred"
-    performance = {}
-    for item in source_meta:
-        for key, value in (item.get("stream_performance") or {}).items():
-            if isinstance(value, int) and not isinstance(value, bool):
-                performance[key] = performance.get(key, 0) + value
-    if performance:
-        meta["stream_performance"] = performance
-    return meta
 
 
 def _tool_arguments_are_complete(arguments) -> bool:
@@ -1962,7 +1922,7 @@ class OpenAICompatDriver:
         working = list(messages)
         for attempt in range(_OPENAI_MAX_LENGTH_CONTINUES):
             if is_cancelled is not None and is_cancelled():
-                meta = _length_attempt_meta(attempts, last)
+                meta = length_attempt_meta(attempts, last)
                 meta["length_continues"] = attempt
                 return DriverResponse(
                     text="".join(parts),
@@ -1975,7 +1935,7 @@ class OpenAICompatDriver:
                 )
             working = list(working)
             working.append({"role": "assistant", "content": last.text})
-            working.append({"role": "user", "content": _OPENAI_LENGTH_CONTINUE})
+            working.append({"role": "user", "content": LENGTH_CONTINUE_PROMPT})
             prior = last
             nxt, tool_retry = _recover_one_stream(_one_stream(working), working)
             attempts.append(nxt)
@@ -1985,7 +1945,7 @@ class OpenAICompatDriver:
             parts.append(nxt.text or "")
             last = nxt
             if tool_retry:
-                meta = _length_attempt_meta(attempts, nxt)
+                meta = length_attempt_meta(attempts, nxt)
                 meta["length_continues"] = attempt + 1
                 return DriverResponse(
                     text="".join(parts), tokens_in=tin, tokens_out=tout,
@@ -1996,12 +1956,12 @@ class OpenAICompatDriver:
                 return DriverResponse(
                     text="".join(parts), tokens_in=tin, tokens_out=tout,
                     latency_ms=latency, model=self.name, error=nxt.error,
-                    meta=_length_attempt_meta(attempts, nxt),
+                    meta=length_attempt_meta(attempts, nxt),
                 )
             if nxt.error and not _length_continue_eligible(nxt):
                 authoritative = recovery_response_is_authoritative(nxt)
                 terminal = nxt if authoritative else prior
-                meta = _length_attempt_meta(attempts, terminal)
+                meta = length_attempt_meta(attempts, terminal)
                 meta["length_continues"] = attempt
                 if not authoritative:
                     meta["continuation_error"] = nxt.error
@@ -2015,7 +1975,7 @@ class OpenAICompatDriver:
                     meta=meta,
                 )
             if not _length_continue_eligible(nxt):
-                meta = _length_attempt_meta(attempts, nxt)
+                meta = length_attempt_meta(attempts, nxt)
                 meta["length_continues"] = attempt + 1
                 return DriverResponse(
                     text="".join(parts),
@@ -2026,7 +1986,7 @@ class OpenAICompatDriver:
                     error=nxt.error,
                     meta=meta,
                 )
-        meta = _length_attempt_meta(attempts, last)
+        meta = length_attempt_meta(attempts, last)
         meta["length_continues"] = _OPENAI_MAX_LENGTH_CONTINUES
         return DriverResponse(
             text="".join(parts),

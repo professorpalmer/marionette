@@ -193,7 +193,7 @@ def _prepare_boundary(method, value, kwargs):
     if type(owner) is OpenAICompatDriver and name == 'chat':
         _allow_reasoning_fallback(boundary)
     if type(owner) is OpenAICompatDriver and name == 'chat_stream':
-        from pmharness.drivers.openai_compat import _OPENAI_LENGTH_CONTINUE
+        from pmharness.drivers.base import LENGTH_CONTINUE_PROMPT
 
         original_builder = driver._build_chat_body
         boundary.recovery = _allow_reasoning_fallback(
@@ -213,7 +213,7 @@ def _prepare_boundary(method, value, kwargs):
                         selected = _BodyBoundary(recovery_body)
                         boundary.fallbacks.append(selected)
                 elif _is_length_continuation(
-                    comparison_value, messages, _OPENAI_LENGTH_CONTINUE,
+                    comparison_value, messages, LENGTH_CONTINUE_PROMPT,
                 ):
                     selected = _allow_reasoning_fallback(
                         _BodyBoundary(_build_from_detached_inputs(
@@ -227,7 +227,7 @@ def _prepare_boundary(method, value, kwargs):
                 if canonical_bytes(messages) == canonical_bytes(comparison_value):
                     selected = boundary
                 elif _is_length_continuation(
-                    comparison_value, messages, _OPENAI_LENGTH_CONTINUE,
+                    comparison_value, messages, LENGTH_CONTINUE_PROMPT,
                 ):
                     selected = _BodyBoundary(_build_from_detached_inputs(
                         original_builder, *a, **kw,
@@ -239,6 +239,26 @@ def _prepare_boundary(method, value, kwargs):
             return json.loads(selected.payload)
 
         setattr(driver, builder, frozen_chat_body)
+    elif type(owner) is AnthropicDriver and name == 'chat_stream':
+        from pmharness.drivers.base import LENGTH_CONTINUE_PROMPT
+
+        original_builder = driver._build_body
+
+        def frozen_stream_body(*a, **kw):
+            messages = a[0] if a else kw.get('messages')
+            if canonical_bytes(messages) == canonical_bytes(comparison_value):
+                selected = boundary
+            elif _is_length_continuation(comparison_value, messages, LENGTH_CONTINUE_PROMPT):
+                body = _build_from_detached_inputs(original_builder, *a, **kw)
+                body['stream'] = True
+                selected = _BodyBoundary(body)
+                boundary.continuations.append(selected)
+            else:
+                raise ValueError('frozen request rejected unexpected message mutation')
+            driver._request_body_observer = selected.observe
+            return json.loads(selected.payload)
+
+        setattr(driver, builder, frozen_stream_body)
     else:
         setattr(driver, builder, lambda *a, **kw: json.loads(boundary.payload))
     driver._request_body_observer = boundary.observe
