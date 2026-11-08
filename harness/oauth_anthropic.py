@@ -92,12 +92,23 @@ def start_anthropic_pkce_login(*, label: str = "") -> Dict[str, Any]:
     }
 
 
+class RefreshTokenRejected(Exception):
+    """The token endpoint refused the refresh token (revoked, expired or reused).
+
+    A retry with the same refresh token cannot succeed: the user must sign in
+    again.
+    """
+
+
 def refresh_anthropic_tokens(refresh_token: str) -> Optional[Dict[str, Any]]:
-    """Exchange a refresh token for a new access token, or None on failure.
+    """Exchange a refresh token for a new access token.
 
     Returns ``access_token``, ``expires_in`` and ``refresh_token`` (the
-    server can rotate it; None when it keeps the old one).
+    server can rotate it; None when it keeps the old one). Returns None on a
+    network or server failure. Raises RefreshTokenRejected when an endpoint
+    answers 400, 401 or 403 and no endpoint succeeds.
     """
+    rejected = ""
     data = json.dumps({
         "grant_type": "refresh_token",
         "client_id": _OAUTH_CLIENT_ID,
@@ -116,6 +127,11 @@ def refresh_anthropic_tokens(refresh_token: str) -> Optional[Dict[str, Any]]:
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            _diag("oauth_anthropic.token_refresh", exc)
+            if exc.code in (400, 401, 403):
+                rejected = f"HTTP {exc.code}"
+            continue
         except Exception as exc:
             _diag("oauth_anthropic.token_refresh", exc)
             continue
@@ -129,6 +145,8 @@ def refresh_anthropic_tokens(refresh_token: str) -> Optional[Dict[str, Any]]:
             "expires_in": int(result.get("expires_in") or 3600),
             "refresh_token": rotated if isinstance(rotated, str) and rotated else None,
         }
+    if rejected:
+        raise RefreshTokenRejected(rejected)
     return None
 
 

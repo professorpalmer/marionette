@@ -195,3 +195,50 @@ class Driver(Protocol):
 
     def chat(self, messages: list, *, tools: Optional[list] = None, system: Optional[str] = None) -> DriverResponse:
         ...
+
+
+# Sent as a user turn after a reply that the output limit cut, so the model
+# continues the text. Drivers and the request snapshot share this exact text.
+LENGTH_CONTINUE_PROMPT = (
+    "[System: Your previous response was truncated by the output length "
+    "limit. Continue exactly where you left off. Do not restart or repeat "
+    "prior text. Finish the answer directly.]"
+)
+
+
+def length_attempt_meta(responses: list[DriverResponse], terminal: DriverResponse) -> dict:
+    """Preserve terminal provenance while summing per-request accounting."""
+    meta = dict(terminal.meta or {})
+    source_meta = [response.meta or {} for response in responses]
+    for key in (
+        "cache_read_tokens", "cache_write_tokens",
+        "cache_write_5m_tokens", "cache_write_1h_tokens",
+    ):
+        values = [item.get(key) for item in source_meta]
+        if any(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            meta[key] = sum(
+                value for value in values
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            )
+    costs = [
+        float(item["provider_cost_usd"]) for item in source_meta
+        if isinstance(item.get("provider_cost_usd"), (int, float))
+        and not isinstance(item.get("provider_cost_usd"), bool)
+        and float(item["provider_cost_usd"]) >= 0.0
+    ]
+    if costs:
+        meta["provider_cost_usd"] = sum(costs)
+    ttl_bases = {
+        str(item.get("cache_write_ttl_basis") or "").strip().lower()
+        for item in source_meta if str(item.get("cache_write_ttl_basis") or "").strip()
+    }
+    if ttl_bases:
+        meta["cache_write_ttl_basis"] = next(iter(ttl_bases)) if len(ttl_bases) == 1 else "inferred"
+    performance = {}
+    for item in source_meta:
+        for key, value in (item.get("stream_performance") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                performance[key] = performance.get(key, 0) + value
+    if performance:
+        meta["stream_performance"] = performance
+    return meta

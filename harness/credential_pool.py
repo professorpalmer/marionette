@@ -256,7 +256,7 @@ class CredentialPool:
         with _lock:
             now = time.time()
             for e in self._entries:
-                if e.id == entry_id:
+                if e.id == entry_id and e.last_status != STATUS_DEAD:
                     e.last_status = STATUS_EXHAUSTED
                     e.last_status_at = now
                     e.last_error_code = error_code
@@ -505,6 +505,12 @@ def peek_token(provider: str) -> Optional[str]:
 
 # Refresh an OAuth access token this long before it expires.
 _OAUTH_REFRESH_MARGIN_MS = 60_000
+# After a failed refresh (network or server), wait this long before the next
+# try. The refresh holds the pool lock, so a retry on every request stalls
+# credential lookups for every provider.
+_OAUTH_REFRESH_RETRY_SECONDS = 60.0
+_refresh_retry_at: Dict[str, float] = {}
+SIGN_IN_AGAIN = "Sign-in expired: the refresh token was rejected. Sign in again."
 
 
 def _oauth_refresher(provider: str):
@@ -552,6 +558,35 @@ def _replace_mirrored_token(provider: str, old: str, new: str) -> None:
         _diag("credential_pool.refresh_keys_mirror", e)
 
 
+def _renew_from_server(entry: PooledCredential, refresher, now_ms: int) -> bool:
+    """Spend the entry's refresh token. True when the entry holds a fresh token."""
+    if entry.last_status == STATUS_DEAD:
+        return False
+    if time.monotonic() < _refresh_retry_at.get(entry.id, 0.0):
+        return False
+    from .oauth_anthropic import RefreshTokenRejected
+    try:
+        result = refresher(entry.refresh_token)
+    except RefreshTokenRejected:
+        # Another process can spend and rotate the token first.
+        if _adopt_newer_disk_token(entry, now_ms):
+            return True
+        entry.last_status = STATUS_DEAD
+        entry.last_status_at = time.time()
+        entry.last_error_code = 401
+        entry.last_error_message = SIGN_IN_AGAIN
+        _persist_all()
+        return False
+    if not result:
+        _refresh_retry_at[entry.id] = time.monotonic() + _OAUTH_REFRESH_RETRY_SECONDS
+        return False
+    entry.access_token = result["access_token"]
+    if result.get("refresh_token"):
+        entry.refresh_token = result["refresh_token"]
+    entry.expires_at_ms = now_ms + int(result["expires_in"]) * 1000
+    return True
+
+
 def refresh_oauth_entry(entry: PooledCredential) -> bool:
     """Renew an OAuth entry's access token in place. True when it is fresh."""
     refresher = _oauth_refresher(entry.provider)
@@ -560,14 +595,10 @@ def refresh_oauth_entry(entry: PooledCredential) -> bool:
     with _lock:
         old = entry.access_token
         now_ms = int(time.time() * 1000)
-        if not _adopt_newer_disk_token(entry, now_ms):
-            result = refresher(entry.refresh_token)
-            if not result:
-                return False
-            entry.access_token = result["access_token"]
-            if result.get("refresh_token"):
-                entry.refresh_token = result["refresh_token"]
-            entry.expires_at_ms = now_ms + int(result["expires_in"]) * 1000
+        if not (_adopt_newer_disk_token(entry, now_ms)
+                or _renew_from_server(entry, refresher, now_ms)):
+            return False
+        _refresh_retry_at.pop(entry.id, None)
         entry.last_status = STATUS_OK
         entry.last_status_at = None
         entry.last_error_code = None
@@ -703,6 +734,7 @@ def clear_pools_for_tests() -> None:
         _pools.clear()
         _rr_index.clear()
         _strategies.clear()
+        _refresh_retry_at.clear()
 
 
 _ENV_TO_PROVIDER = {
