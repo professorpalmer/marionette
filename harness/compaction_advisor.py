@@ -70,6 +70,11 @@ def _effective_thresholds(budget: int) -> tuple[float, float, int, int]:
     return now_ratio, soon_ratio, binding_now, binding_soon
 
 
+def absolute_now_tokens() -> int:
+    """Absolute ``now`` threshold in provider tokens (0 when disabled by env)."""
+    return _env_token_threshold("HARNESS_ADVISOR_NOW_TOKENS", _HOT_NOW_TOKENS)
+
+
 def advisor_enabled() -> bool:
     """Measurement/surfacing toggle; default ON."""
     return _env_enabled("HARNESS_COMPACTION_ADVISOR", True)
