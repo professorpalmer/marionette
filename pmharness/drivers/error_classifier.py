@@ -40,6 +40,18 @@ _QUOTA_PATTERNS = [
 ]
 
 
+_AFFORDABLE_OUTPUT = re.compile(r"can only afford (\d+)", re.IGNORECASE)
+
+
+def affordable_output_tokens(message: Optional[str]) -> Optional[int]:
+    """Output tokens that a credit-limited 402 says the account can pay for.
+
+    OpenRouter: "You requested up to 65536 tokens, but can only afford 56272."
+    """
+    match = _AFFORDABLE_OUTPUT.search(message or "")
+    return int(match.group(1)) if match else None
+
+
 def is_quota_message(message: Optional[str]) -> bool:
     msg = _norm(message)
     return any(p in msg for p in _QUOTA_PATTERNS)
