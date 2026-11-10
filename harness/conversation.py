@@ -724,6 +724,49 @@ def _turn_context_result(future, deadline: float) -> str:
         return ""
 
 
+def _timed_call(fn, *args):
+    """(result, seconds) of one turn-context builder run on the pool."""
+    started = time.monotonic()
+    return fn(*args), time.monotonic() - started
+
+
+def _join_timed_turn_context(future, started: float, deadline: float, timing: Any, phase: str) -> str:
+    """Wait for a ``_timed_call`` future up to ``deadline`` and record its time.
+
+    A lookup cut at the deadline records the time it ran until the cut.
+    """
+    if future is None:
+        return ""
+    try:
+        value, seconds = future.result(timeout=max(0.0, deadline - time.monotonic()))
+    except Exception:
+        value, seconds = "", time.monotonic() - started
+    if timing is not None:
+        timing.record_phase(phase, seconds)
+    return value or ""
+
+
+def _session_tools_profile(session: Any, profile: Optional[str]) -> Optional[str]:
+    """Highest task profile seen this session, for the tool schema only.
+
+    STANDARD and DEEP show the same tools, but STANDARD compacts their
+    descriptions, so each flip rebuilt tools[] and the cached prefix behind it
+    (112 STANDARD/DEEP flips in 1,581 consecutive turns). The schema now only
+    grows: MICRO < STANDARD < DEEP.
+    """
+    from .task_profile import DEEP, MICRO, STANDARD, normalize_profile
+
+    rank = {MICRO: 0, STANDARD: 1, DEEP: 2}
+    current = normalize_profile(profile) if profile else None
+    high = getattr(session, "_tools_profile_high", None)
+    if current not in rank:
+        return high or profile
+    if high is None or rank[current] > rank.get(high, -1):
+        session._tools_profile_high = current
+        return current
+    return high
+
+
 def _tag_pilot_for_metering(driver: Any, session: "ConversationalSession") -> None:
     """Attribute every call this pilot makes to its session (usage ledger)."""
     import weakref
@@ -2560,6 +2603,18 @@ class ConversationalSession(
         self._invalidate_tools_schema()
         return {"ok": True, "reloaded": True, "servers": report}
 
+    def _is_spill_read(self, act: Any) -> bool:
+        """True for a read_file of a spilled tool result (spill:// or the results dir)."""
+        if getattr(act, "kind", "") != "read_file":
+            return False
+        raw = str(getattr(act, "path", "") or "")
+        if raw.startswith("spill://"):
+            return True
+        if not raw or "://" in raw:
+            return False
+        root = os.path.join(os.path.realpath(self._state_dir_or_tempdir), "pmharness-results")
+        return os.path.realpath(os.path.expanduser(raw)).startswith(root + os.sep)
+
     def _read_elision_key(self, act: Any) -> Optional[str]:
         """Key under which a newer identical read supersedes an older one.
 
@@ -2609,7 +2664,7 @@ class ConversationalSession(
             activated = frozenset(self._tool_catalog.activated)
         except Exception:
             activated = frozenset()
-        profile = getattr(self, "_task_profile", None) or None
+        profile = _session_tools_profile(self, getattr(self, "_task_profile", None) or None)
         # The task profile decides which core tools are visible. Keyed on the
         # visible shape (not the profile name) so the snapshot, and the prompt
         # cache behind it, only changes when the toolset does: a MICRO first
@@ -3206,7 +3261,13 @@ class ConversationalSession(
             for m in self._history if m.get("role") == "user"
         )
 
-    def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
+    def _wiki_unchanged_for(self, user_message: str) -> bool:
+        """Same ask again (Retry / Continue) while its wiki slice is still in history."""
+        cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
+        return bool(getattr(self, "_wiki_cache_key", None) == user_message
+                    and cached_wiki and self._in_user_history(cached_wiki))
+
+    def _append_turn_context_trailer(self, message: str, user_message: str, timing: Any = None) -> str:
         try:
             parts = []
             try:
@@ -3222,31 +3283,29 @@ class ConversationalSession(
             # and sit before the pilot request: run them side by side so the
             # turn waits for the slower one, not both. Order in the prompt is
             # unchanged.
-            deadline = time.monotonic() + TURN_CONTEXT_BUDGET_S
+            started = time.monotonic()
+            deadline = started + TURN_CONTEXT_BUDGET_S
             cg_future = (None if skip_cg
-                         else _submit_turn_context(self._build_turn_cg_section, user_message))
-            wiki_future = None
-            wiki_unchanged = False
-            if not skip_wiki:
-                cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
-                if (getattr(self, "_wiki_cache_key", None) == user_message
-                        and cached_wiki and self._in_user_history(cached_wiki)):
-                    # Same ask again (Retry / Continue): no second search,
-                    # no second copy in append-only history.
-                    wiki_unchanged = True
-                else:
-                    wiki_future = _submit_turn_context(self._build_turn_wiki_section, user_message)
-            cg_section = _turn_context_result(cg_future, deadline)
+                         else _submit_turn_context(_timed_call, self._build_turn_cg_section, user_message))
+            wiki_future = (None if skip_wiki or self._wiki_unchanged_for(user_message)
+                           else _submit_turn_context(_timed_call, self._build_turn_wiki_section, user_message))
+            wiki_unchanged = not skip_wiki and wiki_future is None
+            cg_section = _join_timed_turn_context(
+                cg_future, started, deadline, timing, "turn_codegraph")
             if cg_section:
                 parts.append(cg_section)
             if wiki_unchanged:
                 parts.append(_unchanged_section("Wiki"))
-            else:
-                wiki_section = _turn_context_result(wiki_future, deadline)
+            elif not skip_wiki:
+                wiki_section = _join_timed_turn_context(
+                    wiki_future, started, deadline, timing, "turn_wiki")
                 if wiki_section:
                     parts.append(wiki_section)
             try:
-                vault_section = self._build_turn_vault_section(user_message)
+                from .stream_performance import timed_phase
+
+                with timed_phase(timing, "turn_vault"):
+                    vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:
                     parts.append(_unchanged_section("Vault")
                                  if self._in_user_history(vault_section) else vault_section)
@@ -3734,9 +3793,22 @@ class ConversationalSession(
 
         semantics = tool_result_semantics(content, ok=ok)
         tc_id = getattr(act, "tool_call_id", None) or aid
-        clamped_content = content if force_inline else self._turn_economy.persist_tool_result(
-            content, tc_id, tool_name=getattr(act, "kind", None),
-        )
+        if force_inline:
+            clamped_content = content
+        elif self._is_spill_read(act):
+            # The text is already on disk: a second spill file only costs the
+            # model another ranged read. Cut it inline and point at the same file.
+            from .context_budget import truncate_spill_read
+
+            clamped_content = truncate_spill_read(
+                content,
+                self.context_budget_config.resolve_threshold("read_file"),
+                str(getattr(act, "path", "") or ""),
+            )
+        else:
+            clamped_content = self._turn_economy.persist_tool_result(
+                content, tc_id, tool_name=getattr(act, "kind", None),
+            )
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the
         # stale copy still costs tokens every turn otherwise). Only whole-file

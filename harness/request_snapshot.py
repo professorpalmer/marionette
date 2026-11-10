@@ -80,6 +80,10 @@ class _BodyBoundary:
         try:
             actual = canonical_bytes(json.loads(data))
             self.last_digest = hashlib.sha256(actual).hexdigest()
+            if actual != self.payload and _lower_output_cap_only(actual, self.payload):
+                if self.status != 'mismatch':
+                    self.status = 'verified'
+                return
             if actual != self.payload:
                 for fallback in self.fallbacks:
                     if actual == fallback.payload:
@@ -113,6 +117,23 @@ class _BodyBoundary:
         if any(item['wire_status'] == 'mismatch' for item in nested):
             result['wire_status'] = 'mismatch'
         return result
+
+
+_OUTPUT_CAP_FIELDS = ('max_tokens', 'max_completion_tokens')
+
+
+def _lower_output_cap_only(actual, payload):
+    """The same body with a lower output cap (credit-limited 402 resend)."""
+    sent, frozen = json.loads(actual), json.loads(payload)
+    changed = {k for k in set(sent) | set(frozen) if sent.get(k) != frozen.get(k)}
+    if not changed or not changed <= set(_OUTPUT_CAP_FIELDS):
+        return False
+    for key in changed:
+        cap, before = sent.get(key), frozen.get(key)
+        if not isinstance(cap, int) or (before is not None and not (
+                isinstance(before, int) and cap < before)):
+            return False
+    return True
 
 
 def _is_length_continuation(original, candidate, marker):

@@ -1,4 +1,4 @@
-"""Age old large tool results between compactions, only on a cold prompt cache.
+"""Age old large tool results and earlier-turn reasoning, only on a cold prompt cache.
 
 A trim breaks the cached prompt prefix. When the cache is already cold the
 next request rewrites it anyway, so the trim is free. Aged results are never
@@ -104,6 +104,27 @@ def age_tool_results(
     return out, frozenset(aged)
 
 
+def age_reasoning(history: List[dict]) -> Tuple[List[dict], int]:
+    """Blank ``reasoning_content`` of assistant rows before the last user row.
+
+    Chat Completions providers do not need the reasoning of earlier turns.
+    The key stays as ``""`` because some thinking modes check that the field
+    exists on an assistant tool-call row. Returns ``(new_history, chars)``.
+    The input list is not mutated.
+    """
+    last_user = max((i for i, m in enumerate(history) if m.get("role") == "user"), default=-1)
+    out = list(history)
+    reclaimed = 0
+    for i in range(last_user):
+        message = history[i]
+        text = message.get("reasoning_content")
+        if message.get("role") != "assistant" or not isinstance(text, str) or not text:
+            continue
+        out[i] = dict(message, reasoning_content="")
+        reclaimed += len(text)
+    return out, reclaimed
+
+
 def cache_is_cold(session: Any, now: float) -> bool:
     """Cold only when known cold. Unknown or warm returns False."""
     last = getattr(session, "_last_provider_request_at", None)
@@ -150,7 +171,8 @@ def _age_session_locked(session: Any) -> Optional[dict]:
     new_history, aged_ids = age_tool_results(
         history[1:], already_aged=already, recover=recover,
     )
-    if not aged_ids:
+    new_history, reasoning_chars = age_reasoning(new_history)
+    if not aged_ids and not reasoning_chars:
         return None
     before_chars = sum(len(m.get("content") or "") for m in history[1:] if m.get("role") == "tool")
     after_chars = sum(len(m.get("content") or "") for m in new_history if m.get("role") == "tool")
@@ -173,14 +195,16 @@ def _age_session_locked(session: Any) -> Optional[dict]:
     except Exception:
         pass
     after_tokens = int(session._estimate_context_tokens() or 0)
-    reclaimed = max(0, before_chars - after_chars)
+    reclaimed = max(0, before_chars - after_chars) + reasoning_chars
     return {
         "mode": "tool_result_aging",
         "reason": "tool_results_aged",
         "summarized_messages": 0,
         "aged_results": len(aged_ids),
+        "reasoning_chars_dropped": reasoning_chars,
         "chars_reclaimed": reclaimed,
         "before_tokens": before_tokens,
         "after_tokens": after_tokens,
-        "message": f"Aged {len(aged_ids)} old tool result(s) on a cold cache ({reclaimed} chars)",
+        "message": (f"Aged {len(aged_ids)} old tool result(s) and earlier-turn reasoning "
+                    f"on a cold cache ({reclaimed} chars)"),
     }

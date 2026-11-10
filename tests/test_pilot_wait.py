@@ -133,3 +133,43 @@ def test_format_wait_status_settled():
     session = SimpleNamespace(has_pending_swarms=lambda: False)
     text = format_wait_status(session, 2.0, True)
     assert "settled" in text.lower()
+
+
+def test_late_receipts_update_the_existing_card_instead_of_appending(tmp_path, monkeypatch):
+    """A wait replays finished command receipts; each replay appended a card copy."""
+    from harness.config import HarnessConfig
+    from harness.conversation import ConvEvent, ConversationalSession
+
+    s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path)))
+    s._display_transcript.append({"type": "card", "id": "run_command:3", "kind": "run_command",
+                                  "goal": "make test", "result": None})
+    receipt = {"id": "run_command:3", "job_id": "local-cmd-9", "status": "completed", "message": "exit 0"}
+
+    def fake_send_locked(*_a, **_k):
+        for _ in range(3):
+            yield ConvEvent("action_result", dict(receipt))
+        yield ConvEvent("action_result", {"id": "run_command:4", "status": "completed"})
+
+    monkeypatch.setattr(s, "_send_locked", fake_send_locked)
+    kinds = [ev.kind for ev in s.send("go")]
+    assert kinds.count("action_result") == 4
+    cards = [r for r in s._display_transcript if r.get("type") == "card"]
+    assert [c["id"] for c in cards] == ["run_command:3", "run_command:4"]
+    assert cards[0]["result"]["status"] == "completed"
+
+
+def test_wait_drains_only_fresh_command_receipts(tmp_path):
+    from harness.config import HarnessConfig
+    from harness.conversation import ConversationalSession
+
+    s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path), repo=str(tmp_path)))
+    s.harness_session_id = "wait-fresh"
+    s._local_jobs["local-cmd-1"] = {
+        "id": "local-cmd-1", "job_kind": "run_command", "role": "command", "session_id": "wait-fresh",
+        "action_id": "run_command:1", "status": "completed", "exit_code": 0,
+        "terminal_receipt": {"status": "completed", "exit_code": 0},
+    }
+    first = list(apply_ready_command_results(s))
+    second = list(apply_ready_command_results(s))
+    assert len(first) == 1 and second == []
+    assert len(s.drain_command_job_receipts()) == 1  # the HTTP replay lane still replays

@@ -287,8 +287,10 @@ def start_command_batch(
     registered children without a launch checkpoint may start. Commands and
     cwd are immutable for an action; intentional retries need a new action ID.
     """
+    from .command_jobs import durable_action_id
+
     normalized = normalize_batch_commands(commands)
-    aid = str(action_id or "").strip()
+    aid = durable_action_id(session, action_id)
     if not aid:
         raise ValueError("run_command_batch requires a non-empty action_id")
     repo = str(getattr(getattr(session, "config", None), "repo", "") or "").strip()

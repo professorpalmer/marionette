@@ -19,7 +19,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable
 
-from . import http_pool
+from . import error_classifier, http_pool
 from .request_boundary import http_request
 from .base import (
     http_error_excerpt, DriverResponse, SYSTEM_PROMPT, chat_completions_messages,
@@ -59,6 +59,9 @@ def prompt_progress_notice(progress: dict) -> str | None:
         return None
     done = max(0, min(done, total))
     return "Reading prompt: %d of %d tokens (%d%%)" % (done, total, done * 100 // total)
+# Below this, a credit-limited 402 is not worth a smaller resend.
+_MIN_AFFORDABLE_OUTPUT = 512
+
 _LENGTH_CHAT_FINISH = frozenset({"length", "max_tokens", "max_output_tokens"})
 _FILTER_CHAT_FINISH = frozenset({"content_filter"})
 _INCOMPLETE_CHAT_FINISH = frozenset({"incomplete", "empty", "error"})
@@ -1668,6 +1671,7 @@ class OpenAICompatDriver:
         stream_request_attempts = 0
         last_dispatched_body = None
         used_chat_fallback = False
+        output_cap_lowered = False
 
         def _mark_http_fallback(response: DriverResponse) -> DriverResponse:
             nonlocal used_chat_fallback
@@ -1727,7 +1731,8 @@ class OpenAICompatDriver:
             )
 
         def _call() -> DriverResponse:
-            nonlocal last_dispatched_body, stream_request_attempts
+            nonlocal data, last_dispatched_body, output_cap_lowered
+            nonlocal stream_request_attempts
             stream_request_attempts += 1
             headers = {
                 "Content-Type": "application/json",
@@ -1817,6 +1822,18 @@ class OpenAICompatDriver:
                         max_attempts=1,
                         is_cancelled=is_cancelled,
                     ))
+                # A credit-limited 402 names the output the account can pay
+                # for. Send the same request once more with that output cap.
+                if e.code == 402 and not acc.stream_started and not output_cap_lowered:
+                    field = self._output_token_limit_field()
+                    afford = error_classifier.affordable_output_tokens(detail)
+                    cap = body.get(field)
+                    if (afford is not None and afford >= _MIN_AFFORDABLE_OUTPUT
+                            and (not isinstance(cap, int) or afford < cap)):
+                        output_cap_lowered = True
+                        body[field] = afford
+                        data = json.dumps(body).encode("utf-8")
+                        return _call()
                 # Pool rotate only before any tokens streamed (same safety rule).
                 if stream_request_attempts == 1 and not acc.stream_started:
                     nxt = self._pool_rotate_on_http_error(e.code, detail)

@@ -33,7 +33,10 @@ request-relative keys stay relative to ``mark_request_start``, not turn start.
 render plus tool-schema assembly, not one contiguous block.
 ``user_append_ms`` is user-message / context assembly (optional context
 trailer, native image encode, history append). Plan-mode suffix work is
-outside this key.
+outside this key. ``turn_codegraph_ms`` / ``turn_wiki_ms`` are each lookup's
+own run time on the pool (a lookup cut at the deadline records the time until
+the cut). ``turn_vault_ms`` and ``turn_publish_ms`` sit inside
+``user_append_ms``.
 """
 
 from __future__ import annotations
@@ -64,6 +67,10 @@ PRE_REQUEST_PHASE_NAMES = (
     "image_prep",
     "task_profile",
     "user_append",
+    "turn_codegraph",
+    "turn_wiki",
+    "turn_vault",
+    "turn_publish",
     "auto_codegraph",
     "advisory_compaction",
     "step_codegraph",
@@ -227,6 +234,18 @@ class StreamTimingAccumulator:
                 if key in self._phase_open:
                     return
                 self._phase_open[key] = now
+        except Exception:
+            return
+
+    def record_phase(self, name: Any, seconds: float) -> None:
+        """Add a duration measured elsewhere (a pool thread) to a named phase. Never raises."""
+        try:
+            key = str(name or "").strip()
+            if key not in PRE_REQUEST_PHASES or not math.isfinite(seconds) or seconds < 0:
+                return
+            with self._lock:
+                prev = self._phase_s.get(key)
+                self._phase_s[key] = seconds if prev is None else prev + seconds
         except Exception:
             return
 

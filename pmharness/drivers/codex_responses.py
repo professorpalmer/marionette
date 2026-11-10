@@ -687,6 +687,10 @@ def _consume_codex_sse(
         chatgpt_backend=chatgpt_backend,
     )
     collected_items: List[dict] = []
+    # Streamed function-call arguments by item id and by output index. Some
+    # hosts send an output_item.done whose "arguments" is empty.
+    call_args_by_id: Dict[str, List[str]] = {}
+    call_args_by_index: Dict[Any, List[str]] = {}
     text_deltas: List[str] = []
     reasoning_deltas: List[str] = []
     has_tool_calls = False
@@ -1002,6 +1006,26 @@ def _consume_codex_sse(
 
         if "function_call" in event_type:
             has_tool_calls = True
+        if event_type in (
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        ):
+            item_id = event.get("item_id")
+            out_idx = event.get("output_index")
+            parts = call_args_by_id.get(item_id) if item_id else None
+            if parts is None:
+                parts = call_args_by_index.get(out_idx)
+            if parts is None:
+                parts = []
+            if item_id:
+                call_args_by_id[item_id] = parts
+            if out_idx is not None:
+                call_args_by_index[out_idx] = parts
+            if event_type.endswith(".done"):
+                if isinstance(event.get("arguments"), str):
+                    parts[:] = [event["arguments"]]
+            elif isinstance(event.get("delta"), str):
+                parts.append(event["delta"])
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = event.get("delta") or ""
@@ -1037,6 +1061,12 @@ def _consume_codex_sse(
                 out_idx = event.get("output_index")
                 if out_idx is None:
                     out_idx = done_item.get("output_index")
+                if done_item.get("type") == "function_call" and not done_item.get("arguments"):
+                    parts = call_args_by_id.get(done_item.get("id") or "")
+                    if parts is None:
+                        parts = call_args_by_index.get(out_idx)
+                    if parts:
+                        done_item["arguments"] = "".join(parts)
                 sid, _channel = _remember_item(done_item, output_index=out_idx)
                 if not sid:
                     sid = _codex_stream_id(
@@ -1136,7 +1166,11 @@ def _consume_codex_sse(
                 terminal_error.get("message")
                 or terminal_error.get("detail")
                 or terminal_error
-            )[:800]
+            )
+            code = terminal_error.get("code")
+            if isinstance(code, str) and code and code not in err_msg:
+                err_msg = f"{code}: {err_msg}"
+            err_msg = err_msg[:800]
         elif terminal_error:
             err_msg = str(terminal_error)[:800]
         else:

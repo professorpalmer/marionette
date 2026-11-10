@@ -1333,6 +1333,18 @@ class CompactionContextMixin:
                 pass
 
         before_tokens = self._estimate_context_tokens()
+        if not force and not advised:
+            # The layer snapshot counts history bytes / 4, which under-counts
+            # what the provider bills (tool schemas, system prompt, dense
+            # code). On a large window the absolute rule must also see the
+            # usage clock, or a 1M-window session runs past 300k uncompacted.
+            try:
+                from .compaction_advisor import absolute_now_tokens, advisor_compaction_enabled
+
+                absolute = absolute_now_tokens()
+                advised = bool(advisor_compaction_enabled() and 0 < absolute <= before_tokens)
+            except Exception:
+                pass
         if not force and not advised and before_tokens < trigger:
             self._set_compaction_attempt(
                 REASON_BELOW_TRIGGER,

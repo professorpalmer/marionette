@@ -413,9 +413,31 @@ def claim_command_job_launch(session: Any, job_id: str) -> bool:
     return True
 
 
+# Kimi-style call ids (``run_command:15``, ``functions.read_file:3``) count
+# calls in the visible context. The same id comes back after a compaction and
+# in every other session, so it cannot key a durable command row by itself.
+_POSITIONAL_CALL_ID = re.compile(r"^(?:functions\.)?[A-Za-z_][\w.-]*:\d+(?:~\d+)?$")
+
+
+def durable_action_id(session: Any, action_id: str) -> str:
+    """Scope a positional provider call id to this session and user turn.
+
+    A replay of the same call (same session, same turn) keeps its id, so
+    reconcile still finds the earlier row. Other ids pass through unchanged.
+    """
+    aid = str(action_id or "").strip()
+    if not _POSITIONAL_CALL_ID.match(aid):
+        return aid
+    session_id = str(getattr(session, "harness_session_id", "") or "")
+    ordinal_fn = getattr(session, "_current_user_ordinal", None)
+    ordinal = ordinal_fn() if callable(ordinal_fn) else None
+    return f"{session_id}/u{ordinal if ordinal is not None else '-'}/{aid}"
+
+
 def _register_standalone_command(session: Any, act: Any, action_id: str) -> Dict[str, Any]:
     command = str(getattr(act, "command", "") or "").strip()
     repo = str(getattr(getattr(session, "config", None), "repo", "") or "")
+    action_id = durable_action_id(session, action_id)
     if not command or not action_id:
         raise ValueError("run_command requires a non-empty command and action_id")
     if not repo:

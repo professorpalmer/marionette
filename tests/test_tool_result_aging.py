@@ -181,3 +181,37 @@ def test_send_ages_before_first_provider_call(session, monkeypatch):
     aged = [e for e in events if e.kind == "compaction" and e.data.get("mode") == "tool_result_aging"]
     assert len(aged) == 1
     assert _tool_contents(session._history)["call_0"].startswith(AGED_PREFIX)
+
+
+def test_age_reasoning_blanks_earlier_turns_only():
+    from harness.tool_result_aging import age_reasoning
+
+    history = [
+        {"role": "user", "content": "first ask"},
+        {"role": "assistant", "content": "", "reasoning_content": "r" * 900,
+         "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "answer", "reasoning_content": "s" * 100},
+        {"role": "user", "content": "second ask"},
+        {"role": "assistant", "content": "", "reasoning_content": "current turn",
+         "tool_calls": [{"id": "c2", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "ok"},
+    ]
+    out, dropped = age_reasoning(history)
+    assert dropped == 1000
+    assert out[1]["reasoning_content"] == "" and out[3]["reasoning_content"] == ""
+    assert out[5]["reasoning_content"] == "current turn"
+    assert history[1]["reasoning_content"] == "r" * 900
+    assert age_reasoning(out)[1] == 0
+
+
+def test_session_drops_earlier_turn_reasoning_on_a_cold_cache(session):
+    session._history.insert(2, {"role": "assistant", "content": "", "reasoning_content": "think " * 500,
+                                "tool_calls": []})
+    session._history.append({"role": "user", "content": "next ask"})
+    session.pilot = _Driver(_snap(100.0))
+    session._last_provider_request_at = 100.0
+    assert maybe_age_session_tool_results(session, clock=lambda: 200.0) is None
+    payload = maybe_age_session_tool_results(session, clock=lambda: 500.0)
+    assert payload["reasoning_chars_dropped"] == 3000
+    assert session._history[2]["reasoning_content"] == ""

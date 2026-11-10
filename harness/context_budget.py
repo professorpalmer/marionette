@@ -20,6 +20,14 @@ _CHARS_PER_TOKEN: int = 4
 _PER_RESULT_WINDOW_FRACTION: float = 0.15
 _PER_TURN_WINDOW_FRACTION: float = 0.30
 
+# Large-window growth: 2% of the window per result (16k chars at 200k
+# tokens), 12% per tool batch, read_file twice the result cap.
+_LARGE_RESULT_FRACTION: float = 0.02
+_LARGE_RESULT_CEILING: int = 16_000
+_LARGE_TURN_FRACTION: float = 0.12
+_LARGE_TURN_CEILING: int = 96_000
+_READ_FILE_FACTOR: int = 2
+
 # Floors keep a usable preview under tiny windows. Lower than Hermes's
 # 8K/16K so both dimensions can still scale under Marionette's 8K/48K caps.
 _MIN_RESULT_SIZE_CHARS: int = 2_000
@@ -155,29 +163,48 @@ class BudgetConfig:
         return self.max_result_chars
 
 
+def _scaled_cap(env_name: str, env_default: Callable[[], int], window_chars: int,
+                fraction: float, ceiling: int) -> int:
+    """Cap that grows with the window, unless the operator pinned it in env."""
+    legacy = env_default()
+    if os.environ.get(env_name, "").strip():
+        return legacy
+    return max(legacy, min(int(window_chars * fraction), ceiling))
+
+
 def budget_for_context_window(context_length: Optional[int]) -> BudgetConfig:
     """Return a BudgetConfig scaled to the active model's context window.
 
-    Large windows stay at Marionette's historical defaults (env-aware caps).
     Small windows shrink proportionally (Hermes fractions), floored so a
-    usable preview always survives. Invalid / missing lengths keep defaults.
+    usable preview always survives. Large windows grow the caps up to
+    ``_LARGE_RESULT_CEILING`` / ``_LARGE_TURN_CEILING``: a spilled result costs
+    one more provider step to read back, and on a 200k window a 16k-char
+    result is 2% of the context. ``read_file`` gets ``_READ_FILE_FACTOR`` times
+    the result cap because the model asked for that text. An env cap
+    (``HARNESS_MAX_TOOL_RESULT_CHARS`` / ``HARNESS_TURN_BUDGET_CHARS``) pins the
+    cap. Invalid / missing lengths keep the historical defaults.
     """
-    cap_result = _default_max_result()
-    cap_turn = _default_turn_budget()
     if not context_length or context_length <= 0:
-        return BudgetConfig(max_result_chars=cap_result, turn_budget_chars=cap_turn)
+        return BudgetConfig(max_result_chars=_default_max_result(),
+                            turn_budget_chars=_default_turn_budget())
 
     window_chars = int(context_length) * _CHARS_PER_TOKEN
+    cap_result = _scaled_cap("HARNESS_MAX_TOOL_RESULT_CHARS", _default_max_result, window_chars,
+                             _LARGE_RESULT_FRACTION, _LARGE_RESULT_CEILING)
+    cap_turn = _scaled_cap("HARNESS_TURN_BUDGET_CHARS", _default_turn_budget, window_chars,
+                           _LARGE_TURN_FRACTION, _LARGE_TURN_CEILING)
     per_result = int(window_chars * _PER_RESULT_WINDOW_FRACTION)
     per_turn = int(window_chars * _PER_TURN_WINDOW_FRACTION)
 
     per_result = max(_MIN_RESULT_SIZE_CHARS, min(per_result, cap_result))
     per_turn = max(_MIN_TURN_BUDGET_CHARS, min(per_turn, cap_turn))
+    read_cap = min(per_result * _READ_FILE_FACTOR, max(per_turn, per_result))
 
     return BudgetConfig(
         max_result_chars=per_result,
         turn_budget_chars=per_turn,
         preview_chars=1500,
+        tool_overrides={"read_file": read_cap} if read_cap > per_result else {},
     )
 
 
@@ -313,6 +340,18 @@ def build_persisted_message(
         msg += "\n..."
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
+
+
+def truncate_spill_read(content: str, max_chars: Union[int, float], path: str) -> str:
+    """Inline cut of a read of an already spilled file. Writes no new file."""
+    if len(content) <= max_chars:
+        return content
+    head, _ = generate_preview(content, max_chars=int(max_chars))
+    return (
+        f"{head}\n... [read cut at {len(head):,} of {len(content):,} characters. "
+        f"The full text stays at {path}: read_file it again with start_line and limit "
+        f"for the rest.]"
+    )
 
 
 def _notify_compaction(

@@ -2195,6 +2195,8 @@ describe("streamApply module", () => {
       mode: "llm",
     });
     expect(compactionSuccessLabel()).toBe("Context compacted");
+    expect(compactionSuccessLabel({ mode: "tool_result_aging" })).toBe("Trimmed earlier reasoning");
+    expect(compactionSuccessLabel({ mode: "tool_result_aging", aged_results: 2 })).toBe("Aged 2 old tool results");
     expect(compactionSuccessLabel()).not.toMatch(/Context summarized/i);
     const aged = appendCompaction([], 9000, 7000, {
       mode: "tool_result_aging",

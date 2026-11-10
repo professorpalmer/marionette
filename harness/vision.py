@@ -608,10 +608,10 @@ def transcribe_images(paths: list, sidecar=None) -> list:
     model, a spent key) does not fail the whole image turn.
     """
     if sidecar is not None:
-        return [sidecar.transcribe(p) for p in paths]
+        return _map_images(sidecar.transcribe, paths)
     candidates = sidecar_candidates() or [NullVisionSidecar()]
-    results = []
-    for path in paths:
+
+    def transcribe_one(path):
         failures = []
         result = None
         for sc in candidates:
@@ -621,8 +621,24 @@ def transcribe_images(paths: list, sidecar=None) -> list:
             failures.append(f"{sc.name}: {result.error}")
         if result.error and len(failures) > 1:
             result = VisionResult("", error="; ".join(failures)[:800], model=result.model)
-        results.append(result)
-    return results
+        return result
+
+    return _map_images(transcribe_one, paths)
+
+
+def _map_images(fn, paths: list) -> list:
+    """Transcribe images side by side, results in input order.
+
+    Each sidecar call is one VLM request of several seconds, so a turn
+    with two images waits for the slower image, not the sum.
+    """
+    paths = list(paths)
+    if len(paths) < 2:
+        return [fn(p) for p in paths]
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(4, len(paths)), thread_name_prefix="vision") as pool:
+        return list(pool.map(fn, paths))
 
 
 def default_sidecar():

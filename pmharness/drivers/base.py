@@ -206,6 +206,65 @@ LENGTH_CONTINUE_PROMPT = (
 )
 
 
+# Follow-up requests after a text reply that hit the output limit.
+MAX_LENGTH_CONTINUES = 3
+
+
+def stream_with_length_continue(stream_once, messages, *, cut_reasons, model,
+                                on_delta=None, is_cancelled=None) -> DriverResponse:
+    """Stream one reply. A text reply cut by the output limit is continued.
+
+    ``stream_once(messages, on_delta)`` sends one request. Up to
+    ``MAX_LENGTH_CONTINUES`` follow-ups append the cut text and
+    ``LENGTH_CONTINUE_PROMPT``. Their text streams through ``on_delta`` and
+    joins the first reply. A reply with tool calls is never continued.
+    """
+    from pmharness.reasoning import strip_think_blocks
+
+    # Each reply's text is stripped at its ends. Join the raw deltas so a cut
+    # at a space keeps the space that the user saw stream.
+    raw_text = []
+
+    def tee(piece):
+        raw_text.append(piece)
+        if on_delta is not None:
+            on_delta(piece)
+
+    def cut(resp):
+        meta = resp.meta or {}
+        return (not resp.error and meta.get("finish_reason") in cut_reasons
+                and not meta.get("tool_calls") and bool((resp.text or "").strip()))
+
+    first = stream_once(messages, tee)
+    attempts = [first]
+    working = list(messages)
+    while (cut(attempts[-1]) and len(attempts) <= MAX_LENGTH_CONTINUES
+           and not (is_cancelled is not None and is_cancelled())):
+        working = working + [
+            {"role": "assistant", "content": attempts[-1].text},
+            {"role": "user", "content": LENGTH_CONTINUE_PROMPT},
+        ]
+        attempts.append(stream_once(working, tee))
+    if len(attempts) == 1:
+        return first
+    last = attempts[-1]
+    meta = length_attempt_meta(attempts, last)
+    meta["length_continues"] = len(attempts) - 1
+    meta["reasoning"] = "".join((a.meta or {}).get("reasoning") or "" for a in attempts)
+    meta["stream_started"] = True
+    if last.error and not last.text:
+        meta["continuation_error"] = last.error
+    return DriverResponse(
+        text=strip_think_blocks("".join(raw_text)),
+        tokens_in=sum(a.tokens_in for a in attempts),
+        tokens_out=sum(a.tokens_out for a in attempts),
+        latency_ms=sum(a.latency_ms for a in attempts),
+        model=model,
+        error=None if last.error and not last.text else last.error,
+        meta=meta,
+    )
+
+
 def length_attempt_meta(responses: list[DriverResponse], terminal: DriverResponse) -> dict:
     """Preserve terminal provenance while summing per-request accounting."""
     meta = dict(terminal.meta or {})

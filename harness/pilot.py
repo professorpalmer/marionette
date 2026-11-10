@@ -1111,14 +1111,13 @@ def build_tools_schema(
     })
 
     # 1. read_file
-    from .context_budget import _default_max_result
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
         "Read a file's contents from the open workspace or configured read roots. "
         "For a workspace nested in a larger git clone, the git toplevel is also readable. "
-        f"Results over about {_default_max_result():,} characters (roughly 150 lines) "
-        "come back as a short preview with the rest saved to a spill file, so read "
-        "large files in ranges of about 150 lines with start_line and limit. "
+        "A read of up to about 400 lines comes back whole on a large-context model. "
+        "A larger result comes back as a short preview with the rest saved to a spill "
+        "file, so read very large files in ranges with start_line and limit. "
         "Prefer search_codegraph/search_files to explore code structure. "
         "Prefer read_file over shell cd/type for supported paths."
     )
@@ -1658,7 +1657,11 @@ def build_tools_schema(
                             "items": {"type": "string"},
                             "description": "Optional list of subdirectories/files to scope the search; use instead of 'path' to search several at once",
                         },
-                        "max_results": {"type": "integer", "description": "Optional max results to return, default 50"}
+                        "max_results": {"type": "integer", "description": "Optional max results to return, default 50"},
+                        "case_insensitive": {"type": "boolean", "description": "Match without regard to case"},
+                        "glob": {"type": "string", "description": "Only search files whose path matches this glob, e.g. '*.py' or 'src/**/*.ts'"},
+                        "context_lines": {"type": "integer", "description": "Lines of context before and after each match (0-10)"},
+                        "files_only": {"type": "boolean", "description": "Return only the paths of files that match"}
                     },
                     "required": ["query"]
                 }
@@ -3153,7 +3156,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `web_fetch`: read a web page's text contents. Requires `url`.
 - `read_pdf`: extract plain text from a local PDF file or PDF URL. Requires `path` or `url`.
 - `search_codegraph`: search the CodeGraph index for symbol usages, definitions, context, or affected dependents. Requires `query` and optional `kind` (`search` | `context` | `affected`).
-- `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path` (or `paths` for several at once), and `max_results`.
+- `search_files`: plain-text/regex content search over the repository, complementary to symbol search. Requires `query`, optional `path` (or `paths` for several at once), `max_results`, `case_insensitive`, `glob`, `context_lines`, and `files_only`. Use it instead of `rg`/`grep` in `run_command`.
 - `search_state`: look up durable prior jobs/artifacts/spills by keyword (returns job://, artifact://, spill:// URIs). Use before re-dispatching a broad swarm when a prior green analysis may still be valid; open hits with read_file.
 - `search_archive`: search ingested archived Marionette chats by distinctive keywords. Open a hit with `read_archived_chat`. Does not reload into the live session store.
 - `read_archived_chat`: read one archived chat by `chat_id` from search_archive.
@@ -3171,7 +3174,7 @@ You have direct access to a local CodeGraph-indexed workspace and can explore/ed
 - `call_mcp`: call a connected MCP tool. Requires `tool` (the qualified server.tool name) and `arguments` (object). Connected MCP tools may be listed in a "Connected MCP tools" section appended below; use them when relevant.
 - `manage_mcp`: wire MCP servers (list/add/start/stop/remove). For Docker HTTP MCP after `docker run`, call manage_mcp add with name + url=http://localhost:PORT/mcp — localhost is supported. Do not shell-edit ~/.pmharness/mcp.json. Keep bot tokens in the container env, not in chat or mcp.json when the image already reads DISCORD_TOKEN.
 
-LATENCY (mandatory): Minimize provider roundtrips. Combine dependent shell/git checks with && in one `run_command` so failures remain visible. Use `run_command_batch` for independent commands. Emit multiple independent tool calls in one response where the provider supports it.
+LATENCY (mandatory): Minimize provider roundtrips. Read files with `read_file` and search text with `search_files`, not `cat`/`sed`/`rg` in `run_command`: several read_file / search_files / search_codegraph calls in one response run at the same time. Emit multiple independent tool calls in one response where the provider supports it. Keep `run_command` for builds, tests, git and programs; combine dependent shell/git checks with && in one `run_command` so failures remain visible.
 
 MATCH EFFORT TO THE REQUEST (read this first):
 Not every message is a task. Greetings ("hi", "hello", "hey"), thanks, small

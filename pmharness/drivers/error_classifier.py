@@ -40,9 +40,29 @@ _QUOTA_PATTERNS = [
 ]
 
 
+_AFFORDABLE_OUTPUT = re.compile(r"can only afford (\d+)", re.IGNORECASE)
+
+
+def affordable_output_tokens(message: Optional[str]) -> Optional[int]:
+    """Output tokens that a credit-limited 402 says the account can pay for.
+
+    OpenRouter: "You requested up to 65536 tokens, but can only afford 56272."
+    """
+    match = _AFFORDABLE_OUTPUT.search(message or "")
+    return int(match.group(1)) if match else None
+
+
 def is_quota_message(message: Optional[str]) -> bool:
     msg = _norm(message)
     return any(p in msg for p in _QUOTA_PATTERNS)
+
+
+# The provider refused the content. The same request fails again, but the key
+# is fine. These messages often end with "try again", which is not a retry hint.
+_POLICY_PATTERNS = [
+    "content_policy_violation", "violating our usage policy",
+    "violates our usage policy", "inference_hook_denied",
+]
 
 
 # Phrases that mean "the prompt exceeded the model's context window" across
@@ -128,7 +148,12 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
         if 400 <= http_status < 500:
             return ErrorClass.FATAL
 
-    # No HTTP status (network-level exception) -> classify from message.
+    # No HTTP status: a stream failure event or a network exception. Terminal
+    # text comes before the retry text that these messages often include.
+    if is_quota_message(message):
+        return ErrorClass.QUOTA
+    if any(p in msg for p in _POLICY_PATTERNS):
+        return ErrorClass.FATAL
     if is_upstream_provider_block(message):
         return ErrorClass.RETRYABLE
     if any(p in msg for p in _RETRYABLE_PATTERNS):

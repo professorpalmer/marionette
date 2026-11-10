@@ -23,7 +23,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
@@ -202,12 +202,42 @@ def _result_limit(raw: Any, default: int = 50) -> int:
         return default
 
 
+class SearchOptions(NamedTuple):
+    """search_files flags, parsed once from the tool arguments."""
+    case_insensitive: bool = False
+    glob: str = ""
+    context_lines: int = 0
+    files_only: bool = False
+
+    @classmethod
+    def parse(cls, args: Any) -> "SearchOptions":
+        args = args if isinstance(args, dict) else {}
+        try:
+            context = max(0, min(int(args.get("context_lines") or 0), 10))
+        except (TypeError, ValueError):
+            context = 0
+        return cls(
+            case_insensitive=args.get("case_insensitive") is True,
+            glob=str(args.get("glob") or "").strip(),
+            context_lines=context,
+            files_only=args.get("files_only") is True,
+        )
+
+
+_REGEX_FALLBACK_NOTE = "(The query is not a valid regex. It was searched as plain text.)"
+
+
 def _normalize_result_path(line: str) -> str:
     """Render the path prefix with forward slashes so results read the same everywhere."""
     if os.sep != "\\" or ":" not in line:
         return line
     prefix, rest = line.split(":", 1)
     return prefix.replace("\\", "/") + ":" + rest
+
+
+def _is_regex_parse_failure(outcome: Any) -> bool:
+    ok, _status, detail = outcome
+    return not ok and "regex parse error" in str(detail)
 
 
 def _format_match_lines(lines: list[str], max_results: int) -> str:
@@ -738,13 +768,19 @@ class ToolDispatchMixin:
                 return forbidden
 
         max_results = _result_limit(act.arguments.get("max_results"))
-        ok, status, matches = self._search_matching_lines(query, search_paths, max_results)
+        options = SearchOptions.parse(act.arguments)
+        if options.context_lines:
+            # Context rows count as result lines: keep room for each match's window.
+            max_results *= 1 + 2 * options.context_lines
+        ok, status, matches, regex_note = self._search_matching_lines(
+            query, search_paths, max_results, options,
+        )
         if not ok:
             return ok, status, matches
         if isinstance(matches, list):
             matches = self._drop_forbidden_search_hits(matches)
 
-        note = skipped_paths_note(skipped)
+        note = "\n".join(part for part in (regex_note, skipped_paths_note(skipped)) if part)
         if matches:
             result_text = _format_match_lines(matches, max_results)
             return True, "success", f"{result_text}\n\n{note}" if note else result_text
@@ -776,20 +812,36 @@ class ToolDispatchMixin:
             cmd.extend(["--glob", "!" + pattern])
 
     def _search_matching_lines(
-        self, query: str, paths: list[str], max_results: int
-    ) -> tuple[bool, str, Any]:
-        """Run the best available search engine; ripgrep first, Python fallback."""
+        self, query: str, paths: list[str], max_results: int,
+        options: SearchOptions = SearchOptions(),
+    ) -> tuple[bool, str, Any, str]:
+        """Run the best available search engine; ripgrep first, Python fallback.
+
+        Returns ``(ok, status, lines, note)``. An invalid regex is searched
+        again as plain text in the same call, with ``note`` saying so: the
+        model would otherwise spend a provider step to escape it.
+        """
         import shutil
 
         rg_path = shutil.which("rg")
         if rg_path:
-            outcome = self._ripgrep_matching_lines(rg_path, query, paths)
+            outcome = self._ripgrep_matching_lines(rg_path, query, paths, options)
+            if outcome is not None and _is_regex_parse_failure(outcome):
+                fixed = self._ripgrep_matching_lines(rg_path, query, paths, options, fixed=True)
+                if fixed is not None and fixed[0]:
+                    return (*fixed, _REGEX_FALLBACK_NOTE)
             if outcome is not None:
-                return outcome
-        return self._python_matching_lines(query, paths, max_results)
+                return (*outcome, "")
+        try:
+            re.compile(query)
+        except re.error:
+            return (*self._python_matching_lines(re.escape(query), paths, max_results, options),
+                    _REGEX_FALLBACK_NOTE)
+        return (*self._python_matching_lines(query, paths, max_results, options), "")
 
     def _ripgrep_matching_lines(
-        self, rg_path: str, query: str, paths: list[str]
+        self, rg_path: str, query: str, paths: list[str],
+        options: SearchOptions = SearchOptions(), fixed: bool = False,
     ) -> Any:
         """Return ``(ok, status, lines)``, or None when ripgrep is unusable."""
         from .search_hints import is_multiline_query
@@ -797,9 +849,19 @@ class ToolDispatchMixin:
         # A minified or lockfile match can be one enormous line; clip it.
         cmd = [rg_path, "--line-number", "--no-heading", "--color=never",
                "--max-columns=500", "--max-columns-preview"]
-        if is_multiline_query(query):
+        if fixed:
+            cmd.append("--fixed-strings")
+        elif is_multiline_query(query):
             # A query containing newlines can only match across lines.
             cmd.append("--multiline")
+        if options.case_insensitive:
+            cmd.append("--ignore-case")
+        if options.glob:
+            cmd += ["--glob", options.glob]
+        if options.files_only:
+            cmd.append("--files-with-matches")
+        elif options.context_lines:
+            cmd += ["--context", str(options.context_lines)]
         self._append_forbidden_search_globs(cmd)
         cmd += ["-e", query] + [p if p else "." for p in paths]
         try:
@@ -822,13 +884,16 @@ class ToolDispatchMixin:
         return True, "success", [_normalize_result_path(l) for l in output.splitlines() if l.strip()]
 
     def _python_matching_lines(
-        self, query: str, paths: list[str], max_results: int
+        self, query: str, paths: list[str], max_results: int,
+        options: SearchOptions = SearchOptions(),
     ) -> tuple[bool, str, Any]:
+        """Fallback without ripgrep. Context lines are not shown here."""
+        import fnmatch
         from .search_hints import is_multiline_query
 
         multiline = is_multiline_query(query)
         try:
-            compiled = re.compile(query)
+            compiled = re.compile(query, re.IGNORECASE if options.case_insensitive else 0)
         except re.error as e:
             return False, "invalid_arguments", f"Invalid regex pattern: {e}"
 
@@ -839,7 +904,13 @@ class ToolDispatchMixin:
                 getattr(self, "state_dir", None),
             ):
                 rel_path = os.path.relpath(file_path, self.config.repo).replace(os.sep, "/")
-                matches.extend(_file_match_lines(compiled, file_path, rel_path, multiline))
+                if options.glob and not (fnmatch.fnmatch(rel_path, options.glob)
+                                         or fnmatch.fnmatch(os.path.basename(rel_path), options.glob)):
+                    continue
+                rows = _file_match_lines(compiled, file_path, rel_path, multiline)
+                if options.files_only:
+                    rows = rows[:1] and [rel_path]
+                matches.extend(rows)
                 if len(matches) > max_results:
                     return True, "success", matches
         return True, "success", matches

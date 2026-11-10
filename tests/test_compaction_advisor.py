@@ -431,3 +431,33 @@ def test_absolute_threshold_invalid_env_ignored(monkeypatch):
     assert "150000 tokens on a large window" in advice["reasons"][0]
     assert advice["budget_kind"] == "absolute"
     assert advice["budget_tokens"] == 150_000
+
+
+def test_absolute_now_uses_the_provider_usage_clock(monkeypatch, tmp_path):
+    """A 1M-window session billed at 300k tokens compacts even when the layer bytes read low."""
+    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    monkeypatch.delenv("HARNESS_ADVISOR_NOW_TOKENS", raising=False)
+    cfg = HarnessConfig(max_context_tokens=1_000_000, state_dir=str(tmp_path))
+    session = ConversationalSession(cfg)
+    session.harness_session_id = "advisor-usage-clock"
+    session.config.max_context_tokens_pinned = True
+    session._history[0]["content"] = "system prompt"
+    session.pilot = _MockPilot()  # type: ignore[assignment]
+    for i in range(40):
+        session._history.append({"role": "user", "content": f"user turn {i} " + "u" * 400})
+        session._history.append({"role": "assistant", "content": f"assistant turn {i} " + "a" * 400})
+    record_memory_layer_snapshot(str(tmp_path), "advisor-usage-clock", 1, _snapshot(40_000))
+    session._last_prompt_tokens = 300_000
+    session._last_prompt_heuristic = session._estimate_context_tokens_for_list(session._history)
+    events = list(session._maybe_compact_history())
+    assert events and events[0].kind == "compacting"
+
+    monkeypatch.setenv("HARNESS_ADVISOR_NOW_TOKENS", "0")
+    session2 = ConversationalSession(cfg)
+    session2.harness_session_id = "advisor-usage-clock"
+    session2.config.max_context_tokens_pinned = True
+    session2._history = list(session._history)
+    session2.pilot = _MockPilot()  # type: ignore[assignment]
+    session2._last_prompt_tokens = 300_000
+    session2._last_prompt_heuristic = session2._estimate_context_tokens_for_list(session2._history)
+    assert list(session2._maybe_compact_history()) == []
