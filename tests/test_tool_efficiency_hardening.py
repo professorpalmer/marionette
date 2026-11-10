@@ -628,10 +628,10 @@ def test_search_files_requires_a_query(repo):
     assert ok is False and status == "invalid_arguments"
 
 
-def test_search_files_reports_invalid_regex_in_python_fallback(repo, monkeypatch):
+def test_search_files_searches_invalid_regex_as_text_in_python_fallback(repo, monkeypatch):
     session, _workspace = repo
     monkeypatch.setattr(shutil, "which", lambda name: None)
     act = PilotAction(kind="search_files", query="a(", arguments={})
     ok, status, val = session._do_search_files(act)
-    assert ok is False and status == "invalid_arguments"
-    assert "Invalid regex" in val
+    assert ok is True and status == "success"
+    assert "searched as plain text" in val
