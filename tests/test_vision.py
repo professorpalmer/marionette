@@ -404,3 +404,44 @@ def test_pilot_supports_native_images_ignores_unrelated_provider_vision():
     assert pilot_supports_native_images(
         fake_provider, model="", pilot=fake_pilot,
     ) is False
+
+
+def test_transcribe_images_runs_images_side_by_side_in_order():
+    import threading
+    import time
+
+    from harness import vision as v
+
+    barrier = threading.Barrier(3, timeout=2)
+
+    class SlowSidecar:
+        name = "slow"
+
+        def transcribe(self, path):
+            barrier.wait()  # every image must be in flight at once
+            time.sleep(0.01 if path == "a.png" else 0)
+            return v.VisionResult(f"text for {path}", model="m")
+
+    results = v.transcribe_images(["a.png", "b.png", "c.png"], sidecar=SlowSidecar())
+    assert [r.text for r in results] == ["text for a.png", "text for b.png", "text for c.png"]
+
+
+def test_transcribe_images_parallel_keeps_candidate_fallback(monkeypatch):
+    from harness import vision as v
+
+    class Bad:
+        name = "bad"
+
+        def transcribe(self, path):
+            return v.VisionResult("", error="down", model="bad")
+
+    class Good:
+        name = "good"
+
+        def transcribe(self, path):
+            return v.VisionResult(f"ok {path}", model="good")
+
+    monkeypatch.setattr(v, "sidecar_candidates", lambda: [Bad(), Good()])
+    results = v.transcribe_images(["x.png", "y.png"])
+    assert [r.text for r in results] == ["ok x.png", "ok y.png"]
+    assert all(not r.error for r in results)
