@@ -99,7 +99,7 @@ def test_write_failure_never_acknowledges_or_publishes(factory, monkeypatch, ope
     disk = Path(s._prompt_queue_path).read_bytes()
     def fail(*_a, **_k):
         raise PermissionError('injected failure')
-    monkeypatch.setattr('os.replace' if failure == 'replace' else 'json.dump', fail)
+    monkeypatch.setattr('os.replace' if failure == 'replace' else 'os.fsync', fail)
     if operation == 'pop':
         with pytest.raises(Exception):
             s._pop_next_prompt()

@@ -138,13 +138,20 @@ def json_digest(data: Any) -> str:
 
 
 def _atomic_write_json(path: str, data: Any) -> None:
-    """Publish flushed JSON, sync the directory where supported, then read back."""
+    """Publish flushed JSON, sync the directory where supported, then read back.
+
+    ``json.dumps`` without ``indent`` runs the C encoder. ``json.dump`` with
+    ``indent`` runs the pure-Python one, about 5x slower on a multi-megabyte
+    transcript, and this write sits on the turn thread after each tool result.
+    The readback compares the bytes on disk with the bytes written.
+    """
+    payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
     parent = os.path.dirname(path)
     os.makedirs(parent, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(data, handle, indent=2)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
@@ -154,8 +161,8 @@ def _atomic_write_json(path: str, data: Any) -> None:
                 os.fsync(directory)
             finally:
                 os.close(directory)
-        with open(path, encoding="utf-8") as handle:
-            if json_digest(json.load(handle)) != json_digest(data):
+        with open(path, "rb") as handle:
+            if handle.read() != payload:
                 raise OSError("JSON persistence readback mismatch")
     finally:
         if os.path.exists(tmp):
