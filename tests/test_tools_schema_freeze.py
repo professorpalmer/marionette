@@ -255,3 +255,30 @@ def test_prompt_cache_scope_unchanged_across_frozen_sends(monkeypatch):
     assert session._prompt_cache_conversation_key() == key_before
     assert prompt_cache_scope(session._prompt_cache_conversation_key()) == scope_before
     clear_stable_prefixes()
+
+
+def test_tool_schema_follows_the_highest_profile_seen():
+    """A STANDARD turn after a DEEP turn keeps DEEP's full descriptions (no tools[] rebuild)."""
+    from types import SimpleNamespace
+    from harness.conversation import _session_tools_profile
+
+    s = SimpleNamespace()
+    assert _session_tools_profile(s, "MICRO") == "MICRO"
+    assert _session_tools_profile(s, "DEEP") == "DEEP"
+    assert _session_tools_profile(s, "STANDARD") == "DEEP"
+    assert _session_tools_profile(s, "MICRO") == "DEEP"
+    assert _session_tools_profile(s, None) == "DEEP"
+    fresh = SimpleNamespace()
+    assert _session_tools_profile(fresh, None) is None
+    assert _session_tools_profile(fresh, "STANDARD") == "STANDARD"
+
+
+def test_standard_after_deep_reuses_the_schema_snapshot(monkeypatch):
+    monkeypatch.setenv("HARNESS_TOOL_DISCOVERY", "0")
+    session = _session(_MutableMcp([]))
+    session._task_profile = "DEEP"
+    deep = session._build_visible_tools_schema()
+    session._task_profile = "STANDARD"
+    assert session._build_visible_tools_schema() is deep
+    session._task_profile = "DEEP"
+    assert session._build_visible_tools_schema() is deep

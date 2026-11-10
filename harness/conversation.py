@@ -746,6 +746,27 @@ def _join_timed_turn_context(future, started: float, deadline: float, timing: An
     return value or ""
 
 
+def _session_tools_profile(session: Any, profile: Optional[str]) -> Optional[str]:
+    """Highest task profile seen this session, for the tool schema only.
+
+    STANDARD and DEEP show the same tools, but STANDARD compacts their
+    descriptions, so each flip rebuilt tools[] and the cached prefix behind it
+    (112 STANDARD/DEEP flips in 1,581 consecutive turns). The schema now only
+    grows: MICRO < STANDARD < DEEP.
+    """
+    from .task_profile import DEEP, MICRO, STANDARD, normalize_profile
+
+    rank = {MICRO: 0, STANDARD: 1, DEEP: 2}
+    current = normalize_profile(profile) if profile else None
+    high = getattr(session, "_tools_profile_high", None)
+    if current not in rank:
+        return high or profile
+    if high is None or rank[current] > rank.get(high, -1):
+        session._tools_profile_high = current
+        return current
+    return high
+
+
 def _tag_pilot_for_metering(driver: Any, session: "ConversationalSession") -> None:
     """Attribute every call this pilot makes to its session (usage ledger)."""
     import weakref
@@ -2643,7 +2664,7 @@ class ConversationalSession(
             activated = frozenset(self._tool_catalog.activated)
         except Exception:
             activated = frozenset()
-        profile = getattr(self, "_task_profile", None) or None
+        profile = _session_tools_profile(self, getattr(self, "_task_profile", None) or None)
         # The task profile decides which core tools are visible. Keyed on the
         # visible shape (not the profile name) so the snapshot, and the prompt
         # cache behind it, only changes when the toolset does: a MICRO first
