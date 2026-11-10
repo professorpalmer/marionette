@@ -310,12 +310,16 @@ class LocalJobsMixin:
             "result": copy.deepcopy(receipt),
         })
 
-    def drain_command_job_receipts(self, *, already_holding_busy: bool = False) -> list:
+    def drain_command_job_receipts(
+        self, *, already_holding_busy: bool = False, fresh_only: bool = False,
+    ) -> list:
         """Project durable terminal/unknown receipts onto their action cards.
 
         Delivery is idempotent and replayable so a lost HTTP response cannot
         strand a pending card. This lane never emits ``swarm_result`` or
-        ``pilot_resume``.
+        ``pilot_resume``. ``fresh_only`` leaves out receipts delivered by an
+        earlier drain: the pilot's ``wait`` streams only new outcomes, not
+        every command the session ever finished.
         """
         from harness.command_jobs import build_command_terminal_delivery
         busy = getattr(self, "_busy", None)
@@ -337,7 +341,8 @@ class LocalJobsMixin:
                         continue
                     prior = row.get("terminal_delivery")
                     if isinstance(prior, dict):
-                        delivered.append(copy.deepcopy(prior))
+                        if not fresh_only:
+                            delivered.append(copy.deepcopy(prior))
                         continue
                     receipt = build_command_terminal_delivery(row)
                     if receipt is None:

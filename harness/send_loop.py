@@ -128,6 +128,14 @@ _ACTION_RESULT_DISPLAY_FIELDS = (
 )
 
 
+def _display_card(rows: Any, card_id: str) -> Optional[dict]:
+    """Newest display card with this id, or None."""
+    for row in reversed(rows or ()):
+        if isinstance(row, dict) and row.get("type") == "card" and row.get("id") == card_id:
+            return row
+    return None
+
+
 def post_swarm_synthesis_decision(
     *,
     synchronous_swarms: int,
@@ -782,21 +790,29 @@ class SendLoopMixin:
                         for key in _ACTION_RESULT_DISPLAY_FIELDS:
                             if key in ev.data:
                                 res_data[key] = ev.data[key]
-                        card = {
-                            "type": "card",
-                            "id": aid,
-                            "kind": ev.data.get("kind"),
-                            "goal": ev.data.get("goal"),
-                            "cwd": ev.data.get("cwd"),
-                            "result": res_data,
-                        }
-                        goals = ev.data.get("goals")
-                        if isinstance(goals, list):
-                            card["goals"] = [str(g) for g in goals if str(g or "").strip()]
-                        call_id = str(ev.data.get("call_id") or "").strip()
-                        if call_id:
-                            card["call_id"] = call_id
-                        self._display_transcript.append(card)
+                        existing_card = _display_card(self._display_transcript, aid)
+                        if existing_card is not None:
+                            # A later receipt for an earlier card (a background
+                            # command settling during wait) updates that card,
+                            # not a new copy per wait.
+                            if existing_card.get("result") is None:
+                                existing_card["result"] = res_data
+                        else:
+                            card = {
+                                "type": "card",
+                                "id": aid,
+                                "kind": ev.data.get("kind"),
+                                "goal": ev.data.get("goal"),
+                                "cwd": ev.data.get("cwd"),
+                                "result": res_data,
+                            }
+                            goals = ev.data.get("goals")
+                            if isinstance(goals, list):
+                                card["goals"] = [str(g) for g in goals if str(g or "").strip()]
+                            call_id = str(ev.data.get("call_id") or "").strip()
+                            if call_id:
+                                card["call_id"] = call_id
+                            self._display_transcript.append(card)
 
                 if ev.kind == "error":
                     turn_error = str((ev.data or {}).get("error") or "")[:200]

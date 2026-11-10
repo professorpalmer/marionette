@@ -171,7 +171,7 @@ def apply_ready_command_results(session: Any) -> Iterator[Any]:
     if not callable(drain):
         return
     try:
-        receipts = drain(already_holding_busy=True)
+        receipts = drain(already_holding_busy=True, fresh_only=True)
     except TypeError:
         receipts = drain()
     except Exception:
