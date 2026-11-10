@@ -724,6 +724,28 @@ def _turn_context_result(future, deadline: float) -> str:
         return ""
 
 
+def _timed_call(fn, *args):
+    """(result, seconds) of one turn-context builder run on the pool."""
+    started = time.monotonic()
+    return fn(*args), time.monotonic() - started
+
+
+def _join_timed_turn_context(future, started: float, deadline: float, timing: Any, phase: str) -> str:
+    """Wait for a ``_timed_call`` future up to ``deadline`` and record its time.
+
+    A lookup cut at the deadline records the time it ran until the cut.
+    """
+    if future is None:
+        return ""
+    try:
+        value, seconds = future.result(timeout=max(0.0, deadline - time.monotonic()))
+    except Exception:
+        value, seconds = "", time.monotonic() - started
+    if timing is not None:
+        timing.record_phase(phase, seconds)
+    return value or ""
+
+
 def _tag_pilot_for_metering(driver: Any, session: "ConversationalSession") -> None:
     """Attribute every call this pilot makes to its session (usage ledger)."""
     import weakref
@@ -3218,7 +3240,13 @@ class ConversationalSession(
             for m in self._history if m.get("role") == "user"
         )
 
-    def _append_turn_context_trailer(self, message: str, user_message: str) -> str:
+    def _wiki_unchanged_for(self, user_message: str) -> bool:
+        """Same ask again (Retry / Continue) while its wiki slice is still in history."""
+        cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
+        return bool(getattr(self, "_wiki_cache_key", None) == user_message
+                    and cached_wiki and self._in_user_history(cached_wiki))
+
+    def _append_turn_context_trailer(self, message: str, user_message: str, timing: Any = None) -> str:
         try:
             parts = []
             try:
@@ -3234,31 +3262,29 @@ class ConversationalSession(
             # and sit before the pilot request: run them side by side so the
             # turn waits for the slower one, not both. Order in the prompt is
             # unchanged.
-            deadline = time.monotonic() + TURN_CONTEXT_BUDGET_S
+            started = time.monotonic()
+            deadline = started + TURN_CONTEXT_BUDGET_S
             cg_future = (None if skip_cg
-                         else _submit_turn_context(self._build_turn_cg_section, user_message))
-            wiki_future = None
-            wiki_unchanged = False
-            if not skip_wiki:
-                cached_wiki = getattr(self, "_wiki_cache_section", "") or ""
-                if (getattr(self, "_wiki_cache_key", None) == user_message
-                        and cached_wiki and self._in_user_history(cached_wiki)):
-                    # Same ask again (Retry / Continue): no second search,
-                    # no second copy in append-only history.
-                    wiki_unchanged = True
-                else:
-                    wiki_future = _submit_turn_context(self._build_turn_wiki_section, user_message)
-            cg_section = _turn_context_result(cg_future, deadline)
+                         else _submit_turn_context(_timed_call, self._build_turn_cg_section, user_message))
+            wiki_future = (None if skip_wiki or self._wiki_unchanged_for(user_message)
+                           else _submit_turn_context(_timed_call, self._build_turn_wiki_section, user_message))
+            wiki_unchanged = not skip_wiki and wiki_future is None
+            cg_section = _join_timed_turn_context(
+                cg_future, started, deadline, timing, "turn_codegraph")
             if cg_section:
                 parts.append(cg_section)
             if wiki_unchanged:
                 parts.append(_unchanged_section("Wiki"))
-            else:
-                wiki_section = _turn_context_result(wiki_future, deadline)
+            elif not skip_wiki:
+                wiki_section = _join_timed_turn_context(
+                    wiki_future, started, deadline, timing, "turn_wiki")
                 if wiki_section:
                     parts.append(wiki_section)
             try:
-                vault_section = self._build_turn_vault_section(user_message)
+                from .stream_performance import timed_phase
+
+                with timed_phase(timing, "turn_vault"):
+                    vault_section = self._build_turn_vault_section(user_message)
                 if vault_section:
                     parts.append(_unchanged_section("Vault")
                                  if self._in_user_history(vault_section) else vault_section)

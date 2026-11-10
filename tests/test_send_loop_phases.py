@@ -129,7 +129,7 @@ def test_plan_append_only_user_message_byte_order(tmp_path, monkeypatch):
     monkeypatch.setattr(
         session,
         "_append_turn_context_trailer",
-        lambda message, user_message: message + "\n" + trailer_mark,
+        lambda message, user_message, timing=None: message + "\n" + trailer_mark,
     )
 
     class OrderPilot:

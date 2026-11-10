@@ -219,3 +219,53 @@ def test_a_hung_codegraph_cannot_hold_a_hosted_turn(tmp_path, monkeypatch):
     # runner has measured 2.8 s, so wall time is not a tighter bound.
     assert _time.monotonic() - started < 10.0
     assert "### Wiki on time" in seen["system"]
+
+
+def test_turn_context_lookups_record_their_own_time(monkeypatch):
+    """Each lookup's run time lands in the receipt (turn_codegraph_ms / turn_wiki_ms)."""
+    import time as _time
+    from harness.stream_performance import StreamTimingAccumulator
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+    monkeypatch.setattr("harness.task_profile.profile_skips_wiki", lambda *a, **k: False)
+
+    def slow(label, seconds):
+        def build(msg):
+            _time.sleep(seconds)
+            return f"### {label} for {msg}"
+        return build
+
+    monkeypatch.setattr(s, "_build_turn_cg_section", slow("CodeGraph", 0.1))
+    monkeypatch.setattr(s, "_build_turn_wiki_section", slow("Wiki", 0.3))
+    monkeypatch.setattr(s, "_build_turn_vault_section", lambda msg: "")
+    timing = StreamTimingAccumulator()
+    out = s._append_turn_context_trailer("fix the parser", "fix the parser", timing)
+    assert "### CodeGraph for fix the parser" in out and "### Wiki for fix the parser" in out
+    snap = timing.snapshot()
+    assert 80 <= snap["turn_codegraph_ms"] < 250
+    assert 280 <= snap["turn_wiki_ms"] < 600
+    assert "turn_vault_ms" in snap
+
+
+def test_a_cut_lookup_records_its_time_until_the_cut(monkeypatch):
+    import threading
+    import harness.conversation as conv
+    from harness.stream_performance import StreamTimingAccumulator
+    cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
+    cfg.repo = tempfile.mkdtemp()
+    s = ConversationalSession(cfg)
+    monkeypatch.setattr(conv, "TURN_CONTEXT_BUDGET_S", 0.2)
+    monkeypatch.setattr("harness.task_profile.profile_skips_codegraph", lambda *a, **k: False)
+    monkeypatch.setattr("harness.task_profile.profile_skips_wiki", lambda *a, **k: True)
+    release = threading.Event()
+    monkeypatch.setattr(s, "_build_turn_cg_section", lambda msg: release.wait(5) and "late")
+    monkeypatch.setattr(s, "_build_turn_vault_section", lambda msg: "")
+    timing = StreamTimingAccumulator()
+    out = s._append_turn_context_trailer("fix it", "fix it", timing)
+    release.set()
+    assert "late" not in out
+    snap = timing.snapshot()
+    assert 150 <= snap["turn_codegraph_ms"] < 600
+    assert "turn_wiki_ms" not in snap

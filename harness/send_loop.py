@@ -1214,7 +1214,7 @@ class SendLoopMixin:
         if self._resolve_append_only():
             with timed_phase(timing, "user_append"):
                 processed_message = self._append_turn_context_trailer(
-                    processed_message, user_message
+                    processed_message, user_message, timing,
                 )
         else:
             from .task_profile import is_conversational_followup
@@ -1268,7 +1268,8 @@ class SendLoopMixin:
                 self._display_transcript.append(user_display_row(self, user_message, input_id))
                 if input_id:
                     from .input_receipts import publish_session_injected
-                    publish_session_injected(self, [input_id])
+                    with timed_phase(timing, "turn_publish"):
+                        publish_session_injected(self, [input_id])
 
         if image_encode_error is not None:
             if input_id:
