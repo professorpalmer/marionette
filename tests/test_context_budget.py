@@ -256,12 +256,60 @@ def test_budget_for_context_window_invalid_returns_legacy_defaults(clear_budget_
         assert cfg.preview_chars == 1500
 
 
-def test_budget_for_context_window_large_model_capped_at_defaults(clear_budget_env):
-    """200K+ token windows never exceed historical Marionette caps."""
-    for tokens in (200_000, 1_000_000):
-        cfg = budget_for_context_window(tokens)
-        assert cfg.max_result_chars == 8000
-        assert cfg.turn_budget_chars == 48000
+def test_budget_for_context_window_large_model_grows_to_ceiling(clear_budget_env):
+    """A 200K window spills at 16k chars (2%), not 8k; read_file gets twice that."""
+    cfg = budget_for_context_window(200_000)
+    assert cfg.max_result_chars == 16_000
+    assert cfg.turn_budget_chars == 96_000
+    assert cfg.resolve_threshold("read_file") == 32_000
+    assert cfg.resolve_threshold("run_command") == 16_000
+    big = budget_for_context_window(1_000_000)
+    assert (big.max_result_chars, big.turn_budget_chars) == (16_000, 96_000)
+    mid = budget_for_context_window(128_000)
+    assert mid.max_result_chars == int(128_000 * 4 * 0.02)
+
+
+def test_budget_for_context_window_env_pins_the_cap(monkeypatch):
+    monkeypatch.setenv("HARNESS_MAX_TOOL_RESULT_CHARS", "8000")
+    monkeypatch.setenv("HARNESS_TURN_BUDGET_CHARS", "48000")
+    cfg = budget_for_context_window(1_000_000)
+    assert cfg.max_result_chars == 8000
+    assert cfg.turn_budget_chars == 48000
+    assert cfg.resolve_threshold("read_file") == 16_000
+
+
+def test_spill_read_is_cut_inline_without_a_new_spill(tmp_path, clear_budget_env):
+    conf = DummyConfig(repo=str(tmp_path), max_context_tokens=200_000)
+    session = ConversationalSession(conf)
+    session.state_dir = str(tmp_path / "state")
+    results = tmp_path / "state" / "pmharness-results"
+    results.mkdir(parents=True)
+    spilled = results / "call_1.txt"
+    spilled.write_text("x" * 50_000, encoding="utf-8")
+
+    act = DummyAction(kind="read_file", path=str(spilled))
+    act.tool_call_id = "call_2"
+    session._append_action_result(act, "call_2", "y\n" * 25_000, True)
+    content = session._history[-1]["content"]
+    assert PERSISTED_OUTPUT_TAG not in content
+    assert str(spilled) in content
+    assert len(content) < 33_000
+    assert sorted(p.name for p in results.iterdir()) == ["call_1.txt"]
+
+    uri_act = DummyAction(kind="read_file", path="spill://sess/call_1")
+    assert session._is_spill_read(uri_act)
+    assert not session._is_spill_read(DummyAction(kind="read_file", path="src/x.py"))
+
+
+def test_large_read_file_stays_inline_on_a_large_window(tmp_path, clear_budget_env):
+    conf = DummyConfig(repo=str(tmp_path), max_context_tokens=200_000)
+    session = ConversationalSession(conf)
+    session.state_dir = str(tmp_path / "state")
+    act = DummyAction(kind="read_file", path="a.py")
+    act.tool_call_id = "call_3"
+    text = "line of code\n" * 2_000  # 26k chars, about 2,000 lines
+    session._append_action_result(act, "call_3", text, True)
+    assert session._history[-1]["content"].startswith(text)
 
 
 def test_budget_for_context_window_small_model_scales_down(clear_budget_env):

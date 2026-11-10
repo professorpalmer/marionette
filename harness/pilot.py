@@ -1111,14 +1111,13 @@ def build_tools_schema(
     })
 
     # 1. read_file
-    from .context_budget import _default_max_result
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
         "Read a file's contents from the open workspace or configured read roots. "
         "For a workspace nested in a larger git clone, the git toplevel is also readable. "
-        f"Results over about {_default_max_result():,} characters (roughly 150 lines) "
-        "come back as a short preview with the rest saved to a spill file, so read "
-        "large files in ranges of about 150 lines with start_line and limit. "
+        "A read of up to about 400 lines comes back whole on a large-context model. "
+        "A larger result comes back as a short preview with the rest saved to a spill "
+        "file, so read very large files in ranges with start_line and limit. "
         "Prefer search_codegraph/search_files to explore code structure. "
         "Prefer read_file over shell cd/type for supported paths."
     )

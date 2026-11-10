@@ -2560,6 +2560,18 @@ class ConversationalSession(
         self._invalidate_tools_schema()
         return {"ok": True, "reloaded": True, "servers": report}
 
+    def _is_spill_read(self, act: Any) -> bool:
+        """True for a read_file of a spilled tool result (spill:// or the results dir)."""
+        if getattr(act, "kind", "") != "read_file":
+            return False
+        raw = str(getattr(act, "path", "") or "")
+        if raw.startswith("spill://"):
+            return True
+        if not raw or "://" in raw:
+            return False
+        root = os.path.join(os.path.realpath(self._state_dir_or_tempdir), "pmharness-results")
+        return os.path.realpath(os.path.expanduser(raw)).startswith(root + os.sep)
+
     def _read_elision_key(self, act: Any) -> Optional[str]:
         """Key under which a newer identical read supersedes an older one.
 
@@ -3734,9 +3746,22 @@ class ConversationalSession(
 
         semantics = tool_result_semantics(content, ok=ok)
         tc_id = getattr(act, "tool_call_id", None) or aid
-        clamped_content = content if force_inline else self._turn_economy.persist_tool_result(
-            content, tc_id, tool_name=getattr(act, "kind", None),
-        )
+        if force_inline:
+            clamped_content = content
+        elif self._is_spill_read(act):
+            # The text is already on disk: a second spill file only costs the
+            # model another ranged read. Cut it inline and point at the same file.
+            from .context_budget import truncate_spill_read
+
+            clamped_content = truncate_spill_read(
+                content,
+                self.context_budget_config.resolve_threshold("read_file"),
+                str(getattr(act, "path", "") or ""),
+            )
+        else:
+            clamped_content = self._turn_economy.persist_tool_result(
+                content, tc_id, tool_name=getattr(act, "kind", None),
+            )
         # Tag full-file reads with their path so the pre-send pass can elide an
         # EARLIER read of the same file once a newer read supersedes it (the
         # stale copy still costs tokens every turn otherwise). Only whole-file
