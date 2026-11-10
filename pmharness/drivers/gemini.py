@@ -12,7 +12,10 @@ import urllib.request
 import urllib.error
 
 from . import http_pool
-from .base import http_error_excerpt, tool_result_content, DriverResponse, SYSTEM_PROMPT
+from .base import (
+    http_error_excerpt, tool_result_content, DriverResponse, SYSTEM_PROMPT,
+    stream_with_length_continue,
+)
 from .retry import with_retry
 from .metering import metered
 
@@ -480,6 +483,29 @@ class GeminiDriver:
         return with_retry(_call, sleep=self._sleep)
 
     def chat_stream(
+        self,
+        messages: list,
+        *,
+        tools: list | None = None,
+        system: str | None = None,
+        on_delta=None,
+        on_reasoning_delta=None,
+        on_tool_hint=None,
+        session_id: str | None = None,
+        is_cancelled=None,
+    ) -> DriverResponse:
+        """Stream one reply. A text reply cut at ``MAX_TOKENS`` is continued."""
+        return stream_with_length_continue(
+            lambda msgs, tee: self._stream_once(
+                msgs, tools=tools, system=system, on_delta=tee,
+                on_reasoning_delta=on_reasoning_delta, on_tool_hint=on_tool_hint,
+                session_id=session_id,
+            ),
+            messages, cut_reasons=("MAX_TOKENS",), model=self.name,
+            on_delta=on_delta, is_cancelled=is_cancelled,
+        )
+
+    def _stream_once(
         self,
         messages: list,
         *,
