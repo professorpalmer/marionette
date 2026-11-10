@@ -975,9 +975,11 @@ export function compactionAbortLabel(message?: string | null, reason?: string | 
 }
 
 /** Operator-facing label for a successful compaction SSE. */
-export function compactionSuccessLabel(it?: Pick<CompactionItem, "aged_results">): string {
+export function compactionSuccessLabel(it?: Pick<CompactionItem, "aged_results" | "mode">): string {
   const aged = it?.aged_results ?? 0;
   if (aged > 0) return `Aged ${aged} old tool result${aged === 1 ? "" : "s"}`;
+  // A cold-cache aging pass that only blanked earlier-turn reasoning.
+  if (it?.mode === "tool_result_aging") return "Trimmed earlier reasoning";
   return "Context compacted";
 }
 
