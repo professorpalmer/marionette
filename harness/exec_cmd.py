@@ -78,6 +78,11 @@ def run_exec(argv) -> int:
     if not (task or "").strip():
         print("harness exec: no task text", file=sys.stderr)
         return 2
+    # The per-turn tool budget and the step ceiling hand control back to a
+    # person who can say "continue". A headless run has no person, so they
+    # only cut the work short. The caller's time limit bounds the run.
+    for name in ("HARNESS_PILOT_TOOL_BUDGET", "HARNESS_MAX_PILOT_STEPS"):
+        os.environ.setdefault(name, "0")
     if args.context_window:
         os.environ["HARNESS_MAX_CONTEXT_TOKENS"] = str(args.context_window)
 

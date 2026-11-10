@@ -99,3 +99,26 @@ def test_meter_keeps_a_reply_limit_the_harness_sent():
     meter = _meter()
     cfg = SimpleNamespace(model="m", provider="p", effort="low", max_output=393216)
     assert meter.rewrite_body({"max_completion_tokens": 4096}, cfg).get("max_tokens") is None
+
+
+def test_exec_lifts_the_turn_caps_unless_the_caller_set_them(monkeypatch, tmp_path):
+    seen = {}
+
+    class Probe(_FakeSession):
+        def send(self, message, resume=False):
+            import os
+            seen["budget"] = os.environ.get("HARNESS_PILOT_TOOL_BUDGET")
+            seen["steps"] = os.environ.get("HARNESS_MAX_PILOT_STEPS")
+            return iter(())
+
+        def has_pending_swarms(self):
+            return False
+
+        def drain_swarm_results(self):
+            return iter(())
+
+    monkeypatch.setattr("harness.conversation.ConversationalSession", Probe)
+    monkeypatch.delenv("HARNESS_PILOT_TOOL_BUDGET", raising=False)
+    monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "7")
+    assert exec_cmd.run_exec(["task", "--repo", str(tmp_path)]) == 0
+    assert seen == {"budget": "0", "steps": "7"}
