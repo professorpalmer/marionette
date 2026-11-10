@@ -400,3 +400,41 @@ def test_shell_fixture_quotes_and_executable_paths(tmp_path, background, executa
     assert replay['status'] == 'failed'
     assert replay['exit_code'] == 7
     assert (tmp_path / 'quoted effect').read_text(encoding='utf-8') == expected
+
+
+@pytest.mark.parametrize('background', [False, True])
+def test_positional_call_id_from_another_session_does_not_conflict(tmp_path, background):
+    """Kimi-style ids (run_command:2) recur in every session and after compaction."""
+    from harness.command_jobs import standalone_command_job_id
+    s = session_at(tmp_path)
+    s.harness_session_id = 'other-session'
+    hold = python_shell_command("import time; time.sleep(8)")
+    jid = standalone_command_job_id('run_command:2', hold)
+    s._register_command_job(jid, command=hold, action_id='run_command:2', cwd=str(tmp_path))
+    s._checkpoint_command_job_launch(jid)
+    s._mark_command_job_running(jid)
+    s.harness_session_id = 'standalone-session'
+    result = dispatch(s, command(), background, aid='run_command:2')
+    assert not result.get('error'), result
+    assert settle(s, result)['status'] == 'completed'
+    assert (tmp_path / 'effect').read_text() == 'x'
+
+
+def test_positional_call_id_replay_in_the_same_turn_reconciles(tmp_path):
+    s = session_at(tmp_path)
+    first = dispatch(s, command(), False, aid='run_command:7')
+    assert settle(s, first)['status'] == 'completed'
+    replay = dispatch(s, command(), False, aid='run_command:7')
+    assert replay['job_id'] == first['job_id']
+    assert (tmp_path / 'effect').read_text() == 'x'
+
+
+def test_durable_action_id_scopes_only_positional_ids():
+    from types import SimpleNamespace
+    from harness.command_jobs import durable_action_id
+
+    s = SimpleNamespace(harness_session_id='sess', _current_user_ordinal=lambda: 4)
+    assert durable_action_id(s, 'run_command:15') == 'sess/u4/run_command:15'
+    assert durable_action_id(s, 'functions.run_command:3~2') == 'sess/u4/functions.run_command:3~2'
+    assert durable_action_id(s, 'call_abc123') == 'call_abc123'
+    assert durable_action_id(s, 'chatcmpl-tool-9f') == 'chatcmpl-tool-9f'
