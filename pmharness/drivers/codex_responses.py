@@ -1166,7 +1166,11 @@ def _consume_codex_sse(
                 terminal_error.get("message")
                 or terminal_error.get("detail")
                 or terminal_error
-            )[:800]
+            )
+            code = terminal_error.get("code")
+            if isinstance(code, str) and code and code not in err_msg:
+                err_msg = f"{code}: {err_msg}"
+            err_msg = err_msg[:800]
         elif terminal_error:
             err_msg = str(terminal_error)[:800]
         else:

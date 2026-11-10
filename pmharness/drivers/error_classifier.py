@@ -45,6 +45,14 @@ def is_quota_message(message: Optional[str]) -> bool:
     return any(p in msg for p in _QUOTA_PATTERNS)
 
 
+# The provider refused the content. The same request fails again, but the key
+# is fine. These messages often end with "try again", which is not a retry hint.
+_POLICY_PATTERNS = [
+    "content_policy_violation", "violating our usage policy",
+    "violates our usage policy", "inference_hook_denied",
+]
+
+
 # Phrases that mean "the prompt exceeded the model's context window" across
 # OpenAI, Anthropic, OpenRouter, z.ai, Moonshot, and most compat providers.
 # Do NOT match bare ``max_tokens`` / ``exceeds the maximum``: those fire on
@@ -128,7 +136,12 @@ def classify(http_status: Optional[int] = None, message: Optional[str] = None) -
         if 400 <= http_status < 500:
             return ErrorClass.FATAL
 
-    # No HTTP status (network-level exception) -> classify from message.
+    # No HTTP status: a stream failure event or a network exception. Terminal
+    # text comes before the retry text that these messages often include.
+    if is_quota_message(message):
+        return ErrorClass.QUOTA
+    if any(p in msg for p in _POLICY_PATTERNS):
+        return ErrorClass.FATAL
     if is_upstream_provider_block(message):
         return ErrorClass.RETRYABLE
     if any(p in msg for p in _RETRYABLE_PATTERNS):
