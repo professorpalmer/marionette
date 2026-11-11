@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import override
 
 from pydantic import Field
@@ -38,6 +39,35 @@ TASK_PATH = "/tmp/marionette-task.md"
 WHEEL_DIR = "/tmp/marionette-wheel"
 PATH_SETUP = 'export PATH="$HOME/.local/bin:$PATH"; '
 INSTALL_RETRY_WAITS = (10, 30, 60)
+# Offline runs on a local Docker that cannot switch network policy after start
+# (Docker Desktop's kernel lacks nft fib inet, so Harbor's egress control is off).
+# The task container gets NET_ADMIN (task compose), root locks egress to the
+# endpoint after install, and the agent runs without NET_ADMIN/NET_RAW, so
+# nothing it starts can change the rules.
+LOCK_PROBE = "https://pypi.org/simple/"
+DROP_NET_CAPS = (
+    'if [ "$(id -u)" = 0 ]; then exec setpriv --bounding-set -net_admin,-net_raw '
+    "--inh-caps -net_admin,-net_raw -- bash -c %s; else exec bash -c %s; fi"
+)
+
+
+def egress_lock_script(endpoint: str) -> str:
+    """Root shell script: allow loopback and the endpoint host:port, drop the rest."""
+    url = urlsplit(endpoint)
+    host, port = url.hostname, url.port or (443 if url.scheme == "https" else 80)
+    return (
+        "set -e; iptables -F OUTPUT; "
+        "iptables -A OUTPUT -o lo -j ACCEPT; "
+        "iptables -A OUTPUT -d %s -p tcp --dport %d -j ACCEPT; "
+        "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT; "
+        "iptables -P OUTPUT DROP; "
+        "ip6tables -P OUTPUT DROP 2>/dev/null || true" % (shlex.quote(host), port)
+    )
+
+
+def without_net_caps(command: str) -> str:
+    quoted = shlex.quote(command)
+    return DROP_NET_CAPS % (quoted, quoted)
 
 
 def tagged_endpoint(endpoint: str, trial: str) -> str:
@@ -53,6 +83,9 @@ class MarionetteOptions(InstalledAgentOptions):
     endpoint: str = Field(description="OpenAI-compatible base URL the agent may call (the proxy).")
     context_window: int = Field(default=1_048_576, description="The model's context window in tokens.")
     source: str = Field(default="pm-harness", description="pip spec, git URL, or a local wheel path to upload.")
+    egress_lock: bool = Field(default=False, description=(
+        "Local offline runs only: after install, allow egress to the endpoint and nothing else. "
+        "The task container needs cap_add NET_ADMIN."))
 
 
 class Marionette(BaseInstalledAgent):
@@ -94,10 +127,27 @@ class Marionette(BaseInstalledAgent):
             raise last
         self.logger.warning("continuing without optional packages %s", packages)
 
+    async def _install_iptables(self, environment: BaseEnvironment) -> None:
+        """Harbor's dependency helper has no iptables entry, so call the package manager."""
+        cmd = ("command -v iptables >/dev/null 2>&1 || "
+               "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq iptables) || "
+               "apk add --no-cache iptables")
+        for wait in INSTALL_RETRY_WAITS:
+            try:
+                await self.exec_as_root(environment, command=cmd)
+                return
+            except Exception as exc:
+                last = exc
+                self.logger.warning("iptables install failed, retry in %ds: %s", wait, str(exc)[:200])
+                await asyncio.sleep(wait)
+        raise last
+
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         await self._ensure_packages(environment, ("curl", "bash"), required=True)
         await self._ensure_packages(environment, ("git",), required=False)
+        if self.options.egress_lock:
+            await self._install_iptables(environment)
         local = Path(self.options.source)
         if local.suffix == ".whl" and local.is_file():
             await self.exec_as_agent(environment, command="mkdir -p %s" % WHEEL_DIR)
@@ -124,13 +174,28 @@ class Marionette(BaseInstalledAgent):
             "OPENROUTER_API_KEY": key,
             "OPENROUTER_BASE_URL": endpoint,
         }
-        await self.exec_as_agent(environment, env=env, command=(
+        if self.options.egress_lock:
+            await self._lock_egress(environment, endpoint)
+        await self.exec_as_agent(environment, env=env, command=self._wrap(
             PATH_SETUP + "harness exec --task-file %s --endpoint %s --model %s --api-key-env %s "
               "--context-window %d --events %s/marionette-events.jsonl </dev/null 2>%s/marionette-stderr.txt "
               "| tee %s/marionette-stdout.txt" % (
                 TASK_PATH, shlex.quote(endpoint), shlex.quote(self.model_name or ""), KEY_ENV,
                 self.options.context_window, logs, logs, logs)
         ))
+
+    def _wrap(self, command: str) -> str:
+        return without_net_caps(command) if self.options.egress_lock else command
+
+    async def _lock_egress(self, environment: BaseEnvironment, endpoint: str) -> None:
+        """Lock egress, then prove it from the agent side. Never run a trial unlocked."""
+        await self.exec_as_root(environment, command=egress_lock_script(endpoint))
+        probe = await self.exec_as_agent(environment, command=without_net_caps(
+            "curl -s -m 8 -o /dev/null -w %%{http_code} %s || true; iptables -P OUTPUT ACCEPT 2>/dev/null && echo UNLOCKED || true" % LOCK_PROBE))
+        out = (getattr(probe, "stdout", "") or "").strip()
+        if "UNLOCKED" in out or (out[:3].isdigit() and out[:3] != "000"):
+            raise RuntimeError("egress lock failed: probe saw %r" % out[:200])
+        (self.logs_dir / "egress-lock.txt").write_text("locked to %s, probe %s\n" % (endpoint, out or "blocked"))
 
     @override
     def populate_context_post_run(self, context: AgentContext) -> None:
