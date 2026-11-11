@@ -131,3 +131,41 @@ def test_meter_reads_the_trial_tag_and_scalar_params():
     params = meter.request_params({"model": "m", "temperature": 0.2, "stream": True, "messages": [
         {"role": "assistant", "content": "", "reasoning_content": "x"}], "tools": []})
     assert params == {"temperature": 0.2, "stream": True, "reasoning_replayed": 1}
+
+
+def test_meter_route_reads_effort_and_trial():
+    meter = _meter()
+    assert meter.route("/e/high/t/fix-git__abc/v1/chat/completions") == ("high", "fix-git__abc")
+    assert meter.route("/t/fix-git__abc/v1/chat/completions") == ("", "fix-git__abc")
+    assert meter.route("/v1/chat/completions") == ("", "")
+    cfg = SimpleNamespace(model="m", provider="p", effort="low", max_output=1)
+    assert meter.rewrite_body({}, cfg, "high")["reasoning"] == {"effort": "high"}
+
+
+def test_meter_refuses_calls_when_the_budget_is_spent(tmp_path, monkeypatch):
+    import http.server
+    import threading
+    import urllib.error
+    import urllib.request
+
+    meter = _meter()
+    prior = tmp_path / "prior.jsonl"
+    prior.write_text(json.dumps({"cost": 99.5}) + "\n" + json.dumps({"cost": None}) + "\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "x")
+    args = SimpleNamespace(model="m", provider="p", effort="low", max_output=1, log=str(tmp_path / "m.jsonl"),
+                           budget_usd=100.0, prior_log=[str(prior)])
+    meter.Handler.cfg = meter.MeterConfig(args)
+    assert meter.Handler.cfg.spent == 99.5
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), meter.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = "http://127.0.0.1:%d/e/low/t/x/v1/chat/completions" % server.server_address[1]
+        req = urllib.request.Request(url, b'{"messages": []}', {"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            raise AssertionError("the meter forwarded a call over budget")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 402 and b"budget spent" in exc.read()
+    finally:
+        server.shutdown()
+    assert not (tmp_path / "m.jsonl").exists()

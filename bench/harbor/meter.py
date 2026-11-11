@@ -12,7 +12,11 @@ Upstream is OpenRouter, pinned to one provider tag with no fallback, so every
 call reaches the same weights and precision. The agent gets a local token that
 can only call this proxy. The real key stays on the host.
 
-Run:  python bench/harbor/meter.py --port 8790 --log meter.jsonl
+A hard spend cap (``--budget-usd``) stops all calls when the total cost
+reaches it. Cost already spent in ``--prior-log`` files counts. One process
+serves both efforts: the path ``/e/<effort>/...`` picks the effort.
+
+Run:  python bench/harbor/meter.py --port 8790 --log meter.jsonl --budget-usd 150
 Key:  OPENROUTER_API_KEY in the environment.
 """
 from __future__ import annotations
@@ -28,6 +32,9 @@ import urllib.request
 
 UPSTREAM = "https://openrouter.ai/api/v1/chat/completions"
 _LOG_LOCK = threading.Lock()
+# Calls in flight when the cap is reached still finish. Refuse new calls a
+# little before the cap so those calls stay under it.
+BUDGET_MARGIN = 1.0
 
 
 class MeterConfig:
@@ -37,17 +44,28 @@ class MeterConfig:
         self.effort = args.effort
         self.max_output = args.max_output
         self.log_path = args.log
+        self.budget = args.budget_usd
+        self.spent = sum(logged_cost(p) for p in args.prior_log)
         self.key = os.environ.get("OPENROUTER_API_KEY", "")
         if not self.key:
             raise SystemExit("OPENROUTER_API_KEY is not set")
 
 
-def rewrite_body(body: dict, cfg: MeterConfig) -> dict:
+def logged_cost(path: str) -> float:
+    """The total cost in one meter log."""
+    total = 0.0
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            total += json.loads(line).get("cost") or 0
+    return total
+
+
+def rewrite_body(body: dict, cfg: MeterConfig, effort: str = "") -> dict:
     """The request the upstream gets: model, effort, provider pin, reply limit."""
     out = dict(body)
     out["model"] = cfg.model
     out.pop("reasoning_effort", None)
-    out["reasoning"] = {"effort": cfg.effort}
+    out["reasoning"] = {"effort": effort or cfg.effort}
     out["provider"] = {"only": [cfg.provider], "allow_fallbacks": False}
     out["usage"] = {"include": True}
     if not any(out.get(k) for k in ("max_tokens", "max_completion_tokens")):
@@ -59,10 +77,20 @@ def rewrite_body(body: dict, cfg: MeterConfig) -> dict:
     return out
 
 
+def route(path: str) -> tuple:
+    """(effort, trial) from ``[/e/<effort>][/t/<trial>]/v1/...``. Empty if absent."""
+    parts = path.strip("/").split("/")
+    effort = trial = ""
+    if len(parts) > 2 and parts[0] == "e":
+        effort, parts = parts[1], parts[2:]
+    if len(parts) > 2 and parts[0] == "t":
+        trial = parts[1]
+    return effort, trial
+
+
 def trial_tag(path: str) -> str:
     """The trial name in ``/t/<trial>/v1/...``, or empty."""
-    parts = path.strip("/").split("/")
-    return parts[1] if len(parts) > 2 and parts[0] == "t" else ""
+    return route(path)[1]
 
 
 def request_params(body: dict) -> dict:
@@ -118,8 +146,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"error": "body is not JSON"})
             return
-        sent = rewrite_body(body, self.cfg)
-        row = {"ts": time.time(), "trial": trial_tag(self.path), "params": request_params(body),
+        effort, trial = route(self.path)
+        if effort and effort not in ("low", "high"):
+            self._json(400, {"error": {"message": "unknown effort %r" % effort}})
+            return
+        with _LOG_LOCK:
+            over = self.cfg.spent + BUDGET_MARGIN >= self.cfg.budget
+        if over:
+            self._json(402, {"error": {"message": "meter budget spent: $%.2f of $%.2f" % (self.cfg.spent, self.cfg.budget)}})
+            return
+        sent = rewrite_body(body, self.cfg, effort)
+        row = {"ts": time.time(), "trial": trial, "effort": effort or self.cfg.effort, "params": request_params(body),
                "asked_model": body.get("model"), "stream": bool(sent.get("stream")),
                "asked_max_tokens": body.get("max_tokens") or body.get("max_completion_tokens"),
                "n_messages": len(body.get("messages") or []), "n_tools": len(body.get("tools") or [])}
@@ -202,6 +239,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _finish(self, row: dict, started: float) -> None:
         row["seconds"] = round(time.monotonic() - started, 3)
         with _LOG_LOCK, open(self.cfg.log_path, "a", encoding="utf-8") as fh:
+            self.cfg.spent += row.get("cost") or 0
             fh.write(json.dumps(row) + "\n")
 
 
@@ -214,11 +252,14 @@ def main() -> None:
     ap.add_argument("--effort", default="high", choices=["low", "high"])
     ap.add_argument("--max-output", type=int, default=393216)
     ap.add_argument("--log", default="meter.jsonl")
+    ap.add_argument("--budget-usd", type=float, required=True, help="refuse all calls when total cost reaches this")
+    ap.add_argument("--prior-log", action="append", default=[], help="earlier meter log whose cost counts toward the budget")
     args = ap.parse_args()
     Handler.cfg = MeterConfig(args)
     server = http.server.ThreadingHTTPServer((args.host, args.port), Handler)
     server.daemon_threads = True
-    print("meter on %s:%d -> %s via %s, effort %s" % (args.host, args.port, args.model, args.provider, args.effort), flush=True)
+    print("meter on %s:%d -> %s via %s, effort %s, spent $%.2f of $%.2f" % (
+        args.host, args.port, args.model, args.provider, args.effort, Handler.cfg.spent, args.budget_usd), flush=True)
     server.serve_forever()
 
 
