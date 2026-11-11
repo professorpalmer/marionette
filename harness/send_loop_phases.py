@@ -17,6 +17,7 @@ route_task / memory dispatch lives in ``send_loop_dispatch``.
 """
 
 import inspect
+import os
 import queue as queue_mod
 import re
 import threading
@@ -2570,6 +2571,57 @@ def reset_fresh_turn_state(session: Any) -> None:
     session._stagnation_streak = 0
     session._invalid_only_streak = 0
     session._failed_objective_resume_counts = {}
+    session._requirement_check_done = False
+
+
+# A turn that edited files for a long request (a spec) checks it once
+# before it ends. Hidden tests on spec tasks check single sentences of the
+# request; the pilot ended turns with some of them unmet.
+REQUIREMENT_CHECK_MIN_CHARS = 800
+REQUIREMENT_CHECK_NOTE = (
+    "Before you end the turn, do an acceptance check against the user's "
+    "request. List each concrete requirement in it: names and signatures, "
+    "exact error messages, output formats, edge cases and error behavior. "
+    "For each one, show the command output or script result that proves it. "
+    "If a requirement has no proof, check it now and fix what fails. Use "
+    "throwaway scripts, and do not leave new files that the request did not "
+    "ask for. Then give the final answer."
+)
+_REQUIREMENT_CHECK_EDIT_TOOLS = frozenset({"write_file", "edit_file", "hash_edit", "run_implement", "run_parallel"})
+
+
+def _turn_edited_files(history: list) -> bool:
+    """True when a row after the last user request called an edit tool."""
+    from .working_set import is_user_request
+
+    for row in reversed(history):
+        if not isinstance(row, dict):
+            continue
+        if is_user_request(row):
+            return False
+        for call in row.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            name = (call.get("function") or {}).get("name") or call.get("name")
+            if name in _REQUIREMENT_CHECK_EDIT_TOOLS:
+                return True
+    return False
+
+
+def maybe_inject_requirement_check(session: Any, user_message: str) -> bool:
+    """Append the check note once per turn when the turn qualifies."""
+    if os.environ.get("HARNESS_REQUIREMENT_CHECK", "1").strip() == "0":
+        return False
+    if getattr(session, "_requirement_check_done", False):
+        return False
+    if len(str(user_message or "")) < REQUIREMENT_CHECK_MIN_CHARS:
+        return False
+    history = getattr(session, "_history", None)
+    if not isinstance(history, list) or not _turn_edited_files(history):
+        return False
+    session._requirement_check_done = True
+    history.append({"role": "user", "content": REQUIREMENT_CHECK_NOTE, "source": "requirement_check"})
+    return True
 
 
 def drain_idle_turn(
@@ -2694,6 +2746,8 @@ def drain_idle_turn(
     # (Hermes-style mid-turn picker change), stop this turn instead
     # of draining it under the wrong driver -- idle drain + deferred
     # swap will pick it up next.
+    if not (queued and queued.get("text")) and maybe_inject_requirement_check(session, user_message):
+        return ("continue", user_message)
     if not (queued and queued.get("text")):
         if session._next_queued_needs_driver_swap():
             return ("break", user_message)
