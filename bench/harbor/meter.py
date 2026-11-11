@@ -59,6 +59,21 @@ def rewrite_body(body: dict, cfg: MeterConfig) -> dict:
     return out
 
 
+def trial_tag(path: str) -> str:
+    """The trial name in ``/t/<trial>/v1/...``, or empty."""
+    parts = path.strip("/").split("/")
+    return parts[1] if len(parts) > 2 and parts[0] == "t" else ""
+
+
+def request_params(body: dict) -> dict:
+    """The scalar sampling fields the agent sent, plus replayed reasoning."""
+    keep = {k: v for k, v in body.items() if k not in ("messages", "tools", "model") and not isinstance(v, (dict, list))}
+    replay = sum(1 for m in body.get("messages") or [] if isinstance(m, dict) and m.get("reasoning_content"))
+    if replay:
+        keep["reasoning_replayed"] = replay
+    return keep
+
+
 def usage_row(usage: dict | None) -> dict:
     usage = usage or {}
     prompt_details = usage.get("prompt_tokens_details") or {}
@@ -104,7 +119,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(400, {"error": "body is not JSON"})
             return
         sent = rewrite_body(body, self.cfg)
-        row = {"ts": time.time(), "asked_model": body.get("model"), "stream": bool(sent.get("stream")),
+        row = {"ts": time.time(), "trial": trial_tag(self.path), "params": request_params(body),
+               "asked_model": body.get("model"), "stream": bool(sent.get("stream")),
                "asked_max_tokens": body.get("max_tokens") or body.get("max_completion_tokens"),
                "n_messages": len(body.get("messages") or []), "n_tools": len(body.get("tools") or [])}
         started = time.monotonic()

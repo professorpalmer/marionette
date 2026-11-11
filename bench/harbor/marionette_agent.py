@@ -38,6 +38,15 @@ WHEEL_DIR = "/tmp/marionette-wheel"
 PATH_SETUP = 'export PATH="$HOME/.local/bin:$PATH"; '
 
 
+def tagged_endpoint(endpoint: str, trial: str) -> str:
+    """Put the trial name in the path (``.../t/<trial>/v1``) so the meter can
+    split its log per trial. The meter matches on the path suffix."""
+    base = endpoint.rstrip("/")
+    if not trial or not base.endswith("/v1"):
+        return base
+    return "%s/t/%s/v1" % (base[: -len("/v1")], trial)
+
+
 class MarionetteOptions(InstalledAgentOptions):
     endpoint: str = Field(description="OpenAI-compatible base URL the agent may call (the proxy).")
     context_window: int = Field(default=1_048_576, description="The model's context window in tokens.")
@@ -90,7 +99,7 @@ class Marionette(BaseInstalledAgent):
         await self._upload_config_text(environment, content=instruction, remote_path=TASK_PATH, filename="task.md")
         (self.logs_dir / "instruction.md").write_text(instruction)
         logs = self.environment_logs_dir
-        endpoint = self.options.endpoint.rstrip("/")
+        endpoint = tagged_endpoint(self.options.endpoint, self.logs_dir.parent.name)
         key = self._get_env(KEY_ENV) or "local"
         env = {
             KEY_ENV: key,

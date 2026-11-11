@@ -122,3 +122,12 @@ def test_exec_lifts_the_turn_caps_unless_the_caller_set_them(monkeypatch, tmp_pa
     monkeypatch.setenv("HARNESS_MAX_PILOT_STEPS", "7")
     assert exec_cmd.run_exec(["task", "--repo", str(tmp_path)]) == 0
     assert seen == {"budget": "0", "steps": "7"}
+
+
+def test_meter_reads_the_trial_tag_and_scalar_params():
+    meter = _meter()
+    assert meter.trial_tag("/t/fix-git__abc/v1/chat/completions") == "fix-git__abc"
+    assert meter.trial_tag("/v1/chat/completions") == ""
+    params = meter.request_params({"model": "m", "temperature": 0.2, "stream": True, "messages": [
+        {"role": "assistant", "content": "", "reasoning_content": "x"}], "tools": []})
+    assert params == {"temperature": 0.2, "stream": True, "reasoning_replayed": 1}
