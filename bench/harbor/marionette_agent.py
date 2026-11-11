@@ -20,6 +20,7 @@ Use:
 """
 from __future__ import annotations
 
+import asyncio
 import shlex
 from pathlib import Path
 from typing import override
@@ -36,6 +37,7 @@ PYTHON = "3.12"
 TASK_PATH = "/tmp/marionette-task.md"
 WHEEL_DIR = "/tmp/marionette-wheel"
 PATH_SETUP = 'export PATH="$HOME/.local/bin:$PATH"; '
+INSTALL_RETRY_WAITS = (10, 30, 60)
 
 
 def tagged_endpoint(endpoint: str, trial: str) -> str:
@@ -78,9 +80,24 @@ class Marionette(BaseInstalledAgent):
             return "%s/%s" % (WHEEL_DIR, local.name)
         return self.options.source
 
+    async def _ensure_packages(self, environment: BaseEnvironment, packages: tuple, required: bool) -> None:
+        """Install system packages. Mirror 404s are transient, so retry."""
+        for wait in INSTALL_RETRY_WAITS:
+            try:
+                await self.ensure_system_dependencies(environment, packages)
+                return
+            except Exception as exc:  # harbor raises a plain error with the apt output
+                last = exc
+                self.logger.warning("system packages %s failed, retry in %ds: %s", packages, wait, str(exc)[:200])
+                await asyncio.sleep(wait)
+        if required:
+            raise last
+        self.logger.warning("continuing without optional packages %s", packages)
+
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        await self.ensure_system_dependencies(environment, ("curl", "bash", "git"))
+        await self._ensure_packages(environment, ("curl", "bash"), required=True)
+        await self._ensure_packages(environment, ("git",), required=False)
         local = Path(self.options.source)
         if local.suffix == ".whl" and local.is_file():
             await self.exec_as_agent(environment, command="mkdir -p %s" % WHEEL_DIR)
