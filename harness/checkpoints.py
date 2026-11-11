@@ -29,6 +29,14 @@ def _within(base: str, target: str) -> bool:
         return False
 
 
+_CHECKPOINT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Marionette checkpoint",
+    "GIT_AUTHOR_EMAIL": "checkpoint@marionette.invalid",
+    "GIT_COMMITTER_NAME": "Marionette checkpoint",
+    "GIT_COMMITTER_EMAIL": "checkpoint@marionette.invalid",
+}
+
+
 class CheckpointStore:
     def __init__(self, repo_path: Optional[str], session_id: Optional[str] = None):
         # Resolve to realpath to ensure realpath-confinement works reliably.
@@ -186,11 +194,17 @@ class CheckpointStore:
             if head_sha:
                 cmd.extend(["-p", head_sha])
 
+            # A fresh machine or container has no user.name/email, and
+            # commit-tree then fails with exit 128. These commits stay
+            # dangling and internal, so a fixed identity is enough.
+            for key, value in _CHECKPOINT_IDENTITY.items():
+                env.setdefault(key, value)
             commit_res = subprocess.run(
                 cmd,
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
+                env=env,
                 check=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
             )
