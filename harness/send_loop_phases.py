@@ -2578,6 +2578,15 @@ def reset_fresh_turn_state(session: Any) -> None:
 # before it ends. Hidden tests on spec tasks check single sentences of the
 # request; the pilot ended turns with some of them unmet.
 REQUIREMENT_CHECK_MIN_CHARS = 800
+
+
+def requirement_check_min_chars() -> int:
+    """Shortest request that gets the check. ``HARNESS_REQUIREMENT_CHECK_MIN_CHARS`` overrides."""
+    raw = os.environ.get("HARNESS_REQUIREMENT_CHECK_MIN_CHARS", "").strip()
+    try:
+        return max(0, int(raw)) if raw else REQUIREMENT_CHECK_MIN_CHARS
+    except ValueError:
+        return REQUIREMENT_CHECK_MIN_CHARS
 REQUIREMENT_CHECK_NOTE = (
     "Before you end the turn, do an acceptance check against the user's "
     "request. List each concrete requirement in it: names and signatures, "
@@ -2614,7 +2623,7 @@ def maybe_inject_requirement_check(session: Any, user_message: str) -> bool:
         return False
     if getattr(session, "_requirement_check_done", False):
         return False
-    if len(str(user_message or "")) < REQUIREMENT_CHECK_MIN_CHARS:
+    if len(str(user_message or "")) < requirement_check_min_chars():
         return False
     history = getattr(session, "_history", None)
     if not isinstance(history, list) or not _turn_edited_files(history):

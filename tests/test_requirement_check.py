@@ -91,3 +91,9 @@ def test_the_note_names_the_request_parts_hidden_tests_check():
     note = REQUIREMENT_CHECK_NOTE.lower()
     for word in ("error", "edge case", "format"):
         assert word in note
+
+
+def test_the_minimum_length_can_be_lowered(monkeypatch):
+    monkeypatch.setenv("HARNESS_REQUIREMENT_CHECK_MIN_CHARS", "10")
+    s, _ = _run("Fix the typo in a.txt and keep the rest.")
+    assert _checks(s) == 1
