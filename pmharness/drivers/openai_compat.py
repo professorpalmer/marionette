@@ -225,6 +225,24 @@ def _incomplete_stream_tool_calls(assembled: dict, executable: list) -> list:
     ]
 
 
+def reasoning_is_sealed(details) -> bool:
+    """True when a provider signed or encrypted its reasoning.
+
+    Routers (OpenRouter, the HF router) stream the model's reasoning as
+    ``reasoning`` and do not send ``reasoning_content``. Plain-text reasoning
+    goes back to the model as ``reasoning_content`` on the next tool-call
+    request, so a thinking model keeps its plan across tool calls. Signed or
+    encrypted reasoning (Claude, GPT through a router) is not plain text and
+    is not sent back this way.
+    """
+    for item in details or ():
+        if not isinstance(item, dict):
+            continue
+        if item.get("signature") or item.get("data") or item.get("type") == "reasoning.encrypted":
+            return True
+    return False
+
+
 class _OpenAIChatSseAccumulator:
     """Host-agnostic OpenAI chat Completions SSE parser.
 
@@ -251,6 +269,7 @@ class _OpenAIChatSseAccumulator:
         self.reasoning_pieces: list = []
         self.reasoning_content_pieces: list[str] = []
         self.reasoning_content_seen = False
+        self.reasoning_sealed = False
         self.assembled_tool_calls: dict = {}
         self.last_tool_call_index = None
         # Wire index -> assembled slot, for a wire index reused by a new call.
@@ -357,6 +376,8 @@ class _OpenAIChatSseAccumulator:
                     self.reasoning_content_pieces.append(rc_piece)
             elif raw_reasoning_content is not None:
                 self.reasoning_content_pieces.append(str(raw_reasoning_content))
+        if reasoning_is_sealed(delta.get("reasoning_details")):
+            self.reasoning_sealed = True
         reasoning_delta = delta.get("reasoning") or delta.get("reasoning_content") or ""
         if reasoning_delta:
             piece = absorb_stream_snapshot(
@@ -445,6 +466,8 @@ class _OpenAIChatSseAccumulator:
         if self.reasoning_content_seen:
             reasoning_content = "".join(self.reasoning_content_pieces)
             message_obj["reasoning_content"] = reasoning_content
+        elif accumulated_reasoning and not self.reasoning_sealed:
+            reasoning_content = accumulated_reasoning
         reasoning = extract_reasoning(message_obj)
         pure_text = strip_think_blocks(self.full_text)
         executable = _executable_stream_tool_calls(
@@ -1608,6 +1631,9 @@ class OpenAICompatDriver:
                     "" if raw_reasoning_content is None
                     else str(raw_reasoning_content)
                 )
+            elif (isinstance(message_obj.get("reasoning"), str) and message_obj["reasoning"]
+                  and not reasoning_is_sealed(message_obj.get("reasoning_details"))):
+                meta["reasoning_content"] = message_obj["reasoning"]
             if incomplete_tools:
                 meta["incomplete_tool_calls"] = incomplete_tools
             served = self._served_model_from_payload(raw if isinstance(raw, dict) else {})
