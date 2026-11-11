@@ -363,6 +363,25 @@ class LocalJobsMixin:
                     pass
 
 
+    def mark_command_job_delivered(self, job_id: str) -> bool:
+        """Stamp a job whose result the caller already showed inline.
+
+        A foreground command's card gets its result from the run itself.
+        Without this stamp the next ``wait`` drain treats it as fresh and
+        shows every earlier command again as a new "completed" card.
+        """
+        from harness.command_jobs import build_command_terminal_delivery
+        with self._local_jobs_lock:
+            row = self._local_jobs.get(job_id)
+            if not isinstance(row, dict) or isinstance(row.get("terminal_delivery"), dict):
+                return False
+            receipt = build_command_terminal_delivery(row)
+            if receipt is None:
+                return False
+            row["terminal_delivery"] = receipt
+            self._persist_local_jobs_locked()
+        return True
+
     def _initialize_local_metadata_locked(self):
         from .local_job_metadata import LocalMetadataIndex, ObservedJobs
         if not hasattr(self, '_local_metadata'):
