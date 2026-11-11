@@ -127,6 +127,49 @@ class StreamIdleStuckError(RuntimeError):
     can settle with Continue/Retry instead of hanging on Waiting on <pilot>.
     """
 
+STREAM_LOOP_NUDGE = (
+    "Your last reply was cut because it repeated itself. Do not narrate the "
+    "next step. Make the next tool call now, or give the final answer."
+)
+
+
+def stream_fault_retry(exc: BaseException) -> Optional[Dict[str, Any]]:
+    """How to retry a step whose stream a guard cut, or None for other errors.
+
+    Both guards drop the cut text, so a retry starts from the same history.
+    A loop also gets a short nudge, so the retry does not loop the same way.
+    """
+    if isinstance(exc, StreamRepetitionError):
+        return {
+            "notice": "The model started to repeat itself. The reply was cut. Retrying the step.",
+            "nudge": STREAM_LOOP_NUDGE,
+            "reason": "stream_repetition",
+        }
+    if isinstance(exc, StreamIdleStuckError):
+        return {
+            "notice": "The provider stream went silent. Retrying the step.",
+            "nudge": None,
+            "reason": "stream_idle_stuck",
+        }
+    return None
+
+
+def iter_stream_fault_retry(session: Any, exc: BaseException, attempt: int, max_attempts: int):
+    """Yield a notice and return True when the step must retry after ``exc``.
+
+    Nobody may be there to press Retry (headless exec, schedules), so a cut
+    stream retries the step. ``max_attempts`` bounds it.
+    """
+    from .conversation import ConvEvent
+
+    fault = stream_fault_retry(exc)
+    if fault is None or attempt + 1 >= max_attempts:
+        return False
+    yield ConvEvent("notice", {"message": fault["notice"], "reason": fault["reason"]})
+    if fault["nudge"]:
+        session._history.append({"role": "user", "content": fault["nudge"]})
+    return True
+
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
     "open_project", "relocate_session", "session_bank",
     "write_file", "edit_file", "hash_edit", "run_command",

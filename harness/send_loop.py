@@ -73,6 +73,7 @@ from .send_loop_phases import (
     native_tools_blocked,
     record_provider_dispatch_error_receipt,
     record_step_reasoning,
+    iter_stream_fault_retry,
     resolve_emit_say_texts,
     run_auto_verify,
     yield_session_interrupted,
@@ -1611,6 +1612,8 @@ class SendLoopMixin:
                     if self._cancel.is_set():
                         yield from yield_session_interrupted(self)
                         return
+                    if (yield from iter_stream_fault_retry(self, e, attempt, OVERFLOW_RETRY_MAX_ATTEMPTS)):
+                        continue
                     try:
                         msg = self._humanize_pilot_error(str(e))
                     except Exception:
