@@ -174,6 +174,8 @@ class Marionette(BaseInstalledAgent):
             "OPENROUTER_API_KEY": key,
             "OPENROUTER_BASE_URL": endpoint,
         }
+        # Marionette settings for an A/B arm (--ae HARNESS_...=...).
+        env.update({k: v for k, v in (self._extra_env or {}).items() if k.startswith("HARNESS_")})
         if self.options.egress_lock:
             await self._lock_egress(environment, endpoint)
         await self.exec_as_agent(environment, env=env, command=self._wrap(
