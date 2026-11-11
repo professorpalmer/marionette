@@ -82,7 +82,9 @@ def tagged_endpoint(endpoint: str, trial: str) -> str:
 class MarionetteOptions(InstalledAgentOptions):
     endpoint: str = Field(description="OpenAI-compatible base URL the agent may call (the proxy).")
     context_window: int = Field(default=1_048_576, description="The model's context window in tokens.")
-    source: str = Field(default="pm-harness", description="pip spec, git URL, or a local wheel path to upload.")
+    source: str = Field(
+        default="git+https://github.com/professorpalmer/marionette",
+        description="git+https URL (pin a tag with @vX.Y.Z), pip spec, or a local wheel path to upload.")
     egress_lock: bool = Field(default=False, description=(
         "Local offline runs only: after install, allow egress to the endpoint and nothing else. "
         "The task container needs cap_add NET_ADMIN."))
@@ -145,7 +147,8 @@ class Marionette(BaseInstalledAgent):
     @override
     async def install(self, environment: BaseEnvironment) -> None:
         await self._ensure_packages(environment, ("curl", "bash"), required=True)
-        await self._ensure_packages(environment, ("git",), required=False)
+        # A git+https source (the public install) needs git; a wheel or pip spec does not.
+        await self._ensure_packages(environment, ("git",), required=self.options.source.startswith("git+"))
         if self.options.egress_lock:
             await self._install_iptables(environment)
         local = Path(self.options.source)
