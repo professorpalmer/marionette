@@ -12,6 +12,11 @@ A block loops when its last ``TAIL_CHARS`` characters end in an exact
 period that repeats at least ``MIN_REPEATS`` times and covers at least
 ``MIN_SHARE`` of the tail. Text with many lines must also have few
 distinct lines in that region, so numbered rows are not a loop.
+
+A block also loops when its full tail has fewer than ``MAX_DISTINCT_TOKENS``
+distinct whitespace-separated tokens. This catches filler that varies its
+phrases ("OK. Go. Write. Emitting now.") and so has no exact period. Real
+text, code, tables and logs in a 16k window have hundreds of distinct tokens.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ PROBE_TRIES = 8
 MIN_REPEATS = 5
 MIN_SHARE = 0.5
 MAX_DISTINCT_LINE_SHARE = 0.5
+MAX_DISTINCT_TOKENS = 48
 
 
 def _looped_span(tail: str) -> int:
@@ -58,7 +64,13 @@ def _few_distinct_lines(text: str) -> bool:
     return len(set(lines)) <= MAX_DISTINCT_LINE_SHARE * len(lines)
 
 
+def _tiny_vocabulary(tail: str) -> bool:
+    return len(tail) >= TAIL_CHARS and len(set(tail.split())) < MAX_DISTINCT_TOKENS
+
+
 def _tail_loops(tail: str) -> bool:
+    if _tiny_vocabulary(tail):
+        return True
     span = _looped_span(tail)
     return bool(span) and _few_distinct_lines(tail[-span:])
 

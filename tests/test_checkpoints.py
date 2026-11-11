@@ -379,3 +379,31 @@ def test_api_checkpoints_diff_protection(temp_git_repo):
         assert "files" in data
     finally:
         httpd.shutdown()
+
+
+def test_snapshot_works_without_a_git_identity(tmp_path, monkeypatch):
+    """A fresh container has no user.name/email. commit-tree failed with 128 there."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # Like a container's root@<id>: git must not guess an identity.
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"):
+        monkeypatch.delenv(key, raising=False)
+    ident = ["-c", "user.name=Seed", "-c", "user.email=seed@example.com"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "a.txt").write_text("one\n")
+    subprocess.run(["git", "add", "a.txt"], cwd=repo, check=True)
+    subprocess.run(["git", *ident, "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+    probe = subprocess.run(["git", "commit-tree", "HEAD^{tree}", "-m", "x"], cwd=repo, capture_output=True)
+    assert probe.returncode != 0  # the setup really has no identity
+
+    (repo / "a.txt").write_text("two\n")
+    store = CheckpointStore(str(repo), session_id="sess-noident")
+    assert store.snapshot("Before editing a.txt", "edit_file")

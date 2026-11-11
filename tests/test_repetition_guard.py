@@ -92,6 +92,38 @@ def test_identical_lines_with_one_varied_field_are_not_a_loop():
     assert not is_runaway_repetition(text)
 
 
+FILLER = ["Emitting now.", "OK.", "Emitting.", "Go.", "Producing.", "Write.", "Output.and wait.", "Now.", "Write.and call."]
+
+
+def _filler(n: int) -> str:
+    """Varied filler with no exact period, as DeepSeek V4.1 streamed at high effort."""
+    import random
+
+    rng = random.Random(7)
+    out = []
+    while sum(len(p) + 2 for p in out) < n:
+        out.append(rng.choice(FILLER))
+    return "  ".join(out)[:n]
+
+
+def test_varied_filler_with_a_tiny_vocabulary_trips():
+    text = _filler(40_000)
+    assert len(set(text[-16_000:].split())) < 20
+    assert is_runaway_repetition(text)
+    watch = RepetitionWatch()
+    assert any(watch.feed(text[i:i + 97]) for i in range(0, len(text), 97))
+
+
+def test_real_source_text_is_not_filler():
+    import glob
+
+    text = "".join(open(p, encoding="utf-8").read() for p in sorted(glob.glob("harness/*.py"))[:20])
+    assert len(text) > 100_000
+    watch = RepetitionWatch()
+    for i in range(0, len(text), 512):
+        assert watch.feed(text[i:i + 512]) is False
+
+
 def _session(chat_stream, cancel=None):
     history = [{"role": "system"}, {"role": "user", "content": "hi"}]
     return SimpleNamespace(

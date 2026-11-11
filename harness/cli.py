@@ -183,6 +183,9 @@ def main(argv=None) -> int:
     if raw and raw[0] == "doctor":
         from .doctor import run_doctor
         return run_doctor(raw[1:])
+    if raw and raw[0] == "exec":
+        from .exec_cmd import run_exec
+        return run_exec(raw[1:])
     if raw and raw[0] == "auto":
         return _run_auto(raw[1:])
     if raw and raw[0] == "schedule":

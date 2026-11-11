@@ -555,7 +555,7 @@ def finish_foreground_command_job(
         terminal = "timeout"
     else:
         terminal = "failed"
-    return bool(finish(
+    finished = bool(finish(
         job_id,
         status=terminal,
         summary=_terminal_summary(terminal, exit_code, output),
@@ -563,6 +563,10 @@ def finish_foreground_command_job(
         output=output[:_INLINE_OUTPUT_CAP] if output else "",
         run_status=run_status or str(status or ""),
     ))
+    mark = getattr(session, "mark_command_job_delivered", None)
+    if finished and callable(mark):
+        mark(job_id)
+    return finished
 
 
 def _run_registered_command_job(

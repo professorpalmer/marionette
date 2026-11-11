@@ -14,6 +14,7 @@ Public orchestration stays on ``SendLoopMixin``; this helper takes an explicit
 import os
 from typing import Any, Iterator
 
+from .answer_keys import answer_key_refusal
 from .diag import note as _diag_note
 from .pilot import is_invalid_action
 from .pilot_guards import (
@@ -190,7 +191,8 @@ def execute_turn_actions(
                     continue
                 record_action_execution(guard_state, act.kind, act)
                 guard_recorded_indices.add(idx)
-            prefetch_targets.append((idx, act))
+            if not answer_key_refusal(act):
+                prefetch_targets.append((idx, act))
 
     if len(prefetch_targets) >= 2 and not session._cancel.is_set():
         if _note_started is not None:
@@ -417,6 +419,13 @@ def execute_turn_actions(
                 yield ConvEvent("action_result", {"id": aid, "error": cli_verdict.message})
                 session._append_action_result(act, aid, cli_verdict.message, is_native, ok=False)
                 continue
+
+        answer_key = answer_key_refusal(act)
+        if answer_key:
+            _diag_note("pilot_guards", msg=f"answer_key suppressed {act.kind}")
+            yield ConvEvent("action_result", {"id": aid, "error": answer_key})
+            session._append_action_result(act, aid, answer_key, is_native, ok=False)
+            continue
 
         if guards_active():
             if idx in guard_suppressed:
