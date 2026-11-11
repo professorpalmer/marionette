@@ -97,3 +97,20 @@ def test_the_minimum_length_can_be_lowered(monkeypatch):
     monkeypatch.setenv("HARNESS_REQUIREMENT_CHECK_MIN_CHARS", "10")
     s, _ = _run("Fix the typo in a.txt and keep the rest.")
     assert _checks(s) == 1
+
+
+def test_a_second_round_asks_for_test_author_checks(monkeypatch):
+    monkeypatch.setenv("HARNESS_REQUIREMENT_CHECK_ROUNDS", "2")
+    s, events = _run(SPEC)
+    assert _checks(s) == 2
+    notes = [m["content"] for m in s._history if m.get("source") == "requirement_check"]
+    assert notes[0] == REQUIREMENT_CHECK_NOTE
+    assert "hidden acceptance tests" in notes[1]
+    rounds = [e.data["message"] for e in events if e.kind == "notice" and e.data.get("kind") == "requirement_check"]
+    assert rounds == ["Requirement check, round 1", "Requirement check, round 2"]
+
+
+def test_the_default_is_one_round():
+    s, events = _run(SPEC)
+    assert _checks(s) == 1
+    assert [e for e in events if e.kind == "notice" and e.data.get("kind") == "requirement_check"]

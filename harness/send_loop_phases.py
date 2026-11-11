@@ -2571,7 +2571,7 @@ def reset_fresh_turn_state(session: Any) -> None:
     session._stagnation_streak = 0
     session._invalid_only_streak = 0
     session._failed_objective_resume_counts = {}
-    session._requirement_check_done = False
+    session._requirement_checks = 0
 
 
 # A turn that edited files for a long request (a spec) checks it once
@@ -2596,6 +2596,37 @@ REQUIREMENT_CHECK_NOTE = (
     "throwaway scripts, and do not leave new files that the request did not "
     "ask for. Then give the final answer."
 )
+# Round 2. The pilot's own checks test its own reading of the request, so a
+# misread passes them. Hidden tests come from the request text: keyword
+# arguments it names, defaults, empty and missing cases, exact strings, and
+# every surface (CLI, config load, constructor, serializer).
+REQUIREMENT_AUTHOR_NOTE = (
+    "Now take the role of the person who wrote the hidden acceptance tests "
+    "for this request. That person reads only the request text and calls the "
+    "public API exactly as the request names it. Read the request again, "
+    "sentence by sentence. Write new throwaway tests for what your checks did "
+    "not exercise: each argument and keyword argument the request names, "
+    "stated defaults, values for empty, missing and unnamed cases, exact "
+    "strings and output formats, the errors raised, and each surface the "
+    "request names (CLI commands, config loading, constructors, serializers, "
+    "top-level exports). Where the request can be read two ways, use the "
+    "reading that its examples and names support. Run the tests and fix each "
+    "failure. Delete the throwaway tests. Then give the final answer."
+)
+REQUIREMENT_CHECK_NOTES = (REQUIREMENT_CHECK_NOTE, REQUIREMENT_AUTHOR_NOTE)
+
+
+def requirement_check_rounds() -> int:
+    """Check rounds per turn. ``HARNESS_REQUIREMENT_CHECK_ROUNDS`` overrides (0 to 2)."""
+    raw = os.environ.get("HARNESS_REQUIREMENT_CHECK_ROUNDS", "").strip()
+    try:
+        rounds = int(raw) if raw else REQUIREMENT_CHECK_ROUNDS
+    except ValueError:
+        rounds = REQUIREMENT_CHECK_ROUNDS
+    return max(0, min(rounds, len(REQUIREMENT_CHECK_NOTES)))
+
+
+REQUIREMENT_CHECK_ROUNDS = 1
 _REQUIREMENT_CHECK_EDIT_TOOLS = frozenset({"write_file", "edit_file", "hash_edit", "run_implement", "run_parallel"})
 
 
@@ -2618,18 +2649,19 @@ def _turn_edited_files(history: list) -> bool:
 
 
 def maybe_inject_requirement_check(session: Any, user_message: str) -> bool:
-    """Append the check note once per turn when the turn qualifies."""
+    """Append the next check note when the turn qualifies, up to the round limit."""
     if os.environ.get("HARNESS_REQUIREMENT_CHECK", "1").strip() == "0":
         return False
-    if getattr(session, "_requirement_check_done", False):
+    done = int(getattr(session, "_requirement_checks", 0) or 0)
+    if done >= requirement_check_rounds():
         return False
     if len(str(user_message or "")) < requirement_check_min_chars():
         return False
     history = getattr(session, "_history", None)
     if not isinstance(history, list) or not _turn_edited_files(history):
         return False
-    session._requirement_check_done = True
-    history.append({"role": "user", "content": REQUIREMENT_CHECK_NOTE, "source": "requirement_check"})
+    session._requirement_checks = done + 1
+    history.append({"role": "user", "content": REQUIREMENT_CHECK_NOTES[done], "source": "requirement_check"})
     return True
 
 
@@ -2756,6 +2788,8 @@ def drain_idle_turn(
     # of draining it under the wrong driver -- idle drain + deferred
     # swap will pick it up next.
     if not (queued and queued.get("text")) and maybe_inject_requirement_check(session, user_message):
+        yield ConvEvent("notice", {"message": f"Requirement check, round {session._requirement_checks}",
+                                   "kind": "requirement_check"})
         return ("continue", user_message)
     if not (queued and queued.get("text")):
         if session._next_queued_needs_driver_swap():
