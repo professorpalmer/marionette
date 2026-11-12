@@ -8,5 +8,5 @@ SSE events to this renderer.
 
 **Build:** `npm run build` (renderer only) or `npm run dist` (packaged shell).
 
-See the repo [README](../README.md) and [ARCHITECTURE.md](../ARCHITECTURE.md) for
+See the repo [README](../README.md) and [Architecture](../docs/design/architecture.md) for
 the full system map. The only UI is this tree (`webapp/src`).
