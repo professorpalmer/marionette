@@ -9,7 +9,7 @@ import os
 import subprocess
 from typing import Any
 
-from .git_spawn import git_extra_args, git_spawn_env
+from .git_spawn import GIT_DIFF_CONTENT_ARGS, git_extra_args, git_spawn_env
 
 
 def _git(repo: str, *args: str, timeout: int = 30) -> tuple[int, str, str]:
@@ -84,7 +84,9 @@ def workspace_diff(
     repo = resolve_open_repo(open_repo, repo_arg)
     if not repo:
         return {"ok": False, "error": "No open workspace"}
-    args = ["diff", "--cached", "--no-color"] if staged else ["diff", "--no-color"]
+    args = ["diff", *GIT_DIFF_CONTENT_ARGS, "--no-color"]
+    if staged:
+        args.insert(1, "--cached")
     if file:
         args.extend(["--", file])
     rc, out, err = _git(repo, *args)
