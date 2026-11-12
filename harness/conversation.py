@@ -62,7 +62,7 @@ from .pilot import (
     PilotAction,
     PilotError,
     PilotTurn,
-    PILOT_SYSTEM,
+    pilot_system,
     WORKER_SYSTEM,
     is_invalid_action,
     parse_pilot_turn,
@@ -874,7 +874,7 @@ class ConversationalSession(
         # v1 skills are cataloged alongside (namespaced); SkillStore files are
         # never mutated by portable plugins.
         self._skills = SkillStore()
-        system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else PILOT_SYSTEM
+        system = WORKER_SYSTEM if getattr(config, "no_delegation", False) else pilot_system(config.repo or "")
         active = self._skills.list("active")
         plugin_skills = []
         try:

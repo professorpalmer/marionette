@@ -320,19 +320,18 @@ def test_visible_schema_parity_when_discovery_disabled(monkeypatch):
     assert visible_names == full_names
 
 
-def test_search_state_visible_in_core_pilot():
-    """Durable recall must be core-visible before swarm redispatch gates."""
-    from harness.tool_discovery import CORE_PILOT
+def test_session_recall_tools_are_on_demand_and_activate_by_name():
+    """Durable recall left the default schema but a call by name still activates it."""
+    from harness.tool_discovery import CORE_PILOT, is_lazy_activatable_name
 
-    assert "search_state" in CORE_PILOT
-    assert "search_archive" in CORE_PILOT
-    assert "read_archived_chat" in CORE_PILOT
+    for name in ("search_state", "search_archive", "read_archived_chat"):
+        assert name not in CORE_PILOT
+        assert is_lazy_activatable_name(name)
     catalog = ToolCatalog()
     catalog.refresh()
-    names = {t["function"]["name"] for t in catalog.visible_schema()}
-    assert "search_state" in names
-    assert "search_archive" in names
-    assert "read_archived_chat" in names
+    assert "search_state" not in {t["function"]["name"] for t in catalog.visible_schema()}
+    assert catalog.try_lazy_activate(["search_state"])
+    assert "search_state" in {t["function"]["name"] for t in catalog.visible_schema()}
 
 
 def test_core_always_includes_hash_edit_when_enabled(monkeypatch):

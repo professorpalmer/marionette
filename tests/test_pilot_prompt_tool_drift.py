@@ -33,4 +33,5 @@ def test_schemas_state_the_read_spill_limit_and_fresh_shell_cwd():
     by_name = {_tool_name(t): (t.get("function") or t)["description"] for t in build_tools_schema()}
     assert "spill file" in by_name["read_file"] and "400 lines" in by_name["read_file"]
     assert "fresh shell in the workspace root" in by_name["run_command"]
-    assert PILOT_SYSTEM.count("`job_findings`:") == 1
+    # The schemas carry each tool's description; the prompt does not repeat them.
+    assert not re.search(r"^- `[a-z_]+`: ", PILOT_SYSTEM, re.M)
