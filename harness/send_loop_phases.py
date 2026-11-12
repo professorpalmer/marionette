@@ -2572,6 +2572,9 @@ def reset_fresh_turn_state(session: Any) -> None:
     session._invalid_only_streak = 0
     session._failed_objective_resume_counts = {}
     session._requirement_checks = 0
+    from .spec_review import turn_base
+
+    session._review_base = turn_base(session)
 
 
 # A turn that edited files for a long request (a spec) checks it once

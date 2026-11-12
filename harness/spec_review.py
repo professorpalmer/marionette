@@ -53,9 +53,24 @@ def _git(repo: str, args: list, env: Optional[dict] = None) -> subprocess.Comple
                           errors="replace", env=env, timeout=GIT_TIMEOUT)
 
 
-def workspace_diff(repo: str, limit: int = DIFF_LIMIT) -> str:
-    """The diff from HEAD to the working tree, new files included. The real index is not changed."""
-    top = _git(repo, ["rev-parse", "--git-dir"])
+def turn_base(session: Any) -> str:
+    """HEAD when the turn starts, so the review sees work the pilot committed. "" when the review is off."""
+    repo = getattr(getattr(session, "config", None), "repo", "") or ""
+    if not repo or not review_enabled():
+        return ""
+    try:
+        res = _git(repo, ["rev-parse", "--verify", "HEAD"])
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def workspace_diff(repo: str, base: str = "HEAD", limit: int = DIFF_LIMIT) -> str:
+    """The diff from ``base`` to the working tree, new files included. The real index is not changed."""
+    try:
+        top = _git(repo, ["rev-parse", "--git-dir"])
+    except (OSError, subprocess.SubprocessError):
+        return ""
     if top.returncode != 0:
         return ""
     index = os.path.join(repo, top.stdout.strip(), f"index.review.{uuid.uuid4().hex}")
@@ -64,7 +79,9 @@ def workspace_diff(repo: str, limit: int = DIFF_LIMIT) -> str:
         if _git(repo, ["read-tree", "HEAD"], env).returncode != 0:
             return ""
         _git(repo, ["add", "-A"], env)
-        out = _git(repo, ["diff", "--cached", "HEAD", "--no-color"], env).stdout
+        out = _git(repo, ["diff", "--cached", base, "--no-color"], env).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
     finally:
         try:
             os.remove(index)
@@ -100,5 +117,6 @@ def review_note(session: Any, request: str) -> str:
     repo = getattr(getattr(session, "config", None), "repo", "") or ""
     if not repo:
         return ""
-    findings = independent_review(getattr(session, "pilot", None), request, workspace_diff(repo))
+    diff = workspace_diff(repo, getattr(session, "_review_base", "") or "HEAD")
+    findings = independent_review(getattr(session, "pilot", None), request, diff)
     return REVIEW_NOTE + findings if findings else ""

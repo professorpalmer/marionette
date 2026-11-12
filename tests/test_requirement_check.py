@@ -172,3 +172,30 @@ def test_workspace_diff_leaves_the_real_index_alone():
     assert "+print(1)" in workspace_diff(repo)
     status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout
     assert status.strip() == "?? new.py"
+
+
+def test_the_review_diff_keeps_work_the_pilot_committed(monkeypatch):
+    import subprocess
+    from types import SimpleNamespace
+
+    from harness.spec_review import turn_base, workspace_diff
+
+    monkeypatch.setenv("HARNESS_REQUIREMENT_REVIEW", "1")
+    repo = _git_repo()
+    session = SimpleNamespace(config=SimpleNamespace(repo=repo))
+    base = turn_base(session)
+    assert base
+    open(f"{repo}/done.py", "w").write("ok = True\n")
+    for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work"]):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    assert workspace_diff(repo) == ""
+    assert "+ok = True" in workspace_diff(repo, base)
+
+
+def test_turn_base_is_empty_when_the_review_is_off(monkeypatch):
+    from types import SimpleNamespace
+
+    from harness.spec_review import turn_base
+
+    monkeypatch.delenv("HARNESS_REQUIREMENT_REVIEW", raising=False)
+    assert turn_base(SimpleNamespace(config=SimpleNamespace(repo=_git_repo()))) == ""
