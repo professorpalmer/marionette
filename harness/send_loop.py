@@ -103,10 +103,12 @@ from .send_loop_secrets import (
     peel_secret_request_message,
 )
 from .goal_mode import (
+    ACTING_PLACEHOLDER,
     maybe_enqueue_session_goal_continuation,
     maybe_inject_goal_continue,
     reset_turn_goal_state,
     goal_mode_continue_cap,
+    turn_progress,
 )
 
 
@@ -931,7 +933,22 @@ class SendLoopMixin:
                                     or 0
                                 )
                                 goal.record_turn_usage(tokens=tokens)
+                                from .session_goal import CONTINUATION_HEAD, NO_PROGRESS_LIMIT
+
+                                stalled = goal.record_turn_outcome(
+                                    automatic=(user_message or "").startswith(CONTINUATION_HEAD),
+                                    **turn_progress(self._history),
+                                )
                                 self._persist_session_goal()
+                                if stalled:
+                                    yield ConvEvent("notice", {
+                                        "message": (
+                                            "Session goal paused: %d turns in a row "
+                                            "made no progress (%s). Resume the goal "
+                                            "to continue." % (NO_PROGRESS_LIMIT, stalled)
+                                        ),
+                                        "reason": "goal_no_progress",
+                                    })
                                 if getattr(goal, "budget_exceeded", False):
                                     yield ConvEvent("notice", {
                                         "message": (
@@ -1767,7 +1784,7 @@ class SendLoopMixin:
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
             else:
-                assistant_msg["content"] = _history_text or "(acting)"
+                assistant_msg["content"] = _history_text or ACTING_PLACEHOLDER
             stamp_assistant_phase(
                 assistant_msg, getattr(resp, "assistant_phase", None),
             )

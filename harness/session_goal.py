@@ -17,6 +17,9 @@ from typing import Any, Dict, Optional
 
 GOAL_STATUSES = ("active", "paused", "complete", "cleared")
 GOAL_FILENAME = "session_goal.json"
+CONTINUATION_HEAD = "Continue working toward the session goal"
+# Consecutive turns without progress that pause an active goal.
+NO_PROGRESS_LIMIT = 3
 
 
 @dataclass
@@ -31,6 +34,11 @@ class SessionGoal:
     token_budget: Optional[int] = None
     output_token_cap: Optional[int] = None
     budget_exceeded: bool = False
+    # Automatic continuation turns in a row with no tool call and no answer.
+    idle_turns: int = 0
+    # Turns in a row where a command failed and no tool call succeeded.
+    failed_exec_turns: int = 0
+    blocked_reason: str = ""
     # Wall-clock anchor for elapsed_seconds while status is active.
     _active_since: float = field(default=0.0, repr=False)
 
@@ -46,6 +54,9 @@ class SessionGoal:
             "token_budget": self.token_budget,
             "output_token_cap": self.output_token_cap,
             "budget_exceeded": bool(self.budget_exceeded),
+            "idle_turns": int(self.idle_turns),
+            "failed_exec_turns": int(self.failed_exec_turns),
+            "blocked_reason": self.blocked_reason,
         }
 
     @classmethod
@@ -85,6 +96,9 @@ class SessionGoal:
             token_budget=token_budget,
             output_token_cap=output_token_cap,
             budget_exceeded=bool(data.get("budget_exceeded")),
+            idle_turns=int(data.get("idle_turns") or 0),
+            failed_exec_turns=int(data.get("failed_exec_turns") or 0),
+            blocked_reason=str(data.get("blocked_reason") or ""),
             _active_since=float(data.get("_active_since") or 0.0),
         )
 
@@ -111,6 +125,7 @@ class SessionGoal:
         self.updated_at = now
         self._active_since = now
         self.budget_exceeded = False
+        self._reset_progress()
         if token_budget is not None:
             try:
                 self.token_budget = int(token_budget)
@@ -134,6 +149,7 @@ class SessionGoal:
 
     def resume(self) -> "SessionGoal":
         if self.status == "paused" and (self.text or "").strip():
+            self._reset_progress()
             self.status = "active"
             self.updated_at = time.time()
             self._active_since = time.time()
@@ -188,13 +204,49 @@ class SessionGoal:
                 pass
         return self
 
+    def _reset_progress(self) -> None:
+        self.idle_turns = 0
+        self.failed_exec_turns = 0
+        self.blocked_reason = ""
+
+    def record_turn_outcome(
+        self,
+        *,
+        automatic: bool,
+        tool_activity: bool,
+        tool_succeeded: bool,
+        exec_failed: bool,
+        answered: bool,
+    ) -> str:
+        """Count turns without progress. At the limit, pause the goal and
+        return the reason. A paused goal does not continue by itself."""
+        if self.status != "active":
+            return ""
+        if tool_succeeded:
+            self.failed_exec_turns = 0
+        elif exec_failed:
+            self.failed_exec_turns = int(self.failed_exec_turns) + 1
+        if automatic and not tool_activity and not answered:
+            self.idle_turns = int(self.idle_turns) + 1
+        else:
+            self.idle_turns = 0
+        reason = ""
+        if self.idle_turns >= NO_PROGRESS_LIMIT:
+            reason = "empty_response"
+        elif self.failed_exec_turns >= NO_PROGRESS_LIMIT:
+            reason = "execution_failed"
+        if reason:
+            self.pause()
+            self.blocked_reason = reason
+        return reason
+
     def continuation_prompt(self) -> str:
         """Cheap one-sentence reminder for the host to enqueue after a turn."""
         text = (self.text or "").strip()
         if not text:
             return ""
         return (
-            "Continue working toward the session goal "
+            CONTINUATION_HEAD + " "
             "(one focused step; do not restart from scratch): " + text
         )
 

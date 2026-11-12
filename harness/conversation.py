@@ -1360,7 +1360,9 @@ class ConversationalSession(
         if not reminder or not hasattr(self, "enqueue_prompt"):
             return None
         # Avoid stacking duplicate goal reminders in the playlist.
-        marker = "Continue working toward the session goal"
+        from .session_goal import CONTINUATION_HEAD
+
+        marker = CONTINUATION_HEAD
         try:
             for item in self.list_prompts():
                 if isinstance(item, dict) and marker in str(item.get("text") or ""):
