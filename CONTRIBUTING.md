@@ -9,9 +9,12 @@ the conventions that keep the codebase coherent -- please follow them.
   messages, docs, output. Plain words only ("copied", not "copied [check]").
   Typographic characters (em-dash, arrows in prose) are fine.
 - **stdlib-only for the rig itself** (urllib, sqlite, dataclasses). Puppetmaster
-  (`puppetmaster-ai` on PyPI) is the single real runtime dependency.
-- **`pmharness/intent.py` stays PM-free and pure** so it unit-tests fast and
-  hermetically. Execution coupling lives only in `bridge.py`.
+  (`puppetmaster-ai` on PyPI) is the main runtime dependency. The others in
+  `pyproject.toml` are `pypdf`, `tzdata`, and `cryptography` (encrypted
+  sessions only).
+- **`pmharness/intent.py` and `harness/command_policy.py` stay PM-free and
+  pure** so they unit-test fast and hermetically. Execution coupling lives
+  only in `bridge.py`.
 - **Scoring is deterministic** -- no LLM-as-judge. Every metric is a function of
   (labeled task, raw driver text, execution result).
 - **Tests before claiming done.** The offline suite must stay green with zero API
@@ -75,7 +78,7 @@ only, so never force-push `main`. Never push `pmedit-*` worker branches to origi
 
 ## Releases
 
-See `RELEASING.md`. Distribution is primarily the git self-update above; cutting
+See [docs/develop/releasing.md](docs/develop/releasing.md). Distribution is primarily the git self-update above; cutting
 a version tag (`scripts/release.sh X.Y.Z`) also triggers CI to build and attach
 the platform Electron installers to the GitHub Release.
 

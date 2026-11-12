@@ -24,7 +24,7 @@ class RuntimePinTests(unittest.TestCase):
             'webapp/electron/bootstrap.cjs', 'webapp/electron/update-pm.cjs',
             '.github/workflows/tests.yml', '.github/workflows/tests-full.yml',
             '.github/workflows/release.yml',
-            'README.md', 'CONTRIBUTING.md', 'FINDINGS.md',
+            'README.md', 'CONTRIBUTING.md', 'docs/evidence/findings.md',
         ):
             with self.subTest(path=name):
                 pins = re.findall(r'puppetmaster-ai==(\d+\.\d+\.\d+)',
