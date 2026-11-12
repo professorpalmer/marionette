@@ -54,10 +54,9 @@ from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .send_loop_dispatch import DISPATCH_ACTION_KINDS
 from .terminal_empty_recovery import (
-    empty_after_tools_decision,
-    inject_empty_retry,
     last_batch_had_error,
     note_tool_batch,
+    step_recovery,
 )
 from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
@@ -110,6 +109,7 @@ from .goal_mode import (
     goal_mode_continue_cap,
     turn_progress,
 )
+from .session_goal import CONTINUATION_HEAD, NO_PROGRESS_LIMIT
 
 
 POST_SWARM_SYNTHESIS_NUDGE = (
@@ -933,8 +933,6 @@ class SendLoopMixin:
                                     or 0
                                 )
                                 goal.record_turn_usage(tokens=tokens)
-                                from .session_goal import CONTINUATION_HEAD, NO_PROGRESS_LIMIT
-
                                 stalled = goal.record_turn_outcome(
                                     automatic=(user_message or "").startswith(CONTINUATION_HEAD),
                                     **turn_progress(self._history),
@@ -1818,11 +1816,10 @@ class SendLoopMixin:
                 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0)
                 or (_promoted_say and len(_promoted_say.strip()) > 0)
             )
-            empty_decision = empty_after_tools_decision(self, productive)
+            empty_decision = step_recovery(self, productive, turn, cleaned_say_text, _promoted_say)
             if empty_decision == "ok":
                 consecutive_non_productive = 0
             elif empty_decision == "retry":
-                inject_empty_retry(self)
                 consecutive_non_productive = 0
                 continue
             elif empty_decision == "fail":
