@@ -54,10 +54,9 @@ from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
 from .send_loop_dispatch import DISPATCH_ACTION_KINDS
 from .terminal_empty_recovery import (
-    empty_after_tools_decision,
-    inject_empty_retry,
     last_batch_had_error,
     note_tool_batch,
+    step_recovery,
 )
 from .reasoning_effort import session_reasoning
 from .send_loop_phases import (
@@ -103,11 +102,14 @@ from .send_loop_secrets import (
     peel_secret_request_message,
 )
 from .goal_mode import (
+    ACTING_PLACEHOLDER,
     maybe_enqueue_session_goal_continuation,
     maybe_inject_goal_continue,
     reset_turn_goal_state,
     goal_mode_continue_cap,
+    turn_progress,
 )
+from .session_goal import CONTINUATION_HEAD, NO_PROGRESS_LIMIT
 
 
 POST_SWARM_SYNTHESIS_NUDGE = (
@@ -931,7 +933,20 @@ class SendLoopMixin:
                                     or 0
                                 )
                                 goal.record_turn_usage(tokens=tokens)
+                                stalled = goal.record_turn_outcome(
+                                    automatic=(user_message or "").startswith(CONTINUATION_HEAD),
+                                    **turn_progress(self._history),
+                                )
                                 self._persist_session_goal()
+                                if stalled:
+                                    yield ConvEvent("notice", {
+                                        "message": (
+                                            "Session goal paused: %d turns in a row "
+                                            "made no progress (%s). Resume the goal "
+                                            "to continue." % (NO_PROGRESS_LIMIT, stalled)
+                                        ),
+                                        "reason": "goal_no_progress",
+                                    })
                                 if getattr(goal, "budget_exceeded", False):
                                     yield ConvEvent("notice", {
                                         "message": (
@@ -1767,7 +1782,7 @@ class SendLoopMixin:
                 if tool_calls:
                     assistant_msg["tool_calls"] = tool_calls
             else:
-                assistant_msg["content"] = _history_text or "(acting)"
+                assistant_msg["content"] = _history_text or ACTING_PLACEHOLDER
             stamp_assistant_phase(
                 assistant_msg, getattr(resp, "assistant_phase", None),
             )
@@ -1801,11 +1816,10 @@ class SendLoopMixin:
                 or (cleaned_say_text and len(cleaned_say_text.strip()) > 0)
                 or (_promoted_say and len(_promoted_say.strip()) > 0)
             )
-            empty_decision = empty_after_tools_decision(self, productive)
+            empty_decision = step_recovery(self, productive, turn, cleaned_say_text, _promoted_say)
             if empty_decision == "ok":
                 consecutive_non_productive = 0
             elif empty_decision == "retry":
-                inject_empty_retry(self)
                 consecutive_non_productive = 0
                 continue
             elif empty_decision == "fail":

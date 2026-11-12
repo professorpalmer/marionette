@@ -23,6 +23,12 @@ _GIT_EXTRA_ARGS = (
 )
 
 
+# Content diffs also ignore a configured external diff program and textconv
+# drivers. Both run programs named in repo config, and their output is not a
+# patch that git apply or the diff view can read.
+GIT_DIFF_CONTENT_ARGS = ("--no-ext-diff", "--no-textconv")
+
+
 def git_spawn_env(base: Optional[Mapping[str, str]] = None) -> dict:
     """Copy ``base`` (default ``os.environ``) for dest git spawns."""
     try:

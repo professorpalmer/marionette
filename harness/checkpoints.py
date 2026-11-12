@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from .git_spawn import GIT_DIFF_CONTENT_ARGS, git_extra_args
+
 logger = logging.getLogger("pmharness.checkpoints")
 
 CHECKPOINT_GIT_TIMEOUT = 30
@@ -49,7 +51,7 @@ class CheckpointStore:
         if self.repo and os.path.exists(self.repo):
             try:
                 res = subprocess.run(
-                    ["git", "rev-parse", "--is-inside-work-tree"],
+                    ["git", *git_extra_args(), "rev-parse", "--is-inside-work-tree"],
                     cwd=self.repo,
                     capture_output=True,
                     text=True, encoding="utf-8", errors="replace",
@@ -135,7 +137,7 @@ class CheckpointStore:
         try:
             # Get git directory (handles worktrees correctly)
             git_dir_res = subprocess.run(
-                ["git", "rev-parse", "--git-dir"],
+                ["git", *git_extra_args(), "rev-parse", "--git-dir"],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -146,7 +148,7 @@ class CheckpointStore:
 
             # Verify if HEAD exists
             head_res = subprocess.run(
-                ["git", "rev-parse", "--verify", "HEAD"],
+                ["git", *git_extra_args(), "rev-parse", "--verify", "HEAD"],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -163,7 +165,7 @@ class CheckpointStore:
 
             # git add -A: stage all changes (tracked, modified, untracked) into the temp index
             subprocess.run(
-                ["git", "add", "-A"],
+                ["git", *git_extra_args(), "add", "-A"],
                 cwd=self.repo,
                 capture_output=True,
                 env=env,
@@ -173,7 +175,7 @@ class CheckpointStore:
 
             # git write-tree: write the staged state into a new tree object
             write_tree_res = subprocess.run(
-                ["git", "write-tree"],
+                ["git", *git_extra_args(), "write-tree"],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -190,7 +192,7 @@ class CheckpointStore:
             # git commit-tree: create a dangling commit representing the tree
             # This is NOT on any branch, keeping HEAD/branch completely undisturbed
             commit_msg = f"pmharness-checkpoint: {label} [{trigger}]"
-            cmd = ["git", "commit-tree", tree_sha, "-m", commit_msg]
+            cmd = ["git", *git_extra_args(), "commit-tree", tree_sha, "-m", commit_msg]
             if head_sha:
                 cmd.extend(["-p", head_sha])
 
@@ -326,7 +328,7 @@ class CheckpointStore:
         # Verify target checkpoint exists
         try:
             chk_res = subprocess.run(
-                ["git", "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
+                ["git", *git_extra_args(), "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
                 cwd=self.repo,
                 capture_output=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
@@ -368,7 +370,7 @@ class CheckpointStore:
             # 4. Git checkout files from the checkpoint commit directly to worktree
             # Use git checkout <checkpoint_id> -- .
             checkout_res = subprocess.run(
-                ["git", "checkout", checkpoint_id, "--", "."],
+                ["git", *git_extra_args(), "checkout", checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -382,7 +384,7 @@ class CheckpointStore:
 
             # 5. Reset the index so that restored modifications are unstaged relative to HEAD
             subprocess.run(
-                ["git", "reset"],
+                ["git", *git_extra_args(), "reset"],
                 cwd=self.repo,
                 capture_output=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
@@ -424,7 +426,7 @@ class CheckpointStore:
         # Verify target checkpoint exists
         try:
             chk_res = subprocess.run(
-                ["git", "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
+                ["git", *git_extra_args(), "cat-file", "-e", f"{checkpoint_id}^" + "{commit}"],
                 cwd=self.repo,
                 capture_output=True,
                 timeout=CHECKPOINT_GIT_TIMEOUT,
@@ -449,7 +451,7 @@ class CheckpointStore:
 
             # Modified files: exist in both but are modified (we can detect this from git status/diff or by comparing them)
             diff_names_res = subprocess.run(
-                ["git", "diff", "--name-only", checkpoint_id, "--", "."],
+                ["git", *git_extra_args(), "diff", "--name-only", checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -476,7 +478,7 @@ class CheckpointStore:
 
             # Run git diff <checkpoint_sha> -- .
             diff_res = subprocess.run(
-                ["git", "diff", checkpoint_id, "--", "."],
+                ["git", *git_extra_args(), "diff", *GIT_DIFF_CONTENT_ARGS, checkpoint_id, "--", "."],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -510,7 +512,7 @@ class CheckpointStore:
         ids = [cp["id"] for cp in raw]
         try:
             proc = subprocess.run(
-                ["git", "cat-file", "--batch-check=%(objecttype)"],
+                ["git", *git_extra_args(), "cat-file", "--batch-check=%(objecttype)"],
                 cwd=self.repo,
                 input="\n".join(f"{i}^{{commit}}" for i in ids),
                 capture_output=True,
@@ -586,7 +588,7 @@ class CheckpointStore:
     def _ls_files(self, commit_sha: str) -> list[str]:
         try:
             res = subprocess.run(
-                ["git", "ls-tree", "-r", "--name-only", commit_sha],
+                ["git", *git_extra_args(), "ls-tree", "-r", "--name-only", commit_sha],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",
@@ -600,7 +602,7 @@ class CheckpointStore:
     def _ls_current_files(self) -> list[str]:
         try:
             res = subprocess.run(
-                ["git", "ls-files", "-c", "-o", "--exclude-standard"],
+                ["git", *git_extra_args(), "ls-files", "-c", "-o", "--exclude-standard"],
                 cwd=self.repo,
                 capture_output=True,
                 text=True, encoding="utf-8", errors="replace",

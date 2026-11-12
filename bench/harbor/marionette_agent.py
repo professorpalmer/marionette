@@ -37,6 +37,7 @@ KEY_ENV = "MARIONETTE_ENDPOINT_KEY"
 PYTHON = "3.12"
 TASK_PATH = "/tmp/marionette-task.md"
 WHEEL_DIR = "/tmp/marionette-wheel"
+UV_INSTALLER = "https://astral.sh/uv/install.sh"
 PATH_SETUP = 'export PATH="$HOME/.local/bin:$PATH"; '
 INSTALL_RETRY_WAITS = (10, 30, 60)
 # Offline runs on a local Docker that cannot switch network policy after start
@@ -146,7 +147,9 @@ class Marionette(BaseInstalledAgent):
 
     @override
     async def install(self, environment: BaseEnvironment) -> None:
-        await self._ensure_packages(environment, ("curl", "bash"), required=True)
+        # curl is optional: some task images (debian bullseye qemu tasks) cannot
+        # install it because the security mirror 404s, but they have wget.
+        await self._ensure_packages(environment, ("curl", "bash"), required=False)
         # A git+https source (the public install) needs git; a wheel or pip spec does not.
         await self._ensure_packages(environment, ("git",), required=self.options.source.startswith("git+"))
         if self.options.egress_lock:
@@ -157,7 +160,8 @@ class Marionette(BaseInstalledAgent):
             await environment.upload_file(local, "%s/%s" % (WHEEL_DIR, local.name))
         await self.exec_as_agent(environment, command=(
             "set -euo pipefail; "
-            "if ! command -v uv >/dev/null 2>&1; then curl -LsSf https://astral.sh/uv/install.sh | sh; fi; "
+            "if ! command -v uv >/dev/null 2>&1; then "
+            "(curl -LsSf %s 2>/dev/null || wget -qO- %s) | sh; fi; " % (UV_INSTALLER, UV_INSTALLER)
             + PATH_SETUP +
             "uv python install %s && " % PYTHON
             + "uv tool install --python %s %s && harness --help >/dev/null" % (PYTHON, shlex.quote(self._install_spec()))
@@ -196,9 +200,11 @@ class Marionette(BaseInstalledAgent):
         """Lock egress, then prove it from the agent side. Never run a trial unlocked."""
         await self.exec_as_root(environment, command=egress_lock_script(endpoint))
         probe = await self.exec_as_agent(environment, command=without_net_caps(
-            "curl -s -m 8 -o /dev/null -w %%{http_code} %s || true; iptables -P OUTPUT ACCEPT 2>/dev/null && echo UNLOCKED || true" % LOCK_PROBE))
+            "if command -v curl >/dev/null 2>&1; then curl -s -m 8 -o /dev/null -w %%{http_code} %s || true; "
+            "else echo NOCURL; fi; iptables -P OUTPUT ACCEPT 2>/dev/null && echo UNLOCKED || true" % LOCK_PROBE))
         out = (getattr(probe, "stdout", "") or "").strip()
-        if "UNLOCKED" in out or (out[:3].isdigit() and out[:3] != "000"):
+        # Without curl the probe proves nothing, so the lock fails closed.
+        if "UNLOCKED" in out or "NOCURL" in out or (out[:3].isdigit() and out[:3] != "000"):
             raise RuntimeError("egress lock failed: probe saw %r" % out[:200])
         (self.logs_dir / "egress-lock.txt").write_text("locked to %s, probe %s\n" % (endpoint, out or "blocked"))
 

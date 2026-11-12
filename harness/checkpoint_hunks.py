@@ -14,6 +14,7 @@ from typing import Any, Literal, Optional
 from . import session_files
 from .checkpoints import CHECKPOINT_GIT_TIMEOUT, CheckpointStore, _within
 from .diffreview import parse_unified_diff
+from .git_spawn import GIT_DIFF_CONTENT_ARGS, git_extra_args
 
 logger = logging.getLogger("pmharness.checkpoint_hunks")
 
@@ -158,7 +159,7 @@ def _read_repo_file(repo: str, rel_path: str) -> str:
 def _git_show_file(repo: str, commit_sha: str, rel_path: str) -> Optional[str]:
     try:
         res = subprocess.run(
-            ["git", "show", f"{commit_sha}:{rel_path}"],
+            ["git", *git_extra_args(), "show", f"{commit_sha}:{rel_path}"],
             cwd=repo,
             capture_output=True,
             text=True,
@@ -331,7 +332,7 @@ class CheckpointHunkTracker:
         assert repo is not None
         try:
             diff_res = subprocess.run(
-                ["git", "diff", baseline_id, "--", "."],
+                ["git", *git_extra_args(), "diff", *GIT_DIFF_CONTENT_ARGS, baseline_id, "--", "."],
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -377,7 +378,7 @@ class CheckpointHunkTracker:
         # Whole-file adds/removes not represented as hunks still surface via diff names.
         try:
             names_res = subprocess.run(
-                ["git", "diff", "--name-status", baseline_id, "--", "."],
+                ["git", *git_extra_args(), "diff", "--name-status", baseline_id, "--", "."],
                 cwd=repo,
                 capture_output=True,
                 text=True,
@@ -449,7 +450,7 @@ class CheckpointHunkTracker:
         # Untracked adds do not appear in `git diff <commit>` — surface them explicitly.
         try:
             status_res = subprocess.run(
-                ["git", "status", "--porcelain", "-u", "--", "."],
+                ["git", *git_extra_args(), "status", "--porcelain", "-u", "--", "."],
                 cwd=repo,
                 capture_output=True,
                 text=True,

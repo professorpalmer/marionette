@@ -18,6 +18,10 @@ const GIT_EXTRA_ARGS = [
   "-c", "alias.help=help",
 ];
 
+// Content diffs ignore a configured external diff and textconv drivers: both
+// run programs named in repo config (see harness/git_spawn.py).
+const GIT_DIFF_CONTENT_ARGS = ["--no-ext-diff", "--no-textconv"];
+
 function git(repo, args) {
   return new Promise((resolve) => {
     execFile(
@@ -63,7 +67,7 @@ function registerGitBridge(ipcMain, opts = {}) {
   ipcMain.handle("git:diff", async (_e, repo, file) => {
     const denied = guardRepo(repo);
     if (denied) return { ok: false, error: denied };
-    const args = ["diff", "--no-color"];
+    const args = ["diff", ...GIT_DIFF_CONTENT_ARGS, "--no-color"];
     if (file) args.push("--", file);
     return git(repo, args);
   });
@@ -116,7 +120,7 @@ function registerGitBridge(ipcMain, opts = {}) {
   ipcMain.handle("git:diffStaged", async (_e, repo, file) => {
     const denied = guardRepo(repo);
     if (denied) return { ok: false, error: denied };
-    const args = ["diff", "--cached", "--no-color"];
+    const args = ["diff", "--cached", ...GIT_DIFF_CONTENT_ARGS, "--no-color"];
     if (file) args.push("--", file);
     return git(repo, args);
   });

@@ -32,7 +32,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 from harness.diag import note as _diag
-from harness.git_spawn import git_extra_args, git_spawn_env
+from harness.git_spawn import GIT_DIFF_CONTENT_ARGS, git_extra_args, git_spawn_env
 
 if TYPE_CHECKING:
     from harness.config import HarnessConfig
@@ -735,7 +735,7 @@ def finalize_worktree_patch(wt_path: str, base: str = "HEAD") -> tuple[str, list
     if rc_reset != 0:
         _raise_git_failed(wt_path, reset_args, rc_reset, err_reset, out_reset)
 
-    diff_args = ("diff", "--cached", "--no-color", base, "--")
+    diff_args = ("diff", "--cached", *GIT_DIFF_CONTENT_ARGS, "--no-color", base, "--")
     p_diff = subprocess.run(
         ["git", "-C", wt_path, *git_extra_args(), *diff_args],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,

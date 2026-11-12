@@ -150,6 +150,51 @@ def assess_session_goal_continuation(
     )
 
 
+_EXEC_TOOLS = frozenset({"run_command", "run_command_batch", "run_ipython"})
+# History text of an envelope pilot turn that has no prose.
+ACTING_PLACEHOLDER = "(acting)"
+
+
+def turn_progress(history: Sequence[Any]) -> dict:
+    """Read the last turn from history: rows after the last typed request."""
+    from .working_set import is_user_request
+
+    start = 0
+    for index in range(len(history) - 1, -1, -1):
+        if is_user_request(history[index]):
+            start = index + 1
+            break
+    activity = succeeded = exec_failed = answered = False
+    for row in history[start:]:
+        if not isinstance(row, dict):
+            continue
+        role = row.get("role")
+        if role == "assistant":
+            if row.get("tool_calls"):
+                activity = True
+            content = row.get("content")
+            if isinstance(content, str):
+                answered = answered or content.strip() not in ("", ACTING_PLACEHOLDER)
+            elif content:
+                answered = True
+        elif role == "user":
+            # Envelope pilots get tool results back as user rows.
+            activity = True
+        elif role == "tool":
+            activity = True
+            if row.get("is_error") is True:
+                if row.get("_spill_tool") in _EXEC_TOOLS:
+                    exec_failed = True
+            else:
+                succeeded = True
+    return {
+        "tool_activity": activity,
+        "tool_succeeded": succeeded,
+        "exec_failed": exec_failed,
+        "answered": answered,
+    }
+
+
 def reset_turn_goal_state(session: Any) -> int:
     """Clear per-turn Goal Mode state. Returns the continue cap."""
     try:
