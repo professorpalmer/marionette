@@ -3,7 +3,7 @@
 
 Green CI Before Tag stays: a successful `tests` workflow must exist for this
 git tree (commit or dev-PR merge with the same tree). release.yml must not
-re-run pytest. See RELEASING.md.
+re-run pytest. See docs/develop/releasing.md.
 """
 from __future__ import annotations
 

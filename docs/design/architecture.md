@@ -70,7 +70,7 @@ result = Orchestrator(store).run(goal, roles=, worker_mode=, on_job_created=)
 
 `run()` blocks; live observation uses the store event layer
 (`read_events_since` / `event_cursor` / `wait_for_events`). No Puppetmaster core
-change was required. Stage 1 proof lives in `FINDINGS.md` (no separate
+change was required. Stage 1 proof lives in [findings](../evidence/findings.md) (no separate
 `results/STAGE1_RESULTS.md` file).
 
 ## 3. The product pilot contract
@@ -259,7 +259,7 @@ Each stage answered one question and exposed the next:
 
 | Stage | Question | Result |
 |-------|----------|--------|
-| 1 | Does a clean in-process seam exist? | Yes -- driven live, no MCP/CLI. Documented in `FINDINGS.md` (no `STAGE1_RESULTS.md`). |
+| 1 | Does a clean in-process seam exist? | Yes -- driven live, no MCP/CLI. Documented in [findings](../evidence/findings.md) (no `STAGE1_RESULTS.md`). |
 | 2 | Can cheap open weights emit valid intents single-turn? | 7 open models tied the Claude control at 100%; qwen at ~1/100th cost. Battery SATURATED (does not rank). |
 | 3 | Can they drive a multi-turn loop? | Discriminating, but the spread was a HARNESS confound (thin artifacts starved careful models). |
 | 3.5 | (de-confound) budget + substantive substrate | Claude 55%->100%; whole open field 100%, indistinguishable from frontier. Lesson: harness design is a lever on driver economy. |
@@ -272,7 +272,7 @@ sets). Swappable to any catalog model via config.
 Score tables live in `results/STAGE2_RESULTS.md`, `results/STAGE3_RESULTS.md`,
 `results/STAGE3_5_RESULTS.md`, `results/STAGE3_5_FIELD_RESULTS.md`, and
 `results/STAGE4_FIELD_RESULTS.md`. Stage 1 has no results file; the live seam
-proof is in `FINDINGS.md`. Every score is from real execution against real
+proof is in [findings](../evidence/findings.md). Every score is from real execution against real
 Puppetmaster; an early false "30%" run (a masker-truncated API key) was caught by
 the eval's own token instrumentation and never reported.
 

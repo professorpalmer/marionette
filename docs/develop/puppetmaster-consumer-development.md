@@ -1,5 +1,7 @@
 # Testing the Puppetmaster consumer integration
 
+Dated note: this page was written for the 1.25.0 consumer contracts. The current release pin is the `puppetmaster-ai==` line in `pyproject.toml`. The setup steps below still work against any local Puppetmaster checkout.
+
 The consumer changes use the bounded metadata contracts in Puppetmaster development commit `057a786b0e53302ceff0a271b8af73d86864c664`. Release dependency pins are separate from this development setup. Publish a 1.25.0 pin only after that version is available on PyPI.
 
 Use an isolated environment in the Marionette checkout:
