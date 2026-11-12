@@ -2660,8 +2660,16 @@ def maybe_inject_requirement_check(session: Any, user_message: str) -> bool:
     history = getattr(session, "_history", None)
     if not isinstance(history, list) or not _turn_edited_files(history):
         return False
+    note = REQUIREMENT_CHECK_NOTES[done]
+    if done == 1:
+        from .spec_review import review_enabled, review_note
+
+        if review_enabled():
+            note = review_note(session, str(user_message or ""))
+            if not note:
+                return False
     session._requirement_checks = done + 1
-    history.append({"role": "user", "content": REQUIREMENT_CHECK_NOTES[done], "source": "requirement_check"})
+    history.append({"role": "user", "content": note, "source": "requirement_check"})
     return True
 
 

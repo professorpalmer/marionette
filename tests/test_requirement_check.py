@@ -114,3 +114,61 @@ def test_the_default_is_one_round():
     s, events = _run(SPEC)
     assert _checks(s) == 1
     assert [e for e in events if e.kind == "notice" and e.data.get("kind") == "requirement_check"]
+
+
+class _ReviewPilot(_Pilot):
+    def __init__(self, edit: bool, reply: str):
+        super().__init__(edit)
+        self.reply = reply
+        self.reviews = []
+
+    def chat(self, messages, *, system=None, **_k):
+        self.reviews.append((system, messages[0]["content"]))
+        return DriverResponse(text=self.reply)
+
+
+def _git_repo():
+    import subprocess
+
+    repo = tempfile.mkdtemp()
+    for args in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base"]):
+        subprocess.run(["git", *args], cwd=repo, check=True)
+    return repo
+
+
+def _run_review(reply: str, monkeypatch):
+    monkeypatch.setenv("HARNESS_REQUIREMENT_CHECK_ROUNDS", "2")
+    monkeypatch.setenv("HARNESS_REQUIREMENT_REVIEW", "1")
+    s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", repo=_git_repo(), state_dir=tempfile.mkdtemp()))
+    s.pilot = _ReviewPilot(True, reply)
+    list(s.send(SPEC))
+    return s
+
+
+def test_the_review_round_sends_request_and_diff_to_a_fresh_context(monkeypatch):
+    s = _run_review("1. `invalid default argument declaration` is not raised.", monkeypatch)
+    assert len(s.pilot.reviews) == 1
+    system, prompt = s.pilot.reviews[0]
+    assert "hidden acceptance tests" in system.lower()
+    assert "invalid default argument declaration" in prompt and "+x" in prompt and "a.txt" in prompt
+    notes = [m["content"] for m in s._history if m.get("source") == "requirement_check"]
+    assert len(notes) == 2
+    assert notes[1].startswith("An independent reviewer") and "is not raised" in notes[1]
+
+
+def test_no_gaps_ends_the_turn_after_round_one(monkeypatch):
+    s = _run_review("NO GAPS", monkeypatch)
+    assert len(s.pilot.reviews) == 1
+    assert _checks(s) == 1
+
+
+def test_workspace_diff_leaves_the_real_index_alone():
+    import subprocess
+
+    from harness.spec_review import workspace_diff
+
+    repo = _git_repo()
+    open(f"{repo}/new.py", "w").write("print(1)\n")
+    assert "+print(1)" in workspace_diff(repo)
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=repo, capture_output=True, text=True).stdout
+    assert status.strip() == "?? new.py"
