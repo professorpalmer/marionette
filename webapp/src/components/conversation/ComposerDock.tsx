@@ -34,8 +34,8 @@ import SwarmReasoningPicker from "../SwarmReasoningPicker";
 import WorkspaceChip from "./WorkspaceChip";
 import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerActivityRail from "./ComposerActivityRail";
-import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
-import { filterSlashCommands } from "./composerInput";
+import { formatMentionListingCapMessage, slashMenu, type MentionListingCap, type SlashCommand } from "./slashCommands";
+import { setSlashExpertMode, useSlashMenuPrefs } from "./slashMenuPrefs";
 import { ContextRing, contextRingFacts } from "./ContextRing";
 import {
   CONTEXT_USAGE_COLORS,
@@ -56,7 +56,6 @@ export type MemoryProposal = {
   refine?: { kind: string; scope: string };
 };
 export type SymbolHit = { name: string; kind: string; path: string; line: number };
-export type SlashCommand = { cmd: string; desc: string; scope?: string };
 
 export default function ComposerDock({
   config,
@@ -259,10 +258,9 @@ export default function ComposerDock({
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
   const busyChrome = composerBusy && !sessionSwitching;
-  const matchingSlash =
-    slashSearch !== null
-      ? filterSlashCommands(allSlashCommands, slashSearch)
-      : [];
+  const slashPrefs = useSlashMenuPrefs();
+  const menu = slashSearch !== null ? slashMenu(allSlashCommands, slashSearch, slashPrefs) : null;
+  const matchingSlash = menu?.items ?? [];
   // Screen readers follow the highlighted suggestion while focus stays in
   // the textarea (the listbox pattern for an inline autocomplete).
   const suggestId = useId();
@@ -891,21 +889,18 @@ export default function ComposerDock({
             </div>
           )}
 
-          {slashSearch !== null && (
-            <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
-              {matchingSlash.length === 0 ? (
-                <div
-                  className="px-3 py-2 text-ui-11 text-muted select-none"
-                  data-testid="slash-no-matches"
-                >
-                  No matches
-                </div>
-              ) : (
-                <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
-                    Commands
+          {menu && (
+            <div className="absolute left-2 bottom-full mb-1.5 z-50 w-[340px] max-w-[calc(100%-1rem)] bg-panel border border-edge rounded-xl shadow-2xl overflow-hidden">
+              <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="max-h-[260px] overflow-y-auto py-1">
+                {matchingSlash.length === 0 ? (
+                  <div
+                    className="px-3 py-2 text-ui-11 text-muted select-none"
+                    data-testid="slash-no-matches"
+                  >
+                    No matches
                   </div>
-                  {matchingSlash.map((s, idx) => {
+                ) : (
+                  matchingSlash.map((s, idx) => {
                     const isSelected = idx === selectedSlashIndex;
                     return (
                       <div
@@ -915,19 +910,37 @@ export default function ComposerDock({
                         aria-selected={isSelected}
                         onClick={() => insertSlashCommand(s.cmd)}
                         onMouseEnter={() => onSetSelectedSlashIndex(idx)}
-                        className={`flex flex-col px-3 py-1.5 cursor-pointer transition select-none ${
-                          isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
+                        className={`flex items-baseline gap-2 px-3 py-1.5 cursor-pointer transition-colors select-none ${
+                          isSelected ? "bg-panel2" : "hover:bg-panel2/50"
                         }`}
                       >
-                        <div className="flex items-center gap-1.5 text-ui-11.5 font-mono font-semibold">
-                          <span>{s.cmd}</span>
-                        </div>
-                        <span className="text-ui-10 text-muted leading-tight">{s.desc}</span>
+                        <span className={`shrink-0 text-ui-11.5 font-mono font-semibold ${isSelected ? "text-accent" : "text-txt/90"}`}>{s.cmd}</span>
+                        <span className="min-w-0 truncate text-ui-10.5 text-muted" title={s.desc}>{s.desc}</span>
                       </div>
                     );
-                  })}
-                </>
-              )}
+                  })
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 px-3 py-1 border-t border-edge/40 text-ui-10 text-faint select-none">
+                <span data-testid="slash-menu-footer">
+                  {menu.moreCount > 0 ? `${menu.moreCount} more: type to filter` : "Cmd+K for all actions"}
+                </span>
+                <button
+                  type="button"
+                  aria-pressed={slashPrefs.expert}
+                  // Keep focus in the textarea so the menu stays open.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSlashExpertMode(!slashPrefs.expert)}
+                  title={slashPrefs.expert
+                    ? "Expert mode is on: the menu shows internal commands. Click to hide them."
+                    : `Expert mode is off. Click to show ${menu.internalCount} internal ${menu.internalCount === 1 ? "command" : "commands"}.`}
+                  className={`shrink-0 px-1.5 rounded-full border transition-colors ${
+                    slashPrefs.expert ? "border-accent/40 bg-accent/15 text-accent" : "border-edge/50 hover:text-muted hover:border-edge2"
+                  }`}
+                >
+                  Expert
+                </button>
+              </div>
             </div>
           )}
 

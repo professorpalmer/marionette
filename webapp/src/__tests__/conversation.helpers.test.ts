@@ -194,7 +194,6 @@ import {
   cycleSelectIndex,
   detectComposerTrigger,
   filterMentionPaths,
-  filterSlashCommands,
   collectFilesFromDirectoryEntry,
   DROP_FOLDER_FILE_CAP,
   droppedDirectoryPlan,
@@ -3298,9 +3297,6 @@ describe("composerInput module", () => {
       "src/b.ts",
     ]);
     expect(filterMentionPaths(["aaa", "bbb", "ccc"], "", 2)).toEqual(["aaa", "bbb"]);
-    expect(filterSlashCommands([{ cmd: "/help" }, { cmd: "/clear" }], "he")).toEqual([
-      { cmd: "/help" },
-    ]);
     expect(cycleSelectIndex(0, 1, 3)).toBe(1);
     expect(cycleSelectIndex(0, -1, 3)).toBe(2);
     expect(clampSelectIndex(9, 3)).toBe(2);

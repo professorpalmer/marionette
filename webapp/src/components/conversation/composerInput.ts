@@ -189,14 +189,6 @@ export function filterMentionPaths(
   return paths.filter((p) => p.toLowerCase().includes(q)).slice(0, limit);
 }
 
-export function filterSlashCommands<T extends { cmd: string }>(
-  commands: T[],
-  slashSearch: string,
-): T[] {
-  const prefix = "/" + slashSearch.toLowerCase();
-  return commands.filter((s) => s.cmd.toLowerCase().startsWith(prefix));
-}
-
 /** Cycle a selection index with wrap-around (ArrowUp / ArrowDown). */
 export function cycleSelectIndex(
   current: number,
