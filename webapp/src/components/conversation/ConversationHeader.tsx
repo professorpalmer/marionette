@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { GitBranch } from "lucide-react";
 import StatusPill from "./StatusPill";
 import TraceCopy from "./TraceCopy";
+import type { SessionHeading } from "./useSessionHeading";
 import {
   TITLEBAR_CHROME_PAD_X_PX,
   TITLEBAR_TRAFFIC_PAD_PX,
@@ -27,18 +29,24 @@ function useTitlebarLeftPad(ref: { current: HTMLElement | null }): number {
   return pad;
 }
 
-/** Brand strip + status pill for the conversation pane. */
+/**
+ * Session title, project, and branch for the conversation pane. The turn
+ * state is not here: the transcript live line owns it and the status bar
+ * shows its dot. Only an error keeps a pill here, with its trace id.
+ */
+const NO_HEADING: SessionHeading = { title: "", project: "", branch: "" };
+
 export default function ConversationHeader({
+  heading = NO_HEADING,
   pillStatus,
   detail,
   correlationId,
-  onBusyDetailClick,
   recoveryAction,
 }: {
+  heading?: SessionHeading;
   pillStatus: string;
   detail?: string;
   correlationId?: string;
-  onBusyDetailClick?: () => void;
   recoveryAction?: { label: string; onClick: () => void };
 }) {
   const headerRef = useRef<HTMLElement>(null);
@@ -52,6 +60,7 @@ export default function ConversationHeader({
     <header
       ref={headerRef}
       data-testid="conversation-header"
+      data-turn-status={pillStatus}
       className="flex items-center gap-2 border-b border-edge/60 shrink-0 min-w-0 overflow-hidden"
       style={{
         paddingTop: 8,
@@ -61,12 +70,21 @@ export default function ConversationHeader({
         ...dragRegion,
       }}
     >
-      <span className="flex items-baseline gap-1.5 select-none flex-1 min-w-0 overflow-hidden" style={noDrag}>
-        <span className="font-semibold text-ui-12 text-txt/90 tracking-tight shrink-0">Marionette</span>
-        <span className="text-faint/70 text-ui-9 font-normal shrink-0 hidden min-[420px]:inline" aria-hidden>|</span>
-        <span className="text-muted/80 text-ui-9 font-medium tracking-wide uppercase truncate hidden min-[420px]:inline">
-          The Puppetmaster Harness
+      <span className="flex items-baseline gap-2 select-none flex-1 min-w-0 overflow-hidden" style={noDrag}>
+        <span className="font-semibold text-ui-12 text-txt/90 tracking-tight truncate min-w-0" data-testid="header-session-title" title={heading.title || undefined}>
+          {heading.title || "Marionette"}
         </span>
+        {heading.project ? (
+          <span className="text-muted/80 text-ui-11 truncate shrink min-w-0 hidden min-[420px]:inline" data-testid="header-project">
+            {heading.project}
+          </span>
+        ) : null}
+        {heading.branch ? (
+          <span className="text-faint text-ui-11 truncate shrink min-w-0 hidden min-[520px]:inline-flex items-center gap-1 self-center" data-testid="header-branch">
+            <GitBranch size={10} aria-hidden className="shrink-0" />
+            {heading.branch}
+          </span>
+        ) : null}
       </span>
       <div className="shrink-0 flex items-center gap-2 max-w-[55%] min-w-0" style={noDrag}>
         {recoveryAction ? (
@@ -81,11 +99,7 @@ export default function ConversationHeader({
         {pillStatus === "error" && correlationId ? (
           <TraceCopy correlationId={correlationId} />
         ) : null}
-        <StatusPill
-          status={pillStatus}
-          detail={detail}
-          onDetailClick={onBusyDetailClick}
-        />
+        {pillStatus === "error" ? <StatusPill status={pillStatus} detail={detail} /> : null}
       </div>
     </header>
   );

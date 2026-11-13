@@ -37,25 +37,6 @@ export function isSwarmPausePoint(opts: {
   );
 }
 
-/**
- * Sticky busy detail when busyProgress has no label.
- * Pause-point / awaiting_swarm wins over sticky liveInvestigation so
- * hold+idle paints Still working… (not Investigating…) while the fold
- * shows Explored.
- */
-export function derivePillBusyDetail(opts: {
-  liveInvestigation: boolean;
-  pillStatus: string;
-  agentLoopOpen: boolean;
-}): string | undefined {
-  if (opts.pillStatus === "awaiting_swarm") return "Still working…";
-  if (opts.liveInvestigation || opts.pillStatus === "investigating") {
-    return "Investigating…";
-  }
-  if (opts.agentLoopOpen) return "Still working…";
-  return undefined;
-}
-
 export function derivePillStatus(opts: {
   transcriptStale: boolean;
   /** When 0 on a cold miss, skip "switching…" chrome (that was part of the blink). */

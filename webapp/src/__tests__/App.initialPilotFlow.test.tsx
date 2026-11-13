@@ -157,7 +157,7 @@ it("shows the acknowledged pilot while session config is pending, then accepts a
   });
   await waitFor(() => expect(api.chat).toHaveBeenCalledTimes(1));
   await waitFor(() => {
-    expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(2);
+    expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(1);
   });
   expect(screen.queryByText(/Waiting on deepseek-v4-flash/i)).toBeNull();
 
@@ -169,7 +169,7 @@ it("shows the acknowledged pilot while session config is pending, then accepts a
     });
     await Promise.resolve();
   });
-  expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(2);
+  expect(screen.getAllByText(/Waiting on Bonsai2-27B/i)).toHaveLength(1);
 
   await waitFor(() => expect(sessionConfigResolvers.length).toBeGreaterThanOrEqual(2));
   const newestConfig = sessionConfigResolvers[sessionConfigResolvers.length - 1];
@@ -182,7 +182,7 @@ it("shows the acknowledged pilot while session config is pending, then accepts a
     await Promise.resolve();
   });
   await waitFor(() => {
-    expect(screen.getAllByText(/Waiting on gemini-3.7-flash/i)).toHaveLength(2);
+    expect(screen.getAllByText(/Waiting on gemini-3.7-flash/i)).toHaveLength(1);
   });
 });
 
