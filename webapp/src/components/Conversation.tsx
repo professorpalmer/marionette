@@ -507,20 +507,6 @@ export default function Conversation({
   }, []);
 
   useEffect(() => {
-    if (!tabContextMenu) return;
-    const handleClose = () => setTabContextMenu(null);
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setTabContextMenu(null);
-    };
-    window.addEventListener("click", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [tabContextMenu]);
-
-  useEffect(() => {
     const onClose = (e: Event) => {
       const path = (e as CustomEvent<{ path?: string }>).detail?.path;
       if (!path) return;

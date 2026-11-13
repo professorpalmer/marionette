@@ -90,15 +90,16 @@ describe("LeftRail phantom session switch", () => {
     row.focus();
     fireEvent.contextMenu(row);
     const menu = await screen.findByRole("menu", { name: /Other chat actions/ });
-    const fork = within(menu).getByRole("button", { name: "Fork session" });
-    await waitFor(() => expect(fork).toHaveFocus());
-    fireEvent.keyDown(fork, { key: "ArrowDown" });
-    expect(within(menu).getByRole("button", { name: "Rename" })).toHaveFocus();
+    await waitFor(() => expect(menu.contains(document.activeElement)).toBe(true));
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Fork session" })).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: "Rename" })).toHaveFocus());
     fireEvent.keyDown(document.activeElement!, { key: "End" });
-    expect(within(menu).getByRole("button", { name: /Delete/ })).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(within(menu).getByRole("menuitem", { name: /Delete/ })).toHaveFocus());
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-    expect(row).toHaveFocus();
+    await waitFor(() => expect(row).toHaveFocus());
   });
 
   it("names the project expander and reports whether it is open", async () => {

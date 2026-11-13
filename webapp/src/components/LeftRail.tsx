@@ -11,7 +11,8 @@ import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from 
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
-import { moveMenuFocus, useOverlayFocus } from "../lib/overlayFocus";
+import { Menu } from "@base-ui/react/menu";
+import { MenuPanel, MenuRoot, pointAnchor } from "./ui/overlay";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
@@ -123,8 +124,10 @@ export default function LeftRail({
   const openJobRow = useOpenSwarmJobRow();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const contextFirstItemRef = useRef<HTMLButtonElement>(null);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextReturnFocus, setContextReturnFocus] = useState(true);
+  const projectContextTrigger = useRef<HTMLElement | null>(null);
+  const [projectContextOpen, setProjectContextOpen] = useState(false);
   const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
   const [forkOpen, setForkOpen] = useState(false);
   const [swapping, setSwapping] = useState<string | null>(null);
@@ -771,44 +774,18 @@ export default function LeftRail({
     await handleOpenProject(picked);
   };
 
+  const confirmNoRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!contextMenu) return;
-    const handleClose = () => {
-      setContextMenu(null);
-      setConfirmDeleteId(null);
-    };
-    window.addEventListener("click", handleClose);
-    return () => window.removeEventListener("click", handleClose);
-  }, [contextMenu]);
-  // Keyboard path (Shift+F10 / Menu key): focus enters the menu, Tab stays
-  // in it, Escape closes it and focus returns to the session row.
-  useOverlayFocus(!!contextMenu, contextMenuRef, {
-    initialFocusRef: contextFirstItemRef,
-    onClose: () => {
-      setContextMenu(null);
-      setConfirmDeleteId(null);
-    },
-  });
-
-  useEffect(() => {
-    if (!projectContextMenu) return;
-    const handleClose = () => {
-      setProjectContextMenu(null);
-      setConfirmForgetPath(null);
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setProjectContextMenu(null);
-        setConfirmForgetPath(null);
-      }
-    };
-    window.addEventListener("click", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [projectContextMenu]);
+    if (confirmDeleteId || confirmForgetPath) confirmNoRef.current?.focus();
+  }, [confirmDeleteId, confirmForgetPath]);
+  const onContextOpenChange = (next: boolean) => {
+    setContextOpen(next);
+    if (!next) setConfirmDeleteId(null);
+  };
+  const onProjectContextOpenChange = (next: boolean) => {
+    setProjectContextOpen(next);
+    if (!next) setConfirmForgetPath(null);
+  };
 
   const openWorktreeBranch = async (name: string, worktreePath: string) => {
     setSwapping(name);
@@ -1239,10 +1216,13 @@ export default function LeftRail({
       contextTrigger.current = e.currentTarget;
       e.currentTarget.focus();
     }
+    setConfirmDeleteId(null);
+    setContextReturnFocus(true);
+    setContextOpen(true);
     setContextMenu({
       session: s,
-      x: Math.max(8, Math.min(e.clientX, window.innerWidth - 208)),
-      y: Math.max(8, Math.min(e.clientY, window.innerHeight - 400)),
+      x: e.clientX,
+      y: e.clientY,
       sessionId: s.id,
       title: displaySessionListTitle(s.title, s.title_user),
       archived: !!s.archived,
@@ -1508,6 +1488,9 @@ export default function LeftRail({
     const homePath = workspaceInfo?.home || "";
     if (homePath && repoPathsEqual(path, homePath)) return;
     e.preventDefault();
+    projectContextTrigger.current = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+    setConfirmForgetPath(null);
+    setProjectContextOpen(true);
     setProjectContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -2294,165 +2277,152 @@ export default function LeftRail({
 
       {/* CONTEXT MENU */}
       {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          role="menu"
-          aria-label={`${contextMenu.title} actions`}
-          className="session-context-menu fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px]"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => { if (moveMenuFocus(contextMenuRef.current, e.key)) e.preventDefault(); }}
-        >
-          <button ref={contextFirstItemRef} type="button" className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            onClick={() => {
-              setForkTrigger(contextTrigger.current);
-              setForkTarget(contextMenu.session);
-              setForkOpen(true);
-              setContextMenu(null);
-            }}>Fork session</button>
-          {contextMenu.running && (
-            <>
-              <button
-                onClick={async () => {
-                  await stopBackgroundSession(contextMenu.sessionId);
-                  setContextMenu(null);
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
-                Stop
-              </button>
-              <div className="border-t border-edge my-1" />
-            </>
-          )}
-          <button
-            onClick={() => {
-              beginSessionRename(contextMenu.sessionId, contextMenu.title);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+        <MenuRoot open={contextOpen} onOpenChange={onContextOpenChange}>
+          <MenuPanel
+            label={`${contextMenu.title} actions`}
+            anchor={pointAnchor(contextMenu.x, contextMenu.y)}
+            sideOffset={0}
+            finalFocus={contextReturnFocus ? contextTrigger : false}
+            className="session-context-menu bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px] outline-none"
           >
-            Rename
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={() => {
-              void handleCopyTranscriptId(contextMenu.sessionId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy transcript ID
-          </button>
-          <button
-            onClick={() => {
-              void handleExport(contextMenu.sessionId, "md");
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Export as Markdown
-          </button>
-          <button
-            onClick={() => {
-              void handleExport(contextMenu.sessionId, "json");
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Export as JSON
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={async () => {
-              await archiveSession(contextMenu.sessionId, !contextMenu.archived);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            {contextMenu.archived ? "Unarchive" : "Archive"}
-          </button>
-          <div className="border-t border-edge my-1" />
-          {confirmDeleteId === contextMenu.sessionId ? (
-            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
-              <span className="text-muted font-medium">{contextMenu.running ? "Stop and delete?" : "Delete?"}</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await handleDeleteSession(contextMenu.sessionId);
-                    setContextMenu(null);
-                    setConfirmDeleteId(null);
-                  }}
-                  className="text-risk font-bold hover:underline"
-                >
-                  Yes
-                </button>
-                <button
-                  autoFocus
-                  onClick={() => setConfirmDeleteId(null)}
-                  className="text-muted hover:underline"
-                >
-                  No
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
+            <Menu.Item className={MENU_ITEM_CLASS}
               onClick={() => {
-                setConfirmDeleteId(contextMenu.sessionId);
+                setContextReturnFocus(false);
+                setForkTrigger(contextTrigger.current);
+                setForkTarget(contextMenu.session);
+                setForkOpen(true);
+              }}>Fork session</Menu.Item>
+            {contextMenu.running && (
+              <>
+                <Menu.Item
+                  onClick={() => { void stopBackgroundSession(contextMenu.sessionId); }}
+                  className={MENU_ITEM_CLASS}
+                >
+                  Stop
+                </Menu.Item>
+                <Menu.Separator className="border-t border-edge my-1" />
+              </>
+            )}
+            <Menu.Item
+              onClick={() => {
+                setContextReturnFocus(false);
+                beginSessionRename(contextMenu.sessionId, contextMenu.title);
               }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-risk font-medium transition-colors"
+              className={MENU_ITEM_CLASS}
             >
-              Delete
-            </button>
-          )}
-        </div>
+              Rename
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            <Menu.Item
+              onClick={() => { void handleCopyTranscriptId(contextMenu.sessionId); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Copy transcript ID
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => { void handleExport(contextMenu.sessionId, "md"); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Export as Markdown
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => { void handleExport(contextMenu.sessionId, "json"); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Export as JSON
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            <Menu.Item
+              onClick={() => { void archiveSession(contextMenu.sessionId, !contextMenu.archived); }}
+              className={MENU_ITEM_CLASS}
+            >
+              {contextMenu.archived ? "Unarchive" : "Archive"}
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            {confirmDeleteId === contextMenu.sessionId ? (
+              <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+                <span className="text-muted font-medium">{contextMenu.running ? "Stop and delete?" : "Delete?"}</span>
+                <div className="flex gap-2">
+                  <Menu.Item
+                    onClick={() => { void handleDeleteSession(contextMenu.sessionId); }}
+                    className="text-risk font-bold hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    Yes
+                  </Menu.Item>
+                  <Menu.Item
+                    ref={confirmNoRef}
+                    closeOnClick={false}
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="text-muted hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    No
+                  </Menu.Item>
+                </div>
+              </div>
+            ) : (
+              <Menu.Item
+                closeOnClick={false}
+                onClick={() => {
+                  setConfirmDeleteId(contextMenu.sessionId);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-risk font-medium transition-colors cursor-pointer outline-none"
+              >
+                Delete
+              </Menu.Item>
+            )}
+          </MenuPanel>
+        </MenuRoot>
       )}
 
       {/* PROJECT CONTEXT MENU */}
       {projectContextMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px]"
-          style={{ top: projectContextMenu.y, left: projectContextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {confirmForgetPath === projectContextMenu.projectPath ? (
-            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
-              <span className="text-muted font-medium">Remove?</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await handleForgetProject(projectContextMenu.projectPath);
-                    setProjectContextMenu(null);
-                    setConfirmForgetPath(null);
-                  }}
-                  className="text-accent font-bold hover:underline"
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => setConfirmForgetPath(null)}
-                  className="text-muted hover:underline"
-                >
-                  No
-                </button>
+        <MenuRoot open={projectContextOpen} onOpenChange={onProjectContextOpenChange}>
+          <MenuPanel
+            label="Project actions"
+            anchor={pointAnchor(projectContextMenu.x, projectContextMenu.y)}
+            sideOffset={0}
+            finalFocus={projectContextTrigger}
+            className="bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px] outline-none"
+          >
+            {confirmForgetPath === projectContextMenu.projectPath ? (
+              <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+                <span className="text-muted font-medium">Remove?</span>
+                <div className="flex gap-2">
+                  <Menu.Item
+                    onClick={() => { void handleForgetProject(projectContextMenu.projectPath); }}
+                    className="text-accent font-bold hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    Yes
+                  </Menu.Item>
+                  <Menu.Item
+                    ref={confirmNoRef}
+                    closeOnClick={false}
+                    onClick={() => setConfirmForgetPath(null)}
+                    className="text-muted hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    No
+                  </Menu.Item>
+                </div>
               </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                setConfirmForgetPath(projectContextMenu.projectPath);
-              }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            >
-              Remove from list
-            </button>
-          )}
-        </div>
+            ) : (
+              <Menu.Item
+                closeOnClick={false}
+                onClick={() => {
+                  setConfirmForgetPath(projectContextMenu.projectPath);
+                }}
+                className={MENU_ITEM_CLASS}
+              >
+                Remove from list
+              </Menu.Item>
+            )}
+          </MenuPanel>
+        </MenuRoot>
       )}
     </aside>
   );
 }
 
+const MENU_ITEM_CLASS = "w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-txt transition-colors cursor-pointer outline-none";
 const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
 const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
 const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";

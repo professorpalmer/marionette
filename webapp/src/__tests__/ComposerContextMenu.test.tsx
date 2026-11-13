@@ -55,7 +55,7 @@ describe("ComposerContextMenu", () => {
     const menu = await screen.findByRole("menu");
     expect(menu.className).toContain("bg-panel");
     expect(menu.className).not.toContain("backdrop-blur");
-    expect(menu.style.top).toBe("351px");
+    await waitFor(() => expect(menu.parentElement?.style.transform).toBe("translate(121px, 351px)"));
     expect(screen.getByText("Cut")).toBeTruthy();
     expect(screen.getByText("Copy")).toBeTruthy();
     expect(screen.getByText("Paste")).toBeTruthy();

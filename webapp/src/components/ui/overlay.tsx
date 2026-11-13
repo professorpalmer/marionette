@@ -3,7 +3,7 @@
  * return; call sites only paint with tokens. Do not add document listeners for
  * these behaviors anywhere else.
  */
-import type { ComponentProps, ReactNode, RefObject } from "react";
+import type { ComponentProps, KeyboardEvent, ReactNode, RefObject } from "react";
 import { Dialog } from "@base-ui/react/dialog";
 import { Menu } from "@base-ui/react/menu";
 
@@ -55,7 +55,7 @@ export function Modal({
         <Dialog.Viewport className={viewportClassName}>
           <Dialog.Popup
             aria-label={label}
-            aria-labelledby={labelledBy}
+            {...(labelledBy ? { "aria-labelledby": labelledBy } : {})}
             className={className}
             data-testid={testId}
             initialFocus={initialFocus}
@@ -82,9 +82,16 @@ export type MenuPanelProps = {
   align?: "start" | "center" | "end";
   sideOffset?: number;
   /** A trigger element or a `pointAnchor` for a context menu. */
-  anchor?: ComponentProps<typeof Menu.Positioner>["anchor"];
+  anchor?: MenuAnchor;
   finalFocus?: FocusTarget;
 };
+
+type MenuAnchor = ComponentProps<typeof Menu.Positioner>["anchor"];
+
+/** True for a `pointAnchor`: a virtual element, not a DOM node, ref, or getter. */
+function isVirtualAnchor(anchor: MenuAnchor): boolean {
+  return anchor != null && typeof anchor === "object" && !("current" in anchor) && !(anchor instanceof Element);
+}
 
 /** Portal + positioner + popup for a menu. The popup carries `role="menu"`. */
 export function MenuPanel({
@@ -100,12 +107,28 @@ export function MenuPanel({
   return (
     <Menu.Portal>
       <Menu.Positioner className="z-50 outline-none" side={side} align={align} sideOffset={sideOffset} anchor={anchor}>
-        <Menu.Popup aria-label={label} className={className} finalFocus={finalFocus}>
+        <Menu.Popup
+          aria-label={label}
+          className={className}
+          finalFocus={finalFocus}
+          onKeyDown={isVirtualAnchor(anchor) ? closeOnTab : undefined}
+        >
           {children}
         </Menu.Popup>
       </Menu.Positioner>
     </Menu.Portal>
   );
+}
+
+/**
+ * A menu at a virtual point has no DOM trigger, so Base UI cannot find the next
+ * tabbable element and keeps the menu open on Tab. Send Tab through the Escape
+ * path: the menu closes and focus goes to its final focus target.
+ */
+function closeOnTab(event: KeyboardEvent<HTMLDivElement>) {
+  if (event.key !== "Tab") return;
+  event.preventDefault();
+  event.currentTarget.dispatchEvent(new globalThis.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 }
 
 /** Zero-size anchor at a viewport point, for menus opened by right click or IPC. */

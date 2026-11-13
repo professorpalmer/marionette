@@ -578,10 +578,6 @@ body.is-row-resizing iframe {
 }
 
 .right-pane-add-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 4px);
-  right: 0;
   width: 150px;
   padding: 4px;
   border: 1px solid var(--shell-panel-border);
@@ -602,7 +598,8 @@ body.is-row-resizing iframe {
   text-align: left;
 }
 
-.right-pane-add-item:hover {
+.right-pane-add-item:hover,
+.right-pane-add-item[data-highlighted] {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text, #e4e7eb);
 }
@@ -919,16 +916,11 @@ body.is-row-resizing iframe {
   animation: diff-applied-pop theme('transitionDuration.base') theme('transitionTimingFunction.base') forwards;
 }
 
-/* Body-portaled overlays (conversation lightbox/spill, command palette).
-   data-starting-style: first paint at starting opacity (no pop-in).
-   data-instant: skip transition on close. Attribute selectors only. */
+/* Base UI overlays (components/ui/overlay.tsx) set data-starting-style for the
+   first frame, so popups fade in from the starting opacity. Close is instant:
+   do not style data-ending-style. */
 [data-starting-style] {
   opacity: 0;
-}
-[data-instant] {
-  transition: none !important;
-  animation: none !important;
-  opacity: 1;
 }
 
 .scrollbar-none {

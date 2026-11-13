@@ -32,9 +32,9 @@ it("forks the actual context target and retains its selection/error/identity acr
   const onSessionChange = vi.fn();
   render(<LeftRail jobsRefresh={0} onSessionChange={onSessionChange} />);
   const target = await screen.findByRole("button", { name: /Other conversation/ });
-  expect(screen.queryByRole("button", { name: "Fork session" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Fork session" })).toBeNull();
   fireEvent.contextMenu(target, { clientX: 30, clientY: 50 });
-  fireEvent.click(screen.getByRole("button", { name: "Fork session" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Fork session" }));
   const boundary = await screen.findByLabelText("Fork after saved message");
   expect(api.previewSessionFork).toHaveBeenCalledWith("target");
   expect(screen.getByRole("dialog", { name: "Fork Other conversation" })).toBeVisible();
@@ -44,9 +44,9 @@ it("forks the actual context target and retains its selection/error/identity acr
   expect(api.forkSession).toHaveBeenCalledWith({ session_id: "target", event_id: 1,
     revision: "source-revision", request_id: expect.any(String) });
   fireEvent.click(screen.getByRole("button", { name: "Close Fork Other conversation" }));
-  expect(target).toHaveFocus();
+  await waitFor(() => expect(target).toHaveFocus());
   fireEvent.contextMenu(target);
-  fireEvent.click(screen.getByRole("button", { name: "Fork session" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Fork session" }));
   expect(screen.getByLabelText("Fork after saved message")).toHaveValue("1");
   expect(screen.getByRole("alert")).toHaveTextContent("Source changed");
   fireEvent.click(screen.getByRole("button", { name: "Create fork" }));

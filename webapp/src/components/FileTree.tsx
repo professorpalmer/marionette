@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { configChangeKeepsRepo } from "../lib/configChangedEvent";
 import { ChevronRight, ChevronDown, File, RefreshCw } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
 import { api } from "../lib/api";
+import { MenuPanel, MenuRoot, Modal, pointAnchor } from "./ui/overlay";
 import {
   isTransientHarnessConnError,
   revealInFolderLabel,
@@ -204,6 +206,8 @@ function notifyTreeMutated(paths?: { deleted?: string; renamed?: { from: string;
   }
 }
 
+const menuItemClass = "w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-txt transition-colors outline-none";
+
 export default function FileTree() {
   const [repoName, setRepoName] = useState<string>("");
   const [repoRoot, setRepoRoot] = useState<string>("");
@@ -349,33 +353,6 @@ export default function FileTree() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!contextMenu) return;
-    const handleClose = () => {
-      setContextMenu(null);
-      setConfirmDeletePath(null);
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") handleClose();
-    };
-    window.addEventListener("click", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [contextMenu]);
-
-  useEffect(() => {
-    if (!namePrompt) return;
-    setNameValue(namePrompt.initial);
-    const t = window.setTimeout(() => {
-      nameInputRef.current?.focus();
-      nameInputRef.current?.select();
-    }, 0);
-    return () => window.clearTimeout(t);
-  }, [namePrompt]);
-
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
     // Dispatch custom event to let CenterPane/Conversation know we want to open this file
@@ -392,6 +369,11 @@ export default function FileTree() {
   const closeMenu = () => {
     setContextMenu(null);
     setConfirmDeletePath(null);
+  };
+
+  const openNamePrompt = (prompt: NamePromptState) => {
+    setNameValue(prompt.initial);
+    setNamePrompt(prompt);
   };
 
   const targetDirForCreate = (node: FileNode | null): string => {
@@ -444,21 +426,21 @@ export default function FileTree() {
     const node = contextMenu?.node ?? null;
     const dir = targetDirForCreate(node);
     closeMenu();
-    setNamePrompt({ mode: "new-file", title: "New file", initial: "", dir, node });
+    openNamePrompt({ mode: "new-file", title: "New file", initial: "", dir, node });
   };
 
   const openNewFolderPrompt = () => {
     const node = contextMenu?.node ?? null;
     const dir = targetDirForCreate(node);
     closeMenu();
-    setNamePrompt({ mode: "new-folder", title: "New folder", initial: "", dir, node });
+    openNamePrompt({ mode: "new-folder", title: "New folder", initial: "", dir, node });
   };
 
   const openRenamePrompt = () => {
     const node = contextMenu?.node;
     if (!node) return;
     closeMenu();
-    setNamePrompt({
+    openNamePrompt({
       mode: "rename",
       title: "Rename",
       initial: node.name,
@@ -556,7 +538,6 @@ export default function FileTree() {
 
   const node = contextMenu?.node ?? null;
   const isFile = !!node && !node.isDir;
-  const canMutateNode = !!node;
   const revealLabel = revealInFolderLabel();
 
   return (
@@ -606,124 +587,102 @@ export default function FileTree() {
         ))}
       </div>
 
-      {contextMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
+      <MenuRoot open={contextMenu !== null} onOpenChange={(next) => { if (!next) closeMenu(); }}>
+        <MenuPanel
+          label="File actions"
+          anchor={contextMenu ? pointAnchor(contextMenu.x, contextMenu.y) : undefined}
+          sideOffset={0}
+          className="bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px] outline-none"
         >
           {isFile && (
-            <button
-              onClick={handleOpen}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            >
+            <Menu.Item onClick={handleOpen} className={menuItemClass}>
               Open
-            </button>
+            </Menu.Item>
           )}
           {node && (
-            <button
-              onClick={() => void handleReveal()}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            >
+            <Menu.Item onClick={() => void handleReveal()} className={menuItemClass}>
               {revealLabel}
-            </button>
+            </Menu.Item>
           )}
           {node && (
             <>
-              <button
-                onClick={() => void handleCopyPath(false)}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
+              <Menu.Item onClick={() => void handleCopyPath(false)} className={menuItemClass}>
                 Copy Path
-              </button>
-              <button
-                onClick={() => void handleCopyPath(true)}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
+              </Menu.Item>
+              <Menu.Item onClick={() => void handleCopyPath(true)} className={menuItemClass}>
                 Copy Relative Path
-              </button>
+              </Menu.Item>
             </>
           )}
           {(isFile || node) && (
-            <div className="border-t border-edge my-1" />
+            <Menu.Separator className="border-t border-edge my-1" />
           )}
-          <button
-            onClick={openNewFilePrompt}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
+          <Menu.Item onClick={openNewFilePrompt} className={menuItemClass}>
             New File…
-          </button>
-          <button
-            onClick={openNewFolderPrompt}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
+          </Menu.Item>
+          <Menu.Item onClick={openNewFolderPrompt} className={menuItemClass}>
             New Folder…
-          </button>
-          {canMutateNode && (
+          </Menu.Item>
+          {node && (
             <>
-              <div className="border-t border-edge my-1" />
-              <button
-                onClick={openRenamePrompt}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
+              <Menu.Separator className="border-t border-edge my-1" />
+              <Menu.Item onClick={openRenamePrompt} className={menuItemClass}>
                 Rename…
-              </button>
-              {confirmDeletePath === node!.path ? (
+              </Menu.Item>
+              {confirmDeletePath === node.path ? (
                 <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
                   <span className="text-muted font-medium">Delete?</span>
                   <div className="flex gap-2">
-                    <button
+                    <Menu.Item
                       onClick={() => void handleDeleteConfirmed()}
-                      className="text-risk font-bold hover:underline"
+                      className="text-risk font-bold hover:underline data-[highlighted]:underline outline-none"
                     >
                       Yes
-                    </button>
-                    <button
+                    </Menu.Item>
+                    <Menu.Item
+                      closeOnClick={false}
                       onClick={() => setConfirmDeletePath(null)}
-                      className="text-muted hover:underline"
+                      className="text-muted hover:underline data-[highlighted]:underline outline-none"
                     >
                       No
-                    </button>
+                    </Menu.Item>
                   </div>
                 </div>
               ) : (
-                <button
-                  onClick={() => setConfirmDeletePath(node!.path)}
-                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-risk font-medium transition-colors"
+                <Menu.Item
+                  closeOnClick={false}
+                  onClick={() => setConfirmDeletePath(node.path)}
+                  className="w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-risk font-medium transition-colors outline-none"
                 >
                   Delete…
-                </button>
+                </Menu.Item>
               )}
             </>
           )}
-        </div>
-      )}
+        </MenuPanel>
+      </MenuRoot>
 
-      {namePrompt && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/45"
-          onClick={() => setNamePrompt(null)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") setNamePrompt(null);
-          }}
-        >
-          <div
-            className="w-[min(360px,92vw)] rounded-lg border border-edge bg-panel shadow-xl p-3 flex flex-col gap-2"
-            onClick={(e) => e.stopPropagation()}
-          >
+      <Modal
+        open={namePrompt !== null}
+        onClose={() => setNamePrompt(null)}
+        label={namePrompt?.title}
+        initialFocus={nameInputRef}
+        backdropClassName="fixed inset-0 z-[60] bg-black/45"
+        viewportClassName="fixed inset-0 z-[60] flex items-center justify-center"
+        className="w-[min(360px,92vw)] rounded-lg border border-edge bg-panel shadow-xl p-3 flex flex-col gap-2 outline-none"
+      >
+        {namePrompt && (
+          <>
             <div className="text-ui-12 font-medium text-txt">{namePrompt.title}</div>
             <input
               ref={nameInputRef}
               value={nameValue}
               onChange={(e) => setNameValue(e.target.value)}
+              onFocus={(e) => e.currentTarget.select()}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
                   void submitNamePrompt();
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setNamePrompt(null);
                 }
               }}
               className="w-full rounded border border-edge bg-bg px-2 py-1.5 text-ui-12 text-txt outline-none focus:border-accent"
@@ -746,9 +705,9 @@ export default function FileTree() {
                 OK
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

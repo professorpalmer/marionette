@@ -331,6 +331,7 @@ export default function PilotPicker({
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => {
+                      if (e.key === "Escape") return;
                       e.stopPropagation();
                       if (e.nativeEvent.isComposing) return;
                       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
