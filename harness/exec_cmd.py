@@ -16,7 +16,14 @@ import sys
 import time
 from typing import Optional
 
+from .reasoning_effort import (
+    ENDPOINT_REASONING_EFFORT_ENV,
+    REASONING_EFFORT_LEVELS,
+    SWARM_REASONING_EFFORT_ENV,
+)
+
 POLL_SECONDS = 2.5  # the GUI's idle poll interval
+WORKER_EFFORTS = ("low", "medium", "high", "xhigh")  # what PUPPETMASTER_WORKER_EFFORT accepts
 
 
 def _parse(argv) -> argparse.Namespace:
@@ -30,7 +37,19 @@ def _parse(argv) -> argparse.Namespace:
     ap.add_argument("--api-key-env", default="", help="environment variable that holds the --endpoint key")
     ap.add_argument("--context-window", type=int, default=None, help="the model's context window in tokens")
     ap.add_argument("--events", default=None, help="write every event as JSONL to this file")
+    ap.add_argument("--reasoning-effort", default=None, choices=REASONING_EFFORT_LEVELS,
+                    help="reasoning effort for the pilot and its workers; an --endpoint pilot "
+                         "sends it as reasoning_effort on every call")
     return ap.parse_args(argv)
+
+
+def _set_reasoning_effort(effort: str) -> None:
+    """Apply one effort to the pilot, the endpoint wire and the workers."""
+    os.environ["HARNESS_CODEX_REASONING_EFFORT"] = effort
+    os.environ[ENDPOINT_REASONING_EFFORT_ENV] = effort
+    os.environ[SWARM_REASONING_EFFORT_ENV] = effort
+    if effort in WORKER_EFFORTS:
+        os.environ["PUPPETMASTER_WORKER_EFFORT"] = effort
 
 
 def _pin_workers(model: str) -> None:
@@ -85,6 +104,8 @@ def run_exec(argv) -> int:
         os.environ.setdefault(name, "0")
     if args.context_window:
         os.environ["HARNESS_MAX_CONTEXT_TOKENS"] = str(args.context_window)
+    if args.reasoning_effort:
+        _set_reasoning_effort(args.reasoning_effort)
 
     from .config import HarnessConfig
     from .conversation import ConversationalSession

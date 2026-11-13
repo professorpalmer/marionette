@@ -16,6 +16,7 @@ Use:
       -m deepseek-v4.1-flash \
       --ak endpoint=http://host.docker.internal:8790/v1 \
       --ak source=/abs/path/pm_harness-<ver>-py3-none-any.whl \
+      --ak reasoning_effort=high \
       --ae MARIONETTE_ENDPOINT_KEY=<proxy token>
 """
 from __future__ import annotations
@@ -86,6 +87,9 @@ class MarionetteOptions(InstalledAgentOptions):
     source: str = Field(
         default="git+https://github.com/professorpalmer/marionette",
         description="git+https URL (pin a tag with @vX.Y.Z), pip spec, or a local wheel path to upload.")
+    reasoning_effort: str = Field(default="", description=(
+        "Reasoning effort for the pilot and its workers (none, low, medium, high, xhigh, max). "
+        "Sent as reasoning_effort on every pilot call. Empty sends no field."))
     egress_lock: bool = Field(default=False, description=(
         "Local offline runs only: after install, allow egress to the endpoint and nothing else. "
         "The task container needs cap_add NET_ADMIN."))
@@ -185,12 +189,13 @@ class Marionette(BaseInstalledAgent):
         env.update({k: v for k, v in (self._extra_env or {}).items() if k.startswith("HARNESS_")})
         if self.options.egress_lock:
             await self._lock_egress(environment, endpoint)
+        effort = " --reasoning-effort %s" % shlex.quote(self.options.reasoning_effort) if self.options.reasoning_effort else ""
         await self.exec_as_agent(environment, env=env, command=self._wrap(
             PATH_SETUP + "harness exec --task-file %s --endpoint %s --model %s --api-key-env %s "
-              "--context-window %d --events %s/marionette-events.jsonl </dev/null 2>%s/marionette-stderr.txt "
+              "--context-window %d%s --events %s/marionette-events.jsonl </dev/null 2>%s/marionette-stderr.txt "
               "| tee %s/marionette-stdout.txt" % (
                 TASK_PATH, shlex.quote(endpoint), shlex.quote(self.model_name or ""), KEY_ENV,
-                self.options.context_window, logs, logs, logs)
+                self.options.context_window, effort, logs, logs, logs)
         ))
 
     def _wrap(self, command: str) -> str:
