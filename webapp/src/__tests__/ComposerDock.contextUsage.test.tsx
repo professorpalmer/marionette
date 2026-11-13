@@ -24,7 +24,7 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 
 const noop = () => {};
 
-function renderDock(contextUsage: ContextUsageResponse | null) {
+function renderDock(contextUsage: ContextUsageResponse | null, onSetShowContextPanel: (open: boolean) => void = noop) {
   return render(
     <ComposerDock
       config={null}
@@ -66,7 +66,7 @@ function renderDock(contextUsage: ContextUsageResponse | null) {
       onSetPlan={noop}
       onSetCanRevertEdit={noop}
       onSetEditNotice={noop}
-      onSetShowContextPanel={noop}
+      onSetShowContextPanel={onSetShowContextPanel}
       onSetSelectedFileIndex={noop}
       onSetSelectedSlashIndex={noop}
       onSetAttachedImages={noop}
@@ -230,5 +230,17 @@ describe("ComposerDock context-usage resilience", () => {
     expect(screen.queryByText("History compaction")).not.toBeInTheDocument();
     expect(screen.queryByText("Tool-output tokens avoided")).not.toBeInTheDocument();
     expect(screen.queryByText("Compact tool outputs saved")).not.toBeInTheDocument();
+  });
+
+  it("closes the panel on Escape from the ring or from inside the panel", () => {
+    const setOpen = vi.fn();
+    renderDock(null, setOpen);
+    const ring = screen.getByRole("button", { name: /Context window usage/ });
+    fireEvent.keyDown(ring, { key: "Escape" });
+    expect(setOpen).toHaveBeenLastCalledWith(false);
+    setOpen.mockClear();
+    fireEvent.keyDown(screen.getByTestId("context-usage-panel"), { key: "Escape" });
+    expect(setOpen).toHaveBeenLastCalledWith(false);
+    expect(ring).toHaveFocus();
   });
 });

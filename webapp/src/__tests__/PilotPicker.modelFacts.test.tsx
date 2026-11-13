@@ -30,7 +30,7 @@ afterEach(() => {
 async function openPicker() {
   render(<PilotPicker config={config} />);
   await act(async () => {
-    fireEvent.click(screen.getByTitle("openrouter:deepseek/deepseek-v4.1-flash"));
+    fireEvent.click(screen.getByTitle(/\(openrouter:deepseek\/deepseek-v4.1-flash\)$/));
   });
 }
 
