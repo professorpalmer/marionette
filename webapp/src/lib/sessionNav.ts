@@ -29,9 +29,9 @@ export function eventDetailString(event: Event, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-/** "2 min ago", "3 h ago", "Yesterday", "4 d ago". `created` is epoch seconds. */
-export function sessionAge(createdSeconds: number, nowMs = Date.now()): string {
-  const seconds = Math.max(0, Math.floor(nowMs / 1000 - createdSeconds));
+/** "2 min ago", "3 h ago", "Yesterday", "4 d ago". Epoch seconds of the last activity. */
+export function sessionAge(atSeconds: number, nowMs = Date.now()): string {
+  const seconds = Math.max(0, Math.floor(nowMs / 1000 - atSeconds));
   if (seconds < 60) return "Just now";
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes} min ago`;
@@ -50,11 +50,11 @@ export function workspaceName(root: string | undefined): string {
   return parts[parts.length - 1] || "Home";
 }
 
-/** Sessions worth reopening, newest first: not the current one, not
+/** Sessions worth reopening, most recently active first: not the current one, not
  *  archived, not an untouched "New session". */
 export function recentSessionRows(rows: readonly Session[], currentId: string | null | undefined, limit: number): Session[] {
   return rows
     .filter((row) => row.id !== currentId && !row.archived && !isDefaultSessionTitle(row.title))
-    .sort((a, b) => (b.created || 0) - (a.created || 0))
+    .sort((a, b) => (b.updated ?? b.created ?? 0) - (a.updated ?? a.created ?? 0))
     .slice(0, limit);
 }

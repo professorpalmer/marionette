@@ -216,7 +216,8 @@ type Ranked = { item: PaletteItem; score: number };
 
 function sessionItem(session: Session, nowMs: number | undefined): PaletteItem {
   const parts = [workspaceName(session.workspace_root)];
-  if (session.created) parts.push(sessionAge(session.created, nowMs));
+  const lastActive = session.updated ?? session.created;
+  if (lastActive) parts.push(sessionAge(lastActive, nowMs));
   return {
     kind: "session",
     key: `session:${session.id}`,

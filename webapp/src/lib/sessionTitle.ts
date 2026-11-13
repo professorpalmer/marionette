@@ -1,5 +1,13 @@
 import { isActivityHeadlineText } from "./sessionTitleLock";
 
+/** The title harness/sessions.py gives a session before its first prompt. */
+const DEFAULT_SESSION_TITLE = "New session";
+
+export function isDefaultSessionTitle(title: string | undefined | null): boolean {
+  const trimmed = (title || "").trim();
+  return !trimmed || trimmed === DEFAULT_SESSION_TITLE;
+}
+
 /** Window event: refetch the session rows (title, preview, age). */
 export const SESSIONS_CHANGED_EVENT = "harness-sessions-changed";
 

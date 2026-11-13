@@ -72,6 +72,12 @@ describe("EmptySessionStarters", () => {
     expect(recentSessionRows(rows, "s6", 4).map((r) => r.id)).toEqual(["s5", "s4", "s3", "s2"]);
   });
 
+  it("orders by last activity, as the sidebar does", () => {
+    const old = { ...session("old", "Old but active", 1), updated: 100 };
+    const fresh = session("fresh", "New and idle", 50);
+    expect(recentSessionRows([fresh, old], null, 4).map((r) => r.id)).toEqual(["old", "fresh"]);
+  });
+
   it("shows no recent block when the bank fails", async () => {
     vi.spyOn(api, "sessionsBank").mockRejectedValue(new Error("offline"));
     render(<EmptySessionStarters showStarters />);

@@ -81,7 +81,7 @@ export default function EmptySessionStarters({
                     {displaySessionListTitle(row.title, row.title_user)}
                     <span className="text-faint"> · {workspaceName(row.workspace_root || row.repo)}</span>
                   </span>
-                  <span className="text-ui-11 text-faint tabular-nums">{sessionAge(row.created)}</span>
+                  <span className="text-ui-11 text-faint tabular-nums">{sessionAge(row.updated ?? row.created)}</span>
                 </button>
               </li>
             ))}
