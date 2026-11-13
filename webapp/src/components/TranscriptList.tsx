@@ -6,6 +6,7 @@ import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { visibleCommand } from "../lib/visibleCommand";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
+import { commandRisk } from "../lib/commandRisk";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -3271,6 +3272,9 @@ function useLineElapsed(timed: boolean, since: number): string {
   return ms >= 1000 ? formatBusyElapsed(ms) : "";
 }
 
+/** A write command's Run button waits this long for its confirm click. */
+const RUN_CONFIRM_MS = 4000;
+
 /** Drop the outgoing line just after the 200ms base swap in index.css ends. */
 const WHEEL_SWAP_MS = 220;
 
@@ -4319,9 +4323,22 @@ function ActionCard({
     else if (linkKind === "spill") openAgentSpill(goalValue);
   };
 
+  // A command that deletes, moves, or writes needs a second click to run.
+  const runRisk = linkKind === "command" && goalValue ? commandRisk(goalValue) : "read";
+  const [confirmRun, setConfirmRun] = useState(false);
+  useEffect(() => {
+    if (!confirmRun) return;
+    const id = window.setTimeout(() => setConfirmRun(false), RUN_CONFIRM_MS);
+    return () => window.clearTimeout(id);
+  }, [confirmRun]);
   const onRunCommand = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (runRisk === "write" && !confirmRun) {
+      setConfirmRun(true);
+      return;
+    }
+    setConfirmRun(false);
     openAgentCommand(goalValue, { run: true });
   };
 
@@ -4392,16 +4409,24 @@ function ActionCard({
           />
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className={`flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${confirmRun ? "opacity-100" : "opacity-0"}`}>
           {linkKind === "command" && goalValue && (
             <button
               type="button"
               onClick={onRunCommand}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/35 hover:bg-panel2/40 hover:text-txt cursor-pointer bg-transparent text-ui-10 font-sans"
-              title="Run in terminal"
+              data-testid="command-run"
+              data-risk={runRisk}
+              className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border cursor-pointer bg-transparent text-ui-10 font-sans ${
+                confirmRun
+                  ? "border-risk/50 text-risk hover:bg-risk/10"
+                  : "border-edge/35 hover:bg-panel2/40 hover:text-txt"
+              }`}
+              title={runRisk === "write"
+                ? "This command changes files, git state, or processes. Click, then confirm, to run it in the terminal."
+                : "Run in terminal"}
             >
-              <Play size={9} />
-              Run
+              {confirmRun ? <AlertTriangle size={9} aria-hidden /> : <Play size={9} aria-hidden />}
+              {confirmRun ? "Confirm run" : runRisk === "write" ? "Run…" : "Run"}
             </button>
           )}
           {meta && <span>{meta}</span>}
