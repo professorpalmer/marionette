@@ -276,6 +276,38 @@ export function latestUserAsk(items: TurnItemLike[]): string {
   return "";
 }
 
+/** The one recovery action the composer offers after a failed or cut turn. */
+export type RecoveryAction = "continue" | "retry";
+
+export type TurnRecovery = {
+  action: RecoveryAction;
+  /** Terminal cause, for the button title. */
+  cause: string | null;
+};
+
+const FAILURE_PREFIXES = ["[error]", "[aborted]"];
+
+/** True when the latest turn left work to build on: a tool run or answer text. */
+function turnLeftWork(items: TurnItemLike[]): boolean {
+  return itemsInCurrentTurn(items).some((it) => {
+    if (it.kind === "card") return true;
+    if (it.kind !== "msg") return false;
+    const msg = (it as { msg: { role: string; text?: string; workerStream?: boolean } }).msg;
+    if (msg.role !== "assistant" || msg.workerStream) return false;
+    const text = String(msg.text || "").trim();
+    return Boolean(text) && !FAILURE_PREFIXES.some((prefix) => text.startsWith(prefix));
+  });
+}
+
+/**
+ * One failure gives one recovery action: Continue when the turn left work,
+ * Retry when it failed before any (a rejected request), none without an ask.
+ */
+export function recoveryActionFor(items: TurnItemLike[]): RecoveryAction | null {
+  if (turnLeftWork(items)) return "continue";
+  return latestUserAsk(items) ? "retry" : null;
+}
+
 export function latestPartialAssistant(items: TurnItemLike[]): string {
   for (const it of [...itemsInCurrentTurn(items)].reverse()) {
     if (it.kind !== "msg") continue;

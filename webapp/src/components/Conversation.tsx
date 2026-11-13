@@ -26,12 +26,14 @@ import {
   hasPartialAssistantAnswer,
   latestUserAsk,
   recoveryControlsAvailable,
+  recoveryActionFor,
   recoveryDispatchAllowed,
   settleFromStaleLocalAbandon,
   settleFromStreamError,
   settleFromTransportEof,
   settleFromUserStop,
   type RecoveryContext,
+  type TurnRecovery,
   type TerminalCause,
   type TurnLifecycle,
   type TurnSettle,
@@ -155,7 +157,7 @@ import {
   putTerminalSelection,
 } from "./conversation/terminalSelectionCache";
 import { emptySessionContext } from "./conversation/TranscriptEmptyState";
-import { COMPOSER_PREFILL_EVENT, eventDetailString } from "../lib/sessionNav";
+import { COMPOSER_PREFILL_EVENT, eventDetailString, FOCUS_COMPOSER_EVENT } from "../lib/sessionNav";
 import {
   chatColumnMountClass,
   isChatColumnActive,
@@ -1975,8 +1977,8 @@ export default function Conversation({
 
   useEffect(() => {
     const onFocus = () => { taRef.current?.focus(); };
-    window.addEventListener("harness-focus-input", onFocus);
-    return () => window.removeEventListener("harness-focus-input", onFocus);
+    window.addEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_COMPOSER_EVENT, onFocus);
   }, []);
 
   useEffect(() => {
@@ -2550,15 +2552,19 @@ export default function Conversation({
     setEditNotice(null);
   };
 
+  const closeComposerMenus = () => {
+    setMentionSearch(null);
+    setMentionIndex(-1);
+    setSlashSearch(null);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // An IME (Japanese, Chinese, Korean, accent or dictation composition) owns
     // Enter/Escape while composing: Enter confirms the candidate, not send.
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Escape") {
       if (mentionSearch !== null || slashSearch !== null) {
-        setMentionSearch(null);
-        setMentionIndex(-1);
-        setSlashSearch(null);
+        closeComposerMenus();
         e.preventDefault();
         return;
       }
@@ -4227,6 +4233,18 @@ export default function Conversation({
   );
   const handleTranscriptImageClick = useCallback((url: string) => setLightboxUrl(url), []);
   const recoveryBound = recoveryContextRef.current;
+  const turnRecoveryAction = recoveryActionFor(items);
+  const turnRecovery: TurnRecovery | null = turnRecoveryAction && recoveryBound && recoveryDispatchAllowed({
+    composerBusy,
+    dispatching: recoveryDispatchingRef.current,
+    lifecycle: turnLifecycle,
+    boundSessionId: recoveryBound.sessionId,
+    activeSessionId,
+    boundGeneration: recoveryBound.generation,
+    activeGeneration: streamGenRef.current,
+  })
+    ? { action: turnRecoveryAction, cause: terminalCause }
+    : null;
   const handleRecoveryContinue = () => {
     if (!recoveryBound) return;
     if (!recoveryDispatchAllowed({
@@ -4307,11 +4325,14 @@ export default function Conversation({
 
   // With no model, Retry cannot help, and the composer model slot already
   // offers Connect a model. The header adds no second copy.
+  // One failure gives one recovery action: while the composer offers Continue
+  // or Retry for the failed turn, the header adds no second Retry.
   const recoveryAction = emptySessionContext(config).needsModel
     ? undefined
     : (
     operationalDiagnostic
     && operationalDiagnostic.recovery.kind !== "none"
+    && !(turnRecovery && operationalDiagnostic.recovery.kind === "retry")
       ? {
           label: operationalDiagnostic.recovery.label,
           onClick: () => { void handleOperationalRecovery(); },
@@ -4475,6 +4496,7 @@ export default function Conversation({
         handleCancelEdit={handleCancelEdit}
         handleInputChange={handleInputChange}
         handleKeyDown={handleKeyDown}
+        handleComposerBlur={closeComposerMenus}
         handlePaste={handlePaste}
         insertMention={insertMention}
         insertFolder={insertFolder}
@@ -4485,19 +4507,8 @@ export default function Conversation({
         handleQueueAdd={handleQueueAdd}
         stop={stop}
         send={send}
-        recoveryAvailable={Boolean(recoveryBound) && recoveryDispatchAllowed({
-          composerBusy,
-          dispatching: recoveryDispatchingRef.current,
-          lifecycle: turnLifecycle,
-          boundSessionId: recoveryBound?.sessionId,
-          activeSessionId,
-          boundGeneration: recoveryBound?.generation,
-          activeGeneration: streamGenRef.current,
-        })}
-        recoveryRetryAvailable={Boolean(latestUserAsk(items))}
-        recoveryCause={terminalCause}
-        onContinue={handleRecoveryContinue}
-        onRetry={handleRecoveryRetry}
+        recovery={turnRecovery}
+        onRecover={turnRecovery?.action === "continue" ? handleRecoveryContinue : handleRecoveryRetry}
       />
       )}
         />

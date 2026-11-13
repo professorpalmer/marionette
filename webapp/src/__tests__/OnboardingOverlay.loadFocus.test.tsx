@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useEffect, useRef, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import OnboardingOverlay from "../components/OnboardingOverlay";
 import { api } from "../lib/api";
 import { resetOnboardingForTests } from "../state/onboardingStore";
+import { FOCUS_COMPOSER_EVENT } from "../lib/sessionNav";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -107,5 +109,48 @@ describe("OnboardingOverlay focus after the provider load", () => {
     await release(providers as Providers);
     await waitFor(() => expect(screen.getByTestId("onboarding-load-status"))
       .toHaveTextContent("Nothing found on this Mac. OpenRouter is recommended."));
+  });
+
+  describe("focus after Escape", () => {
+    /** App shape: the composer listens for the focus event; onboarding mounts over it. */
+    function Shell({ opener }: { opener: boolean }) {
+      const [open, setOpen] = useState(!opener);
+      const ta = useRef<HTMLTextAreaElement>(null);
+      useEffect(() => {
+        const focus = () => ta.current?.focus();
+        window.addEventListener(FOCUS_COMPOSER_EVENT, focus);
+        return () => window.removeEventListener(FOCUS_COMPOSER_EVENT, focus);
+      }, []);
+      return <>
+        <textarea ref={ta} aria-label="Message" />
+        {opener ? <button type="button" onClick={() => setOpen(true)}>Connect a model</button> : null}
+        {open ? <OnboardingOverlay onClose={() => setOpen(false)} /> : null}
+      </>;
+    }
+
+    it("puts focus in the composer when the app opened onboarding with nothing focused", async () => {
+      const release = deferProviders();
+      render(<Shell opener={false} />);
+      await release(providers as Providers);
+      const field = await screen.findByLabelText("OpenRouter API key");
+      await waitFor(() => expect(field).toHaveFocus());
+      fireEvent.keyDown(field, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("onboarding-overlay")).toBeNull());
+      await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus());
+    });
+
+    it("returns focus to the control that opened it", async () => {
+      const release = deferProviders();
+      render(<Shell opener />);
+      const opener = screen.getByRole("button", { name: "Connect a model" });
+      opener.focus();
+      fireEvent.click(opener);
+      await release(providers as Providers);
+      const field = await screen.findByLabelText("OpenRouter API key");
+      await waitFor(() => expect(field).toHaveFocus());
+      fireEvent.keyDown(field, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("onboarding-overlay")).toBeNull());
+      await waitFor(() => expect(opener).toHaveFocus());
+    });
   });
 });

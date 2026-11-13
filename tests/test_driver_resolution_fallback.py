@@ -214,3 +214,15 @@ def test_bare_go_catalog_id_available_when_openrouter_disconnected(monkeypatch):
     assert srv._driver_provider_available("deepseek-v4-flash")
     srv._resolve_available_driver()
     assert srv._driver_provider_available(srv._cfg.driver)
+
+
+def test_bare_default_becomes_its_openrouter_picker_spec(monkeypatch):
+    """OpenRouter key only, no curation: the compiled-in bare 'qwen3-coder-30b'
+    runs through OpenRouter, but the picker showed it as a separate row with
+    "Details unknown". The driver must be the picker spec the profile lists."""
+    spec = "openrouter:qwen/qwen3-coder-30b-a3b-instruct"
+    pilots = ["openrouter:openai/gpt-6.1-sol", spec]
+    _install_cfg(monkeypatch, enabled=pilots, driver="qwen3-coder-30b")
+    srv._resolve_available_driver()
+    assert srv._cfg.driver == spec
+    assert srv._available_pilots() == [spec, "openrouter:openai/gpt-6.1-sol"]

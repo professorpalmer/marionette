@@ -27,6 +27,7 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional
 from pmharness.drivers import http_pool
+from pmharness.drivers.base import http_error_excerpt
 from pmharness.drivers.metering import report_usage
 
 
@@ -142,7 +143,7 @@ class OpenAICompatVisionSidecar:
             with http_pool.urlopen(req, timeout=self.timeout) as r:
                 raw = json.load(r)
         except urllib.error.HTTPError as e:
-            return VisionResult("", error=f"HTTP {e.code}: {e.read().decode('utf-8','replace')[:300]}",
+            return VisionResult("", error=f"HTTP {e.code}: {http_error_excerpt(e, dict(req.header_items()), 300)}",
                                 latency_ms=(time.time()-t0)*1000, model=self.name)
         except Exception as e:
             return VisionResult("", error=repr(e), latency_ms=(time.time()-t0)*1000, model=self.name)
@@ -239,7 +240,7 @@ class AnthropicVisionSidecar:
             with http_pool.urlopen(req, timeout=self.timeout) as r:
                 raw = json.load(r)
         except urllib.error.HTTPError as e:
-            return VisionResult("", error=f"HTTP {e.code}: {e.read().decode('utf-8','replace')[:300]}",
+            return VisionResult("", error=f"HTTP {e.code}: {http_error_excerpt(e, dict(req.header_items()), 300)}",
                                 latency_ms=(time.time()-t0)*1000, model=self.name)
         except Exception as e:
             return VisionResult("", error=repr(e), latency_ms=(time.time()-t0)*1000, model=self.name)

@@ -8,7 +8,7 @@ import { expandAgentMemory } from "./memoryDeepLink";
 import { modelLabelOf, providerLabelOf, providerOf } from "./pilotPickerModels";
 import type { SessionSearchHit } from "./sessionSearch";
 import { displaySessionListTitle } from "./sessionTitle";
-import { recentSessionRows, sessionAge, workspaceName } from "./sessionNav";
+import { focusComposer, recentSessionRows, sessionAge, workspaceName } from "./sessionNav";
 
 export type CommandPaletteActionId =
   | "new-session"
@@ -123,7 +123,7 @@ export function runCommandPaletteAction(
       window.dispatchEvent(new Event("harness-clear-transcript"));
       return;
     case "focus-composer":
-      window.dispatchEvent(new Event("harness-focus-input"));
+      focusComposer();
       return;
     case "open-swarm":
       window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "swarm" }));

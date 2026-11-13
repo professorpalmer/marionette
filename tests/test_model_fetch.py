@@ -321,3 +321,49 @@ def test_chat_model_filter_drops_non_chat():
               "gpt-realtime-2", "text-embedding-3-large", "aqa",
               "gemini-2.5-pro-preview-tts", "nano-banana-pro-preview"]:
         assert not _is_chat_model(m), f"{m} should NOT be a chat model"
+
+
+def test_openrouter_drops_variants_without_a_chat_endpoint(tmp_path, monkeypatch):
+    """A ``:batch`` variant serves only /api/v1/batches; a chat send gives 404."""
+    p = prov.get_provider("openrouter")
+    chat = ["/api/v1/chat/completions", "/api/v1/completions", "/api/v1/messages", "/api/v1/responses"]
+    payload = {"data": [
+        {"id": "deepseek/deepseek-v4.1-flash", "endpoints": chat},
+        {"id": "deepseek/deepseek-v4.1-flash:batch", "endpoints": ["/api/v1/batches"]},
+        {"id": "z-ai/glm-5.3:free", "endpoints": chat},
+        {"id": "openai/gpt-6.1-sol"},
+    ]}
+    cache = tmp_path / "provider_models_cache.json"
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    monkeypatch.setattr(mf, "_get", lambda url, headers: payload)
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    ids = [r["id"] for r in mf.fetch_model_records(p, "key", force=True)]
+    assert ids == ["deepseek/deepseek-v4.1-flash", "z-ai/glm-5.3:free", "openai/gpt-6.1-sol"]
+
+
+def test_openrouter_stale_cache_drops_batch_rows(tmp_path, monkeypatch):
+    """A cache written before ``endpoints`` was kept still lists ``:batch`` rows."""
+    import json as _json
+    import time as _time
+    p = prov.get_provider("openrouter")
+    cache = tmp_path / "provider_models_cache.json"
+    cache.write_text(_json.dumps({"openrouter": {"fetched_at": _time.time(), "models": [
+        {"id": "deepseek/deepseek-v4.1-flash", "source": "live", "status": "available"},
+        {"id": "deepseek/deepseek-v4.1-flash-1017:batch", "source": "live", "status": "available"},
+    ]}}), encoding="utf-8")
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(cache))
+    mf._RECORD_MEM.clear()
+    mf._MEM.clear()
+    assert [r["id"] for r in mf.fetch_model_records(p, "key")] == ["deepseek/deepseek-v4.1-flash"]
+
+
+def test_http_error_excerpt_scrubs_account_ids():
+    import io
+    from pmharness.drivers.base import http_error_excerpt
+
+    body = b'{"error":{"message":"no chat endpoint","code":404},"user_id":"user_2ZZtestAccountId0000000000"}'
+    out = http_error_excerpt(io.BytesIO(body), {"Authorization": "Bearer sk-or-v1-0000000000"})
+    assert "user_2ZZ" not in out
+    assert '"user_id":"REDACTED"' in out
+    assert "no chat endpoint" in out

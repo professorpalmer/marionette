@@ -8,6 +8,8 @@ import { Dialog } from "@base-ui/react/dialog";
 import { Menu } from "@base-ui/react/menu";
 
 type FocusTarget = RefObject<HTMLElement | null> | boolean;
+/** A ref, a boolean, or a function of the close type (Base UI `finalFocus`). */
+type FinalFocus = ComponentProps<typeof Dialog.Popup>["finalFocus"];
 
 export type ModalProps = {
   open: boolean;
@@ -25,7 +27,7 @@ export type ModalProps = {
   /** The positioning layer around the panel (for example flex centering). */
   viewportClassName?: string;
   initialFocus?: FocusTarget;
-  finalFocus?: FocusTarget;
+  finalFocus?: FinalFocus;
   testId?: string;
 };
 

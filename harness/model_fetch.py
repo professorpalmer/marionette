@@ -155,11 +155,29 @@ def _fetch_codex_oauth_models(access_token: str) -> list[str]:
     return ids
 
 
+_OPENROUTER_CHAT_ENDPOINT = "/api/v1/chat/completions"
+
+
+def _openrouter_serves_chat(item: dict[str, Any]) -> bool:
+    """False for an OpenRouter variant that has no chat endpoint.
+
+    OpenRouter lists ``endpoints`` per model. A ``:batch`` variant lists only
+    ``/api/v1/batches``, and a chat request to it gives HTTP 404. A cached
+    record from before ``endpoints`` was kept uses the ``:batch`` suffix.
+    """
+    endpoints = item.get("endpoints")
+    if isinstance(endpoints, list):
+        return _OPENROUTER_CHAT_ENDPOINT in endpoints
+    return not str(item.get("id") or "").endswith(":batch")
+
+
 def _normalize_openrouter_record(
     item: dict[str, Any], *, source: str, pricing_per_mtok: bool = False
 ) -> dict[str, Any] | None:
     model_id = item.get("id")
     if not isinstance(model_id, str) or not model_id.strip():
+        return None
+    if not _openrouter_serves_chat(item):
         return None
     record: dict[str, Any] = {
         "id": model_id.strip(),
@@ -168,7 +186,7 @@ def _normalize_openrouter_record(
     }
     for field in (
         "name", "description", "canonical_slug", "context_length",
-        "architecture", "modalities", "supported_parameters",
+        "architecture", "modalities", "supported_parameters", "endpoints",
     ):
         if field in item and item[field] is not None:
             record[field] = item[field]

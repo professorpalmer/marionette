@@ -7,6 +7,7 @@ harness's job, identically for every model.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 from .reasoning_envelope import ReasoningEnvelope
@@ -131,6 +132,27 @@ def chat_completions_messages(messages: list) -> list:
 
 _CREDENTIAL_HEADERS = frozenset(("authorization", "x-api-key", "x-goog-api-key", "api-key"))
 
+# Account identifiers a provider puts in an error body, such as OpenRouter's
+# "user_id". Error text reaches the chat, the transcript and the logs.
+_ACCOUNT_ID_RE = re.compile(
+    r"""(?ix)
+    (["']?)
+    (?:user|account|org|organization|customer|team|workspace)[_-]?id
+    \1 \s* [:=] \s*
+    (["']?) [^"',}\s]+ \2
+    """
+)
+
+
+def scrub_account_ids(text: str) -> str:
+    """Replace the value of each account identifier field with REDACTED."""
+    if not text:
+        return text
+    return _ACCOUNT_ID_RE.sub(
+        lambda m: m.group(0)[: m.start(2) - m.start(0)] + m.group(2) + "REDACTED" + m.group(2),
+        text,
+    )
+
 
 def http_error_excerpt(err: Any, headers: Optional[dict] = None, limit: int = 500) -> str:
     """Body of an HTTP error for the error string, cut to ``limit``.
@@ -148,7 +170,7 @@ def http_error_excerpt(err: Any, headers: Optional[dict] = None, limit: int = 50
             secret = secret[7:].strip()
         if len(secret) >= 8:
             text = text.replace(secret, "REDACTED")
-    return text[:limit]
+    return scrub_account_ids(text)[:limit]
 
 
 @dataclass

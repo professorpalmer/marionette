@@ -1,10 +1,12 @@
 /**
- * Continue / Retry: disabled while busy, one dispatch, honest visible send.
+ * Turn recovery: one failure gives one action (Continue or Retry), hidden
+ * while busy, one dispatch per click.
  */
 import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ComposerDock from "../components/conversation/ComposerDock";
+import type { TurnRecovery } from "../lib/turnTerminal";
 
 vi.mock("../lib/api", () => ({
   api: {},
@@ -23,10 +25,8 @@ const noop = () => {};
 
 function renderDock(opts: {
   composerBusy: boolean;
-  recoveryAvailable?: boolean;
-  recoveryRetryAvailable?: boolean;
-  onContinue?: () => void;
-  onRetry?: () => void;
+  recovery?: TurnRecovery | null;
+  onRecover?: () => void;
 }) {
   return render(
     <ComposerDock
@@ -103,49 +103,39 @@ function renderDock(opts: {
       handleQueueAdd={noop}
       stop={noop}
       send={noop}
-      recoveryAvailable={opts.recoveryAvailable}
-      recoveryRetryAvailable={opts.recoveryRetryAvailable}
-      recoveryCause="provider_eof"
-      onContinue={opts.onContinue}
-      onRetry={opts.onRetry}
+      recovery={opts.recovery ?? null}
+      onRecover={opts.onRecover}
     />,
   );
 }
 
 describe("ComposerDock recovery chrome", () => {
-  it("hides Continue/Retry while the mouth is busy", () => {
-    renderDock({ composerBusy: true, recoveryAvailable: true });
+  it("hides the recovery action while the mouth is busy", () => {
+    renderDock({ composerBusy: true, recovery: { action: "continue", cause: "provider_eof" } });
     expect(screen.queryByRole("button", { name: /continue/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     expect(screen.getByRole("button", { name: /stop/i })).toBeInTheDocument();
   });
 
-  it("dispatches Continue and Retry exactly once from an incomplete turn", () => {
-    const onContinue = vi.fn();
-    const onRetry = vi.fn();
-    renderDock({
-      composerBusy: false,
-      recoveryAvailable: true,
-      recoveryRetryAvailable: true,
-      onContinue,
-      onRetry,
-    });
+  it("shows only Continue for a turn that left work, and dispatches once", () => {
+    const onRecover = vi.fn();
+    renderDock({ composerBusy: false, recovery: { action: "continue", cause: "provider_eof" }, onRecover });
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
-    expect(onContinue).toHaveBeenCalledTimes(1);
-    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onRecover).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Retry when there is no latest user ask", () => {
-    const onRetry = vi.fn();
-    renderDock({
-      composerBusy: false,
-      recoveryAvailable: true,
-      recoveryRetryAvailable: false,
-      onRetry,
-    });
-    expect(screen.getByRole("button", { name: /retry/i })).toBeDisabled();
+  it("shows only Retry for a request that failed before any work", () => {
+    const onRecover = vi.fn();
+    renderDock({ composerBusy: false, recovery: { action: "retry", cause: "transport_error" }, onRecover });
+    expect(screen.queryByRole("button", { name: /continue/i })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /retry/i }));
-    expect(onRetry).not.toHaveBeenCalled();
+    expect(onRecover).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no recovery action when nothing failed", () => {
+    renderDock({ composerBusy: false, recovery: null });
+    expect(screen.queryByRole("button", { name: /continue/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 });
