@@ -217,3 +217,23 @@ it("cancels scheduled cold recovery after a local edit", async () => {
  expect(api.sessionTranscript).toHaveBeenCalledTimes(4);
  expect(d.itemsRef.current).toEqual([msg("local")]);
 });
+it("a store replay asked for during the transcript load waits for the load", async () => {
+ // Measured in the rig: on reload the replay started while the transcript
+ // load was in flight. It painted the newest turn's tail on the empty feed,
+ // the load was then dropped as stale, and only the tail stayed.
+ const response = deferred<Awaited<ReturnType<typeof api.sessionTranscript>>>();
+ vi.mocked(api.sessionTranscript).mockReturnValue(response.promise);
+ vi.mocked(api.readEventsSince).mockResolvedValue({ session_id: "A", cursor: 1, events: [
+  { id: 1, kind: "stream", data: { kind: "message", text: "replayed tail", cursor: 1, generation: 1 } },
+ ] } as Awaited<ReturnType<typeof api.readEventsSince>>);
+ const d = fixture();
+ d.applyStreamEventRef.current = () => d.setItems((p) => [...p, { kind: "msg", msg: { role: "assistant", text: "replayed tail" } }]);
+ renderHook(() => useSessionSwitch(d));
+ d.ensureChatEventsReattachRef.current();
+ await act(async () => {});
+ expect(api.readEventsSince).not.toHaveBeenCalled();
+ await act(async () => response.resolve({ history: [{ role: "user", content: "first turn" }] }));
+ await act(async () => {});
+ expect(d.itemsRef.current[0]).toEqual(hydratedUser("first turn"));
+ expect(api.readEventsSince).toHaveBeenCalled();
+});
