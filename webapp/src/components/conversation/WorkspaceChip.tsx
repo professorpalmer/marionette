@@ -44,8 +44,9 @@ export const WORKSPACE_CHIP_ROW_CLASS =
 
 /** The header's project name; a click opens the folder menu (Home, recents,
  *  Open Folder). The header owns the project fact, so the composer has no
- *  second copy of it. */
-export default function WorkspaceChip({ label }: { label?: string }) {
+ *  second copy of it. With `showLabel` false the trigger is a folder icon in
+ *  the same place: the session title already says the name. */
+export default function WorkspaceChip({ label, showLabel = true }: { label?: string; showLabel?: boolean }) {
   const operationalDiagnostic = useOperationalDiagnostic();
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
@@ -104,9 +105,12 @@ export default function WorkspaceChip({ label }: { label?: string }) {
       <MenuRoot open={open} onOpenChange={setOpen}>
         <Menu.Trigger
           data-testid="header-project"
-          title="Switch folder"
+          title={showLabel ? "Switch folder" : `Switch folder (${label || name})`}
+          aria-label={showLabel ? undefined : `Switch folder (${label || name})`}
           className="flex items-center gap-0.5 min-w-0 text-muted/80 hover:text-txt transition rounded px-1 -mx-1 hover:bg-panel2/60">
-          <span className="truncate">{label || name}</span>
+          {showLabel
+            ? <span className="truncate">{label || name}</span>
+            : <Folder size={11} className="text-faint shrink-0" aria-hidden />}
           <ChevronDown size={10} className="text-faint shrink-0" />
         </Menu.Trigger>
         <MenuPanel side="bottom" align="start" sideOffset={4} label="Workspace folders" className={WORKSPACE_CHIP_POPOVER_CLASS}>
