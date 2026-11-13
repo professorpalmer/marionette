@@ -571,15 +571,15 @@ describe("StatusBar update progress mirror", () => {
     const { rerender } = render(
       <StatusBar
         {...statusBarProps}
-        update={{ behind: 2, branch: "main", version: "0.9.245" }}
+        update={{ kind: "commits", behind: 2, branch: "main", version: "0.9.245" }}
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "2 new commits" }));
     expect(applyRequest).toHaveBeenCalledTimes(1);
 
     rerender(<StatusBar {...statusBarProps} update={null} />);
-    expect(screen.queryByRole("button", { name: "update (2)" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "2 new commits" })).not.toBeInTheDocument();
     window.removeEventListener("harness-update-apply", applyRequest);
   });
 
@@ -609,10 +609,11 @@ describe("StatusBar update progress mirror", () => {
       behind: 2,
       branch: "main",
       current: "0.9.245",
+      latest: "0.9.246",
     }));
 
     expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "v0.9.246 ready" }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
 
     act(() => progressListeners.forEach((listener) => listener({

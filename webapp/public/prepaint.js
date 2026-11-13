@@ -14,7 +14,7 @@ try {
   if (glass) {
     document.documentElement.setAttribute("data-marionette-glass", "");
     var keep = Math.max(0, 100 - Math.round(Number(state.intensity) || 0));
-    document.documentElement.style.setProperty("--translucency-glass-keep", keep + "%");
+    document.documentElement.style.setProperty("--translucency-frame-keep", keep + "%");
     document.documentElement.style.backgroundColor = "transparent";
   } else {
     document.documentElement.style.backgroundColor = THEMED;

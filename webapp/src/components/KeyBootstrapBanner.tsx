@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
-import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
+import { useTitlebarLeftPad } from "../lib/useTitlebarLeftPad";
 
 /** Startup key-store failures: distinct from the keyless ProviderKeyBanner. */
 export default function KeyBootstrapBanner({
@@ -11,13 +11,16 @@ export default function KeyBootstrapBanner({
   onOpenSettings: () => void;
 }) {
   const [dismissed, setDismissed] = useState(false);
+  const [leftPad, stripRef] = useTitlebarLeftPad();
   if (dismissed || !issues.length) return null;
 
   return (
     <div
+      ref={stripRef}
+      data-top-strip=""
       data-testid="key-bootstrap-banner"
       className="flex items-center gap-2.5 pr-4 py-1.5 bg-warn/10 border-b border-warn/30 text-ui-11.5 text-txt select-none shrink-0"
-      style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
+      style={{ paddingLeft: leftPad }}
     >
       <AlertTriangle size={13} className="text-warn shrink-0" />
       <span className="font-medium">A provider key did not save on startup.</span>

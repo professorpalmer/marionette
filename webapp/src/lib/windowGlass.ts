@@ -1,6 +1,6 @@
 /**
  * Renderer half of window glass. Main owns the native material; this module
- * thins field surfaces and mirrors the lever over IPC / localStorage so a
+ * thins the window frame and mirrors the lever over IPC / localStorage so a
  * reload paints before React.
  */
 
@@ -41,7 +41,10 @@ function clampIntensity(value: unknown): number {
   return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : 0;
 }
 
-export function glassSurfaceKeep(intensity: number): number {
+/** Percent of the frame tint that stays over the native material. Only the
+ *  window frame (left rail, title band, gutters) thins; content surfaces
+ *  stay opaque at every intensity. */
+export function glassFrameKeep(intensity: number): number {
   return 100 - clampIntensity(intensity);
 }
 
@@ -121,10 +124,10 @@ export function applyGlassSurfaces(
   const live = glassActive(state);
   root.toggleAttribute(GLASS_ATTR, live);
   if (live) {
-    root.style.setProperty("--translucency-glass-keep", `${glassSurfaceKeep(state.intensity)}%`);
+    root.style.setProperty("--translucency-frame-keep", `${glassFrameKeep(state.intensity)}%`);
     root.style.backgroundColor = "transparent";
   } else {
-    root.style.removeProperty("--translucency-glass-keep");
+    root.style.removeProperty("--translucency-frame-keep");
     root.style.removeProperty("background-color");
   }
 }

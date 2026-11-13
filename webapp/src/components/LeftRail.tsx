@@ -4,7 +4,9 @@ import { MetadataStatus } from './MetadataJobs';
 import { useOpenSwarmJobRow } from '../lib/useOpenSwarmJob';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
+import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
+import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
+import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
@@ -107,12 +109,15 @@ export default function LeftRail({
   onSessionChange,
   onSessionCreated,
   activeSessionId: shownSessionId,
+  onCollapse,
 }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
   onSessionCreated?: (id: string) => void;
   /** The session Conversation is showing. */
   activeSessionId?: string | null;
+  /** Hides the rail (Cmd+B). The button sits in the title band beside the traffic lights. */
+  onCollapse?: () => void;
 }) {
   const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
   const openJobRow = useOpenSwarmJobRow();
@@ -1136,6 +1141,14 @@ export default function LeftRail({
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
   });
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const id = eventDetailString(e, "sessionId");
+      if (id) void switchSession(id);
+    };
+    window.addEventListener(SWITCH_SESSION_EVENT, onSwitch);
+    return () => window.removeEventListener(SWITCH_SESSION_EVENT, onSwitch);
+  });
   const followUpAfterSessionRemove = async (id: string, viewingId: string, projectPath: string) => {
     const remaining = remainingOpenAfterRemoveFromCache(projectPath, id);
     const action = actionAfterSessionRemove({
@@ -1523,14 +1536,25 @@ export default function LeftRail({
   return (
     <aside ref={railRef} className="session-rail bg-transparent flex flex-col h-full overflow-hidden text-[0.8125rem]">
       <div ref={topChromeRef}>
-      {/* Keep the native traffic-light/titlebar area separate from the actions.
-          The same draggable region also preserves window movement on other
-          desktop platforms. */}
+      {/* Title band: the native traffic lights sit at its left, the hide
+          control at its right. The band is the window drag region. */}
       <div
-        aria-hidden="true"
-        className="session-rail-drag h-12 shrink-0"
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-      />
+        className="session-rail-drag flex items-center justify-end px-2.5 shrink-0"
+        style={{ height: MACOS_TITLEBAR_BAND_PX, WebkitAppRegion: "drag" } as React.CSSProperties}
+      >
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Hide sidebar (⌘B)"
+            aria-label="Hide sidebar"
+            className="h-7 w-7 grid place-items-center rounded text-muted hover:text-txt hover:bg-panel2/60 transition"
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
+      </div>
 
       <div className="px-2.5 pb-2 border-b border-edge/50">
         <button

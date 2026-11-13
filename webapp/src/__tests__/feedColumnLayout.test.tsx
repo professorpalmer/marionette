@@ -51,11 +51,9 @@ function renderColumn(opts: {
 }
 
 describe("chat column feed alignment", () => {
-  it("top-aligns empty-session greeting above the composer dock", () => {
+  it("keeps the empty-session heading in the feed, above the centered composer", () => {
     const { feedRef, feedContentRef } = renderColumn();
-    const greeting = screen.getByText(
-      "Message the pilot. It plans, investigates via swarms, and explains.",
-    );
+    const greeting = screen.getByText("What should we work on?");
     const scrollport = screen.getByTestId("transcript-feed-scrollport");
     const content = screen.getByTestId("transcript-feed-content");
     const composer = screen.getByTestId("composer-chrome");
@@ -71,6 +69,9 @@ describe("chat column feed alignment", () => {
       `${FEED_COMPOSER_CLEARANCE_PX}px`,
     );
     expect(content.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Starters sit below the composer, so the composer is centered between them and the heading.
+    const starters = screen.getByTestId("empty-session-starters");
+    expect(composer.compareDocumentPosition(starters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps a short transcript in the feed column, not under the composer", () => {

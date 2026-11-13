@@ -19,7 +19,8 @@ import {
   type SecretRequestItem,
   type Item,
 } from "../TranscriptList";
-import TranscriptEmptyState from "./TranscriptEmptyState";
+import TranscriptEmptyState, { type EmptySessionContext } from "./TranscriptEmptyState";
+import EmptySessionStarters from "./EmptySessionStarters";
 import {
   feedContentLayoutClass,
   feedLiveStreamOpen,
@@ -75,6 +76,7 @@ export default function ConversationChatColumn({
   sessionId,
   itemSessionId = "",
   paneIds = [],
+  emptySession,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
   /** Direct child of the feed scrollport — observed for height-driven stick. */
@@ -112,6 +114,8 @@ export default function ConversationChatColumn({
   /** Session that currently owns `items` (may lag activeSessionId by one frame). */
   itemSessionId?: string;
   paneIds?: string[];
+  /** Shell facts for the empty-session state (workspace name, model readiness). */
+  emptySession?: EmptySessionContext;
 }) {
   const ids = retainSessionPanes({
     prev: paneIds,
@@ -125,6 +129,9 @@ export default function ConversationChatColumn({
   // Dim only when stale rows are on screen (refresh flake). Empty cold-miss
   // dim was the swap blink — nothing to honesty-dim.
   const feedDimmed = transcriptStale && paintCount > 0;
+  // An empty session centers the composer: the feed (heading at its bottom)
+  // and the starters below the composer split the free height evenly.
+  const emptyLayout = !transcriptStale && paintCount === 0;
   const [dockPad, setDockEl] = useDockClearance();
   const columnRef = useRef<HTMLDivElement>(null);
   const { findApiRef, findBar } = useTranscriptFind(feedRef, columnRef, items, sessionId, dockPad ?? 0);
@@ -170,6 +177,7 @@ export default function ConversationChatColumn({
                   <TranscriptEmptyState
                     transcriptStale={live ? transcriptStale : panePaint === 0}
                     itemCount={panePaint}
+                    context={emptySession}
                   />
                 ) : null}
                 <TranscriptList
@@ -220,6 +228,11 @@ export default function ConversationChatColumn({
       <div className="transcript-fold-chrome select-none shrink-0 min-w-0" data-testid="composer-chrome">
         {composerDock}
       </div>
+      {emptyLayout ? (
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <EmptySessionStarters sessionId={sessionId} showStarters={!emptySession?.needsModel} />
+        </div>
+      ) : null}
     </div>
   );
 }
