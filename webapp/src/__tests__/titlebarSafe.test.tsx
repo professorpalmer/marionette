@@ -84,6 +84,26 @@ describe("titlebar-safe clearance", () => {
     expect(screen.getByText(/Open Folder/).closest('[role="menuitem"]')).toBeInTheDocument();
   });
 
+  it("ConversationHeader truncates the title first, not the project or branch", () => {
+    // flex-shrink spread the overflow over all three, so a short project name
+    // ("proj2") lost 3px at 900-1024px while the title had room to give.
+    render(
+      <ConversationHeader
+        pillStatus="done"
+        heading={{ title: "Read calc.py and say in one sentence what it does", project: "proj2", branch: "master" }}
+      />,
+    );
+    const title = screen.getByTestId("header-session-title");
+    expect(title.className).toMatch(/\bmin-w-0\b/);
+    expect(title.className).toMatch(/\btruncate\b/);
+    for (const slot of [screen.getByTestId("header-project-slot"), screen.getByTestId("header-branch")]) {
+      expect(slot.className).toMatch(/\bshrink-0\b/);
+      expect(slot.className).toMatch(/\bmax-w-\[30%\]/);
+    }
+    // A long branch still truncates inside its cap.
+    expect(screen.getByText("master").className).toMatch(/\btruncate\b/);
+  });
+
   it("projectRepeatsTitle ignores case and spaces, and never matches an empty title", () => {
     expect(projectRepeatsTitle("proj", "proj")).toBe(true);
     expect(projectRepeatsTitle(" Proj ", "proj")).toBe(true);

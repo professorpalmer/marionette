@@ -6,6 +6,7 @@ import {
 } from "@codemirror/view";
 import { RangeSetBuilder, StateField, type EditorState, type Extension } from "@codemirror/state";
 import type { InFilePendingHunk } from "../lib/inFileReview";
+import { MONO_STACK } from "../lib/fontStacks";
 
 export type InFileReviewHandlers = {
   onAccept: (item: InFilePendingHunk) => void;
@@ -150,7 +151,7 @@ const infileReviewTheme = EditorView.baseTheme({
     padding: "4px 8px",
     margin: "2px 0",
     fontSize: "11px",
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontFamily: MONO_STACK,
     backgroundColor: "rgba(63, 185, 80, 0.08)",
     border: "1px solid rgba(63, 185, 80, 0.25)",
     borderRadius: "4px",

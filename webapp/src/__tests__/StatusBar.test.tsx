@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
   deriveFooterRuntimeStatus,
   footerRuntimeStatusLabel,
+  footerStatusWithModel,
   footerStatusWithTurn,
   sessionGoalForChip,
 } from "../components/StatusBar";
@@ -174,6 +175,14 @@ describe("deriveFooterRuntimeStatus", () => {
     expect(footerStatusWithTurn("ready", false)).toBe("ready");
     expect(footerRuntimeStatusLabel("thinking")).toBe("Thinking…");
     expect(footerRuntimeStatusLabel("busy")).toBe("Busy");
+    expect(footerRuntimeStatusLabel("no_model")).toBe("No model connected");
+  });
+
+  it("marks an idle footer with no model as no_model, and keeps work states", () => {
+    expect(footerStatusWithModel("ready", true)).toBe("no_model");
+    expect(footerStatusWithModel("ready", false)).toBe("ready");
+    expect(footerStatusWithModel("thinking", true)).toBe("thinking");
+    expect(footerStatusWithModel("busy", true)).toBe("busy");
   });
 });
 
@@ -310,6 +319,24 @@ describe("StatusBar runtime status", () => {
       expect(screen.getByText("Idle").closest("[data-runtime-status]"))
         .toHaveAttribute("data-runtime-status", "ready");
     });
+  });
+
+  it("does not show the ready dot when no model is connected", async () => {
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      active_view_id: "sess-1",
+      runners: { "sess-1": "idle" },
+    });
+
+    render(<StatusBar {...statusBarProps} needsModel />);
+
+    await waitFor(() => expect(screen.getByText("No model connected")).toBeInTheDocument());
+    const dot = document.querySelector("[data-runtime-status]")!;
+    expect(dot).toHaveAttribute("data-runtime-status", "no_model");
+    expect(dot).toHaveAttribute("title", "No model connected");
+    expect(dot.querySelector("svg")!.getAttribute("class")).not.toMatch(/fill-good|text-good/);
+    expect(screen.queryByText("Idle")).toBeNull();
   });
 
   it("shows a working dot while the chat turn is open, even when the runner reply says idle", async () => {
