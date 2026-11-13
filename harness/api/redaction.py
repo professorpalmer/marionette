@@ -6,6 +6,8 @@ import re
 from hashlib import sha256
 from typing import Any, TypedDict
 
+from pmharness.drivers.base import scrub_account_ids
+
 _REDACTED = "REDACTED"
 _MAX_LABEL = 40
 _MAX_SUMMARY = 240
@@ -34,7 +36,7 @@ def _redact_string(text: str) -> str:
         return text
     out = _URL_CREDENTIAL_RE.sub(lambda m: m.group(1).split("=", 1)[0] + "=" + _REDACTED, text)
     out = _SECRET_KV_RE.sub(rf"\1{_REDACTED}", out)
-    return _TOKENISH_RE.sub(_REDACTED, out)
+    return scrub_account_ids(_TOKENISH_RE.sub(_REDACTED, out))
 
 
 def redact_secret_text(text: str) -> str:
