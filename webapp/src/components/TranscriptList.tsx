@@ -861,11 +861,17 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
   const out: GroupedItem[] = [];
   let run: TurnWorkRow[] = [];
   let heldFinal: GroupedItem | null = null;
+  // A steer is a user message sent while the turn worked. It must not split
+  // the turn's one Worked for fold, and it must stay visible, so it paints
+  // after the fold and before the final answer.
+  let heldSteers: GroupedItem[] = [];
   const closeRun = () => {
     const groups = run.filter((row) => row.kind === "activity_group").length;
     if (groups > 0 && run.length >= 2) out.push({ kind: "turn_work", rows: run });
     else out.push(...run);
     run = [];
+    out.push(...heldSteers);
+    heldSteers = [];
     if (heldFinal) {
       out.push(heldFinal);
       heldFinal = null;
@@ -882,6 +888,10 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
     }
     if (row.kind === "msg" && row.msg.role === "assistant" && row.msg.channel !== "answer" && !unfinished) {
       run.push({ kind: "msg", msg: row.msg });
+      return;
+    }
+    if (row.kind === "steer" && !unfinished) {
+      heldSteers.push(row);
       return;
     }
     closeRun();
@@ -3950,6 +3960,11 @@ function ClampedProse({
   );
 }
 
+/** Tag under a mid-turn user message: why it is not a new turn. */
+function steerTagLabel(mode: SteerItem["mode"]): string {
+  return mode === "interrupt" ? "stopped the turn and sent" : "sent while working";
+}
+
 function SteerNote({
   item,
   onImageClick,
@@ -3957,19 +3972,24 @@ function SteerNote({
   item: SteerItem;
   onImageClick?: (url: string) => void;
 }) {
-  // The whole pill is selectable, like a user bubble, so a drag that starts on
-  // the label or padding still selects. The label is generated content: it
-  // stays out of copied text.
+  // A steer is a user message sent mid-turn: same bubble as a user message,
+  // with a small tag. The tag is generated content, so it stays out of
+  // copied text.
   return (
-    <div
-      data-testid="steer-note"
-      data-label={item.mode === "interrupt" ? "interrupt:" : "steer:"}
-      className="transcript-msg-body flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-ui-10.5 text-faint my-1 font-mono before:shrink-0 before:text-muted before:content-[attr(data-label)]"
-    >
-      <div className="min-w-0">
-        <ClampedProse text={item.text} fadeClassName="from-bg" />
+    <div className="flex flex-col items-end gap-0.5 my-1 w-full">
+      <div
+        data-testid="steer-note"
+        data-mode={item.mode === "interrupt" ? "interrupt" : "steer"}
+        className="transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-[85%] text-ui-13 leading-relaxed whitespace-pre-wrap break-words border bg-accent2 text-txt border-edge/30"
+      >
+        <ClampedProse text={item.text} fadeClassName="from-accent2" />
         <MessageAttachments images={item.images} documents={item.documents} onImageClick={onImageClick} />
       </div>
+      <span
+        data-testid="steer-tag"
+        data-label={steerTagLabel(item.mode)}
+        className="px-1 text-ui-10 text-faint select-none before:content-[attr(data-label)]"
+      />
     </div>
   );
 }

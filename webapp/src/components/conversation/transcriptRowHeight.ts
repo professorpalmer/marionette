@@ -258,14 +258,15 @@ export function rowPretextSpec(
         chromePx: 56,
       };
     case "steer": {
-      const label = item.mode === "interrupt" ? "interrupt:" : "steer:";
+      const imageExtra = (item.images?.length ? 52 : 0) + (item.documents?.length ? 34 : 0);
       return {
-        text: `${label} ${item.text}`,
-        font: TRANSCRIPT_CHIP_FONT,
-        lineHeight: TRANSCRIPT_CHIP_LINE_HEIGHT_PX,
-        maxWidth: feedInnerWidth,
+        text: item.text,
+        font: TRANSCRIPT_USER_FONT,
+        lineHeight: TRANSCRIPT_USER_LINE_HEIGHT_PX,
+        maxWidth: transcriptBubbleMaxWidth(feedInnerWidth, "user"),
         whiteSpace: "pre-wrap",
-        chromePx: 36,
+        // Bubble chrome plus the "sent while working" tag line.
+        chromePx: 44 + imageExtra,
         maxProsePx: TRANSCRIPT_USER_CLAMP_PX,
       };
     }

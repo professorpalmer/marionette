@@ -1396,7 +1396,7 @@ describe("steer clamp", () => {
       expect(more).toHaveLength(2);
       fireEvent.click(more[0]!);
       expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
-      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "steer:");
+      expect(screen.getByTestId("steer-tag")).toHaveAttribute("data-label", "sent while working");
       const bodies = screen.getAllByTestId("transcript-clamp-body");
       expect(bodies).toHaveLength(2);
       expect(bodies.every((el) => (el.textContent || "").includes("probe probe"))).toBe(true);
@@ -1412,7 +1412,7 @@ describe("steer clamp", () => {
       );
       expect(screen.getByTestId("transcript-clamp")).toHaveAttribute("data-collapsed", "0");
       expect(screen.queryByRole("button", { name: "Show more" })).toBeNull();
-      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "steer:");
+      expect(screen.getByTestId("steer-tag")).toHaveAttribute("data-label", "sent while working");
     });
   });
 
@@ -1423,7 +1423,7 @@ describe("steer clamp", () => {
           {...listProps([{ kind: "steer", text: "probe ".repeat(40), mode: "interrupt" }])}
         />,
       );
-      expect(screen.getByTestId("steer-note")).toHaveAttribute("data-label", "interrupt:");
+      expect(screen.getByTestId("steer-tag")).toHaveAttribute("data-label", "stopped the turn and sent");
       expect(screen.getByRole("button", { name: "Show more" })).toBeTruthy();
     });
   });
