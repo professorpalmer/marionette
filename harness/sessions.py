@@ -909,7 +909,10 @@ def derive_title(prompt: str) -> str:
     for line in lines:
         cleaned = re.sub(r'```[a-zA-Z0-9_\-+]*', '', line)
         cleaned = re.sub(r'`', '', cleaned)
-        cleaned = re.sub(r'[*_~#\-+>]', '', cleaned)
+        # Markdown markers only: a heading, quote or list lead, and emphasis
+        # at word edges. Marks inside a word stay (test_calc.py, re-run).
+        cleaned = re.sub(r'^\s*(?:[#>]+|[-+*]|\d+[.)])\s+', '', cleaned)
+        cleaned = re.sub(r'(?<!\w)[*_~]+|[*_~]+(?!\w)', '', cleaned)
         cleaned = ' '.join(cleaned.split())
         if cleaned:
             first_line = cleaned

@@ -37,7 +37,7 @@ import {
   type TurnLifecycle,
   type TurnSettle,
 } from "../lib/turnTerminal";
-import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
+import { refreshSessionRowsAfterFirstSend, SESSIONS_CHANGED_EVENT } from "../lib/sessionTitle";
 import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 import { publishSessionTodos } from "../lib/sessionTodos";
 
@@ -1273,6 +1273,8 @@ export default function Conversation({
   }, []);
 
   const triggerCompletionEffects = () => {
+    // The finished turn changed the row's preview and age.
+    window.dispatchEvent(new Event(SESSIONS_CHANGED_EVENT));
     const isNotifyEnabled = notifyPrefEnabled();
     const isSoundEnabled = soundPrefEnabled();
 
@@ -3283,11 +3285,7 @@ export default function Conversation({
         (it) => it.kind === "msg" && it.msg.role === "user",
       );
       if (activeSessionId && msg.trim() && !hasPriorUserTurn) {
-        void renameDefaultSessionIfNeeded(
-          activeSessionId,
-          msg,
-          repoRoot || config?.repo,
-        );
+        refreshSessionRowsAfterFirstSend();
       }
     }
     setTurnOpen(true);

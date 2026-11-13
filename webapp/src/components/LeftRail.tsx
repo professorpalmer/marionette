@@ -14,7 +14,7 @@ import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
-import { displaySessionListTitle } from "../lib/sessionTitle";
+import { displaySessionListTitle, SESSIONS_CHANGED_EVENT } from "../lib/sessionTitle";
 import { useSessionStateFeed } from "../lib/sessionStateFeed";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import {
@@ -720,6 +720,13 @@ export default function LeftRail({
       else await revalidateWorkspace();
     }
   };
+
+  // A send named the session or a turn finished: refetch title, preview, age.
+  useEffect(() => {
+    const onSessionsChanged = () => { void revalidateSessions(); };
+    window.addEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+    return () => window.removeEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+  }, [revalidateSessions]);
 
   useEffect(() => {
     const handleConfigChanged = () => {

@@ -13,11 +13,7 @@ import {
   workedForLabel,
   isWorkingEllipsisFallback,
 } from "../lib/turnProgress";
-import {
-  DEFAULT_SESSION_TITLE,
-  deriveSessionTitle,
-  displaySessionListTitle,
-} from "../lib/sessionTitle";
+import { displaySessionListTitle } from "../lib/sessionTitle";
 import { isActivityHeadlineText } from "../lib/sessionTitleLock";
 
 afterEach(() => {
@@ -274,28 +270,8 @@ describe("sealed fold (Worked for + flat Thought / Ran rows)", () => {
 });
 
 describe("session title lock", () => {
-  it("never derives titles from investigating / Explored / Diagnosing walls", () => {
-    expect(deriveSessionTitle("Investigating ActionForm redirect…")).toBe(
-      DEFAULT_SESSION_TITLE,
-    );
-    expect(deriveSessionTitle("Explored 1 search, 3 commands")).toBe(
-      DEFAULT_SESSION_TITLE,
-    );
-    expect(deriveSessionTitle("Diagnosing production error…")).toBe(
-      DEFAULT_SESSION_TITLE,
-    );
-    expect(deriveSessionTitle("Planning call queries with CodeGraph")).toBe(
-      DEFAULT_SESSION_TITLE,
-    );
-    expect(deriveSessionTitle("Stopped.")).toBe(DEFAULT_SESSION_TITLE);
-    expect(deriveSessionTitle("fix the redirect in ActionForm")).toBe(
-      "Fix the redirect in ActionForm",
-    );
-  });
-
   it("40 investigating headlines still map to one user-derived list title", () => {
-    const userTitle = deriveSessionTitle("debug flash builder redirect");
-    expect(userTitle).toBe("Debug flash builder redirect");
+    const userTitle = "Debug flash builder redirect";
 
     const headlines = Array.from({ length: 40 }, (_, i) =>
       i % 2 === 0

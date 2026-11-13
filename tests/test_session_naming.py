@@ -51,6 +51,11 @@ def test_derive_title():
     assert derive_title("   \n   \n") == "New session"
     # Collapses whitespace
     assert derive_title("   hello    world   ") == "Hello world"
+    # Marks inside a word are not markdown.
+    assert derive_title("Fix the bug so test_calc.py passes") == "Fix the bug so test_calc.py passes"
+    assert derive_title("**re-run** the _flaky_ suite") == "Re-run the flaky suite"
+    assert derive_title("# Heading here") == "Heading here"
+    assert derive_title("> quoted ask") == "Quoted ask"
     # Activity headlines never become session titles
     assert derive_title("Investigating ActionForm redirect…") == "New session"
     assert derive_title("Explored 1 search, 3 commands") == "New session"
