@@ -8,6 +8,7 @@ import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Penci
 import { EditDiffCounts, EditDiffPatch, parseEditDiff } from "./conversation/EditDiff";
 import { SwarmWorkerRows } from "./conversation/SwarmWorkerRows";
 import { swarmPendingStatusOf } from "./conversation/swarmPendingIdentity";
+import { localSwarmJobId } from "../lib/localJobMetadata";
 import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
 import { commandRisk } from "../lib/commandRisk";
@@ -52,6 +53,7 @@ import { rehypeStreamCaret, STREAM_CARET_CLASS } from "../lib/streamCaret";
 import {
   activityWorkDurationMs,
   activityHeadline,
+  explorationBucket,
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
@@ -239,23 +241,37 @@ export type SwarmPendingItem = {
   terminal_job_ids?: string[];
 };
 
-const SWARM_FOLD_STATUS_ORDER: readonly SwarmPendingStatus[] = ["done", "partial", "failed", "ended"];
-
 /**
- * Fold label for swarm pills: the state of each swarm. A pill stays in the
- * transcript after its swarm ends (as done, partial, failed or ended), so a
- * count of pills is not a count of pending swarms.
+ * One headline step per swarm in a fold. A swarm shows as its run_swarm
+ * card, its pill, or its result card, and which of these a fold holds
+ * differs live, after the turn ends, and after a reload. Each job counts
+ * once, so the fold names the swarm the same way in all three.
  */
-export function swarmPendingFoldLabel(pills: readonly SwarmPendingItem[]): string {
-  const statuses = pills.map(swarmPendingStatusOf);
-  if (statuses.includes("running")) return "Swarm · running";
-  if (statuses.includes("waiting")) return "Swarm · waiting";
-  if (statuses.length === 1) return `Swarm · ${statuses[0]}`;
-  const parts = SWARM_FOLD_STATUS_ORDER
-    .map((status) => [status, statuses.filter((s) => s === status).length] as const)
-    .filter(([, n]) => n > 0)
-    .map(([status, n]) => `${n} ${status}`);
-  return `Swarm · ${parts.join(", ")}`;
+export function foldSwarmSteps(items: readonly ActivityItem[]): { kind: string; target: string; running: boolean }[] {
+  const steps: { kind: string; target: string; running: boolean }[] = [];
+  const seen = new Set<string>();
+  const counted = (ids: readonly string[]) => ids.some((id) => seen.has(id));
+  for (const it of items) {
+    if (it.kind !== "card" || explorationBucket(it.card.kind || "") !== "swarms") continue;
+    const job = String(it.card.result?.job_id || "").trim();
+    if (job) seen.add(job);
+    if (it.card.id) seen.add(localSwarmJobId(it.card.id));
+  }
+  for (const it of items) {
+    if (it.kind === "swarm_result") {
+      if (counted([it.job_id])) continue;
+      seen.add(it.job_id);
+      steps.push({ kind: "run_swarm", target: it.objective || "", running: false });
+    }
+  }
+  for (const it of items) {
+    if (it.kind !== "swarm_pending") continue;
+    const ids = [...(it.job_ids || []), ...(it.terminal_job_ids || [])];
+    if (counted(ids)) continue;
+    ids.forEach((id) => seen.add(id));
+    steps.push({ kind: "run_swarm", target: it.objective || "", running: swarmPendingStatusOf(it) === "running" });
+  }
+  return steps;
 }
 
 type SwarmArtifact = {
@@ -826,6 +842,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
         pushActivity(item);
         continue;
       }
+      // A done one-job pill whose result is in the transcript (maybe after a
+      // steer, in a later fold) is that result: it does not paint twice.
+      if (item.job_ids.length === 1 && (item.terminal_job_ids || []).some((jobId) => resultJobIds.has(jobId))) continue;
       const uncoveredJobIds = (item.job_ids || []).filter((jobId) => !resultJobIds.has(jobId));
       if (uncoveredJobIds.length === 0) continue;
       // Terminal lifecycle metadata is part of the investigation, but is
@@ -2815,6 +2834,9 @@ function ActivityGroup({
   // so Explored / Investigating tracks the investigation timeline the user sees.
   const nestedRows = cards.flatMap((c) => c.card.actions || []);
   const actionCount = cards.length + nestedRows.length;
+  // A swarm with no run_swarm card (its pill or its result) is a step too.
+  const swarmSteps = foldSwarmSteps(items);
+  const stepCount = actionCount + swarmSteps.length;
   // Ignore stale ``running`` when a terminal result body is already present —
   // otherwise every Explored group force-opens on seal and spinners never die.
   const anyRunning = cards.some((c) => cardEffectivelyRunning(c.card));
@@ -2880,11 +2902,17 @@ function ActivityGroup({
         : "");
 
   // Cursor-style kind buckets ("3 files, 1 search") for Explored / Investigating.
+  // The newest step takes the live verb, so a finished swarm sorts first
+  // and a running one last.
   const headlineSteps = [
+    ...swarmSteps.filter((step) => !step.running),
     ...cards.map((c) => ({ kind: c.card.kind || "action", target: resolveCardCliInput(c.card) })),
     ...nestedRows.map((a) => ({ kind: a.kind || "action", target: a.goal })),
+    ...swarmSteps.filter((step) => step.running),
   ];
-  const stepHeadline = actionCount > 0 ? activityHeadline(headlineSteps, true) : "Thinking";
+  const stepHeadline = stepCount > 0
+    ? activityHeadline(headlineSteps, actionCount > 0 || swarmSteps.some((step) => step.running))
+    : "Thinking";
   const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking, modelLabel });
   // The live line under the fold shows the newest step. Its row joins the
   // list only when the next step replaces it, so no step paints twice.
@@ -3084,23 +3112,18 @@ function ActivityGroup({
 
   const quietSummary = (() => {
     if (investigating) {
-      if (swarmPendingItems.length > 0 && actionCount === 0) {
-        return swarmPendingFoldLabel(swarmPendingItems);
-      }
       // Work-fold chrome owns Exploring — never spoken-prose Working...
       return workFoldLabel({ live: true, headline: stepHeadline });
     }
     if (!isLiveFold && durableJobRunning) return "job still running";
-    if (sealedTitle === "explored" && (actionCount > 0 || thinkingItems.length > 0)) {
-      return actionCount > 0 ? activityHeadline(headlineSteps, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
+    if (sealedTitle === "explored" && (stepCount > 0 || thinkingItems.length > 0)) {
+      // A sealed fold whose swarm still runs keeps the live verb for it.
+      return stepCount > 0 ? activityHeadline(headlineSteps, swarmPendingRunning) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
     }
     // Sealed turn: Cursor-style Worked for {duration} — not Explored counts.
     if (actionCount > 0 || thinkingItems.length > 0 || swarmResults.length > 0 || swarmPendingItems.length > 0) {
-      if (swarmResults.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
-        return `Swarm · ${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`;
-      }
-      if (swarmPendingItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
-        return swarmPendingFoldLabel(swarmPendingItems);
+      if (actionCount === 0 && thinkingItems.length === 0 && swarmSteps.length > 0) {
+        return activityHeadline(swarmSteps, swarmPendingRunning);
       }
       return workFoldLabel({ live: false, durationMs: sealedWorkMs });
     }
@@ -3191,9 +3214,6 @@ function ActivityGroup({
             )}
             {checkpointItems.length > 0 && (
               <span className="ml-0.5 text-ui-10 text-faint/40">+ {checkpointItems.length} restore point{checkpointItems.length === 1 ? "" : "s"}</span>
-            )}
-            {swarmResults.length > 0 && actionCount > 0 && (
-              <span className="ml-0.5 text-ui-10 text-faint/40">+ swarm</span>
             )}
           </>
         }
