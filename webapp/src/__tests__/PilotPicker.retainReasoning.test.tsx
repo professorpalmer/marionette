@@ -74,8 +74,8 @@ describe("PilotPicker thinking retention", () => {
     updateCache.mockResolvedValueOnce(cacheOf("s1", true));
     render(<PilotPicker sessionId="s1" config={sonnetConfig} />);
     fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
-    const box = await screen.findByLabelText("Keep thinking blocks");
-    expect(box).not.toBeChecked();
+    const box = await screen.findByRole("menuitemcheckbox", { name: "Keep thinking blocks" });
+    expect(box).toHaveAttribute("aria-checked", "false");
     fireEvent.click(box);
     await waitFor(() => {
       expect(updateCache).toHaveBeenCalledWith("s1", { action: "preferences", retain_reasoning: true });
@@ -141,19 +141,18 @@ describe("PilotPicker initial session model", () => {
     expect(api.swapPilot).not.toHaveBeenCalled();
   });
 
-  it("stages a reasoning level chosen before a session exists", () => {
+  it("stages a reasoning level chosen before a session exists", async () => {
     const onPendingReasoningChange = vi.fn();
     const { rerender } = render(<PilotPicker config={sonnetConfig} onPendingReasoningChange={onPendingReasoningChange} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
-    const high = screen.getByRole("radio", { name: "High" });
-    expect(high.tagName).toBe("BUTTON");
-    expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
+    const high = screen.getByRole("menuitemradio", { name: "High" });
+    expect(screen.getByRole("menuitemradio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(high);
 
     expect(onPendingReasoningChange).toHaveBeenCalledExactlyOnceWith("high", "anthropic:claude-sonnet-4-6");
     expect(screen.getByRole("button", { name: "Pilot reasoning: High" })).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Reasoning effort picker" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Reasoning effort picker" })).toBeNull());
     expect(api.setPilotPreferences).not.toHaveBeenCalled();
 
     rerender(<PilotPicker config={{ ...sonnetConfig }} pendingReasoning="high" onPendingReasoningChange={onPendingReasoningChange} />);
@@ -189,22 +188,21 @@ describe("Reasoning menus from the keyboard", () => {
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("radiogroup", { name: "Reasoning level" })).toBeTruthy();
-    const medium = screen.getByRole("radio", { name: "Medium" });
+    expect(screen.getByRole("group", { name: "Reasoning level" })).toBeTruthy();
+    const medium = screen.getByRole("menuitemradio", { name: "Medium" });
     await waitFor(() => expect(medium).toHaveFocus());
     fireEvent.keyDown(medium, { key: "ArrowDown" });
-    expect(screen.getByRole("radio", { name: "High" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("radio", { name: "High" }), { key: "Home" });
-    expect(screen.getByRole("radio", { name: "None" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("radio", { name: "None" }), { key: "ArrowUp" });
-    expect(screen.getByRole("radio", { name: "Max" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "High" }), { key: "Home" });
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "None" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "None" }), { key: "ArrowUp" });
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveFocus());
   });
 
   it("gives the worker picker the same keyboard rows", async () => {
     render(<SwarmReasoningPicker config={{ ...sonnetConfig, swarm_reasoning_effort: "low" }} sessionId="s1" />);
     fireEvent.click(screen.getByTitle(/Worker reasoning/));
-    const low = screen.getByRole("radio", { name: "Low" });
-    expect(low.tagName).toBe("BUTTON");
+    const low = screen.getByRole("menuitemradio", { name: "Low" });
     await waitFor(() => expect(low).toHaveFocus());
   });
 });
