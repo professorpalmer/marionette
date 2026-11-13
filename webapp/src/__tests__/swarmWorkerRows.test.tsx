@@ -43,7 +43,8 @@ describe("inline swarm worker rows", () => {
     await schedule(metadata);
     const [row] = await screen.findAllByTestId("swarm-worker-row");
     expect(row.textContent).toContain("Auditor");
-    expect(row.textContent).toContain("deepseek-v4.1-flash");
+    // The same name as the Swarm Tracker shows (rig N06 against R01).
+    expect(row.textContent).toContain("deepseek/deepseek-v4.1-flash");
     expect(row.textContent).toContain("running");
     expect(row.textContent).toContain("120 tok");
     expect(row.textContent).toContain("Regression checks");
