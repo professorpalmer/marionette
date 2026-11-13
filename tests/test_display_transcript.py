@@ -61,6 +61,24 @@ def test_display_transcript_accumulation():
     # It has the full clean say text or the acting fallback
     assert history[1]["content"] == "Sure, I can help you with that."
 
+def test_final_answer_event_and_row_share_one_time():
+    # The UI ends a sealed turn's Worked for at the final answer. The live
+    # bubble takes its time from the event and a reload takes it from the
+    # row, so both must carry the same value.
+    cfg = HarnessConfig()
+    session = ConversationalSession(cfg)
+    session.pilot = MockPilot()  # type: ignore
+
+    events = list(session.send("how do I build a wooden table?"))
+
+    said = [e for e in events if e.kind == "message" and (e.data or {}).get("role") == "assistant"]
+    assert len(said) == 1
+    row = session.export_display_transcript()[-1]
+    assert row["text"] == said[0].data["text"]
+    assert isinstance(said[0].data.get("ts"), int)
+    assert said[0].data["ts"] == row["ts"]
+
+
 def test_save_load_display_transcript_roundtrip(tmp_path):
     state_dir = str(tmp_path)
     session_id = "test-session-display"
