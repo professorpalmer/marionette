@@ -4346,7 +4346,11 @@ export default function Conversation({
     executeSendRef.current(ask, auto, plan);
   }, [auto, plan]);
 
-  const recoveryAction = (
+  // With no model, Retry cannot help, and the composer model slot already
+  // offers Connect a model. The header adds no second copy.
+  const recoveryAction = emptySessionContext(config).needsModel
+    ? undefined
+    : (
     operationalDiagnostic
     && operationalDiagnostic.recovery.kind !== "none"
       ? {
@@ -4354,7 +4358,7 @@ export default function Conversation({
           onClick: () => { void handleOperationalRecovery(); },
         }
       : undefined
-  );
+    );
 
   return (
     <main className="flex flex-col h-full min-w-0 bg-transparent" data-active-editor-tab={activeTab}>

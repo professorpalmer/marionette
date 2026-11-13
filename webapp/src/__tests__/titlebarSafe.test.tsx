@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProviderKeyBanner from "../components/ProviderKeyBanner";
 import ConversationHeader from "../components/conversation/ConversationHeader";
@@ -49,6 +49,23 @@ describe("titlebar-safe clearance", () => {
     expect(screen.getByTestId("header-project").textContent).toBe("proj");
     expect(screen.getByTestId("header-branch").textContent).toBe("master");
     expect(screen.queryByText(/Investigating|Still working|Done/)).toBeNull();
+  });
+
+  it("ConversationHeader owns the project: a click opens the folder menu", () => {
+    render(
+      <ConversationHeader
+        pillStatus="done"
+        heading={{ title: "Fix the calc bug", project: "proj", branch: "master" }}
+      />,
+    );
+    const project = screen.getByTestId("header-project");
+    expect(project).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(project);
+    expect(project).toHaveAttribute("aria-expanded", "true");
+    // jsdom has no width, so the narrow-header rule hides the chip from role queries.
+    expect(screen.getByText(/Open Folder/).closest("button")).toBeInTheDocument();
+    expect(screen.queryByText("Local")).toBeNull();
+    expect(screen.getAllByText("master")).toHaveLength(1);
   });
 
   it("ConversationHeader keeps the error pill", () => {

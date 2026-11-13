@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Folder, GitBranch, Home } from "lucide-react";
+import { ChevronDown, Folder, Home } from "lucide-react";
 import { api } from "../../lib/api";
 import { repoPathsEqual } from "../../lib/pathNormalize";
 import { pickFolder } from "../../lib/transport";
@@ -34,13 +34,16 @@ export function isWorkspaceHomeActive(repo: string | undefined, home?: string): 
 
 /** Popover panel: fixed width + clip so long paths cannot expand the menu. */
 export const WORKSPACE_CHIP_POPOVER_CLASS =
-  "absolute bottom-full left-0 mb-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50";
+  "absolute top-full left-0 mt-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50";
 
 /** Recent/Home rows: bounded flex child so `truncate` can ellipsize. */
 export const WORKSPACE_CHIP_ROW_CLASS =
   "w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition";
 
-export default function WorkspaceChip() {
+/** The header's project name; a click opens the folder menu (Home, recents,
+ *  Open Folder). The header owns the project fact, so the composer has no
+ *  second copy of it. */
+export default function WorkspaceChip({ label }: { label?: string }) {
   const operationalDiagnostic = useOperationalDiagnostic();
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
@@ -104,16 +107,18 @@ export default function WorkspaceChip() {
   const recents = workspaceChipRecents(ws?.recents, ws?.repo, home);
 
   return (
-    <div className="flex items-center gap-1.5 px-1 pb-1.5 text-ui-11 relative">
+    <div className="relative flex items-center gap-1.5 min-w-0 shrink text-ui-11">
       <button
+        type="button"
+        data-testid="header-project"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title="Switch folder"
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
-        className="flex items-center gap-1 text-muted hover:text-txt transition rounded px-1 py-0.5 hover:bg-panel2/60">
-        <Folder size={11} className="text-faint" />
-        <span className="font-medium">{name}</span>
-        <ChevronDown size={11} className="text-faint" />
+        className="flex items-center gap-0.5 min-w-0 text-muted/80 hover:text-txt transition rounded px-1 -mx-1 hover:bg-panel2/60">
+        <span className="truncate">{label || name}</span>
+        <ChevronDown size={10} className="text-faint shrink-0" />
       </button>
-      {ws?.branch ? <span className="text-faint flex items-center gap-0.5"><GitBranch size={10} />{ws.branch}</span> : null}
-      <span className="text-faint/70">Local</span>
       {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
       {open && (
         <div onClick={(e) => e.stopPropagation()}

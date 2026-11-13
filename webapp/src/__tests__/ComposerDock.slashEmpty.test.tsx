@@ -3,10 +3,12 @@
  * but slashMenu returns zero hits (parity with @mention no-matches).
  */
 import { createRef } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSlashMenuPrefsForTests } from "../components/conversation/slashMenuPrefs";
 import ComposerDock from "../components/conversation/ComposerDock";
+import { OPEN_ONBOARDING_EVENT } from "../lib/sessionNav";
+import type { Config } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {},
@@ -23,10 +25,10 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 
 const noop = () => {};
 
-function renderDock(slashSearch: string | null) {
+function renderDock(slashSearch: string | null, config: Config | null = null) {
   return render(
     <ComposerDock
-      config={null}
+      config={config}
       taRef={createRef<HTMLTextAreaElement>()}
       input={slashSearch !== null ? `/${slashSearch}` : ""}
       auto={false}
@@ -138,5 +140,29 @@ describe("ComposerDock slash empty-state", () => {
     act(() => { fireEvent.click(expert); });
     expect(screen.getByRole("button", { name: "Expert" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("/refine")).toBeInTheDocument();
+  });
+});
+
+describe("ComposerDock with no model", () => {
+  const noKey = { driver: "qwen3-coder-30b", reach: "openrouter", budget: 0, pilot_ready: false } as Config;
+
+  it("shows Connect a model in place of a fallback model name", () => {
+    const onboarding = vi.fn();
+    window.addEventListener(OPEN_ONBOARDING_EVENT, onboarding);
+    renderDock(null, noKey);
+    expect(screen.queryByTestId("pilot-picker")).toBeNull();
+    expect(screen.queryByTestId("swarm-reasoning-picker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Connect a model" }));
+    expect(onboarding).toHaveBeenCalledTimes(1);
+    window.removeEventListener(OPEN_ONBOARDING_EVENT, onboarding);
+  });
+
+  it("keeps the picker for a ready pilot and for a keyless local pilot", () => {
+    renderDock(null, { ...noKey, pilot_ready: true });
+    expect(screen.getByTestId("pilot-picker")).toBeInTheDocument();
+    cleanup();
+    renderDock(null, { ...noKey, driver: "local:qwen3-coder-30b" });
+    expect(screen.getByTestId("pilot-picker")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect a model" })).toBeNull();
   });
 });
