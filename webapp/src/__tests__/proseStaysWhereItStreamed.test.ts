@@ -88,6 +88,13 @@ describe("prose stays where it streamed", () => {
       "steer",
       "assistant:Done.",
     ]);
+    const compaction: Item = { kind: "compaction", before_tokens: 9000, after_tokens: 3000 };
+    expect(shape([user, card("a"), said, compaction, card("b"), answer], false)).toEqual([
+      "user:fix the parser",
+      "work[fold[a] assistant:Checking fold[b]]",
+      "compaction",
+      "assistant:Done.",
+    ]);
     // While the turn is live the steer stays where it was sent.
     expect(shape([user, card("a"), said, card("b"), steer, card("c")], true)).toEqual([
       "user:fix the parser", "fold[a]", "assistant:Checking", "fold[b]", "steer", "fold[c]",

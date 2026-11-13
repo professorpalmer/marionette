@@ -257,6 +257,15 @@ export function rowPretextSpec(
         whiteSpace: "pre-wrap",
         chromePx: 56,
       };
+    case "model_switch":
+      return {
+        text: `Model switched · ${item.from} to ${item.to}`,
+        font: TRANSCRIPT_CHIP_FONT,
+        lineHeight: TRANSCRIPT_CHIP_LINE_HEIGHT_PX,
+        maxWidth: feedInnerWidth,
+        whiteSpace: "normal",
+        chromePx: 16,
+      };
     case "steer": {
       const imageExtra = (item.images?.length ? 52 : 0) + (item.documents?.length ? 34 : 0);
       return {

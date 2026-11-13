@@ -50,7 +50,7 @@ def test_display_transcript_accumulation():
     assert receipt['original_text'] == "how do I build a wooden table?"
     assert receipt['status'] == 'injected'
     assert all(isinstance(row.pop("ts"), int) for row in display)
-    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id}
+    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id, "model": session.config.driver}
     assert display[1] == {"type": "message", "role": "assistant", "text": "Sure, I can help you with that."}
 
     # Verify that the raw history has the raw pilot output formatting

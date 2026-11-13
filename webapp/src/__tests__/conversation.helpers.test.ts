@@ -161,7 +161,9 @@ import {
   STOP_INTERRUPT_FAILED_NOTICE,
   executeSendGate,
   pilotSetupBlocksDispatch,
-  formatCompactCompleteMessage,
+  appendCompactResult,
+  appendCompactFailure,
+  compactFailureIsNoop,
   formatCompactErrorMessage,
   shouldApplyCompactSettle,
   formatHelpSlashReply,
@@ -2129,7 +2131,7 @@ describe("streamApply module", () => {
     expect(formatDistilledNotice({ skill: { status: "skipped" } })).toBeNull();
     expect(
       formatDistilledNotice({ skill: { status: "proposed", name: "foo" } }),
-    ).toMatch(/proposed 1 skill/);
+    ).toBe('Self-learning: proposed 1 skill ("foo")');
     expect(formatWikiAutoIngestNotice(1)).toMatch(/1 page/);
     expect(formatWikiAutoIngestNotice(2)).toMatch(/2 pages/);
     expect(truncateWaitHint("")).toBeNull();
@@ -2684,7 +2686,20 @@ describe("composerSend module", () => {
     expect(shouldBlockEmptySend({ transcriptStale: false, text: "  ", imageCount: 0 })).toBe(true);
     expect(shouldBlockEmptySend({ transcriptStale: false, text: "", imageCount: 1 })).toBe(false);
     expect(formatHelpSlashReply([{ cmd: "/help", desc: "Help" }])).toMatch(/\/help/);
-    expect(formatCompactCompleteMessage(10, 4)).toMatch(/10 -> 4/);
+    const done = appendCompactResult([], { before_tokens: 10, after_tokens: 4, mode: "llm", kept: ["a.py"] });
+    expect(done).toEqual([{ kind: "compaction", before_tokens: 10, after_tokens: 4, mode: "llm", kept: ["a.py"] }]);
+    const noop = Object.assign(new Error("x"), { reason: "no_compactable_history" });
+    expect(appendCompactFailure([], noop)).toEqual([{
+      kind: "compaction",
+      before_tokens: 0,
+      after_tokens: 0,
+      aborted: true,
+      reason: "no_compactable_history",
+      message: "Nothing to compact: the recent turn is already compact",
+    }]);
+    expect(compactFailureIsNoop(noop)).toBe(true);
+    expect(compactFailureIsNoop(new Error("boom"))).toBe(false);
+    expect(appendCompactFailure([], new Error("boom"))[0]).not.toHaveProperty("message", expect.stringMatching(/^\[error\]/));
     expect(
       formatCompactErrorMessage(
         Object.assign(new Error("Recent turn is already compact"), {
@@ -2692,6 +2707,7 @@ describe("composerSend module", () => {
         }),
       ),
     ).toMatch(/already compact/i);
+    expect(formatCompactErrorMessage(Object.assign(new Error("x"), { reason: "summary_rejected" }))).not.toMatch(/System Note/);
     expect(
       formatCompactErrorMessage(
         Object.assign(new Error("rejected"), { reason: "summary_rejected" }),

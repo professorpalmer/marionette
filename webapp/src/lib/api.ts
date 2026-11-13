@@ -2366,6 +2366,11 @@ export const api = {
       after_tokens: number;
       error?: string;
       reason?: string;
+      mode?: string;
+      kept?: string[];
+      dropped?: string[];
+      handles?: string[];
+      story?: string[];
     }>("/api/session/compact", {}),
   stripSessionImages: () =>
     postJSON<{ ok: boolean; stripped?: number; error?: string }>(

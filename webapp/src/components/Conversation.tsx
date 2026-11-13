@@ -99,8 +99,9 @@ import {
   composerEnterAction,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
-  formatCompactCompleteMessage,
-  formatCompactErrorMessage,
+  appendCompactResult,
+  appendCompactFailure,
+  compactFailureIsNoop,
   shouldApplyCompactSettle,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
@@ -2068,33 +2069,21 @@ export default function Conversation({
             activeSessionId: activeSessionIdRef.current,
           })) return;
           setStatus("done");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
-              },
-            },
-          ]);
+          setItems((p) => appendCompactResult(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            res,
+          ));
         })
         .catch((err) => {
           if (!shouldApplyCompactSettle({
             requestSessionId: compactSid,
             activeSessionId: activeSessionIdRef.current,
           })) return;
-          setStatus("error");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactErrorMessage(err),
-              },
-            },
-          ]);
+          setStatus(compactFailureIsNoop(err) ? "done" : "error");
+          setItems((p) => appendCompactFailure(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            err,
+          ));
         });
     };
     window.addEventListener("harness-clear-transcript", onClearTranscript);
@@ -3250,6 +3239,7 @@ export default function Conversation({
           images: imgsToSend,
           documents: documentChips(submission.documents ?? attachedDocuments),
           id: echoId,
+          model: config?.driver || undefined,
         }),
       }]);
       pinnedToBottomRef.current = true;
@@ -3782,33 +3772,21 @@ export default function Conversation({
             activeSessionId: activeSessionIdRef.current,
           })) return;
           setStatus("done");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
-              }
-            }
-          ]);
+          setItems((p) => appendCompactResult(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            res,
+          ));
         })
         .catch((err) => {
           if (!shouldApplyCompactSettle({
             requestSessionId: compactSid,
             activeSessionId: activeSessionIdRef.current,
           })) return;
-          setStatus("error");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactErrorMessage(err),
-              }
-            }
-          ]);
+          setStatus(compactFailureIsNoop(err) ? "done" : "error");
+          setItems((p) => appendCompactFailure(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            err,
+          ));
         });
       return;
     }

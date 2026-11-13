@@ -42,6 +42,9 @@ import {
   formatTokenK,
 } from "./contextUsageColors";
 import { showStandaloneEditNoticeDismiss } from "./composerSend";
+import { SELF_LEARNING_PREFIX } from "./streamApply";
+import { expandSkills } from "../../lib/memoryDeepLink";
+import { focusSettingsPage } from "../SettingsShell";
 import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
 import { pickerConfig } from "../../lib/sessionConfig";
 
@@ -422,16 +425,32 @@ export default function ComposerDock({
           </div>
         )}
         {distillNotice && (
-          <div className="mb-2 px-1 flex items-center gap-2 text-ui-10.5 text-faint/80">
+          <div className="mb-2 px-1 flex items-center gap-2 text-ui-10.5 text-faint/80" data-testid="distill-notice">
             <span className="flex-1 truncate">
               {distillNotice}
             </span>
+            {distillNotice.startsWith(SELF_LEARNING_PREFIX) ? (
+              <button
+                type="button"
+                onClick={() => {
+                  onSetDistillNotice(null);
+                  focusSettingsPage("advanced");
+                  window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+                  expandSkills();
+                }}
+                className="shrink-0 text-muted hover:text-txt underline-offset-2 hover:underline transition-colors"
+              >
+                Review in Skills
+              </button>
+            ) : null}
             <button
+              type="button"
               onClick={() => onSetDistillNotice(null)}
-              className="text-faint/50 hover:text-muted transition shrink-0"
-              title="dismiss"
+              className="shrink-0 p-0.5 rounded text-faint/60 hover:text-muted hover:bg-panel2 transition-colors"
+              aria-label="Dismiss"
+              title="Dismiss"
             >
-              x
+              <X size={11} aria-hidden />
             </button>
           </div>
         )}

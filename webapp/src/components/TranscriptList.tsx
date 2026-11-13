@@ -4,7 +4,8 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExter
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { visibleCommand } from "../lib/visibleCommand";
-import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText } from "lucide-react";
+import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
+import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -70,6 +71,7 @@ import {
   maxKnown,
   headlineFocusCard,
   formatBusyElapsed,
+  shortPilotModelLabel,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -128,6 +130,9 @@ import {
   vaultCiteChipLabel,
 } from "./conversation/streamApply";
 
+/** Divider before the first user turn that runs on a different pilot model. */
+export type ModelSwitchItem = { kind: "model_switch"; from: string; to: string };
+
 /** Mid-turn steer/interrupt row; carries the attachments it was sent with. */
 export type SteerItem = {
   kind: "steer";
@@ -141,6 +146,8 @@ export type Msg = {
   role: "user" | "assistant";
   text: string;
   /** Durable identity — optimistic echo and persist hydrate share this. */
+  /** Pilot model spec a user turn ran on (server stamps it on the row). */
+  model?: string;
   id?: string;
   isPlan?: boolean;
   images?: { path: string; name: string; previewUrl: string }[];
@@ -346,6 +353,7 @@ export type Item =
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
+  | ModelSwitchItem
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string; duration_ms?: number | null; started_at_ms?: number }
   | SwarmPendingItem
   | SwarmResultItem
@@ -458,59 +466,43 @@ function CompactionReceipt({
   it: Extract<Item, { kind: "compaction" }>;
   fold?: boolean;
 }) {
-  const [openHandle, setOpenHandle] = useState<string | null>(null);
   const chrome = compactionRowChrome(it);
-  const counts = !it.aborted ? compactionKeptDroppedLine(it.kept, it.dropped) : undefined;
   const handles = it.handles || [];
-  const story = it.story || [];
-  const pillClass = fold
-    ? "flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono"
-    : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-ui-10.5 ${
-        it.aborted
-          ? "bg-warn/10 border border-warn/25 text-warn/90"
-          : "bg-panel2/10 border border-edge/10 text-faint"
-      }`;
-  return (
-    <div className={fold ? undefined : "flex flex-col gap-0.5 my-1"}>
-      <div
-        role={fold ? undefined : "status"}
-        title={chrome.title}
-        className={pillClass}
-      >
-        <span>{chrome.label}</span>
+  if (fold) {
+    return (
+      <div>
+        <div title={chrome.title} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono">
+          <span>{chrome.label}</span>
+        </div>
+        {handles.length > 0 ? (
+          <span className="text-ui-10 text-faint/70 font-mono" title={handles.join(" · ")}>
+            {handles.length} handle{handles.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
       </div>
-      {!fold && counts ? (
-        <div className="text-ui-10.5 text-faint font-mono px-3">{counts}</div>
-      ) : null}
-      {handles.length > 0 && !fold ? (
-        <div className="flex flex-wrap gap-1 px-3">
-          {handles.map((handle) => (
-            <button
-              type="button"
-              key={handle}
-              title={handle}
-              onClick={() => setOpenHandle((cur) => (cur === handle ? null : handle))}
-              className="text-ui-10.5 text-faint font-mono bg-transparent border-0 p-0 cursor-pointer hover:underline underline-offset-2"
-            >
-              {handle}
-            </button>
-          ))}
+    );
+  }
+  const counts = !it.aborted ? compactionKeptDroppedLine(it.kept, it.dropped) : undefined;
+  const story = it.story || [];
+  const hasSummary = Boolean(counts) || handles.length > 0 || story.length > 0;
+  const shrank = !it.aborted && it.before_tokens > 0 && it.after_tokens >= 0;
+  return (
+    <SystemEventRow
+      testId="compaction-event"
+      icon={it.aborted ? AlertTriangle : Minimize2}
+      tone={it.aborted ? "warn" : "quiet"}
+      label={chrome.label}
+      detail={shrank ? `${compactTokens(it.before_tokens)} to ${compactTokens(it.after_tokens)} tokens` : undefined}
+      title={chrome.title}
+      moreLabel={hasSummary ? "View summary" : undefined}
+      more={hasSummary ? (
+        <div className="flex flex-col gap-1 font-mono break-words" data-testid="compaction-summary">
+          {counts ? <div>{counts}</div> : null}
+          {handles.length > 0 ? <div className="text-faint/90">{handles.join(" · ")}</div> : null}
+          {story.map((line) => <div key={line}>{line}</div>)}
         </div>
-      ) : null}
-      {handles.length > 0 && fold ? (
-        <span className="text-ui-10 text-faint/70 font-mono" title={handles.join(" · ")}>
-          {handles.length} handle{handles.length === 1 ? "" : "s"}
-        </span>
-      ) : null}
-      {openHandle && !fold ? (
-        <div className="text-ui-10.5 text-faint font-mono px-3 whitespace-pre-wrap break-all">
-          <div>{openHandle}</div>
-          {story.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    />
   );
 }
 
@@ -814,6 +806,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
           ? item
           : { ...item, job_ids: uncoveredJobIds },
       );
+    } else if (item.kind === "compaction") {
+      // A system event: one divider row, never folded into the tool strip.
+      flush();
+      grouped.push(item);
     } else if (isActivityTelemetry(item)) {
       pushActivity(item);
     } else if (
@@ -861,17 +857,17 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
   const out: GroupedItem[] = [];
   let run: TurnWorkRow[] = [];
   let heldFinal: GroupedItem | null = null;
-  // A steer is a user message sent while the turn worked. It must not split
-  // the turn's one Worked for fold, and it must stay visible, so it paints
-  // after the fold and before the final answer.
-  let heldSteers: GroupedItem[] = [];
+  // A steer (a user message sent while the turn worked) and a compaction
+  // divider must not split the turn's one Worked for fold, and must stay
+  // visible, so they paint after the fold and before the final answer.
+  let heldEvents: GroupedItem[] = [];
   const closeRun = () => {
     const groups = run.filter((row) => row.kind === "activity_group").length;
     if (groups > 0 && run.length >= 2) out.push({ kind: "turn_work", rows: run });
     else out.push(...run);
     run = [];
-    out.push(...heldSteers);
-    heldSteers = [];
+    out.push(...heldEvents);
+    heldEvents = [];
     if (heldFinal) {
       out.push(heldFinal);
       heldFinal = null;
@@ -890,14 +886,33 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
       run.push({ kind: "msg", msg: row.msg });
       return;
     }
-    if (row.kind === "steer" && !unfinished) {
-      heldSteers.push(row);
+    if ((row.kind === "steer" || row.kind === "compaction") && !unfinished) {
+      heldEvents.push(row);
       return;
     }
     closeRun();
     out.push(row);
   });
   closeRun();
+  return out;
+}
+
+/**
+ * Insert a model-switch divider before each user turn whose pilot model
+ * differs from the turn before it. Turns without a recorded model keep the
+ * last known one.
+ */
+export function insertModelSwitches(grouped: GroupedItem[]): GroupedItem[] {
+  let last = "";
+  const out: GroupedItem[] = [];
+  for (const row of grouped) {
+    if (row.kind === "msg" && row.msg.role === "user" && row.msg.model) {
+      const model = row.msg.model;
+      if (last && model !== last) out.push({ kind: "model_switch", from: last, to: model });
+      last = model;
+    }
+    out.push(row);
+  }
   return out;
 }
 
@@ -1265,6 +1280,8 @@ export function stableItemKey(it: GroupedItem, i: number): string {
       return `auth-${it.id || i}`;
     case "steer":
       return `steer-${i}`;
+    case "model_switch":
+      return `model-switch-${i}-${it.to}`;
     case "turn_terminal":
       return it.id ? `turn-term-${it.id}` : `turn-term-${i}-${it.cause}-${it.state}`;
     case "quality_gate":
@@ -1694,7 +1711,7 @@ export const TranscriptList = memo(function TranscriptList({
     const intermediate = collectIntermediateAssistantItems(items, agentLoopOpen);
     return {
       intermediateItems: intermediate,
-      grouped: wrapSealedTurns(groupAgentActivity(items, intermediate), agentLoopOpen),
+      grouped: insertModelSwitches(wrapSealedTurns(groupAgentActivity(items, intermediate), agentLoopOpen)),
     };
   }, [items, agentLoopOpen]);
   const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
@@ -2223,6 +2240,17 @@ export const TranscriptList = memo(function TranscriptList({
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
       return <SteerNote key={key} item={it} onImageClick={onImageClick} />;
+    } else if (it.kind === "model_switch") {
+      return (
+        <SystemEventRow
+          key={key}
+          testId="model-switch-event"
+          icon={Repeat}
+          label="Model switched"
+          detail={`${shortPilotModelLabel(it.from)} to ${shortPilotModelLabel(it.to)}`}
+          title={`${it.from} → ${it.to}`}
+        />
+      );
     } else if (it.kind === "quality_gate") {
       const gate = qualityGatePresentation(it);
       const toneClass =
@@ -2847,7 +2875,7 @@ function ActivityGroup({
           aria-label={`restore point created: ${it.label}`}
         >
           <History size={10} className="text-faint/70" aria-hidden />
-          <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
+          <span title={it.id}>Restore point · {it.label}</span>
         </div>
       );
     }

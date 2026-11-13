@@ -391,7 +391,10 @@ class _CompactingPilot:
         self.force_calls.append(force)
         yield {"kind": "compacting", "data": {}}
         self._tokens = 20
-        yield {"kind": "compaction", "data": {"before_tokens": 50, "after_tokens": 20}}
+        yield {"kind": "compaction", "data": {
+            "before_tokens": 50, "after_tokens": 20, "mode": "extractive",
+            "kept": ["src/calc.py"], "dropped": [], "handles": ["job_1"], "story": [],
+        }}
 
     def export_transcript_data(self):
         self.exports += 1
@@ -440,6 +443,10 @@ def test_compact_and_state():
     assert payload["ok"] is True and payload["compacted"] is True
     assert payload["before_tokens"] == 50 and payload["after_tokens"] == 20
     assert payload.get("reason") == "ok"
+    # The receipt rides along so the transcript row matches an auto pass.
+    assert payload["mode"] == "extractive"
+    assert payload["kept"] == ["src/calc.py"] and payload["handles"] == ["job_1"]
+    assert "dropped" not in payload and "story" not in payload
     # Manual compaction must bypass the 75% trigger.
     assert pilot.force_calls == [True]
     ack = getattr(pilot, "_compaction_advice_ack", None)

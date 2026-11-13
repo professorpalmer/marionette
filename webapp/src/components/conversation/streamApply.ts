@@ -2247,6 +2247,9 @@ export function finalizeOrphanSwarmPills(
   });
 }
 
+/** Lead of a self-learning notice; the composer footer links it to Skills. */
+export const SELF_LEARNING_PREFIX = "Self-learning:";
+
 /** Self-learning footnote copy; null when nothing actionable was proposed. */
 export function formatDistilledNotice(d: {
   skill?: { status?: string; name?: string };
@@ -2264,7 +2267,7 @@ export function formatDistilledNotice(d: {
     }
   }
   if (parts.length === 0) return null;
-  return `Self-learning: ${parts.join(", ")} - review in Skills tab`;
+  return `${SELF_LEARNING_PREFIX} ${parts.join(", ")}`;
 }
 
 export function formatWikiAutoIngestNotice(pageCount: number): string {

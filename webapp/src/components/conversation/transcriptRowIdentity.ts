@@ -134,12 +134,14 @@ export function optimisticUserEchoMsg(opts: {
   images?: Msg["images"];
   documents?: Msg["documents"];
   id: string;
+  model?: string;
 }): Msg {
   return {
     role: "user",
     text: opts.text,
     images: opts.images,
     ...(opts.documents?.length ? { documents: opts.documents } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
     id: opts.id,
   };
 }
