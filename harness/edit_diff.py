@@ -19,7 +19,8 @@ MAX_PATCH_LINES = 400
 
 
 def read_text_for_diff(path: str) -> Optional[str]:
-    """Text of ``path`` before a write. A missing file is "" (a create).
+    """Text of ``path`` before a write, with LF line ends. A missing file
+    is "" (a create).
 
     ``None`` when the file is too large, binary, or unreadable.
     """
@@ -32,7 +33,9 @@ def read_text_for_diff(path: str) -> Optional[str]:
             raw = f.read()
         if b"\0" in raw:
             return None
-        return raw.decode("utf-8")
+        # The patch is for display, so CRLF files diff as LF lines. Raw
+        # bytes kept "\r" on every line of a Windows file.
+        return raw.decode("utf-8").replace("\r\n", "\n")
     except (OSError, UnicodeDecodeError):
         return None
 

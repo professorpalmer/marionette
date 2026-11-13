@@ -21,6 +21,17 @@ def test_counts_and_patch_for_an_edit(tmp_path):
     assert diff["truncated"] is False
 
 
+def test_a_crlf_file_diffs_as_lf_lines(tmp_path):
+    path = tmp_path / "calc.py"
+    path.write_bytes(b"def add(a, b):\r\n    return a - b\r\n")
+    before = read_text_for_diff(str(path))
+    path.write_bytes(b"def add(a, b):\r\n    return a + b\r\n")
+    diff = edit_diff(before, str(path), "calc.py")
+    assert (diff["added"], diff["removed"]) == (1, 1)
+    assert "\r" not in diff["patch"]
+    assert "+    return a + b\n" in diff["patch"]
+
+
 def test_a_new_file_is_all_added(tmp_path):
     path = tmp_path / "new.py"
     before = read_text_for_diff(str(path))
