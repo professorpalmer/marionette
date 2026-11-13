@@ -436,6 +436,8 @@ const TOOL_VERBS: Record<string, ToolVerbs> = {
   search: { past: "Searched", live: "Searching" },
   glob: { past: "Listed files", live: "Listing files" },
   run_command: { past: "Ran", live: "Running" },
+  // The goal names the batch ("command batch (3 commands)").
+  run_command_batch: { past: "Ran", live: "Running" },
   run_terminal: { past: "Ran", live: "Running" },
   execute: { past: "Ran", live: "Running" },
   shell: { past: "Ran", live: "Running" },
@@ -462,6 +464,9 @@ export function toolVerb(kind: string, live: boolean): string {
   const k = normalizeToolKind(kind) || (kind || "").toLowerCase().replace(/-/g, "_").trim();
   const verbs = TOOL_VERBS[k];
   if (verbs) return live ? verbs.live : verbs.past;
+  // A run_* tool already names its verb: "run_swarm" is Running swarm / Ran swarm.
+  const ran = /^run_(.+)$/.exec(k);
+  if (ran) return `${live ? "Running" : "Ran"} ${ran[1].replace(/_/g, " ")}`;
   const label = toolRowLabel(kind);
   return live ? `Running ${label.toLowerCase()}` : label;
 }
@@ -1189,13 +1194,15 @@ export function deriveBusyProgress(
  * beat before its arguments arrive; naming it then flashes the bare tool name
  * between every call, so name the latest card that has a goal until it does.
  */
-export function headlineFocusCard<C extends { goal?: string }>(
+export function headlineFocusCard<C extends { goal?: string; kind?: string }>(
   cards: readonly C[],
   running: C | undefined,
   goalOf: (card: C) => string,
 ): C | undefined {
   if (!running || goalOf(running)) return running;
-  return [...cards].reverse().find((c) => goalOf(c)) ?? running;
+  // Only a card of the same tool stands in: a tool that never gets a goal
+  // (run_swarm) must not name a finished tool of another kind.
+  return [...cards].reverse().find((c) => c.kind === running.kind && goalOf(c)) ?? running;
 }
 
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentTurnStep, deriveBusyProgress, headlineFocusCard, type TurnItem } from "../lib/turnProgress";
+import { currentTurnStep, deriveBusyProgress, headlineFocusCard, liveActivityLine, toolVerb, type TurnItem } from "../lib/turnProgress";
 
 const user: TurnItem = { kind: "msg", msg: { role: "user", text: "run the probes" } };
 const done = (id: string, goal: string): TurnItem => ({
@@ -32,6 +32,24 @@ describe("busy labels say what is happening", () => {
     const b2 = { id: "b", goal: "echo probe 2" };
     expect(headlineFocusCard([a, b2], b2, goal)).toBe(b2);
     expect(headlineFocusCard([a], undefined, goal)).toBeUndefined();
+  });
+
+  it("does not name a finished tool of another kind while a goal-less tool runs", () => {
+    // Measured in the rig: the live line kept "Running run command batch
+    // command batch (3 commands)" for the whole swarm after the batch ended.
+    const goal = (c: { goal?: string }) => c.goal || "";
+    const batch = { id: "a", kind: "run_command_batch", goal: "command batch (3 commands)" };
+    const swarm = { id: "b", kind: "run_swarm", goal: "" };
+    expect(headlineFocusCard([batch, swarm], swarm, goal)).toBe(swarm);
+  });
+
+  it("says each tool's verb once", () => {
+    expect(liveActivityLine({ runningKind: "run_command_batch", runningGoal: "command batch (3 commands)" }).text)
+      .toBe("Running command batch (3 commands)");
+    expect(toolVerb("run_command_batch", false)).toBe("Ran");
+    expect(liveActivityLine({ runningKind: "run_swarm" }).text).toBe("Running swarm");
+    expect(toolVerb("run_swarm", false)).toBe("Ran swarm");
+    expect(toolVerb("run_implement", true)).toBe("Running implement");
   });
 });
 
