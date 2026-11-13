@@ -36,15 +36,15 @@ import WorkerOperations from './WorkerOperations';
 const SWARM_STARTER = 'Use a swarm to review this repository for bugs and report what you find.';
 const button = 'px-1.5 py-0.5 text-ui-10.5 text-muted hover:text-txt focus-visible:outline focus-visible:outline-accent disabled:opacity-50';
 const compactSelect = 'w-full h-6 rounded border border-edge bg-panel2/40 px-1.5 text-ui-10 text-muted focus:outline-none focus:border-accent/60';
-export function MetadataStatus({ hidden = false }: { hidden?: boolean }) {
+export function MetadataStatus() {
   const { store, state } = useSharedJobMetadata();
   const activity = metadataActivity(state);
   const [now, setNow] = useState(Date.now);
   useEffect(() => { const clock = setInterval(() => { if (!document.hidden) setNow(Date.now()); }, 10000); return () => clearInterval(clock); }, []);
   const times = [...Object.values(state.observedAt), ...(state.local.observedAt === null ? [] : [state.local.observedAt]), ...(state.localActive.observedAt === null ? [] : [state.localActive.observedAt])];
   const oldest = times.length ? Math.max(0, Math.floor((now - Math.min(...times)) / 1000)) : null;
-  return <div className={hidden ? 'sr-only' : 'px-2 py-1 text-ui-10 text-muted'}>
-    {!hidden && state.error && <p role="alert">Job updates unavailable ({state.error.replaceAll('_', ' ')}). Retained observations may be stale.</p>}
+  return <div className='px-2 py-1 text-ui-10 text-muted'>
+    {state.error && <p role="alert">Job updates unavailable ({state.error.replaceAll('_', ' ')}). Retained observations may be stale.</p>}
     <p role="status" className={activity.count > 0 ? "text-ui-10 text-accent" : "sr-only"}>{activity.label}{oldest === null ? '' : ` · Oldest observation ${oldest}s ago`}</p>
     <div className="flex flex-wrap gap-1">
       <button className={button} disabled={state.working} onClick={() => { store.restartTraversal(); void store.readView(); }}>Retry updates</button>

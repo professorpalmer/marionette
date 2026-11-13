@@ -253,11 +253,6 @@ export function seedWorkspacesCache(
   write(workspacesCacheKey(root), rows);
 }
 
-/** SWR cache key for jobs scoped to both the selected project and active session. */
-export function jobsCacheKey(projectPath: string, activeSessionId?: string): string {
-  return `jobs:${projectPath || "__none__"}:${activeSessionId || "__none__"}`;
-}
-
 /** True when LeftRail should offer Stop without forcing a view attach. */
 export function shouldOfferBackgroundStop(
   status: "running" | "idle" | "attaching" | "missing" | undefined,

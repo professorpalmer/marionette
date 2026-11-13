@@ -1,13 +1,8 @@
-import { nativeActiveStatuses } from '../lib/localJobMetadata';
-import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
-import { MetadataStatus } from './MetadataJobs';
-import { useOpenSwarmJobRow } from '../lib/useOpenSwarmJob';
-import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
 import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
-import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
+import { api, type Workspace, type WorkspaceInfo, type Session } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
@@ -34,7 +29,6 @@ import {
 import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
-import { filterJobsByScope, jobScopeForSession, loadJobScopeChoice, saveJobScope, type JobScopeChoice } from "../lib/jobScope";
 import {
   BRANCHES_MIN_HEIGHT,
   branchesHeightFromPointerDelta,
@@ -42,7 +36,6 @@ import {
   filterBranchWorkspaces,
 } from "./leftRailBranches";
 
-const RAIL_METADATA_FIELDS = [...METADATA_JOBS_FIELDS, 'working'] as const;
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -59,7 +52,6 @@ export {
   purgeSessionFromRootCaches,
   workspacesCacheKey,
   seedWorkspacesCache,
-  jobsCacheKey,
   shouldOfferBackgroundStop,
   isRedundantSessionSwitch,
   sessionSwitchSucceeded,
@@ -102,7 +94,7 @@ import {
   remainingOpenAfterRemoveFromCache,
   type RunnerStatus,
 } from "./leftRailSessions";
-import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, SessionAge, type JobStatus } from "./leftRailPrimitives";
+import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
 
 export default function LeftRail({
   jobsRefresh,
@@ -119,8 +111,6 @@ export default function LeftRail({
   /** Hides the rail (Cmd+B). The button sits in the title band beside the traffic lights. */
   onCollapse?: () => void;
 }) {
-  const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
-  const openJobRow = useOpenSwarmJobRow();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -147,18 +137,6 @@ export default function LeftRail({
     projectPath: string;
   } | null>(null);
   const [confirmForgetPath, setConfirmForgetPath] = useState<string | null>(null);
-  const [sessionJobsCollapsed, setSessionJobsCollapsed] = useState(
-    () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
-  );
-  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
-  const [jobScopeChoice, setJobScopeChoice] = useState<JobScopeChoice | null>(loadJobScopeChoice);
-  useEffect(() => {
-    const onScope = () => setJobScopeChoice(loadJobScopeChoice());
-    window.addEventListener("harness-job-scope-changed", onScope);
-    return () => window.removeEventListener("harness-job-scope-changed", onScope);
-  }, []);
-  const [showAllJobs, setShowAllJobs] = useState(false);
-  const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
   const [branchesHeight, setBranchesHeight] = useState(loadBranchesHeight);
   const [pruningBranches, setPruningBranches] = useState(false);
   const pruningBranchesRef = useRef(false);
@@ -177,74 +155,27 @@ export default function LeftRail({
   const topChromeRef = useRef<HTMLDivElement>(null);
   const upperSectionsRef = useRef<HTMLDivElement>(null);
   const projectsSectionRef = useRef<HTMLDivElement>(null);
-  const sessionJobsHeightRef = useRef(sessionJobsHeight);
   const branchesHeightRef = useRef(branchesHeight);
-  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const branchesResizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
 
-  sessionJobsHeightRef.current = sessionJobsHeight;
   branchesHeightRef.current = branchesHeight;
-
-  const getMaxSessionJobsHeight = () => {
-    const rail = railRef.current;
-    const top = topChromeRef.current;
-    const upper = upperSectionsRef.current;
-    if (!rail || !top || !upper) return sessionJobsMinHeight();
-    // A scroll container's scrollHeight cannot undercut its rendered height.
-    // Summing child heights preserves the natural content bound for both short
-    // and overflowing lists.
-    const upperContent = Array.from(upper.children).reduce(
-      (sum, el) => sum + (el as HTMLElement).offsetHeight,
-      0,
-    );
-    const available = rail.clientHeight - top.offsetHeight;
-    return Math.max(sessionJobsMinHeight(), available - upperContent);
-  };
-
-  const clampSessionJobsHeight = (height: number) =>
-    Math.min(getMaxSessionJobsHeight(), Math.max(sessionJobsMinHeight(), height));
 
   const getMaxBranchesHeight = () => {
     const rail = railRef.current;
     const top = topChromeRef.current;
     if (!rail || !top) return BRANCHES_DEFAULT_HEIGHT;
-    const jobsOccupied = sessionJobsCollapsed
-      ? 48
-      : sessionJobsHeightRef.current;
     // Keep Projects from being crushed out
     // of the upper rail when Branches is dragged tall.
     const projectsOccupied = projectsSectionRef.current?.offsetHeight
       ?? BRANCHES_PROJECTS_RESERVE;
     const reserved = Math.max(BRANCHES_PROJECTS_RESERVE, projectsOccupied);
     const available =
-      rail.clientHeight - top.offsetHeight - jobsOccupied - reserved;
+      rail.clientHeight - top.offsetHeight - reserved;
     return Math.max(BRANCHES_MIN_HEIGHT, available);
   };
 
   const clampBranchesHeight = (height: number) =>
     Math.min(getMaxBranchesHeight(), Math.max(BRANCHES_MIN_HEIGHT, height));
-
-  const onSessionJobsResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (sessionJobsCollapsed) return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    resizeDragRef.current = { startY: e.clientY, startH: sessionJobsHeightRef.current };
-  };
-
-  const onSessionJobsResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizeDragRef.current) return;
-    const delta = resizeDragRef.current.startY - e.clientY;
-    setSessionJobsHeight(clampSessionJobsHeight(resizeDragRef.current.startH + delta));
-  };
-
-  const finishSessionJobsResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizeDragRef.current) return;
-    resizeDragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-    saveSessionJobsHeight(sessionJobsHeightRef.current);
-  };
 
   const branchesResizeCleanupRef = useRef<(() => void) | null>(null);
   const finishBranchesResize = () => {
@@ -516,9 +447,6 @@ export default function LeftRail({
     },
   );
 
-  const browseMetadataSupported = metadata.view.kind !== 'idle' && repoPathsEqual(selectedProjectPath, metadata.view.target.repo);
-  const jobs = browseMetadataSupported ? metadataJobs(metadata) : [];
-  const jobsValidating = metadata.working;
 
   // Dim only on real workspace/session activation — never on jobs fetch that
   // follows browse-select of an already-listed project (that was the PROJECTS blink).
@@ -1447,61 +1375,14 @@ export default function LeftRail({
     }
   });
 
-  useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
-
   useEffect(() => {
     const clampToViewport = () => {
-      setSessionJobsHeight((h) => clampSessionJobsHeight(h));
       setBranchesHeight((h) => clampBranchesHeight(h));
     };
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
-
-  const toggleSessionJobsCollapsed = () => {
-    setSessionJobsCollapsed((v) => {
-      const next = !v;
-      localStorage.setItem(SESSION_JOBS_COLLAPSED_KEY, next ? "1" : "0");
-      return next;
-    });
-  };
-
-  const activeSessionId = sessions.find((session) => session.active)?.id || "";
-  const jobScope = jobScopeForSession(jobScopeChoice, activeSessionId);
-  const artifactContext = JSON.stringify([currentRepo, selectedProjectPath, activeSessionId]);
-  const artifactContextRef = useRef(artifactContext);
-  if (artifactContextRef.current !== artifactContext) {
-    artifactContextRef.current = artifactContext;
-  }
-  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId)
-    .filter(isJobsListRow)
-    .sort((a, b) =>
-    Number(b.read_status !== 'unavailable' && nativeActiveStatuses.includes(b.status))
-    - Number(a.read_status !== 'unavailable' && nativeActiveStatuses.includes(a.status)),
-  );
-  const visibleJobs = sortedJobs.filter(
-    (j) => !hiddenJobIds.has(j.metadata_key ?? j.id) || !isTerminalJob(j),
-  );
-  const hiddenJobCount = sortedJobs.filter(
-    (j) => hiddenJobIds.has(j.metadata_key ?? j.id) && isTerminalJob(j),
-  ).length;
-  const terminalVisibleJobs = visibleJobs.filter((j) => isTerminalJob(j));
-
-  const clearFinishedJobs = () => {
-    setHiddenJobIds((prev) => {
-      const next = new Set(prev);
-      for (const j of terminalVisibleJobs) next.add(j.metadata_key ?? j.id);
-      return next;
-    });
-  };
-
-  const restoreHiddenJobs = () => setHiddenJobIds(new Set());
-
-  const displayedJobs = showAllJobs
-    ? visibleJobs
-    : visibleJobs.slice(0, SESSION_JOBS_DISPLAY_CAP);
-  const hasMoreJobs = visibleJobs.length > SESSION_JOBS_DISPLAY_CAP;
+  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, workspaces.length]);
 
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
     // Home is a UI pin, not a forgettable recent — skip remove chrome.
@@ -2149,149 +2030,6 @@ export default function LeftRail({
 
       </div>
 
-      {/* JOBS -- clean task-list styling: a
-          slim status row per job, click to expand a card with richer detail
-          (adapter/role, tokens/cost, artifact headlines) instead of a lone
-          line of truncated text. Bounded height + collapsible header so a long
-          session doesn't swallow the left rail. Vertically resizable via the
-          grab handle above the header. */}
-      <div
-        data-slot="left-rail-jobs"
-        className="mt-auto px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
-        style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
-      >
-        {!sessionJobsCollapsed && (
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize session jobs panel"
-            onPointerDown={onSessionJobsResizePointerDown}
-            onPointerMove={onSessionJobsResizePointerMove}
-            onPointerUp={finishSessionJobsResize}
-            onPointerCancel={finishSessionJobsResize}
-            className="h-1.5 -mt-1.5 mb-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
-          >
-            <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
-          </div>
-        )}
-        {!sessionJobsCollapsed && (browseMetadataSupported ? <MetadataStatus hidden /> : <p role="status" className="p-2 text-xs text-muted">Job metadata is available for the active workspace only. This project remains selected for browsing.</p>)}
-        <div
-          data-slot="left-rail-jobs-header"
-          className={`shrink-0 min-w-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}
-        >
-          <div className="h-7 flex items-center justify-between px-1.5 gap-2 min-w-0">
-            <button
-              onClick={toggleSessionJobsCollapsed}
-              className="h-6 flex items-center gap-1 min-w-0 rail-job-detail uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
-            >
-              {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
-              <span className="truncate">Jobs</span>
-              {jobsValidating && !sessionJobsCollapsed && (
-                <Loader2 size={10} className="animate-spin text-muted shrink-0" />
-              )}
-              {visibleJobs.length > 0 && (
-                <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
-              )}
-            </button>
-            {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
-              <button
-                type="button"
-                aria-label="Clear finished jobs"
-                onClick={clearFinishedJobs}
-                className="h-6 w-6 shrink-0 grid place-items-center rounded text-faint hover:bg-panel2/60 hover:text-risk focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 transition-colors"
-              >
-                <Trash2 size={11} />
-              </button>
-            )}
-          </div>
-          {!sessionJobsCollapsed && (
-            <div
-              data-slot="left-rail-job-scopes"
-              className="grid grid-cols-3 h-6 mx-1.5 mb-1 overflow-hidden rounded border border-edge/70"
-            >
-              {(["session", "repo", "all"] as const).map((scope) => (
-                <button
-                  key={scope}
-                  type="button"
-                  aria-pressed={jobScope === scope}
-                  aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
-                  onClick={(e) => { e.stopPropagation(); saveJobScope(scope, activeSessionId); }}
-                  className={`min-w-0 text-ui-9 uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
-                >
-                  {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        {!sessionJobsCollapsed && (
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 pb-1">
-            {visibleJobs.length === 0 ? (
-              <div className="px-1 py-1">
-                {jobsValidating ? (
-                  <div className="rail-job-detail text-faint italic px-1 py-1 flex items-center gap-1.5">
-                    <Loader2 size={10} className="animate-spin shrink-0" />
-                    Loading jobs...
-                  </div>
-                ) : (
-                <Empty>
-                  {hiddenJobCount > 0 ? "All jobs in this view cleared" : "No jobs in this view"}
-                </Empty>
-                )}
-                {hiddenJobCount > 0 && (
-                  <button
-                    onClick={restoreHiddenJobs}
-                    className="mt-1 px-1 text-ui-10 text-accent hover:underline focus:outline-none"
-                  >
-                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <>
-                {displayedJobs.map((j) => {
-                  const st = jobStatus(j);
-                  const key = j.metadata_key ?? j.id;
-                  return (
-                    <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
-                      <button
-                        onClick={() => openJobRow(j)}
-                        className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
-                      >
-                        <JobStatusIcon status={st} />
-                        <span
-                          className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-risk/90" : "text-txt"}`}
-                          title={jobDisplayTitle(j)}
-                        >
-                          {jobDisplayTitle(j)}
-                        </span>
-                      </button>
-
-                    </div>
-                  );
-                })}
-                {hasMoreJobs && !showAllJobs && (
-                  <button
-                    onClick={() => setShowAllJobs(true)}
-                    className="w-full px-2 py-1 text-ui-10 text-accent hover:underline focus:outline-none"
-                  >
-                    Show all ({visibleJobs.length})
-                  </button>
-                )}
-                {hiddenJobCount > 0 && (
-                  <button
-                    onClick={restoreHiddenJobs}
-                    className="w-full px-2 py-1 text-ui-10 text-faint hover:text-accent hover:underline focus:outline-none"
-                  >
-                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
       {/* CONTEXT MENU */}
       {contextMenu && (
         <div
@@ -2453,47 +2191,9 @@ export default function LeftRail({
   );
 }
 
-const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
-const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
-const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
-const SESSION_JOBS_DISPLAY_CAP = 20;
-
 const BRANCHES_HEIGHT_KEY = "pmharness.leftRail.branchesHeight.v1";
 const BRANCHES_DEFAULT_HEIGHT = 140;
 const BRANCHES_PROJECTS_RESERVE = 160;
-
-function sessionJobsMinHeight(): number {
-  if (typeof window === "undefined") return 280;
-  return Math.min(280, Math.round(window.innerHeight * 0.35));
-}
-
-function loadSessionJobsHeight(): number {
-  const fallback = sessionJobsMinHeight();
-  try {
-    const raw = localStorage.getItem(SESSION_JOBS_HEIGHT_KEY);
-    if (!raw) return fallback;
-    const n = Number.parseInt(raw, 10);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
-    // Upper-bound against the window BEFORE first paint. The layout-aware
-    // clamp (getMaxSessionJobsHeight) needs refs that only exist after mount,
-    // so a tall height saved from a big window would otherwise flash a jobs
-    // panel that swallows the whole rail for one frame in a small window.
-    const conservativeMax = typeof window === "undefined"
-      ? n
-      : Math.max(sessionJobsMinHeight(), Math.round(window.innerHeight * 0.6));
-    return Math.min(conservativeMax, Math.max(sessionJobsMinHeight(), n));
-  } catch {
-    return fallback;
-  }
-}
-
-function saveSessionJobsHeight(height: number): void {
-  try {
-    localStorage.setItem(SESSION_JOBS_HEIGHT_KEY, String(Math.round(height)));
-  } catch {
-    // localStorage full/unavailable -- height still works for this session.
-  }
-}
 
 function loadBranchesHeight(): number {
   try {
@@ -2517,41 +2217,3 @@ function saveBranchesHeight(height: number): void {
     // localStorage full/unavailable -- height still works for this session.
   }
 }
-
-function loadHiddenSessionJobs(): Set<string> {
-  try {
-    const raw = localStorage.getItem(SESSION_JOBS_HIDDEN_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(arr) ? arr : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveHiddenSessionJobs(ids: Set<string>): void {
-  try {
-    localStorage.setItem(SESSION_JOBS_HIDDEN_KEY, JSON.stringify([...ids].slice(-2000)));
-  } catch {
-    // localStorage full/unavailable -- hide state still works for this session.
-  }
-}
-
-function isTerminalJob(j: Job): boolean {
-  const st = jobStatus(j);
-  return st === "completed" || st === "cancelled";
-}
-
-function jobStatus(j: Job): JobStatus {
-  const s = (j.status || "").toLowerCase();
-  if (s.includes("complete") || s.includes("done")) return "completed";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error") || s.includes("stall")) return "cancelled";
-  if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
-  return "pending";
-}
-
-// Compact metadata chips shown when a job card is expanded -- role/adapter and
-// usage so the card carries real signal instead of a truncated goal line.
-
-// Aggregate diffstat across a job's patch artifacts so a card can show a
-// git-style "+40 -12" summary at a glance. Returns null when the job produced
-// no patch (audits, reviews) so the caller can skip the row entirely.

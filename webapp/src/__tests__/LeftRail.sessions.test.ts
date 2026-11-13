@@ -6,7 +6,7 @@ import {
   peekTranscriptCacheEntry,
   writeTranscriptCache,
 } from "../components/conversation/transcriptCache";
-import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, jobsCacheKey, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, sessionSwitchSucceeded, shouldOfferBackgroundStop, shouldPromoteListActive, onScreenSessionId, requestedSessionAfterList, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
+import { actionAfterSessionRemove, buildProjectsList, collectUnreadFinishedSessionIds, filterForgottenRecent, formatLeaseExhaustedMessage, isLeaseExhaustedError, isRailWideSwitching, isRedundantSessionSwitch, partitionProjectSessions, patchActiveSessionInCaches, patchSessionArchivedInCaches, patchSessionTitleInCaches, pickFallbackProjectAfterForget, preferLastGoodSessionList, projectSessionsEmptyState, purgeSessionFromRootCaches, remainingOpenAfterRemoveFromCache, SESSION_LEASE_EXHAUSTED_MESSAGE, seedWorkspacesCache, sessionSwitchSucceeded, shouldOfferBackgroundStop, shouldPromoteListActive, onScreenSessionId, requestedSessionAfterList, writeSessionListCache, workspacesCacheKey } from "../components/LeftRail";
 import type { Session } from "../lib/api";
 
 /**
@@ -573,14 +573,6 @@ describe("LeftRail session list contracts", () => {
     expect(readSWRCache(workspacesCacheKey(root))).toEqual(rows);
     seedWorkspacesCache("", [{ name: "nope", branch: "nope", active: true }]);
     expect(readSWRCache(workspacesCacheKey(""))).toBeUndefined();
-  });
-
-  it("jobs SWR key is stable per selected project and confirmed active session", () => {
-    const project = "C:\\Projects\\marionette";
-    expect(jobsCacheKey(project, "session-a")).toBe(jobsCacheKey(project, "session-a"));
-    expect(jobsCacheKey(project, "session-a")).not.toBe(jobsCacheKey(project, "session-b"));
-    expect(jobsCacheKey(project, "session-a")).not.toBe(jobsCacheKey("C:\\Projects\\dugout", "session-a"));
-    expect(jobsCacheKey("", undefined)).toBe("jobs:__none__:__none__");
   });
 
   it("isLeaseExhaustedError requires lease_exhausted code (not bare 409)", () => {

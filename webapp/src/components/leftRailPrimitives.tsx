@@ -1,15 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { compactAge } from "../lib/relativeTime";
-import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
-
-export type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
-
-export function JobStatusIcon({ status }: { status: JobStatus }) {
-  if (status === "completed") return <CheckCircle2 size={12} className="text-good shrink-0" />;
-  if (status === "in_progress") return <Loader2 size={12} className="animate-spin text-accent shrink-0" />;
-  if (status === "cancelled") return <XCircle size={12} className="text-risk shrink-0" />;
-  return <Circle size={12} className="text-muted shrink-0" />;
-}
+import { Loader2 } from "lucide-react";
 
 /** Compact running/idle indicator for a session row. Hidden when status unknown.
  *  When stoppable (running + non-active), click Stops that runner without view attach. */
