@@ -49,6 +49,7 @@ window.fetch = withEndpointDiscovery(async input => {
     }
     : path === '/api/context/usage' ? { available: true, session_id: activeSession, total: 0, limit: 10000, categories: [] }
     : path === '/api/commands' ? { commands: [] }
+    : path === '/api/sessions' ? []
     : path === '/api/swarm/live' ? []
     : path === '/api/workspace/files' ? { files: [], folders: [] }
     : path === '/api/pilots' ? { pilots: [] }
