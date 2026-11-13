@@ -1,9 +1,15 @@
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { openAgentFile } from "../../lib/agentLinks";
-import { EditDiffCounts } from "./EditDiff";
+import { EditDiffCounts, EditDiffPatch } from "./EditDiff";
 
-export type TurnChangedFile = { path: string; added: number; removed: number };
+/** One file the turn wrote: summed counts and the patch of each write. */
+export type TurnChangedFile = {
+  path: string;
+  added: number;
+  removed: number;
+  patches: { patch: string; truncated?: boolean }[];
+};
 
 /**
  * End of a finished turn that wrote files: "2 files changed · Review · Undo".
@@ -101,18 +107,21 @@ export function TurnChangesFooter({ item }: { item: TurnChangesItem }) {
         {undo.phase === "error" ? <span className="text-risk/85">{undo.message}</span> : null}
       </div>
       {reviewOpen ? (
-        <ul className="mt-1 ml-1 pl-3 border-l border-edge/50 space-y-0.5" data-testid="turn-changes-files">
+        <ul className="mt-1 ml-1 pl-3 border-l border-edge/50 space-y-1.5" data-testid="turn-changes-files">
           {item.files.map((f) => (
-            <li key={f.path} className="flex items-center gap-2 min-w-0">
-              <button
-                type="button"
-                className="truncate min-w-0 bg-transparent border-0 p-0 font-mono text-ui-11 text-txt/80 cursor-pointer hover:text-accent/85 hover:underline underline-offset-2 text-left"
-                title={`Open ${f.path}`}
-                onClick={() => openAgentFile(f.path)}
-              >
-                {f.path}
-              </button>
-              <EditDiffCounts added={f.added} removed={f.removed} />
+            <li key={f.path} className="min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  className="truncate min-w-0 bg-transparent border-0 p-0 font-mono text-ui-11 text-txt/80 cursor-pointer hover:text-accent/85 hover:underline underline-offset-2 text-left"
+                  title={`Open ${f.path}`}
+                  onClick={() => openAgentFile(f.path)}
+                >
+                  {f.path}
+                </button>
+                <EditDiffCounts added={f.added} removed={f.removed} />
+              </div>
+              {f.patches.map((p, i) => (p.patch ? <EditDiffPatch key={i} patch={p.patch} truncated={p.truncated} /> : null))}
             </li>
           ))}
         </ul>

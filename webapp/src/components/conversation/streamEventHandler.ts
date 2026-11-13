@@ -16,6 +16,7 @@ import {
 } from "./thinkingToolPrep";
 import {
   appendActionStartCard,
+  dropSwarmToolPrep,
   applyActionResultCard,
   appendAuthFailure,
   appendAutoHalt,
@@ -514,9 +515,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       // stack another card (session-switch SSE race → infinite Investigated).
       // Default tool cards to collapsed always: they used to mount open while
       // running and snap shut on action_result, which read as a flicker.
-      if (d.kind !== "run_swarm") {
-        setItems((p) => appendActionStartCard(p, d));
-      }
+      setItems((p) => (d.kind === "run_swarm" ? dropSwarmToolPrep(p, d) : appendActionStartCard(p, d)));
     } else if (ev.kind === "action_result") {
       if (d.todos && Array.isArray(d.todos.phases)) {
         const todoSid = String(d.session_id || "").trim();

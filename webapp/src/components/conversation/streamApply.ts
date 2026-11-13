@@ -1318,6 +1318,22 @@ function dropAnonymousKindPrep(items: Item[], kind: string): Item[] {
   });
 }
 
+/**
+ * A run_swarm action shows as its swarm pill live and as its result after a
+ * reload, so its tool prep row goes when the action starts. Left in place,
+ * the fold counted the one swarm twice ("Running 2 swarms").
+ */
+export function dropSwarmToolPrep(items: Item[], d: { id: string; kind?: string }): Item[] {
+  const id = String(d.id || "").trim();
+  const next = dropAnonymousKindPrep(items, String(d.kind || "run_swarm")).filter((it) => !(
+    id
+    && it.kind === "card"
+    && String(it.card.id || "").startsWith("tool-prep:")
+    && (it.card.id === `tool-prep:${id}` || it.card.call_id === id)
+  ));
+  return next.length === items.length ? items : next;
+}
+
 export function appendActionStartCard(
   items: Item[],
   d: {
@@ -2091,10 +2107,12 @@ export function applySwarmResultToItems(
   const updated = items.map((item, idx) => {
     if (idx !== pendingIdx || item.kind !== "swarm_pending") return item;
 
+    // A one-job pill (local-swarm-<call id>) also records the real job id,
+    // so its result counts as the same swarm in any fold.
     const creditedIds = item.job_ids.includes(jobId)
       ? [jobId]
       : item.job_ids.length === 1
-        ? item.job_ids
+        ? [...item.job_ids, jobId]
         : [jobId];
     // Union prior terminal credits, this result, and any sibling swarm_result
     // rows already in the transcript (out-of-order reused-before-pending).

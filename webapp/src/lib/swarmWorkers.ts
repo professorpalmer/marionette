@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ExpertArtifact, ExpertTask } from "./expertMetadata";
 import { canonicalExpertSelection, metadataSelectionKey, type MetadataDetail, type MetadataSelection } from "./jobMetadata";
 import { currentExpert, useSharedJobMetadata } from "./jobMetadataContext";
+import { displayModelId } from "./modelIdentity";
 import type { JobMetadataState } from "./useJobMetadata";
 
 /** One worker of a swarm job, as the inline transcript card shows it. */
@@ -78,7 +79,8 @@ export function swarmWorkerRows(
     return {
       taskId: task.id,
       role: task.role || "worker",
-      model: task.model || "",
+      // The Swarm Tracker's name for the model, so both surfaces agree.
+      model: task.model ? displayModelId(task.model) : "",
       status,
       tokens: taskTokens(task),
       lastAction: workerLastAction(task, status, artifacts),

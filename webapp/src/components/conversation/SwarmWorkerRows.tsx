@@ -1,5 +1,4 @@
 import { formatTokenCount } from "../../lib/ledgerDisplay";
-import { shortPilotModelLabel } from "../../lib/turnProgress";
 import { useOpenSwarmJob } from "../../lib/useOpenSwarmJob";
 import { useSwarmWorkers } from "../../lib/swarmWorkers";
 
@@ -34,7 +33,7 @@ export function SwarmWorkerRows({ swarmKey, running }: { swarmKey: string; runni
             className="w-full min-w-0 flex items-baseline gap-2 py-0.5 text-left text-ui-11 font-sans bg-transparent border-0 p-0 cursor-pointer group"
           >
             <span className="shrink-0 text-txt/85 group-hover:text-txt">{row.role}</span>
-            {row.model ? <span className="shrink-0 text-faint">{shortPilotModelLabel(row.model)}</span> : null}
+            {row.model ? <span className="shrink-0 text-faint">{row.model}</span> : null}
             <span className={`shrink-0 ${statusTone(row.status)}`}>{row.status}</span>
             {row.tokens !== null ? (
               <span className="shrink-0 text-faint tabular-nums">{formatTokenCount(row.tokens)} tok</span>

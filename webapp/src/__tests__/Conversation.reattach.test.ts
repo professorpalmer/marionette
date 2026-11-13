@@ -2013,7 +2013,8 @@ describe("mid-turn store-event cursor reattach", () => {
       (item) => item.kind === "swarm_result" && item.job_id === "job_done",
     )).toBe(true);
     expect(screen.getByText("The review is complete.")).toBeTruthy();
-    expect(screen.getByText("Swarm · 1 result")).toBeTruthy();
+    // Live and settled name the swarm the same way.
+    expect(screen.getByRole("button", { name: /Ran 1 swarm/i })).toBeTruthy();
     expect(screen.queryByText(/Investigating/i)).toBeNull();
   });
 

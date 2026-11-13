@@ -7,7 +7,7 @@ vi.mock("../lib/api", async (orig) => {
   return { ...real, api: { ...real.api, restoreCheckpoint: (id: string) => restoreCheckpoint(id) } };
 });
 
-import { TranscriptList, type Item } from "../components/TranscriptList";
+import { clearActivityFoldPrefs, TranscriptList, type Item } from "../components/TranscriptList";
 
 function editCard(id: string, path: string, added: number, removed: number, open = false): Item {
   return {
@@ -76,6 +76,30 @@ describe("edit row diff", () => {
   });
 });
 
+describe("edit row body", () => {
+  it("shows the diff, not the internal fields", () => {
+    // Rig K19: the open row showed path, cwd, "found 1 artifacts · file"
+    // and "FILE edited src/calc.py: replaced 16 chars -> 16 chars".
+    clearActivityFoldPrefs();
+    const card = editCard("e1", "src/calc.py", 1, 1, true);
+    if (card.kind !== "card") throw new Error("card");
+    card.card.cwd = "/work/proj";
+    card.card.result = {
+      ...card.card.result,
+      num: 1,
+      types: ["file"],
+      artifacts: [{ type: "file", headline: "edited src/calc.py: replaced 16 chars -> 16 chars" }],
+    };
+    renderItems(turn("fix it", "cp1", [card]));
+    fireEvent.click(screen.getByRole("button", { name: /Worked for/ }));
+    const body = screen.getByTestId("edit-diff-patch").parentElement!;
+    expect(body.textContent).toContain("+new line");
+    expect(body.textContent).not.toContain("/work/proj");
+    expect(body.textContent).not.toContain("artifacts");
+    expect(body.textContent).not.toContain("replaced 16 chars");
+  });
+});
+
 describe("turn changed-files footer", () => {
   it("sums the turn's writes per file", () => {
     renderItems(turn("fix it", "cp1", [
@@ -90,6 +114,23 @@ describe("turn changed-files footer", () => {
     const files = within(footer).getByTestId("turn-changes-files");
     expect(files.textContent).toContain("src/calc.py+5-1");
     expect(files.textContent).toContain("test_calc.py+5");
+  });
+
+  it("Review shows the diff of each file, not only its name", () => {
+    // Rig K18: Review listed names, and a click opened the whole file.
+    renderItems(turn("fix it", "cp1", [
+      editCard("e1", "src/calc.py", 1, 1),
+      editCard("e2", "src/calc.py", 1, 1),
+      editCard("e3", "test_calc.py", 1, 1),
+    ]));
+    const footer = screen.getByTestId("turn-changes");
+    fireEvent.click(within(footer).getByTestId("turn-changes-review"));
+    const patches = within(footer).getAllByTestId("edit-diff-patch");
+    // One patch block per write, under its file.
+    expect(patches).toHaveLength(3);
+    expect(patches[0].textContent).toContain("+++ b/src/calc.py");
+    expect(patches[2].textContent).toContain("+++ b/test_calc.py");
+    expect(within(patches[0]).getByText("+new line").className).toContain("text-good");
   });
 
   it("has no footer for a turn without writes", () => {
