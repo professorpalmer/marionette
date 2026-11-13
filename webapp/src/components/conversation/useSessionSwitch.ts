@@ -44,6 +44,7 @@ import {
 import type { MemoryProposal } from "./streamEventHandler";
 import { beginChatStreamGeneration } from "./chatEvents";
 import { createChatEventsReattach } from "./chatEventsReattach";
+import { parseTranscriptRing, type TranscriptRing } from "./storeEvents";
 import { cancelStreamPaint, cancelTypewriterWithoutFlush } from "./streamTypewriter";
 import { gatherSessionArtifacts } from "./sessionArtifacts";
 import {
@@ -378,6 +379,8 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
     // falling back to retained-frame pull + light poll if live attach fails.
     const reattachSid = activeSessionId;
     let reattachGen = streamGenRef.current;
+    // Set only when the loaded rows are the transcript the server read at it.
+    const transcriptRingRef: { current: TranscriptRing | null } = { current: null };
     const makeReattach = () => createChatEventsReattach({
       cancelled: () => cancelled,
       loadGen,
@@ -412,6 +415,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       setBackendPendingSwarms,
       turnSettledRef,
       abandonStaleLocalStreamRef,
+      transcriptRingRef,
     });
     let { startChatEventsReattach } = makeReattach();
     // The store replay paints the newest turn on top of the loaded transcript.
@@ -585,6 +589,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
             loadedFingerprint: loadedFp,
           }).kind === "unchanged"
         ) {
+          transcriptRingRef.current = parseTranscriptRing(res.ring);
           writeTranscriptCache(activeSessionId, itemsRef.current);
           setTranscriptStale(false);
           setEditNotice((prev) => clearRecoveredSessionFailNotice(prev));
@@ -593,6 +598,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
         setItems(loadedItems);
         itemsRef.current = loadedItems;
         transcriptFpRef.current = loadedFp;
+        transcriptRingRef.current = parseTranscriptRing(res.ring);
         writeTranscriptCache(activeSessionId, loadedItems);
         setTranscriptStale(false);
         // Successful hydrate — drop sticky SESSION_* fail banner from a prior flake.
