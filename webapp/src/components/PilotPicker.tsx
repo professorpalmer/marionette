@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState, useRef } from "react";
-import { ChevronDown, Check, Loader2, Search } from "lucide-react";
+import { Brain, ChevronDown, Check, Loader2, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
@@ -313,7 +313,7 @@ export default function PilotPicker({
             setModelOpen((prev) => !prev);
           }}
           title={current || "Pilot model"}
-          className="flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+          className="composer-control flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
         >
           <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
           {binding
@@ -387,9 +387,12 @@ export default function PilotPicker({
               setModelOpen(false);
               setReasonOpen((prev) => !prev);
             }}
-            title={`Reasoning effort (${labelForEffort(reasoning)})`}
-            className="flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+            aria-label={`Pilot reasoning: ${labelForEffort(reasoning)}`}
+            title={`Pilot reasoning effort: ${labelForEffort(reasoning)}. Applies to the chat pilot, not to workers.`}
+            className="composer-control flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
           >
+            <Brain size={11} className="composer-toolbar-icon shrink-0 text-faint" aria-hidden="true" />
+            <span className="composer-toolbar-label text-faint">Reasoning</span>
             <span className="truncate max-w-[90px]">{labelForEffort(reasoning)}</span>
             <ChevronDown size={11} className="shrink-0 opacity-60" />
           </button>

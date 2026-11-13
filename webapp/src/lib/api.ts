@@ -1439,6 +1439,8 @@ export type ContextCategory = {
 export type ContextUsageResponse = {
   total: number;
   limit: number;
+  /** Context size that starts automatic compaction (75% of the window or less). */
+  compaction_trigger_tokens?: number;
   categories: ContextCategory[];
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;

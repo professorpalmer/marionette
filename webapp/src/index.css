@@ -311,13 +311,27 @@ body {
   flex: 0 1 auto;
 }
 
+/* One control height for every composer toolbar control. */
+.composer-control {
+  height: 22px;
+}
+
+/* Text labels yield to icons in narrow docks: the icon shows only while the
+   label is hidden, so a control never shows a bare value with no name. */
+.composer-toolbar-icon { display: none; }
+
+@container (max-width: 600px) {
+  .composer-mode-label { display: none; }
+}
+
 @container (max-width: 560px) {
   .composer-toolbar-label { display: none; }
+  .composer-toolbar-icon { display: inline-block; }
   .pilot-picker-trigger-label { max-width: 8rem; }
 }
 
 @container (max-width: 480px) {
-  .composer-toolbar-label { display: none; }
+  .composer-context-label { display: none; }
   .pilot-picker-trigger-label { max-width: 7.5rem; }
 }
 

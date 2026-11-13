@@ -133,6 +133,17 @@ def test_context_usage_prefers_real_total():
     assert usage_real["total"] > heuristic_total
 
 
+def test_context_usage_reports_auto_compaction_trigger():
+    """The composer ring tooltip names the token count that starts auto compaction."""
+    from harness.compaction_mixin import compaction_trigger_tokens
+
+    s = _session(budget=200000)
+    usage = s.get_context_usage()
+    expected = compaction_trigger_tokens(200000, getattr(s.pilot, "max_tokens", None))
+    assert usage["compaction_trigger_tokens"] == expected
+    assert 0 < usage["compaction_trigger_tokens"] <= 150000
+
+
 def test_context_usage_exposes_compaction_advice(monkeypatch):
     session = _session(budget=200000)
     monkeypatch.setattr(

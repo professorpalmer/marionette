@@ -128,7 +128,8 @@ describe("ComposerDock context-usage resilience", () => {
     const { container } = renderDock(nanUsage);
 
     expect(screen.getByText("0% Full")).toBeInTheDocument();
-    expect(screen.getByText("0%")).toBeInTheDocument(); // Usage button
+    // Non-finite data is "no data", not a 0% claim: the ring shows no label.
+    expect(screen.getByRole("button", { name: "Context window usage", exact: true })).toBeInTheDocument();
     expect(container.textContent).not.toContain("NaN");
   });
 

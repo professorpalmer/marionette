@@ -7,7 +7,7 @@ import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
-import { useId, type RefObject } from "react";
+import { useId, type ReactNode, type RefObject } from "react";
 import {
   ChevronDown,
   Code,
@@ -36,6 +36,7 @@ import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerActivityRail from "./ComposerActivityRail";
 import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
 import { filterSlashCommands } from "./composerInput";
+import { ContextRing, contextRingFacts } from "./ContextRing";
 import {
   CONTEXT_USAGE_COLORS,
   contextUsagePercent,
@@ -276,6 +277,7 @@ export default function ComposerDock({
 
   // Defense in depth: usage is validated upstream (normalizeContextUsage),
   // but a malformed payload must degrade to an empty breakdown, not a crash.
+  const ringFacts = contextRingFacts(contextUsage);
   const contextCategories = Array.isArray(contextUsage?.categories)
     ? contextUsage.categories
     : [];
@@ -996,28 +998,40 @@ export default function ComposerDock({
           <ComposerContextMenu textareaRef={taRef} />
           <div className="composer-toolbar px-3 pb-2">
             <div className="composer-toolbar-actions">
-            <button type="button" onClick={() => {
-              onSetAuto((a) => {
-                const next = !a;
-                if (next) onSetPlan(false);
-                return next;
-              });
-            }} aria-label="Autopilot" aria-pressed={auto} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
-                ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-              <Zap size={11} aria-hidden="true" />
-            </button>
-            <button type="button" onClick={() => {
-              onSetPlan((p) => {
-                const next = !p;
-                if (next) onSetAuto(false);
-                return next;
-              });
-            }} aria-label="Plan mode" aria-pressed={plan} title="Plan mode -- get an actionable plan instead of execution (read-only)"
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
-                ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
-              <ListChecks size={11} aria-hidden="true" />
-            </button>
+            <ModeToggle
+              label="Auto"
+              ariaLabel="Autopilot"
+              on={auto}
+              tone="warn"
+              icon={<Zap size={11} aria-hidden="true" />}
+              title={auto
+                ? "Autopilot is on: the pilot plans and runs on its own. Click to turn it off."
+                : "Autopilot is off: you steer each step. Click to let the pilot plan and run on its own."}
+              onToggle={() => {
+                onSetAuto((a) => {
+                  const next = !a;
+                  if (next) onSetPlan(false);
+                  return next;
+                });
+              }}
+            />
+            <ModeToggle
+              label="Plan"
+              ariaLabel="Plan mode"
+              on={plan}
+              tone="accent"
+              icon={<ListChecks size={11} aria-hidden="true" />}
+              title={plan
+                ? "Plan mode is on: the pilot returns a plan and does not edit (read-only). Click to turn it off."
+                : "Plan mode is off. Click to get a read-only plan instead of execution."}
+              onToggle={() => {
+                onSetPlan((p) => {
+                  const next = !p;
+                  if (next) onSetAuto(false);
+                  return next;
+                });
+              }}
+            />
             <div className="pilot-picker-slot">
               <PilotPicker
                 key={sessionId}
@@ -1041,18 +1055,16 @@ export default function ComposerDock({
                   fetchContextUsage();
                 }
               }}
-              title="View context window usage breakdown"
-              aria-label="Context window usage"
+              title={ringFacts?.tooltip ?? "Context window usage: no data yet. Click to load the breakdown."}
+              aria-label={ringFacts ? `Context window usage ${ringFacts.label}` : "Context window usage"}
               aria-expanded={showContextPanel}
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 font-mono flex items-center gap-1 shrink-0 transition
-                ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
+              className={`composer-control px-1.5 rounded-md text-ui-10.5 font-mono tabular-nums flex items-center gap-1 shrink-0 border transition-colors
+                ${showContextPanel ? "bg-accent/15 text-accent border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border-edge/30 hover:bg-panel2/80"}`}
             >
-              <FileText size={11} />
-              {contextUsage ? (
-                <span>{contextUsagePercent(contextUsage.total, contextUsage.limit)}%</span>
-              ) : (
-                <span className="composer-toolbar-label">Usage</span>
-              )}
+              <ContextRing facts={ringFacts} />
+              {ringFacts ? (
+                <span className="composer-context-label">{ringFacts.label}</span>
+              ) : null}
             </button>
             </div>
             <div className="composer-toolbar-send">
@@ -1136,5 +1148,43 @@ export default function ComposerDock({
 
       </div>
     </div>
+  );
+}
+
+/** Composer mode pill: the label says what it is, the fill says it is on. */
+function ModeToggle({
+  label,
+  ariaLabel,
+  on,
+  tone,
+  icon,
+  title,
+  onToggle,
+}: {
+  label: string;
+  ariaLabel: string;
+  on: boolean;
+  tone: "warn" | "accent";
+  icon: ReactNode;
+  title: string;
+  onToggle: () => void;
+}) {
+  const onClass = tone === "warn"
+    ? "bg-warn/15 text-warn border-warn/40"
+    : "bg-accent/15 text-accent border-accent/40";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={ariaLabel}
+      aria-pressed={on}
+      title={title}
+      data-state={on ? "on" : "off"}
+      className={`composer-control px-1.5 rounded-full text-ui-10.5 font-medium flex items-center gap-1 shrink-0 border transition-colors
+        ${on ? onClass : "border-edge/50 text-faint hover:text-muted hover:border-edge2"}`}
+    >
+      {icon}
+      <span className="composer-mode-label">{label}</span>
+    </button>
   );
 }
