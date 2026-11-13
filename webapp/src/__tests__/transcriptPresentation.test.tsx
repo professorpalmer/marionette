@@ -829,7 +829,7 @@ describe("investigation UX residual debts (nested / fold prefs / workerStream)",
     // Fold stays default-closed — do not force-open for workerStream.
     expect(screen.queryByText(/worker streaming/i)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Exploring/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Running/i }));
     // Bubble capped ticker chrome (label + tokens), not a muted narration <pre>.
     expect(screen.getByText(/worker streaming/i)).toBeTruthy();
     expect(screen.getByText(/worker live tokens line one/i)).toBeTruthy();

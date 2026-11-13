@@ -45,11 +45,10 @@ import { splitMarkdownBlocks, splitStreamingMarkdown } from "../lib/streamMarkdo
 import { rehypeStreamCaret, STREAM_CARET_CLASS } from "../lib/streamCaret";
 import {
   activityWorkDurationMs,
-  aggregateExplorationSummary,
+  activityHeadline,
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
-  exploringHeadline,
   joinThoughtFoldText,
   liveActivityLine,
   partitionActivityRows,
@@ -70,6 +69,7 @@ import {
   turnSpanMs,
   maxKnown,
   headlineFocusCard,
+  formatBusyElapsed,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -2317,6 +2317,7 @@ export const TranscriptList = memo(function TranscriptList({
           busyElapsedMs={i === liveFoldIdx ? busyElapsedMs : null}
           sealedTitle={inLiveTurn ? "explored" : "worked"}
           rememberedTurnMs={rememberedTurnMs(canon)}
+          modelLabel={i === liveFoldIdx ? modelLabel : null}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
         />
       );
@@ -2614,6 +2615,7 @@ function ActivityGroup({
   busyElapsedMs: busyElapsedMsProp,
   sealedTitle: sealedTitleProp,
   rememberedTurnMs: rememberedTurnMsProp,
+  modelLabel: modelLabelProp,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -2637,7 +2639,10 @@ function ActivityGroup({
   sealedTitle?: "worked" | "explored";
   /** The turn's remembered busy clock, for a group that is the whole turn. */
   rememberedTurnMs?: number | null;
+  /** Pilot model the live line names while the turn waits on it. */
+  modelLabel?: string | null;
 }) {
+  const modelLabel = modelLabelProp ?? "";
   const sealedTitle = sealedTitleProp ?? "worked";
   const rememberedTurnMs = rememberedTurnMsProp ?? null;
   const loopOpen = loopOpenProp ?? false;
@@ -2740,12 +2745,12 @@ function ActivityGroup({
         : "");
 
   // Cursor-style kind buckets ("3 files, 1 search") for Explored / Investigating.
-  const kindSummary = aggregateExplorationSummary([
-    ...cards.map((c) => c.card.kind || "action"),
-    ...nestedRows.map((a) => a.kind || "action"),
-  ]);
-  const stepHeadline = actionCount > 0 ? exploringHeadline(kindSummary, true) : "Thinking";
-  const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking });
+  const headlineSteps = [
+    ...cards.map((c) => ({ kind: c.card.kind || "action", target: resolveCardCliInput(c.card) })),
+    ...nestedRows.map((a) => ({ kind: a.kind || "action", target: a.goal })),
+  ];
+  const stepHeadline = actionCount > 0 ? activityHeadline(headlineSteps, true) : "Thinking";
+  const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking, modelLabel });
   // The live line under the fold shows the newest step. Its row joins the
   // list only when the next step replaces it, so no step paints twice.
   const liveLineShown = investigating && actionCount > 0;
@@ -2951,7 +2956,7 @@ function ActivityGroup({
     }
     if (!isLiveFold && durableJobRunning) return "job still running";
     if (sealedTitle === "explored" && (actionCount > 0 || thinkingItems.length > 0)) {
-      return actionCount > 0 ? exploringHeadline(kindSummary, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
+      return actionCount > 0 ? activityHeadline(headlineSteps, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
     }
     // Sealed turn: Cursor-style Worked for {duration} — not Explored counts.
     if (actionCount > 0 || thinkingItems.length > 0 || swarmResults.length > 0 || swarmPendingItems.length > 0) {
@@ -3102,7 +3107,7 @@ function ActivityGroup({
         </div>
       )}
       {liveLineShown ? (
-        <LiveActivityLine text={liveLine} onOpen={liveLineOpen} />
+        <LiveActivityLine text={liveLine.text} timed={liveLine.modelWait} onOpen={liveLineOpen} />
       ) : null}
     </div>
   );
@@ -3111,7 +3116,7 @@ function ActivityGroup({
 /** The verb of fold chrome paints brighter than its counts or duration. */
 function splitFoldLabel(label: string): [string, string] {
   const text = String(label || "").trim();
-  const lead = /^(Worked for|Exploring|Explored|Thought)\s+/.exec(text);
+  const lead = /^(Worked for|Exploring|Explored|Editing|Edited|Running|Ran|Thought)\s+/.exec(text);
   return lead ? [lead[1], text.slice(lead[0].length)] : [text, ""];
 }
 
@@ -3162,16 +3167,17 @@ function FoldHeader({
  * below while the old one rolls up and out (the wheel), and the live text
  * shimmers. Reduced motion shows the swap without movement (index.css).
  */
-function LiveActivityLine({ text, onOpen }: { text: string; onOpen?: () => void }) {
-  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean }>(
-    () => ({ current: text, previous: null, turn: 0, swapping: false }),
+function LiveActivityLine({ text, timed = false, onOpen }: { text: string; timed?: boolean; onOpen?: () => void }) {
+  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean; since: number }>(
+    () => ({ current: text, previous: null, turn: 0, swapping: false, since: Date.now() }),
   );
+  const elapsed = useLineElapsed(timed, lines.since);
   if (lines.current !== text) {
     // An unfocused window pauses every animation (html.app-idle in index.css).
     // A swap paused at its first frame sits below the box at opacity 0, so
     // the live line looked empty. Unfocused, swap at once without motion.
     const animate = !document.documentElement.classList.contains("app-idle");
-    setLines({ current: text, previous: animate ? lines.current : null, turn: lines.turn + 1, swapping: animate });
+    setLines({ current: text, previous: animate ? lines.current : null, turn: lines.turn + 1, swapping: animate, since: Date.now() });
   }
   useEffect(() => {
     if (!lines.swapping) return;
@@ -3204,9 +3210,27 @@ function LiveActivityLine({ text, onOpen }: { text: string; onOpen?: () => void 
             {lines.current}
           </button>
         ) : lines.current}
+        {elapsed ? <span className="tabular-nums" data-testid="live-activity-elapsed"> · {elapsed}</span> : null}
       </span>
     </div>
   );
+}
+
+/**
+ * Seconds a model wait line has shown, as "4s". The clock starts when the
+ * line text changes, so each wait counts from its own start.
+ */
+function useLineElapsed(timed: boolean, since: number): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!timed) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [timed, since]);
+  if (!timed) return "";
+  const ms = now - since;
+  return ms >= 1000 ? formatBusyElapsed(ms) : "";
 }
 
 /** Drop the outgoing line just after the 200ms base swap in index.css ends. */

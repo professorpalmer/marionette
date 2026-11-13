@@ -205,7 +205,7 @@ describe("live fold (Exploring + live line + flat rows)", () => {
       />,
     );
 
-    const workChrome = screen.getByRole("button", { name: /Exploring ran 2 commands/i });
+    const workChrome = screen.getByRole("button", { name: /Running 2 commands/i });
     expect(workChrome.textContent || "").not.toMatch(/Working\.\.\./i);
     expect(screen.queryByText("Working...")).toBeNull();
     expect(screen.getByTestId("live-activity-line").textContent).toBe("Running rg ActionForm");
@@ -345,7 +345,7 @@ describe("stacked Swarm done fold", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Exploring/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Running 1 swarm/i }));
 
     const fold = screen.getByTestId("swarm-done-fold");
     expect(fold.querySelector(".transcript-fold-chrome")?.textContent || "").toMatch(/Swarm done · 8/);
