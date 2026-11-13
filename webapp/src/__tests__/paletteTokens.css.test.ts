@@ -29,6 +29,7 @@ const CLOSED_FILES = [
   "components/EconomicsPane.tsx",
   "components/FileEditorPane.tsx",
   "components/PilotPicker.tsx",
+  "components/CommandPalette.tsx",
 ];
 
 const FORBIDDEN: Array<[string, RegExp]> = [

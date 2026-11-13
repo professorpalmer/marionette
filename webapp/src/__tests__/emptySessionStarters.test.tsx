@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import EmptySessionStarters, { STARTER_PROMPTS, recentSessionRows } from "../components/conversation/EmptySessionStarters";
+import EmptySessionStarters, { STARTER_PROMPTS } from "../components/conversation/EmptySessionStarters";
 import TranscriptEmptyState, { emptySessionContext } from "../components/conversation/TranscriptEmptyState";
 import { api, type Session } from "../lib/api";
-import { COMPOSER_PREFILL_EVENT, OPEN_ONBOARDING_EVENT, SWITCH_SESSION_EVENT, sessionAge, workspaceName } from "../lib/sessionNav";
+import { COMPOSER_PREFILL_EVENT, OPEN_ONBOARDING_EVENT, SWITCH_SESSION_EVENT, recentSessionRows, sessionAge, workspaceName } from "../lib/sessionNav";
 
 function session(id: string, title: string, created: number, extra: Partial<Session> = {}): Session {
   return { id, title, created, ...extra };
@@ -69,7 +69,7 @@ describe("EmptySessionStarters", () => {
 
   it("keeps at most four reopenable rows, newest first", () => {
     const rows = Array.from({ length: 7 }, (_, i) => session(`s${i}`, `Task ${i}`, i));
-    expect(recentSessionRows(rows, "s6").map((r) => r.id)).toEqual(["s5", "s4", "s3", "s2"]);
+    expect(recentSessionRows(rows, "s6", 4).map((r) => r.id)).toEqual(["s5", "s4", "s3", "s2"]);
   });
 
   it("shows no recent block when the bank fails", async () => {

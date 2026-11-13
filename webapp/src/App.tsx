@@ -600,6 +600,15 @@ export default function App() {
       <CommandPalette
         onToggleLeft={() => setLeftOpen((v) => !v)}
         onToggleRight={toggleRight}
+        config={config}
+        sessionId={activeSessionId}
+        modelsEnabled={!pilotSelectionDisabled}
+        onPickModel={(model) => {
+          if (!activeSessionId) return handlePendingPilotModelChange(model);
+          void requestSessionPilot(activeSessionId, model)
+            .then(() => window.dispatchEvent(new Event("harness-config-changed")))
+            .catch(() => {});
+        }}
       />
     </div>
     </JobMetadataOwner>

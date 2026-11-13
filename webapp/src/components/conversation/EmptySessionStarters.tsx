@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { BookOpen, Bug, GitCompare, MessageSquare } from "lucide-react";
 import { api, type Session } from "../../lib/api";
-import { displaySessionListTitle, isDefaultSessionTitle } from "../../lib/sessionTitle";
-import { prefillComposer, requestSessionSwitch, sessionAge, workspaceName } from "../../lib/sessionNav";
+import { displaySessionListTitle } from "../../lib/sessionTitle";
+import { prefillComposer, recentSessionRows, requestSessionSwitch, sessionAge, workspaceName } from "../../lib/sessionNav";
 
 /** Starter prompts fill the composer. They never send, so the user can edit. */
 export const STARTER_PROMPTS = [
@@ -26,16 +26,6 @@ export const STARTER_PROMPTS = [
   },
 ] as const;
 
-const RECENT_LIMIT = 4;
-
-/** Rows worth reopening: not this session, not archived, not an untouched "New session". */
-export function recentSessionRows(rows: Session[], currentId: string | undefined): Session[] {
-  return rows
-    .filter((row) => row.id !== currentId && !row.archived && !isDefaultSessionTitle(row.title))
-    .sort((a, b) => (b.created || 0) - (a.created || 0))
-    .slice(0, RECENT_LIMIT);
-}
-
 /** Below the centered composer in an empty session: starters, then recent sessions. */
 export default function EmptySessionStarters({
   sessionId,
@@ -49,7 +39,7 @@ export default function EmptySessionStarters({
     let cancelled = false;
     api.sessionsBank({ limit: 24 })
       .then((rows) => {
-        if (!cancelled) setRecent(recentSessionRows(Array.isArray(rows) ? rows : [], sessionId));
+        if (!cancelled) setRecent(recentSessionRows(Array.isArray(rows) ? rows : [], sessionId, 4));
       })
       .catch(() => {
         if (!cancelled) setRecent([]);

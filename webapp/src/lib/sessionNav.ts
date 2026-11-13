@@ -1,3 +1,6 @@
+import type { Session } from "./api";
+import { isDefaultSessionTitle } from "./sessionTitle";
+
 /** Window events that let shell surfaces (empty session, Cmd+K) drive the
  *  rail, the composer and onboarding without new prop chains. */
 
@@ -45,4 +48,13 @@ export function workspaceName(root: string | undefined): string {
   if (!trimmed || /[\\/]\.pmharness[\\/]home$/i.test(trimmed)) return "Home";
   const parts = trimmed.split(/[\\/]/);
   return parts[parts.length - 1] || "Home";
+}
+
+/** Sessions worth reopening, newest first: not the current one, not
+ *  archived, not an untouched "New session". */
+export function recentSessionRows(rows: readonly Session[], currentId: string | null | undefined, limit: number): Session[] {
+  return rows
+    .filter((row) => row.id !== currentId && !row.archived && !isDefaultSessionTitle(row.title))
+    .sort((a, b) => (b.created || 0) - (a.created || 0))
+    .slice(0, limit);
 }
