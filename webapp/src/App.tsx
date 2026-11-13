@@ -30,6 +30,7 @@ import type { PilotSetupGate } from "./components/conversation/composerSend";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
 import { reclampRailWidths } from "./lib/railLayout";
+import { OPEN_ONBOARDING_EVENT } from "./lib/sessionNav";
 import {
   setConfigured,
   setManual,
@@ -339,6 +340,16 @@ export default function App() {
     checkSetupStatus();
   }, []);
 
+  // Empty session "Connect a model" and Cmd+K reopen onboarding on demand.
+  useEffect(() => {
+    const onOpen = () => {
+      setManual(true);
+      setShowOverlay(true);
+    };
+    window.addEventListener(OPEN_ONBOARDING_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_ONBOARDING_EVENT, onOpen);
+  }, []);
+
   // PERF: pause nonessential CSS motion while the app is backgrounded. Keep
   // separate idle/hidden classes so visible worker activity can remain truthful
   // when the window is merely unfocused, while hidden windows fully pause.
@@ -497,7 +508,10 @@ export default function App() {
                 }
                 onAddKey={() => {
                   setManual(true);
-                  setShowWizard(true);
+                  // Keyless: the same connect flow as first launch. Workers-only
+                  // gap: the registry wizard picks a worker-capable key.
+                  if (config.pilot_ready) setShowWizard(true);
+                  else setShowOverlay(true);
                 }}
               />
             )}

@@ -6,6 +6,7 @@ import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
+import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
 import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
@@ -1131,6 +1132,14 @@ export default function LeftRail({
     const onNew = () => { void newSession(); };
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
+  });
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const id = eventDetailString(e, "sessionId");
+      if (id) void switchSession(id);
+    };
+    window.addEventListener(SWITCH_SESSION_EVENT, onSwitch);
+    return () => window.removeEventListener(SWITCH_SESSION_EVENT, onSwitch);
   });
   const followUpAfterSessionRemove = async (id: string, viewingId: string, projectPath: string) => {
     const remaining = remainingOpenAfterRemoveFromCache(projectPath, id);

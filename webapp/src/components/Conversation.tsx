@@ -153,6 +153,8 @@ import {
   peekTerminalSelections,
   putTerminalSelection,
 } from "./conversation/terminalSelectionCache";
+import { emptySessionContext } from "./conversation/TranscriptEmptyState";
+import { COMPOSER_PREFILL_EVENT, eventDetailString } from "../lib/sessionNav";
 import {
   chatColumnMountClass,
   isChatColumnActive,
@@ -2017,6 +2019,17 @@ export default function Conversation({
     const onFocus = () => { taRef.current?.focus(); };
     window.addEventListener("harness-focus-input", onFocus);
     return () => window.removeEventListener("harness-focus-input", onFocus);
+  }, []);
+
+  useEffect(() => {
+    const onPrefill = (e: Event) => {
+      const text = eventDetailString(e, "text");
+      if (!text) return;
+      setInput(text);
+      taRef.current?.focus();
+    };
+    window.addEventListener(COMPOSER_PREFILL_EVENT, onPrefill);
+    return () => window.removeEventListener(COMPOSER_PREFILL_EVENT, onPrefill);
   }, []);
 
   useEffect(() => {
@@ -4452,6 +4465,7 @@ export default function Conversation({
           sessionId={activeSessionId ?? ""}
           itemSessionId={cachedSessionIdRef.current ?? ""}
           paneIds={retainedPaneIds}
+          emptySession={emptySessionContext(config)}
           composerDock={(
       <ComposerDock
         config={config}

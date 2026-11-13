@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import OnboardingOverlay from "../components/OnboardingOverlay";
+import OnboardingOverlay, { detectionFrom } from "../components/OnboardingOverlay";
 import { api } from "../lib/api";
 import { FEATURED_OAUTH_ORDER } from "../lib/onboardingProviders";
 import {
@@ -12,6 +12,9 @@ vi.mock("../lib/api", () => ({
   api: {
     providers: vi.fn(),
     setProviderKey: vi.fn(),
+    setProviderEnabled: vi.fn(),
+    getClaudeCliStatus: vi.fn(),
+    getLocalModels: vi.fn(),
     startAuthOAuth: vi.fn(),
     pollAuthOAuth: vi.fn(),
     completeAuthOAuth: vi.fn(),
@@ -73,11 +76,20 @@ describe("OnboardingOverlay featured vs key rows", () => {
       label: "claude-max",
     });
     vi.mocked(api.cancelAuthOAuth).mockResolvedValue({ ok: true });
+    vi.mocked(api.getClaudeCliStatus).mockResolvedValue({ ok: false, installed: false, authenticated: false });
+    vi.mocked(api.getLocalModels).mockResolvedValue({ externals: [] });
   });
+
+  async function openAll() {
+    await screen.findByTestId("onboarding-overlay");
+    fireEvent.click(await screen.findByRole("button", { name: /Sign in with a plan/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Other API keys/ }));
+  }
 
   it("renders featured OAuth rows and key paste rows", async () => {
     render(<OnboardingOverlay onClose={vi.fn()} />);
     expect(await screen.findByTestId("onboarding-overlay")).toBeTruthy();
+    await openAll();
 
     const featured = screen.getAllByTestId("featured-provider-row");
     expect(featured.map((el) => el.getAttribute("data-provider"))).toEqual([
@@ -117,7 +129,7 @@ describe("OnboardingOverlay featured vs key rows", () => {
     const onClose = vi.fn();
     render(<OnboardingOverlay onClose={onClose} />);
     await screen.findByTestId("onboarding-overlay");
-    fireEvent.change(screen.getByPlaceholderText("OPENROUTER_API_KEY"), {
+    fireEvent.change(await screen.findByPlaceholderText("Paste your OpenRouter API key"), {
       target: { value: "sk-or-test" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Connect/i }));
@@ -132,7 +144,7 @@ describe("OnboardingOverlay featured vs key rows", () => {
   it("featured Sign in starts the existing auth oauth device flow", async () => {
     const onClose = vi.fn();
     render(<OnboardingOverlay onClose={onClose} />);
-    await screen.findByTestId("onboarding-overlay");
+    await openAll();
     const rows = screen.getAllByTestId("featured-provider-row");
     const codex = rows.find((el) => el.getAttribute("data-provider") === "openai-codex");
     expect(codex).toBeTruthy();
@@ -144,5 +156,72 @@ describe("OnboardingOverlay featured vs key rows", () => {
     });
     expect(getOnboardingState().configured).toBe(true);
     expect(getOnboardingState().mode).toBe("oauth");
+  });
+});
+
+describe("OnboardingOverlay first-launch order", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    resetOnboardingForTests(true);
+    vi.mocked(api.getClaudeCliStatus).mockResolvedValue({ ok: false, installed: false, authenticated: false });
+    vi.mocked(api.getLocalModels).mockResolvedValue({ externals: [] });
+    vi.mocked(api.setProviderEnabled).mockResolvedValue({ ok: true, provider: "openrouter", has_key: true, masked: "" });
+  });
+
+  it("opens on OpenRouter, offers a local model, and folds the other paths", async () => {
+    vi.mocked(api.providers).mockResolvedValue(providers);
+    render(<OnboardingOverlay onClose={vi.fn()} />);
+    await screen.findByPlaceholderText("Paste your OpenRouter API key");
+    expect(screen.getByText("Recommended")).toBeTruthy();
+    expect(screen.getAllByText("Chat and workers").length).toBeGreaterThan(0);
+    expect(screen.getByTestId("local-model-option")).toBeTruthy();
+    expect(screen.queryAllByTestId("featured-provider-row")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: /Sign in with a plan/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByRole("button", { name: /Other API keys/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText(/Full stack/i)).toBeNull();
+    expect(screen.queryByText("Found on this Mac")).toBeNull();
+    // "Later" lives in the footer, outside the scrolling body.
+    const later = screen.getByRole("button", { name: /choose a provider later/i });
+    expect(later.closest("footer")).toBeTruthy();
+  });
+
+  it("lists what it found first and turns on a disconnected env key", async () => {
+    const onClose = vi.fn();
+    vi.mocked(api.providers).mockResolvedValue([
+      ...providers,
+      provider("deepseek", { display_name: "DeepSeek", has_env: true, disconnected: true }),
+    ]);
+    vi.mocked(api.getClaudeCliStatus).mockResolvedValue({ ok: true, installed: true, authenticated: false });
+    vi.mocked(api.getLocalModels).mockResolvedValue({
+      externals: [{ id: "ollama", name: "Ollama", vendor: "ollama", base_url: "http://127.0.0.1:11434", models: ["qwen"] }],
+    });
+    render(<OnboardingOverlay onClose={onClose} />);
+    expect(await screen.findByText("Found on this Mac")).toBeTruthy();
+    const rows = screen.getAllByTestId("detected-row").map((row) => row.textContent);
+    expect(rows[0]).toContain("DeepSeek key");
+    expect(rows.some((text) => text?.includes("Claude Code CLI"))).toBe(true);
+    expect(rows.some((text) => text?.includes("Ollama at http://127.0.0.1:11434"))).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Turn on" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(api.setProviderEnabled).toHaveBeenCalledWith("deepseek", true);
+    expect(getOnboardingState().configured).toBe(true);
+  });
+
+  it("still opens when the optional probes fail", async () => {
+    vi.mocked(api.providers).mockResolvedValue(providers);
+    vi.mocked(api.getClaudeCliStatus).mockRejectedValue(new Error("no route"));
+    vi.mocked(api.getLocalModels).mockRejectedValue(new Error("no route"));
+    render(<OnboardingOverlay onClose={vi.fn()} />);
+    expect(await screen.findByPlaceholderText("Paste your OpenRouter API key")).toBeTruthy();
+    expect(screen.queryByText("Found on this Mac")).toBeNull();
+  });
+});
+
+describe("detectionFrom", () => {
+  it("ignores malformed local rows and a signed-in CLI", () => {
+    expect(detectionFrom([], { installed: true, authenticated: true }, { externals: [null, { name: "x" }] })).toEqual({
+      keys: [], claudeCliInstalled: false, localEndpoints: [],
+    });
   });
 });
