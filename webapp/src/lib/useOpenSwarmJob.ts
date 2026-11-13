@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext } from 'react';
 import { JobMetadataContext, metadataJobs } from './jobMetadataContext';
 import { openAgentSwarmJob } from './agentLinks';
 import { swarmNavigationTarget } from './pendingSwarmOpenJob';
+import type { Job } from './api';
 
 // Transcript ownership can lag the active metadata provider during a session switch.
 export const SwarmLinkSessionContext = createContext<string | undefined>(undefined);
@@ -21,4 +22,19 @@ export function useOpenSwarmJob(sessionId?: string, repo?: string) {
     const matches = metadataJobs(state).filter(job => job.id === jobId);
     openAgentSwarmJob(swarmNavigationTarget(jobId, context, matches.length === 1 && matches[0].read_status !== 'unavailable' ? matches[0] : undefined, artifactId));
   }, [store, ownerSessionId, repo]);
+}
+
+/**
+ * Open a job row from the job list that the shared metadata view shows.
+ * The row came from that view, so the view is its context, and the row's
+ * own source and metadata key name the exact job. A bare id gave an
+ * unresolved target that the Jobs pane could not place.
+ */
+export function useOpenSwarmJobRow() {
+  const store = useContext(JobMetadataContext);
+  return useCallback((job: Job) => {
+    const state = store.getSnapshot();
+    const context = state.view.kind === 'idle' ? null : { ...state.view.target, contextEpoch: state.contextEpoch };
+    openAgentSwarmJob(swarmNavigationTarget(job.id, context, job, undefined, job.metadata_key));
+  }, [store]);
 }

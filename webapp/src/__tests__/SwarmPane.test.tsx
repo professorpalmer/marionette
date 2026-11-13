@@ -34,6 +34,9 @@ import { view as metadataView, view, selection, selection as metadataSelection }
 import { metadataSelectionKey } from "../lib/jobMetadata";
 
 import { queuePendingSwarmNavigation, peekPendingSwarmNavigation, clearPendingSwarmOpenJob } from "../lib/pendingSwarmOpenJob";
+import { openAgentSwarmJob } from "../lib/agentLinks";
+import { useOpenSwarmJobRow } from "../lib/useOpenSwarmJob";
+import { metadataJobs, useSharedJobMetadata } from "../lib/jobMetadataContext";
 
 import { terminalWorkerMetadataFixture } from "./workerIdentity.fixtures";
 
@@ -2220,6 +2223,32 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     expect(screen.getByLabelText('Filter jobs')).toHaveValue('active');
     open();
     await expectOpened('Deep-link target behind filter');
+  });
+  it("opens a job row with the view's context (left rail Jobs click)", async () => {
+    await fixture('Rail row target');
+    function RowOpener() {
+      const { state } = useSharedJobMetadata();
+      const openRow = useOpenSwarmJobRow();
+      const job = metadataJobs(state)[0];
+      return job ? <button type="button" onClick={() => openRow(job)}>open rail row</button> : null;
+    }
+    render(<metadata.Provider><RowOpener /><SwarmWithInspect /></metadata.Provider>);
+    fireEvent.click(await screen.findByRole('button', { name: 'open rail row' }));
+    await expectOpened('Rail row target');
+    expect(screen.queryByText(/Target context is unknown/)).not.toBeInTheDocument();
+    await waitFor(() => expect(peekPendingSwarmNavigation()).toBeNull());
+  });
+  it("a manual pick ends a navigation without context and clears its notice", async () => {
+    await fixture('Picked by hand');
+    mount();
+    act(() => openAgentSwarmJob(selection.job_ref.job_id));
+    expect(await screen.findByText(/Target context is unknown/)).toBeInTheDocument();
+    const row = (await screen.findAllByRole('button', { name: /^Picked by hand/ }))
+      .find((btn) => btn.getAttribute('aria-expanded') != null);
+    if (!row) throw Error('Missing job row');
+    fireEvent.click(row);
+    expect(screen.queryByText(/Target context is unknown/)).not.toBeInTheDocument();
+    expect(peekPendingSwarmNavigation()).toBeNull();
   });
   it("consumes a pending open-job queued before mount", async () => {
     await fixture('Late-mount deep-link target', true);

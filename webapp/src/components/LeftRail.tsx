@@ -1,7 +1,7 @@
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
 import { MetadataStatus } from './MetadataJobs';
-import { openAgentSwarmJob } from '../lib/agentLinks';
+import { useOpenSwarmJobRow } from '../lib/useOpenSwarmJob';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
@@ -115,6 +115,7 @@ export default function LeftRail({
   activeSessionId?: string | null;
 }) {
   const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
+  const openJobRow = useOpenSwarmJobRow();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -2230,7 +2231,7 @@ export default function LeftRail({
                   return (
                     <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
-                        onClick={() => openAgentSwarmJob(j.id)}
+                        onClick={() => openJobRow(j)}
                         className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
                       >
                         <JobStatusIcon status={st} />
@@ -2241,7 +2242,6 @@ export default function LeftRail({
                           {jobDisplayTitle(j)}
                         </span>
                       </button>
-                      {/* Selection opens Jobs rail PM embed via openAgentSwarmJob */}
 
                     </div>
                   );
