@@ -1002,6 +1002,7 @@ export function turnChanges(span: GroupedItem[]): TurnChangesItem | null {
         path,
         added: (prev?.added ?? 0) + diff.added,
         removed: (prev?.removed ?? 0) + diff.removed,
+        patches: [...(prev?.patches ?? []), { patch: diff.patch, truncated: diff.truncated }],
       });
     }
   }
@@ -4395,6 +4396,9 @@ function ActionCard({
       : null;
   const hasExitCode = typeof card.result?.exit_code === "number";
   const editDiff = parseEditDiff(card.result?.diff);
+  // A file write with a diff shows the diff. The row names the file, and
+  // the path, cwd and artifact receipt only repeat it.
+  const diffBody = Boolean(editDiff?.patch);
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
@@ -4627,7 +4631,7 @@ function ActionCard({
       {card.open && (
         <div className="mt-1 ml-5 pl-3 border-l border-edge/50 py-1.5 pr-3 bg-panel2/25 rounded-r-sm text-ui-11 max-w-full text-txt/85 space-y-1 font-sans">
           {/* Never render an empty key row — that was the "goal" with no value. */}
-          {commandKv ? (
+          {commandKv && !diffBody ? (
             <KV
               k={inputKey}
               v={commandKv}
@@ -4647,7 +4651,7 @@ function ActionCard({
               ))}
             </div>
           )}
-          {card.cwd && <KV k="cwd" v={card.cwd} linkKind="workspace" />}
+          {card.cwd && !diffBody && <KV k="cwd" v={card.cwd} linkKind="workspace" />}
           {editDiff?.patch ? <EditDiffPatch patch={editDiff.patch} truncated={editDiff.truncated} /> : null}
           {hasExitCode ? (
             <KV k="exit" v={String(card.result!.exit_code)} />
@@ -4677,7 +4681,7 @@ function ActionCard({
                 : "Full output"}
             </button>
           ) : null}
-          {card.result && !card.result.error && (
+          {card.result && !card.result.error && !diffBody && (
             <>
               {card.result.job_id && (
                 <KV
