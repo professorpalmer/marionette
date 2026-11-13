@@ -367,6 +367,8 @@ const BUCKET_ORDER: ExplorationBucket[] = [
 
 type HeadlineGroup = "explore" | "edit" | "run";
 
+const HEADLINE_GROUP_ORDER: readonly HeadlineGroup[] = ["edit", "run", "explore"];
+
 const HEADLINE_VERBS: Record<HeadlineGroup, ToolVerbs> = {
   explore: { past: "Explored", live: "Exploring" },
   edit: { past: "Edited", live: "Editing" },
@@ -381,7 +383,7 @@ function headlineGroup(bucket: ExplorationBucket): HeadlineGroup {
 
 /**
  * Fold headline whose verb matches what the fold holds:
- * "Explored 3 files, 1 search, edited 2 files, ran 1 command".
+ * "Edited 2 files, ran 1 command, explored 3 files, 1 search".
  * Edits count distinct targets when known. While live, the group of the
  * newest step takes the live verb ("Editing 1 file").
  */
@@ -412,7 +414,8 @@ export function activityHeadline(
   }
   const last = steps.length ? headlineGroup(explorationBucket(steps[steps.length - 1].kind)) : null;
   const parts: string[] = [];
-  for (const group of ["explore", "edit", "run"] as HeadlineGroup[]) {
+  // The strongest verb leads: an edit fold reads "Edited ...", not "Explored".
+  for (const group of HEADLINE_GROUP_ORDER) {
     if (!phrases[group].length) continue;
     const verbs = HEADLINE_VERBS[group];
     const verb = live && group === last ? verbs.live : verbs.past;
