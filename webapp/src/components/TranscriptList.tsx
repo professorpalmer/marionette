@@ -1906,7 +1906,9 @@ export const TranscriptList = memo(function TranscriptList({
       const item = virtualGrouped[index];
       if (!item) return TRANSCRIPT_ROW_FALLBACK_PX;
       const rowId = rowKeys[index] ?? stableItemKey(item, index);
-      return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth);
+      const folded = item.kind === "turn_work"
+        && !resolveActivityGroupOpen(sessionFoldPrefKey(sessionId, `work:${turnWorkStableId(item.rows, index)}`));
+      return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth, { folded });
     },
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,

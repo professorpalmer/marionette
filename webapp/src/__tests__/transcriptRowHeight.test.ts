@@ -271,3 +271,23 @@ describe("transcriptRowHeight", () => {
     expect(rowMeasureSignal(streaming)).not.toBe(rowMeasureSignal(grown));
   });
 });
+
+describe("folded Worked for estimate", () => {
+  // Measured in the rig: on reload every sealed turn paints folded (30 px),
+  // but the estimate was the DOM-measure fallback (144 px), so the final
+  // answer painted about 114 px low and jumped up on the first measure.
+  const work = {
+    kind: "turn_work",
+    rows: [{ kind: "activity_group", items: [{ kind: "card", card: { id: "a", kind: "read_file" } }] }],
+  } as unknown as GroupedItem;
+
+  it("is one fold header line while the fold is closed", () => {
+    const cache = createTranscriptRowHeightCache();
+    expect(cache.estimateRowHeight(work, "w", 600, { folded: true })).toBe(30);
+  });
+
+  it("keeps the DOM-measure fallback for an open fold", () => {
+    const cache = createTranscriptRowHeightCache();
+    expect(cache.estimateRowHeight(work, "w", 600, { folded: false })).toBe(TRANSCRIPT_ROW_FALLBACK_PX * 2);
+  });
+});
