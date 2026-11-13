@@ -5,6 +5,7 @@ import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilot
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { useOverlayFocus } from "../lib/overlayFocus";
+import { loadModelFacts, modelFactParts, type ModelFactsState } from "../lib/pilotModelFacts";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
 type PickerSeed = {
@@ -76,6 +77,7 @@ export default function PilotPicker({
   const operation = useRef(0);
   const reasoningOperation = useRef(0);
   const retainOperation = useRef(0);
+  const [factsState, setFactsState] = useState<ModelFactsState>({ kind: "loading" });
   const [retainReasoning, setRetainReasoning] = useState(false);
   const [retainReady, setRetainReady] = useState(false);
   const [savingRetain, setSavingRetain] = useState(false);
@@ -104,6 +106,16 @@ export default function PilotPicker({
     window.addEventListener("harness-open-model-picker", handleOpen);
     return () => window.removeEventListener("harness-open-model-picker", handleOpen);
   }, []);
+
+  useEffect(() => {
+    if (!modelOpen) return;
+    let active = true;
+    loadModelFacts().then(
+      (facts) => { if (active) setFactsState({ kind: "ready", facts }); },
+      () => { if (active) setFactsState({ kind: "unavailable" }); },
+    );
+    return () => { active = false; };
+  }, [modelOpen]);
 
   useEffect(() => {
     if (!modelOpen) {
@@ -268,21 +280,33 @@ export default function PilotPicker({
     const isSelected = m === current;
     const isActive = m === activeModel;
     const label = labelOf(m);
+    const facts = factsState.kind === "ready" ? factsState.facts.get(m) : undefined;
+    // The line keeps its height while loading so rows never jump.
+    const meta = factsState.kind === "loading"
+      ? "\u00a0"
+      : facts
+        ? modelFactParts(facts).join(" \u00b7 ")
+        : "Details unknown";
     return (
       <div
         key={m}
         id={optionId(m)}
         role="option"
         aria-selected={isSelected}
+        aria-description={factsState.kind === "loading" ? undefined : meta}
         data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
         onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}
-        className={`flex items-center justify-between px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
+        className={`flex flex-col px-3 py-1.5 text-ui-11.5 cursor-pointer transition-colors select-none ${
           isActive ? "bg-panel2" : ""
         } ${isSelected ? "text-accent font-medium" : "text-txt/90"}`}
+        title={m}
       >
-        <span className="min-w-0 flex-1 leading-snug" title={m}>{label}</span>
-        {isSelected && <Check size={11} className="shrink-0 ml-2" />}
+        <span className="flex items-center justify-between min-w-0">
+          <span className="leading-snug truncate">{label}</span>
+          {isSelected && <Check size={11} className="shrink-0 ml-2" />}
+        </span>
+        <span className="text-ui-10 text-faint font-normal tabular-nums leading-snug truncate" data-testid="pilot-model-facts">{meta}</span>
       </div>
     );
   };
@@ -327,7 +351,7 @@ export default function PilotPicker({
             role="dialog"
             aria-modal="true"
             aria-label="Pilot model picker"
-            className="absolute left-0 bottom-full mb-1 z-50 w-[min(20rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+            className="absolute left-0 bottom-full mb-1 z-50 w-[min(23rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
           >
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
               <Search size={12} className="text-faint shrink-0" />
@@ -357,7 +381,7 @@ export default function PilotPicker({
                 className="bg-transparent text-ui-11.5 text-txt placeholder:text-faint outline-none w-full"
               />
             </div>
-            <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[280px] overflow-y-auto">
+            <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[340px] overflow-y-auto">
               {!hasRows ? (
                 <div className="px-3 py-2 text-ui-11 text-faint">No matching models</div>
               ) : (
