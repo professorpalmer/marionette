@@ -6,6 +6,7 @@ import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { visibleCommand } from "../lib/visibleCommand";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
 import { EditDiffCounts, EditDiffPatch, parseEditDiff } from "./conversation/EditDiff";
+import { SwarmWorkerRows } from "./conversation/SwarmWorkerRows";
 import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
 import { commandRisk } from "../lib/commandRisk";
@@ -2753,6 +2754,13 @@ function ActivityGroup({
   // opens the fold when they want the step list. Seed from the module map so
   // a remount does not yank an explicit toggle mid-stream.
   const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
+  const runningSwarmKeys = swarmPendingItems
+    .filter((it) => {
+      const status = it.status || (it.resolved ? "done" : "running");
+      return status === "running" || status === "waiting";
+    })
+    .map((it) => String(it.job_ids?.[0] || "").trim())
+    .filter(Boolean);
   const swarmPendingRunning = swarmPendingItems.some((it) => {
     const status = it.status || (it.resolved ? "done" : "running");
     return status === "running";
@@ -2971,6 +2979,7 @@ function ActivityGroup({
           jobIds={it.job_ids || []}
           objective={it.objective || ""}
           status={it.status || (it.resolved ? "done" : "running")}
+          hasResultCard={swarmResults.length > 0}
         />
       );
     }
@@ -3208,6 +3217,10 @@ function ActivityGroup({
       {liveLineShown ? (
         <LiveActivityLine text={liveLine.text} timed={liveLine.modelWait} onOpen={liveLineOpen} />
       ) : null}
+      {/* A closed live fold still shows the workers of its running swarm. */}
+      {investigating && !open
+        ? runningSwarmKeys.map((key) => <SwarmWorkerRows key={key} swarmKey={key} running />)
+        : null}
     </div>
   );
 }
@@ -4819,10 +4832,13 @@ function SwarmPendingPill({
   jobIds,
   objective,
   status,
+  hasResultCard = false,
 }: {
   jobIds: string[];
   objective: string;
   status: SwarmPendingStatus;
+  /** A result card beside the pill shows the workers of a finished swarm. */
+  hasResultCard?: boolean;
 }) {
   const truncatedObj = objective.length > 60 ? objective.slice(0, 60) + "..." : objective;
   const label = status === "failed"
@@ -4856,19 +4872,24 @@ function SwarmPendingPill({
         : status === "done"
           ? "bg-good/40"
           : "bg-faint/40";
+  const swarmKey = String(jobIds[0] || "").trim();
+  const running = status === "running" || status === "waiting";
   return (
-    <div
-      data-testid="swarm-pending-pill"
-      data-status={status}
-      className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}
-    >
-      {status === "running"
-        ? <Loader2 size={11} className="animate-spin text-accent" />
-        : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
-      <span className="inline-flex items-center gap-1 flex-wrap">
-        <span>{label}: {truncatedObj}</span>
-        <SwarmJobIdChips jobIds={jobIds} />
-      </span>
+    <div className="flex flex-col">
+      <div
+        data-testid="swarm-pending-pill"
+        data-status={status}
+        className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}
+      >
+        {status === "running"
+          ? <Loader2 size={11} className="animate-spin text-accent" />
+          : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
+        <span className="inline-flex items-center gap-1 flex-wrap">
+          <span>{label}: {truncatedObj}</span>
+          <SwarmJobIdChips jobIds={jobIds} />
+        </span>
+      </div>
+      {swarmKey && (running || !hasResultCard) ? <SwarmWorkerRows swarmKey={swarmKey} running={running} /> : null}
     </div>
   );
 }
@@ -5072,6 +5093,11 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
           ? <ChevronDown size={12} className="text-faint shrink-0" />
           : <ChevronRight size={12} className="text-faint shrink-0" />)}
       </button>
+      {primaryJobId ? (
+        <div className="px-2.5">
+          <SwarmWorkerRows swarmKey={primaryJobId} running={false} />
+        </div>
+      ) : null}
 
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">
