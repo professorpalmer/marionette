@@ -39,7 +39,7 @@ html.app-idle:not(.app-hidden) .semantic-activity-spinner {
 html { font-size: clamp(11.5px, 0.62vw + 7.1px, 16px); }
 
 body {
-  background: var(--shell-chrome, #0f1113); color: #ececef;
+  background: var(--shell-frame, #0f1113); color: #ececef;
   overflow: hidden;
   font-size: 0.8125rem; /* was 13px; now scales with the responsive root */
   -webkit-font-smoothing: antialiased;
@@ -102,6 +102,11 @@ body {
   --titlebar-chrome-pad-x: 24px;
   /* Inset shell chrome (Claude Code-style floating panels). */
   --shell-chrome: #0f1113;
+  /* Window frame: body tint and left rail. Glass thins these only. */
+  --shell-frame: #0f1113;
+  --shell-sidebar: #13161a;
+  --shell-frame-border: rgba(255, 255, 255, 0.05);
+  /* Content surfaces: always opaque, with or without glass. */
   --shell-chat: #0f1113;
   --shell-panel: #13161a;
   --shell-panel-border: rgba(255, 255, 255, 0.05);
@@ -117,22 +122,50 @@ body {
 }
 
 /* Window glass (Settings → General → Transparent background).
-   Native vibrancy / DWM acrylic composites BELOW the page. Field tokens go
-   transparent so <body> is the only painter; inset panels and cards keep
-   their own fills for contrast. Tint is --translucency-glass-keep. */
+   Native vibrancy / DWM acrylic composites BELOW the page. Glass is a frame
+   material, as in Finder, Codex and Cursor: only the window frame (left rail,
+   its title band and the gutters) thins. The chat card, the composer, the
+   status bar, tool cards and flyouts keep opaque fills, so text contrast does
+   not depend on the desktop behind the window.
+   <body> is the one frame painter: --shell-frame is its tint, and the rail
+   goes transparent over it so the tint is not stacked twice.
+   --translucency-frame-keep is the tint that stays (lib/windowGlass.ts). */
 :root[data-marionette-glass] {
   background-color: transparent !important;
   --shell-chrome: transparent;
-  /* Keep every shell surface on one glass curve. Panels retain their borders
-     and slightly lighter base, but no longer become opaque islands.
-     --shell-overlay stays solid: flyouts sit over scrolling chat. */
-  --shell-chat: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 80%), transparent);
-  --shell-panel: color-mix(in srgb, #13161a var(--translucency-glass-keep, 80%), transparent);
+  --shell-frame: color-mix(in srgb, #0f1113 var(--translucency-frame-keep, 60%), transparent);
+  --shell-sidebar: transparent;
+  --shell-frame-border: transparent;
   --shell-panel-border: rgba(255, 255, 255, 0.08);
 }
 
-:root[data-marionette-glass] body {
-  background: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 100%), transparent);
+
+/* The left rail is part of the window frame. */
+.shell-sidebar {
+  border-radius: var(--shell-panel-radius);
+  border: 1px solid var(--shell-frame-border);
+  background: var(--shell-sidebar);
+  overflow: hidden;
+}
+
+/* Secondary text on the thinned frame: one step lighter than muted/faint, so
+   it keeps 4.5:1 over the native material at every intensity. */
+:root[data-marionette-glass] .shell-sidebar :is(.text-muted, .text-faint) {
+  color: #b9bfc8;
+}
+
+/* The chat column is one opaque card on the frame. A top strip (update,
+   key notices) follows the card's rounded top. */
+.shell-chat-card {
+  border: 1px solid var(--shell-panel-border);
+  border-radius: var(--shell-panel-radius);
+  background-color: var(--shell-chat);
+  background-image: radial-gradient(120% 80% at 50% -10%, rgba(139, 150, 196, 0.06), rgba(139, 150, 196, 0) 60%);
+}
+
+.shell-chat-card > [data-top-strip]:first-child {
+  border-top-left-radius: calc(var(--shell-panel-radius) - 1px);
+  border-top-right-radius: calc(var(--shell-panel-radius) - 1px);
 }
 
 /* Side rails + footer sit "within" the window: rounded, lightly bordered,

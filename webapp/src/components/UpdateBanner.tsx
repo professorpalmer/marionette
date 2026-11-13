@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
-import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
+import { useTitlebarLeftPad } from "../lib/useTitlebarLeftPad";
 
 // The loud counterpart to the StatusBar's small "update" pill. When the tracked
 // branch has moved ahead of this checkout, this slides a prominent bar across the
@@ -38,6 +38,7 @@ export default function UpdateBanner({
   const readyRef = useRef(false);
   const committedRef = useRef(false);
   const lastRuntimeNoteRef = useRef<string | null>(null);
+  const [leftPad, stripRef] = useTitlebarLeftPad();
   const publishAvailability = useCallback((res: any) => {
     onAvailabilityChange?.({
       behind: res.behind || 0,
@@ -320,15 +321,15 @@ export default function UpdateBanner({
   const versionLabel = latest ? (latest.startsWith("v") ? latest : `v${latest}`) : "A new version";
 
   return (
-    // Fixed px titlebar-traffic-pad clears macOS traffic lights. Rem-based pl-24
-    // collapsed under the responsive root font-size when the window resized.
     // Deliberately NOT a drag region: Electron intermittently swallows clicks on
     // no-drag children inside a drag parent, which made "Restart now" flash its
     // active state without ever firing.
     <div
+      ref={stripRef}
+      data-top-strip=""
       data-testid="update-banner"
       className="flex items-center gap-3 pr-4 py-2 bg-accent/10 border-b border-accent/30 text-ui-12 text-txt select-none shrink-0"
-      style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
+      style={{ paddingLeft: leftPad }}
     >
       <ArrowUpCircle size={15} className="text-accent shrink-0" />
       {applying ? (

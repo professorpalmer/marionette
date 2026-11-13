@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { KeyRound, X } from "lucide-react";
-import { TITLEBAR_TRAFFIC_PAD_PX } from "../lib/titlebarSafe";
+import { useTitlebarLeftPad } from "../lib/useTitlebarLeftPad";
 
 // Keyless-state nudge. Marionette ships on the 'agentic' engine -- edits and
 // swarms route directly through the user's own provider keys, with Puppetmaster
@@ -20,17 +20,18 @@ export default function ProviderKeyBanner({
   variant?: "keyless" | "workers";
 }) {
   const [dismissed, setDismissed] = useState(false);
+  const [leftPad, stripRef] = useTitlebarLeftPad();
   if (dismissed) return null;
   const workersOnly = variant === "workers";
 
   return (
-    // Fixed px paddingLeft clears macOS traffic lights (hiddenInset). Rem-based
-    // Tailwind pl-24 shrinks with the responsive root font-size on resize.
     <div
+      ref={stripRef}
+      data-top-strip=""
       data-testid="provider-key-banner"
       data-variant={variant}
       className="flex items-center gap-2.5 pr-4 py-1.5 bg-accent/10 border-b border-accent/25 text-ui-11.5 text-txt select-none shrink-0"
-      style={{ paddingLeft: TITLEBAR_TRAFFIC_PAD_PX }}
+      style={{ paddingLeft: leftPad }}
     >
       <KeyRound size={13} className="text-accent shrink-0" />
       <span className="font-medium">

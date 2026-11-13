@@ -18,7 +18,6 @@ const {
   glassActive,
   glassMaterialForPicker,
   glassMaterialsFor,
-  glassSurfaceKeep,
   glassSupportedOn,
   normalizeMode,
   normalizeState,
@@ -109,12 +108,6 @@ describe("glassActive / keep / opacity", () => {
     assert.equal(glassActive(glass(0, "header")), false);
     assert.equal(glassActive(glass(60, "header")), true);
     assert.equal(glassActive(clear(60)), false);
-  });
-
-  it("thins the tint linearly to zero", () => {
-    assert.equal(glassSurfaceKeep(0), 100);
-    assert.equal(glassSurfaceKeep(60), 40);
-    assert.equal(glassSurfaceKeep(100), 0);
   });
 
   it("fades native opacity from fade under glass, intensity under clear", () => {

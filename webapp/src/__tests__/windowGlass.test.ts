@@ -8,7 +8,7 @@ import {
   TRANSLUCENCY_STORAGE_KEY,
   endTranslucencyPeek,
   glassActive,
-  glassSurfaceKeep,
+  glassFrameKeep,
   normalizeRendererState,
   readStoredTranslucency,
   resetTranslucencyPeek,
@@ -18,7 +18,7 @@ import {
 afterEach(() => {
   resetTranslucencyPeek(document.documentElement);
   document.documentElement.removeAttribute("data-marionette-glass");
-  document.documentElement.style.removeProperty("--translucency-glass-keep");
+  document.documentElement.style.removeProperty("--translucency-frame-keep");
   document.documentElement.style.removeProperty("background-color");
   localStorage.removeItem(TRANSLUCENCY_STORAGE_KEY);
 });
@@ -43,16 +43,16 @@ describe("applyGlassSurfaces", () => {
   it("marks the root and publishes the keep token while glass is live", () => {
     applyGlassSurfaces({ intensity: 60, fade: 0, mode: "glass", material: "header" });
     expect(document.documentElement.hasAttribute("data-marionette-glass")).toBe(true);
-    expect(document.documentElement.style.getPropertyValue("--translucency-glass-keep")).toBe("40%");
+    expect(document.documentElement.style.getPropertyValue("--translucency-frame-keep")).toBe("40%");
     expect(glassActive({ intensity: 60, fade: 0, mode: "glass", material: "header" })).toBe(true);
-    expect(glassSurfaceKeep(60)).toBe(40);
+    expect(glassFrameKeep(60)).toBe(40);
   });
 
   it("clears the mark when the lever is off", () => {
     applyGlassSurfaces({ intensity: 60, fade: 0, mode: "glass", material: "header" });
     applyGlassSurfaces({ intensity: 0, fade: 0, mode: "glass", material: "header" });
     expect(document.documentElement.hasAttribute("data-marionette-glass")).toBe(false);
-    expect(document.documentElement.style.getPropertyValue("--translucency-glass-keep")).toBe("");
+    expect(document.documentElement.style.getPropertyValue("--translucency-frame-keep")).toBe("");
   });
 });
 

@@ -442,7 +442,6 @@ export default function App() {
   return (
     <JobMetadataOwner repo={config?.repo || ""} sessionId={activeSessionId}>
     <div className="h-full flex flex-col bg-[var(--shell-chrome)]">
-      <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
       <ComputerAccess
         sessionId={activeSessionId || ""}
         onOpenBrowser={() => openRightTo("browser")}
@@ -451,55 +450,18 @@ export default function App() {
           openRightTo("browser");
         }}
       />
-      {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
-          we tell the user to plug in a key. Suppressed while the first-run wizard
-          is up (it already covers key setup) to avoid stacking two prompts. */}
-      {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && !showOverlay && (
-        <ProviderKeyBanner
-          variant={
-            config.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false
-              ? "workers"
-              : "keyless"
-          }
-          onAddKey={() => {
-            setManual(true);
-            setShowWizard(true);
-          }}
-        />
-      )}
-      {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && !showOverlay && (
-        <KeyBootstrapBanner
-          issues={config.key_bootstrap_issues}
-          onOpenSettings={() => {
-            focusSettingsPage("providers");
-            openRightTo("settings");
-          }}
-        />
-      )}
-      {/* Left rail and tool cards sit on the conversation surface. */}
+      {/* Window frame (glass when on) holds the left rail; the chat column is
+          one opaque card on it. Top strips live in the chat card, so the
+          traffic lights stay in the rail title band. */}
       <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
-        <div
-          className={`relative flex-1 min-w-0 h-full flex overflow-hidden border border-[var(--shell-panel-border)] ${
-            leftOpen && rightOpen
-              ? "rounded-none"
-              : leftOpen
-                ? "rounded-r-[var(--shell-panel-radius)]"
-                : rightOpen
-                  ? "rounded-l-[var(--shell-panel-radius)]"
-                  : "rounded-[var(--shell-panel-radius)]"
-          } ${leftOpen ? "border-l-0" : ""} ${rightOpen ? "border-r-0" : ""}`}
-          style={{
-            backgroundColor: "var(--shell-chat, #0f1113)",
-            backgroundImage:
-              "radial-gradient(120% 80% at 50% -10%, rgba(139,150,196,0.06), rgba(139,150,196,0) 60%)",
-          }}
-        >
-          <div style={{ width: displayed.leftW }} className={`shell-inset-panel shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
+        <div className="relative flex-1 min-w-0 h-full flex overflow-hidden">
+          <div style={{ width: displayed.leftW }} className={`shell-sidebar shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
             <LeftRail
               jobsRefresh={jobsRefresh}
               onSessionChange={handleSessionChange}
               onSessionCreated={handleSessionCreated}
               activeSessionId={activeSessionId}
+              onCollapse={() => setLeftOpen(false)}
             />
           </div>
           {leftOpen && (
@@ -520,9 +482,35 @@ export default function App() {
           )}
           <div
             data-testid="chat-surface"
-            className="relative flex-1 min-w-0 min-h-0 flex flex-col"
+            className="shell-chat-card relative flex-1 min-w-0 min-h-0 flex flex-col"
           >
-            <div className="flex-1 min-h-0 min-w-0 h-full flex flex-col">
+            <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
+            {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
+                we tell the user to plug in a key. Suppressed while the first-run wizard
+                is up (it already covers key setup) to avoid stacking two prompts. */}
+            {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && !showOverlay && (
+              <ProviderKeyBanner
+                variant={
+                  config.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false
+                    ? "workers"
+                    : "keyless"
+                }
+                onAddKey={() => {
+                  setManual(true);
+                  setShowWizard(true);
+                }}
+              />
+            )}
+            {config?.key_bootstrap_issues && config.key_bootstrap_issues.length > 0 && !showWizard && !showOverlay && (
+              <KeyBootstrapBanner
+                issues={config.key_bootstrap_issues}
+                onOpenSettings={() => {
+                  focusSettingsPage("providers");
+                  openRightTo("settings");
+                }}
+              />
+            )}
+            <div className="relative flex-1 min-h-0 min-w-0 h-full flex flex-col">
               <ErrorBoundary label="Chat">
                 <Conversation
                   config={config}
@@ -539,13 +527,13 @@ export default function App() {
                   onJobChange={() => setJobsRefresh((n) => n + 1)}
                 />
               </ErrorBoundary>
+              <RightDock
+                panelsOpen={rightOpen}
+                onOpenTab={openRightTo}
+                onExpand={() => openRightTo(lastRightTab())}
+                onCollapse={() => setRightOpen(false)}
+              />
             </div>
-            <RightDock
-              panelsOpen={rightOpen}
-              onOpenTab={openRightTo}
-              onExpand={() => openRightTo(lastRightTab())}
-              onCollapse={() => setRightOpen(false)}
-            />
           </div>
           {rightOpen && (
             <Resizer

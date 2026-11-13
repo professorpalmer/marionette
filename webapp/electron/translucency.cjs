@@ -196,10 +196,6 @@ function glassActive(state) {
   return state.mode === "glass" && state.intensity > 0;
 }
 
-function glassSurfaceKeep(intensity) {
-  return TRANSLUCENCY_MAX - clampIntensity(intensity);
-}
-
 function vibrancyFor(state) {
   return glassActive(state) ? state.material : null;
 }
@@ -445,7 +441,6 @@ module.exports = {
   glassActive,
   glassMaterialForPicker,
   glassMaterialsFor,
-  glassSurfaceKeep,
   glassSupportedOn,
   readOsVersionName,
   resolveSystemRelease,
