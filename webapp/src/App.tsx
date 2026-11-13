@@ -588,7 +588,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar config={config} update={availableUpdate}
+        <StatusBar update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={toggleRight}
           onOpenEconomics={() => openRightTo("economics")} />
