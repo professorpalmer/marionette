@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { GitBranch } from "lucide-react";
 import StatusPill from "./StatusPill";
 import TraceCopy from "./TraceCopy";
+import WorkspaceChip from "./WorkspaceChip";
 import type { SessionHeading } from "./useSessionHeading";
 import {
   TITLEBAR_CHROME_PAD_X_PX,
@@ -61,7 +62,7 @@ export default function ConversationHeader({
       ref={headerRef}
       data-testid="conversation-header"
       data-turn-status={pillStatus}
-      className="flex items-center gap-2 border-b border-edge/60 shrink-0 min-w-0 overflow-hidden"
+      className="relative z-20 flex items-center gap-2 border-b border-edge/60 shrink-0 min-w-0"
       style={{
         paddingTop: 8,
         paddingBottom: 7,
@@ -70,17 +71,17 @@ export default function ConversationHeader({
         ...dragRegion,
       }}
     >
-      <span className="flex items-baseline gap-2 select-none flex-1 min-w-0 overflow-hidden" style={noDrag}>
+      <span className="flex items-center gap-2 select-none flex-1 min-w-0" style={noDrag}>
         <span className="font-semibold text-ui-12 text-txt/90 tracking-tight truncate min-w-0" data-testid="header-session-title" title={heading.title || undefined}>
           {heading.title || "Marionette"}
         </span>
         {heading.project ? (
-          <span className="text-muted/80 text-ui-11 truncate shrink min-w-0 hidden min-[420px]:inline" data-testid="header-project">
-            {heading.project}
+          <span className="hidden min-[420px]:flex min-w-0 shrink">
+            <WorkspaceChip label={heading.project} />
           </span>
         ) : null}
         {heading.branch ? (
-          <span className="text-faint text-ui-11 truncate shrink min-w-0 hidden min-[520px]:inline-flex items-center gap-1 self-center" data-testid="header-branch">
+          <span className="text-faint text-ui-11 truncate shrink min-w-0 hidden min-[520px]:inline-flex items-center gap-1" data-testid="header-branch">
             <GitBranch size={10} aria-hidden className="shrink-0" />
             {heading.branch}
           </span>

@@ -47,6 +47,12 @@ async function inspect(goal: string) {
   if (row.getAttribute('aria-expanded') === 'false') fireEvent.click(row);
 }
 
+/** Coverage text and its read controls sit behind the tracker info button. */
+function openCoverage() {
+  const toggle = screen.getByRole('button', { name: 'Coverage details' });
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+}
+
 it('shows exhausted reads and retries even when the successful row is otherwise identical', async () => {
   const f = await setup();
   const result = expertDetail(selection, f.context());
@@ -73,7 +79,7 @@ it('shows transport failure instead of an empty tracker and retries', async () =
   if (!request) throw Error('Missing wire fixture');
   f.request.mockRejectedValue(new Error('offline'));
   await act(async () => { f.store.setTarget(f.context()); await f.store.readView(); });
-  expect(await screen.findByRole('alert')).toHaveTextContent('Job updates unavailable');
+  expect(await screen.findByRole('alert')).toHaveTextContent('Job updates stopped');
   expect(screen.queryByText(/^No jobs observed in this view/)).not.toBeInTheDocument();
   expect(await screen.findByRole('button', { name: /Inspect A/ })).toBeVisible();
   expect(screen.queryByText(/Job observations could not be loaded/)).not.toBeInTheDocument();
@@ -86,6 +92,7 @@ it('shows transport failure instead of an empty tracker and retries', async () =
     }
     return result;
   });
+  openCoverage();
   fireEvent.click(screen.getByRole('button', { name: 'Retry updates' }));
   await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   expect(screen.getByRole('button', { name: /Inspect A/ })).toBeVisible();
@@ -146,6 +153,7 @@ it("retries unavailable metadata summary and restores identical retained rows", 
   expect(screen.queryByText('Retained observation is stale; current lifecycle is unconfirmed.')).not.toBeInTheDocument();
   expect(f.store.getSnapshot().streams.some(stream => stream.state === 'unavailable')).toBe(true);
   f.request.mockImplementation(original);
+  openCoverage();
   fireEvent.click(screen.getByRole('button', { name: 'Retry updates' }));
   await waitFor(() => expect(f.store.getSnapshot().working).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
@@ -168,6 +176,7 @@ it('retries incomplete session summary and restores positive current totals whil
       result: { kind: 'present', row: { ...row, header: { ...backend.economics.header, workers_complete: complete } } } }] };
   });
   for (let i = 0; i < 64; i++) await act(async () => { await f.store.ownerTick(); });
+  openCoverage();
   expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('partial coverage');
   const rows = f.store.getSnapshot().observations;
   complete = true; now += 120001;

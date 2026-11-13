@@ -78,15 +78,6 @@ export function dashboardLocateError(payload: DashboardLocate & { stderr?: strin
   return stderr ? `${base}: ${stderr.slice(0, 280)}` : base;
 }
 
-export type JobsListEmptyInput = {
-  failedRead: boolean;
-  viewReady: boolean;
-  working: boolean;
-  hiddenCount: number;
-  filter: string;
-  hasJobs: boolean;
-};
-
 export type TrackerReadInput = {
   storeError: boolean;
   view: { availability: "known" | "unavailable"; missing: string[]; refreshing: boolean; refresh: string } | null;
@@ -112,22 +103,3 @@ export function trackerReadState(input: TrackerReadInput): { failedRead: boolean
   return { failedRead, loading };
 }
 
-/** Honest empty-list copy — never "Job data unavailable" as a blank lie. */
-export function jobsListEmptyTruth(input: JobsListEmptyInput): { title: string; detail?: string } {
-  if (input.failedRead) {
-    return {
-      title: "Job observations could not be loaded",
-      detail: "Retry updates; an empty view does not establish no work.",
-    };
-  }
-  if (!input.viewReady || (!input.hasJobs && input.working)) {
-    return { title: "Loading jobs…" };
-  }
-  if (input.filter !== "all" && !input.hasJobs) {
-    return { title: "No jobs match this filter" };
-  }
-  if (input.hiddenCount > 0 && !input.hasJobs) {
-    return { title: "All jobs are hidden" };
-  }
-  return { title: "No jobs yet" };
-}

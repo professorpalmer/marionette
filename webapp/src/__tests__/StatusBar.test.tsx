@@ -13,6 +13,7 @@ import { api, type LedgerBucket, type LedgerView } from "../lib/api";
 import { _resetProcessUsageForTests, refreshProcessUsage } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
 import { _resetActivityForTests, setActivity } from "../lib/appActivity";
+import { resetSlashMenuPrefsForTests, setSlashExpertMode } from "../components/conversation/slashMenuPrefs";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -90,7 +91,6 @@ afterEach(() => {
 });
 
 const statusBarProps = {
-  config: null,
   update: null,
   leftOpen: true,
   rightOpen: false,
@@ -656,8 +656,10 @@ describe("StatusBar update progress mirror", () => {
 });
 
 describe("StatusBar task profile chip", () => {
+  afterEach(() => resetSlashMenuPrefsForTests());
   beforeEach(() => {
     vi.clearAllMocks();
+    setSlashExpertMode(true);
     mockWorkspaces.mockResolvedValue([]);
     mockGetSessionState.mockResolvedValue({
       state: "idle",
@@ -679,12 +681,22 @@ describe("StatusBar task profile chip", () => {
     });
 
     const chip = await screen.findByTestId("task-profile-chip");
-    expect(chip).toHaveTextContent("DEPTH");
-    expect(chip).toHaveTextContent("MICRO");
+    expect(chip).toHaveTextContent("Depth");
+    expect(chip).toHaveTextContent(/micro/i);
     expect(chip).toHaveAttribute(
       "title",
       expect.stringContaining("skipped wiki and CodeGraph auto-inject"),
     );
+  });
+
+  it("is an expert fact: hidden while expert mode is off", async () => {
+    setSlashExpertMode(false);
+    render(<StatusBar {...statusBarProps} />);
+    act(() => {
+      publishTaskProfile({ profile: "standard" });
+    });
+    await waitFor(() => expect(mockGetSessionState).toHaveBeenCalled());
+    expect(screen.queryByTestId("task-profile-chip")).not.toBeInTheDocument();
   });
 
   it("clears the chip on session change", async () => {
@@ -715,20 +727,15 @@ describe("StatusBar compact chrome", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("shortens long model ids", () => {
-    render(
-      <StatusBar
-        {...statusBarProps}
-        config={{
-          driver: "openrouter:deepseek/deepseek-v4-pro-0813",
-          reach: "openrouter",
-          budget: 0,
-        }}
-      />,
-    );
-
-    expect(screen.getByText("deepseek-v4-pro-0813")).toBeInTheDocument();
-    expect(screen.queryByText("openrouter:deepseek/deepseek-v4-pro-0813")).toBeNull();
+  it("shows no model, provider, branch or platform: other surfaces own those facts", async () => {
+    vi.mocked(api.getWorkspace).mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
+    const { container } = render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(mockGetSessionState).toHaveBeenCalled());
+    for (const text of ["dev", "openrouter", "standalone", "desktop", "web"]) {
+      expect(screen.queryByText(text)).toBeNull();
+    }
+    expect(container.querySelector(".status-bar-model")).toBeNull();
+    expect(api.getWorkspace).not.toHaveBeenCalled();
   });
 });
 
@@ -845,36 +852,6 @@ it("does not show a session Retry banner for an unrelated boot-store failure", a
   fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "conversation" } });
   await waitFor(() => expect(screen.getAllByText(/33\.60/).length).toBeGreaterThan(0));
   expect(screen.queryAllByText(/Session usage partial \/ unavailable/)).toHaveLength(0);
-});
-
-describe("StatusBar branch label", () => {
-  const mockGetWorkspace = vi.mocked(api.getWorkspace);
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, runners: {} });
-    mockSessions.mockResolvedValue([]);
-  });
-
-  it("reads the branch once per repo, not once per config object", async () => {
-    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
-    const config = { repo: "/a", driver: "x", reach: "cloud", budget: 1 } as never;
-    const { rerender } = render(<StatusBar {...statusBarProps} config={config} />);
-    expect(await screen.findByText("dev")).toBeTruthy();
-    for (let i = 0; i < 5; i += 1) {
-      rerender(<StatusBar {...statusBarProps} config={{ ...(config as object) } as never} />);
-    }
-    expect(mockGetWorkspace).toHaveBeenCalledTimes(1);
-    expect(api.workspaces).not.toHaveBeenCalled();
-  });
-
-  it("clears the branch when the new workspace is not a git repo", async () => {
-    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
-    const { rerender } = render(<StatusBar {...statusBarProps} config={{ repo: "/a" } as never} />);
-    expect(await screen.findByText("dev")).toBeTruthy();
-    mockGetWorkspace.mockResolvedValue({ repo: "/plain", branch: "", is_git: false, codegraph_status: "none" });
-    rerender(<StatusBar {...statusBarProps} config={{ repo: "/plain" } as never} />);
-    await waitFor(() => expect(screen.queryByText("dev")).toBeNull());
-  });
 });
 
 describe("StatusBar session switch", () => {

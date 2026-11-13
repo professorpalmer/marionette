@@ -26,12 +26,14 @@ import {
   Zap,
   Brain,
   RefreshCw,
+  KeyRound,
 } from "lucide-react";
 import { api, type Config, type ContextUsageResponse, type Job } from "../../lib/api";
 import { forgetResolvedMemoryProposal, rememberResolvedMemoryProposal } from "../../lib/memoryProposalResolution";
 import PilotPicker from "../PilotPicker";
+import { emptySessionContext } from "./TranscriptEmptyState";
+import { openOnboarding } from "../../lib/sessionNav";
 import SwarmReasoningPicker from "../SwarmReasoningPicker";
-import WorkspaceChip from "./WorkspaceChip";
 import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerActivityRail from "./ComposerActivityRail";
 import { formatMentionListingCapMessage, slashMenu, type MentionListingCap, type SlashCommand } from "./slashCommands";
@@ -545,7 +547,6 @@ export default function ComposerDock({
           </div>
         )}
         {/* compact composer: input + a single tidy control row */}
-        <WorkspaceChip />
         <div
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
@@ -1064,6 +1065,17 @@ export default function ComposerDock({
                 });
               }}
             />
+            {emptySessionContext(config).needsModel ? (
+              // No key, plan or local model: a model name here would be a guess.
+              <button
+                type="button"
+                onClick={openOnboarding}
+                className="composer-control flex items-center gap-1 text-ui-11 text-accent rounded-md px-2 bg-transparent hover:bg-accent/10 border border-accent/40 transition-colors select-none"
+              >
+                <KeyRound size={11} aria-hidden="true" />
+                <span>Connect a model</span>
+              </button>
+            ) : (<>
             <div className="pilot-picker-slot">
               <PilotPicker
                 key={sessionId}
@@ -1079,6 +1091,7 @@ export default function ComposerDock({
               />
             </div>
             <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
+            </>)}
             <button
               type="button"
               onClick={() => {

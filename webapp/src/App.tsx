@@ -496,22 +496,13 @@ export default function App() {
             className="shell-chat-card relative flex-1 min-w-0 min-h-0 flex flex-col"
           >
             <UpdateBanner onAvailabilityChange={setAvailableUpdate} />
-            {/* Keyless nudge: agentic is the shipped default, so instead of a demo run
-                we tell the user to plug in a key. Suppressed while the first-run wizard
-                is up (it already covers key setup) to avoid stacking two prompts. */}
-            {config && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && !showOverlay && (
+            {/* Workers gap only: with no model at all, the composer and the empty
+                session own the connect action. Hidden while the wizard is up. */}
+            {config?.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false && !showWizard && !showOverlay && (
               <ProviderKeyBanner
-                variant={
-                  config.pilot_ready && (config.workers_ready ?? config.agentic_ready) === false
-                    ? "workers"
-                    : "keyless"
-                }
                 onAddKey={() => {
                   setManual(true);
-                  // Keyless: the same connect flow as first launch. Workers-only
-                  // gap: the registry wizard picks a worker-capable key.
-                  if (config.pilot_ready) setShowWizard(true);
-                  else setShowOverlay(true);
+                  setShowWizard(true);
                 }}
               />
             )}
@@ -588,7 +579,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar config={config} update={availableUpdate}
+        <StatusBar update={availableUpdate}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={toggleRight}
           onOpenEconomics={() => openRightTo("economics")} />

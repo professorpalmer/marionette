@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import MetadataJobs from '../components/MetadataJobs';
 import { JobMetadataOwner } from '../lib/jobMetadataContext';
@@ -44,11 +44,17 @@ async function ticks(f: Awaited<ReturnType<typeof setup>>, count = 64) {
   for (let i = 0; i < count; i++) await act(async () => { await f.store.ownerTick(); });
 }
 
+/** Coverage text sits behind the tracker info button. */
+function openCoverage() {
+  fireEvent.click(screen.getByRole('button', { name: 'Coverage details' }));
+}
+
 describe('automatic current headers and session worker usage', () => {
   it('keeps successful session totals available between scheduled two-second owner polls', async () => {
     const f = await setup();
     vi.useFakeTimers();
     render(<JobMetadataOwner repo={selection().repo} sessionId={selection().session_id}><MetadataJobs /></JobMetadataOwner>);
+    openCoverage();
     let hydrated = false;
     let pollsAfterHydration = 0;
     // 17 polls after hydration cover more than one 32 s refresh cycle.
@@ -67,6 +73,7 @@ describe('automatic current headers and session worker usage', () => {
     const f = await setup();
     vi.useFakeTimers();
     render(<JobMetadataOwner repo={selection().repo} sessionId={selection().session_id}><MetadataJobs /></JobMetadataOwner>);
+    openCoverage();
     for (let i = 0; i < 20; i++) await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     expect(screen.getByTitle('Model: gpt-6-astra')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Automatic worker · running' })).toHaveTextContent('0/1');
@@ -78,6 +85,7 @@ describe('automatic current headers and session worker usage', () => {
   it('recovers positive current session totals after unavailable headers with identical list rows', async () => {
     const f = await setup(); let now = Date.now(); vi.spyOn(Date, 'now').mockImplementation(() => now);
     render(<f.Provider><MetadataJobs /></f.Provider>);
+    openCoverage();
     f.fail(true); await ticks(f);
     const rows = f.store.getSnapshot().observations;
     expect(screen.getByLabelText('Session worker usage')).toHaveTextContent('partial coverage');
@@ -99,6 +107,7 @@ describe('automatic current headers and session worker usage', () => {
     now += 120001; await ticks(f);
     expect(sessionWorkerUsage(f.store.getSnapshot())).toMatchObject({ kind: 'complete', cost: 1.5, measured: 1.25, estimated: .25, routing: .1, cache: .2, compaction: null });
     render(<f.Provider><MetadataJobs /></f.Provider>);
+    openCoverage();
     expect(screen.getByRole('button', { name: 'Automatic worker · running' })).toHaveTextContent('1/1');
     const meter = within(screen.getByLabelText('Session worker usage'));
     expect(meter.getByText('Measured $1.25')).toBeVisible();

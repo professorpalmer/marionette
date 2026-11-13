@@ -12,6 +12,8 @@ import { parseExpertHeader, parseExpertMetadata } from '../lib/expertMetadata';
 import { currentFacts as facts, currentDetail as selected } from './expertCurrent.fixtures';
 import { context, selection as legacySelection } from './jobMetadata.fixtures';
 import { expertMetadataFixture, expertSummary } from './metadataExpert.fixtures';
+import { resetSlashMenuPrefsForTests, setSlashExpertMode } from '../components/conversation/slashMenuPrefs';
+
 
 function selection(n = 1): MetadataSelection { const s = legacySelection(n); return { ...s, job_ref: { ...s.job_ref, version: 2, incarnation: '12345678-1234-4234-8234-123456789abc' } }; }
 async function expandAndInspect(name?: string | RegExp) {
@@ -262,10 +264,12 @@ describe('original positive inspector requirements through parser/store/render',
     expect(sizes).toEqual([8, 2]);
     expect(Object.keys(f.store.getSnapshot().headers)).toHaveLength(10);
     expect(currentHeader(f.store.getSnapshot(), metadataSelectionKey(selection()))?.created_at).toContain('09-01');
+    setSlashExpertMode(true);
     render(<f.Provider><JobsInspectHarness><MetadataJobs /></JobsInspectHarness></f.Provider>);
     const before = () => !!(screen.getByRole('button', { name: 'Job 2 · running' }).compareDocumentPosition(screen.getByRole('button', { name: 'Job 1 · running' })) & Node.DOCUMENT_POSITION_FOLLOWING);
     expect(before()).toBe(true);
     fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } }); expect(before()).toBe(false);
+    resetSlashMenuPrefsForTests();
   });
 });
 

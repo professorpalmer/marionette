@@ -43,6 +43,14 @@ export function queuePendingSwarmNavigation(target: SwarmNavigationTarget): Swar
   }
   return pending;
 }
+/** Job ids a pending navigation may add to a narrower view. A pin widens the
+ *  view only in the session where it was made: a pin left over from another
+ *  session (or with no known session) must not list that job in this one. */
+export function pinnedJobIds(target: SwarmNavigationTarget | null, activeSessionId: string): string[] | undefined {
+  const session = activeSessionId.trim();
+  if (!target?.jobId || !session || target.context?.session_id !== session) return undefined;
+  return [target.jobId];
+}
 export function peekPendingSwarmNavigation(): SwarmNavigationTarget | null { return pending; }
 /** Compare the actual click object: equal destination fields are still different clicks. */
 export function takePendingSwarmNavigation(target: SwarmNavigationTarget): SwarmNavigationTarget | null {
