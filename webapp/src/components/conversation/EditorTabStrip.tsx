@@ -2,8 +2,10 @@
  * File-editor tab strip + right-click context menu for Conversation.
  */
 
+import { Menu } from "@base-ui/react/menu";
 import { X } from "lucide-react";
 import { revealInFolderLabel, revealWorkspacePath, toAbsoluteWorkspacePath } from "../../lib/transport";
+import { MenuPanel, MenuRoot, pointAnchor } from "../ui/overlay";
 
 export type OpenEditorTab = {
   path: string;
@@ -17,6 +19,8 @@ export type TabContextMenuState = {
   y: number;
   path: string;
 };
+
+const menuItemClass = "w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 outline-none text-txt transition-colors";
 
 export default function EditorTabStrip({
   openTabs,
@@ -99,92 +103,69 @@ export default function EditorTabStrip({
         </div>
       )}
 
-      {tabContextMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
-          style={{ top: tabContextMenu.y, left: tabContextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              onCloseContextMenu();
-              const res = await revealWorkspacePath(repoRoot, path);
-              if (!res.ok) {
-                window.dispatchEvent(
-                  new CustomEvent("harness-toast", {
-                    detail: res.error || "Could not reveal path",
-                  }),
-                );
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+      <MenuRoot open={tabContextMenu !== null} onOpenChange={(next) => { if (!next) onCloseContextMenu(); }}>
+        {tabContextMenu && (
+          <MenuPanel
+            label="Editor tab menu"
+            anchor={pointAnchor(tabContextMenu.x, tabContextMenu.y)}
+            sideOffset={0}
+            className="bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px] outline-none"
           >
-            {revealInFolderLabel()}
-          </button>
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              onCloseContextMenu();
-              const abs = toAbsoluteWorkspacePath(repoRoot, path);
-              try {
-                await navigator.clipboard.writeText(abs);
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Path copied" }));
-              } catch {
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy Path
-          </button>
-          <button
-            onClick={async () => {
-              const path = tabContextMenu.path;
-              onCloseContextMenu();
-              try {
-                await navigator.clipboard.writeText(path.replace(/\\/g, "/"));
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Relative path copied" }));
-              } catch {
-                window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
-              }
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy Relative Path
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={() => {
-              const path = tabContextMenu.path;
-              onCloseContextMenu();
-              onCloseTab(path);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close
-          </button>
-          <button
-            onClick={() => {
-              const path = tabContextMenu.path;
-              onCloseContextMenu();
-              onCloseOtherTabs(path);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close others
-          </button>
-          <button
-            onClick={() => {
-              onCloseContextMenu();
-              onCloseAllTabs();
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Close all
-          </button>
-        </div>
-      )}
+            <Menu.Item
+              onClick={async () => {
+                const res = await revealWorkspacePath(repoRoot, tabContextMenu.path);
+                if (!res.ok) {
+                  window.dispatchEvent(
+                    new CustomEvent("harness-toast", {
+                      detail: res.error || "Could not reveal path",
+                    }),
+                  );
+                }
+              }}
+              className={menuItemClass}
+            >
+              {revealInFolderLabel()}
+            </Menu.Item>
+            <Menu.Item
+              onClick={async () => {
+                const abs = toAbsoluteWorkspacePath(repoRoot, tabContextMenu.path);
+                try {
+                  await navigator.clipboard.writeText(abs);
+                  window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Path copied" }));
+                } catch {
+                  window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
+                }
+              }}
+              className={menuItemClass}
+            >
+              Copy Path
+            </Menu.Item>
+            <Menu.Item
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(tabContextMenu.path.replace(/\\/g, "/"));
+                  window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Relative path copied" }));
+                } catch {
+                  window.dispatchEvent(new CustomEvent("harness-toast", { detail: "Could not copy path" }));
+                }
+              }}
+              className={menuItemClass}
+            >
+              Copy Relative Path
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            <Menu.Item onClick={() => onCloseTab(tabContextMenu.path)} className={menuItemClass}>
+              Close
+            </Menu.Item>
+            <Menu.Item onClick={() => onCloseOtherTabs(tabContextMenu.path)} className={menuItemClass}>
+              Close others
+            </Menu.Item>
+            <Menu.Item onClick={onCloseAllTabs} className={menuItemClass}>
+              Close all
+            </Menu.Item>
+          </MenuPanel>
+        )}
+      </MenuRoot>
     </>
   );
 }

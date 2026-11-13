@@ -38,7 +38,7 @@ it.each([360, 640, 1024])("retains Settings side navigation and nested Escape/fo
     fireEvent.keyDown(close, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Fork Source" })).toBeNull();
     expect(onClose).not.toHaveBeenCalled();
-    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(trigger).toHaveFocus());
     expect(settings).toBeVisible();
     fireEvent.keyDown(trigger, { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();

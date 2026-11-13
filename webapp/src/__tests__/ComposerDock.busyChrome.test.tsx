@@ -180,7 +180,7 @@ describe("ComposerDock picker layout and accessibility", () => {
     expect(screen.getByRole("dialog", { name: "Pilot model picker" })).toBeInTheDocument();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: High" }));
-    expect(screen.getByRole("dialog", { name: "Reasoning effort picker" })).toBeInTheDocument();
+    expect(screen.getByRole("menu", { name: "Reasoning effort picker" })).toBeInTheDocument();
     expect(screen.getByTestId("swarm-reasoning-picker")).toHaveTextContent("Workers");
   });
 

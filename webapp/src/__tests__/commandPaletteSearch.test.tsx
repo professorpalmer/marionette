@@ -160,7 +160,7 @@ describe("CommandPalette search", () => {
     fireEvent.change(screen.getByTestId("command-palette-input"), { target: { value: "deepseek" } });
     const option = await screen.findByRole("option", { name: /DeepSeek V4\.1 Flash/ });
     expect(option.getAttribute("aria-selected")).toBe("true");
-    fireEvent.keyDown(window, { key: "Enter" });
+    fireEvent.keyDown(screen.getByTestId("command-palette-input"), { key: "Enter" });
     expect(onPickModel).toHaveBeenCalledWith("openrouter:deepseek/deepseek-v4.1-flash");
   });
 

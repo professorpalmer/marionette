@@ -63,7 +63,7 @@ describe("titlebar-safe clearance", () => {
     fireEvent.click(project);
     expect(project).toHaveAttribute("aria-expanded", "true");
     // jsdom has no width, so the narrow-header rule hides the chip from role queries.
-    expect(screen.getByText(/Open Folder/).closest("button")).toBeInTheDocument();
+    expect(screen.getByText(/Open Folder/).closest('[role="menuitem"]')).toBeInTheDocument();
     expect(screen.queryByText("Local")).toBeNull();
     expect(screen.getAllByText("master")).toHaveLength(1);
   });

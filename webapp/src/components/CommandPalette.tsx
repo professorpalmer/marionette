@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Cpu, FileText, MessageSquare, SquareTerminal, type LucideIcon } from "lucide-react";
 import { focusSettingsPage } from "./SettingsShell";
 import {
@@ -9,9 +9,9 @@ import {
   type PaletteItem,
 } from "../lib/commandPalette";
 import { api, type Config, type Session, type SessionSearchHit } from "../lib/api";
-import { OverlayPortal } from "../lib/overlayPortal";
 import { requestSessionSwitch } from "../lib/sessionNav";
 import { isMacNavigator } from "../lib/terminalSelection";
+import { Modal } from "./ui/overlay";
 
 type CommandPaletteProps = {
   onToggleLeft: () => void;
@@ -62,7 +62,7 @@ function ShortcutCaps({ item, isMac }: { item: PaletteItem; isMac: boolean }) {
   );
 }
 
-function isPaletteShortcut(e: KeyboardEvent): boolean {
+function isPaletteShortcut(e: globalThis.KeyboardEvent): boolean {
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return false;
   return e.key.toLowerCase() === "k";
 }
@@ -87,7 +87,6 @@ export default function CommandPalette({
   const [sessionHits, setSessionHits] = useState<SessionSearchHit[]>([]);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
   const listId = useId();
   const isMac = useMemo(() => isMacNavigator(), []);
 
@@ -136,10 +135,6 @@ export default function CommandPalette({
     modelsEnabled: modelsEnabled && Boolean(onPickModel),
   });
   const items = sections.flatMap((section) => section.items);
-  const actionsRef = useRef(items);
-  actionsRef.current = items;
-  const activeIndexRef = useRef(activeIndex);
-  activeIndexRef.current = activeIndex;
   const hooksRef = useRef({ onToggleLeft, onToggleRight, onPickModel });
   hooksRef.current = { onToggleLeft, onToggleRight, onPickModel };
 
@@ -169,11 +164,28 @@ export default function CommandPalette({
     setOpen(false);
     setQuery("");
   };
-  const runSelectedRef = useRef(runSelected);
-  runSelectedRef.current = runSelected;
+  const onPaletteKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (items.length === 0 ? 0 : (i + 1) % items.length));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (items.length === 0 ? 0 : (i - 1 + items.length) % items.length));
+      return;
+    }
+    if (e.key === "Enter") {
+      const item = items[activeIndex];
+      if (!item) return;
+      e.preventDefault();
+      e.stopPropagation();
+      runSelected(item);
+    }
+  };
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
       if (!isPaletteShortcut(e)) return;
       e.preventDefault();
       e.stopPropagation();
@@ -198,43 +210,12 @@ export default function CommandPalette({
   }, []);
 
   useEffect(() => {
-    if (!open) return;
-    setActiveIndex(0);
-    const t = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(t);
+    if (open) setActiveIndex(0);
   }, [open]);
 
   useEffect(() => {
     setActiveIndex((i) => (items.length === 0 ? 0 : Math.min(i, items.length - 1)));
   }, [items.length, query]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      const list = actionsRef.current;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveIndex((i) => (list.length === 0 ? 0 : (i + 1) % list.length));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveIndex((i) =>
-          list.length === 0 ? 0 : (i - 1 + list.length) % list.length,
-        );
-        return;
-      }
-      if (e.key === "Enter") {
-        const item = list[activeIndexRef.current];
-        if (!item) return;
-        e.preventDefault();
-        e.stopPropagation();
-        runSelectedRef.current(item);
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [open]);
 
   useEffect(() => {
     if (!open || !listRef.current) return;
@@ -245,26 +226,17 @@ export default function CommandPalette({
   }, [activeIndex, open]);
 
   return (
-    <OverlayPortal
+    <Modal
       open={open}
       onClose={close}
-      focusRootRef={dialogRef}
-      initialFocusRef={inputRef}
-      testId="command-palette-backdrop"
-      className="fixed inset-0 z-[60] bg-black/55 flex items-start justify-center pt-[18vh] px-4 transition-opacity duration-150"
-      onBackdropMouseDown={(e) => {
-        if (e.target === e.currentTarget) setOpen(false);
-      }}
+      label="Command palette"
+      initialFocus={inputRef}
+      testId="command-palette"
+      backdropClassName="fixed inset-0 z-[60] bg-black/55 transition-opacity duration-150"
+      viewportClassName="fixed inset-0 z-[60] flex items-start justify-center pt-[18vh] px-4"
+      className="w-full max-w-xl rounded-lg border border-edge bg-panel shadow-2xl overflow-hidden outline-none"
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Command palette"
-        data-testid="command-palette"
-        className="w-full max-w-xl rounded-lg border border-edge bg-panel shadow-2xl overflow-hidden"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
+      <div onKeyDownCapture={onPaletteKey}>
         <div className="border-b border-edge/50 px-3 py-2">
           <input
             ref={inputRef}
@@ -347,6 +319,6 @@ export default function CommandPalette({
           <span className="ml-auto">{shortcutCaps(["mod"], isMac)[0]}K toggles</span>
         </div>
       </div>
-    </OverlayPortal>
+    </Modal>
   );
 }

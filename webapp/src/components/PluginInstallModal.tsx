@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { api, type AgentPlugin } from "../lib/api";
-import { OverlayPortal } from "../lib/overlayPortal";
+import { Modal } from "./ui/overlay";
 import { PluginSourceError, resolvePluginSource } from "../lib/pluginSourceUrls";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 
@@ -93,24 +93,17 @@ export default function PluginInstallModal({
   const title = installed ? "Enable plugin" : "Install plugin";
 
   return (
-    <OverlayPortal
+    <Modal
       open={open}
       onClose={handleClose}
+      label={title}
       testId="plugin-install-modal"
-      className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center p-4"
-      initialFocusRef={sourceRef}
-      onBackdropClick={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+      backdropClassName="fixed inset-0 z-[90] bg-black/50"
+      viewportClassName="fixed inset-0 z-[90] flex items-center justify-center p-4"
+      className="w-full max-w-md rounded-lg border border-edge bg-bg shadow-xl outline-none"
+      initialFocus={sourceRef}
     >
-      <form
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onSubmit={installed ? (e) => e.preventDefault() : install}
-        className="w-full max-w-md rounded-lg border border-edge bg-bg shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <form onSubmit={installed ? (e) => e.preventDefault() : install}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge/40">
           <h2 className="text-ui-13 font-semibold text-txt">{title}</h2>
           <button
@@ -214,6 +207,6 @@ export default function PluginInstallModal({
           )}
         </div>
       </form>
-    </OverlayPortal>
+    </Modal>
   );
 }

@@ -5,7 +5,7 @@
 
 import { useRef } from "react";
 import { X } from "lucide-react";
-import { OverlayPortal } from "../../lib/overlayPortal";
+import { Modal } from "../ui/overlay";
 
 export type SpillPreviewState = {
   uri: string;
@@ -44,25 +44,21 @@ export default function SpillPreviewModal({
   preview: SpillPreviewState | null;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <OverlayPortal
+    <Modal
       open={preview !== null}
       onClose={onClose}
-      focusRootRef={panelRef}
-      initialFocusRef={closeRef}
+      label="Spill preview"
+      initialFocus={closeRef}
       testId="spill-preview-modal"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity duration-200"
-      onBackdropClick={onClose}
+      backdropClassName="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm transition-opacity duration-200"
+      viewportClassName="fixed inset-0 z-50 flex items-center justify-center"
+      className="relative w-[min(920px,92vw)] max-h-[85vh] flex flex-col bg-panel border border-edge rounded-lg shadow-2xl outline-none"
     >
       {preview ? (
-        <div
-          ref={panelRef}
-          className="relative w-[min(920px,92vw)] max-h-[85vh] flex flex-col bg-panel border border-edge rounded-lg shadow-2xl"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <>
           <div className="flex items-center gap-2 px-3 py-2 border-b border-edge/60">
             <div className="min-w-0 flex-1">
               <div className="font-mono text-ui-11 text-accent/90 truncate" title={preview.uri}>
@@ -89,8 +85,8 @@ export default function SpillPreviewModal({
           <pre className="m-0 px-3 py-2 overflow-auto whitespace-pre-wrap break-all font-mono text-ui-11 leading-snug text-txt/90 min-h-[12rem]">
             {preview.error || preview.content || "(empty)"}
           </pre>
-        </div>
+        </>
       ) : null}
-    </OverlayPortal>
+    </Modal>
   );
 }

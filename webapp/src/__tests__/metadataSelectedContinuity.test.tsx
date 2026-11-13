@@ -213,7 +213,7 @@ it.each(['same context', 'replacement incarnation', 'close and reopen'])('fences
   expect(f.stops).toHaveLength(1);
   expect(f.detailReads).toHaveLength(1);
   expect(screen.queryByText(/Stop outcome is unconfirmed|Awaiting stop acknowledgement|Stop request accepted/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
+  await waitFor(() => expect(screen.getByText(/Lifecycle: running/)).toBeVisible());
   expect(screen.getByRole('button', { name: 'Request native stop' })).toBeEnabled();
 });
 
@@ -222,11 +222,11 @@ it('supports focus entry, Escape close and focus return without retaining extra 
   const opener = screen.getByRole('button', { name: 'Command · running' });
   fireEvent.click(opener);
   const close = screen.getByRole('button', { name: 'Close selected inspection' });
-  expect(close).toHaveFocus();
+  await waitFor(() => expect(close).toHaveFocus());
   const region = screen.getByRole('region', { name: 'Selected job inspection' });
   expect(opener.getAttribute('aria-controls')).toBe(region.id);
   fireEvent.keyDown(close, { key: 'Escape' });
-  expect(opener).toHaveFocus();
+  await waitFor(() => expect(opener).toHaveFocus());
   expect(screen.queryByRole('region', { name: 'Selected job inspection' })).not.toBeInTheDocument();
   expect(f.store.getSnapshot().localDetail).toBeNull();
 });
@@ -302,7 +302,7 @@ it.each(['same', 'replacement'] as const)('fences old Stop acknowledgements acro
   await act(async () => { ack.resolve({ ok: true }); });
   expect(f.detailReads).toHaveLength(1);
   expect(screen.queryByText(/Stop request accepted/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
+  await waitFor(() => expect(screen.getByText(/Lifecycle: running/)).toBeVisible());
 });
 
 it('fences selection close and reopen ABA before an acknowledgement', async () => {
@@ -316,7 +316,7 @@ it('fences selection close and reopen ABA before an acknowledgement', async () =
   expect(f.detailReads).toHaveLength(1);
   expect(screen.queryByText(/Stop request accepted/)).not.toBeInTheDocument();
   const inspection = screen.getByRole('region', { name: 'Selected job inspection' });
-  expect(within(inspection).getByText(/Lifecycle: running/)).toBeVisible();
+  await waitFor(() => expect(within(inspection).getByText(/Lifecycle: running/)).toBeVisible());
 });
 
 it('reconciles accepted Stop copy when a later inspection observes cancellation', async () => {

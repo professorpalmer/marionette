@@ -27,8 +27,8 @@ it("a folder created from the tree lists the workspace once, not twice", async (
   await screen.findByText("alpha.ts");
   vi.mocked(api.getWorkspaceFiles).mockClear();
   fireEvent.contextMenu(screen.getByText("alpha.ts"));
-  fireEvent.click(screen.getByText("New Folder…"));
-  const input = screen.getByPlaceholderText("folder-name");
+  fireEvent.click(await screen.findByRole("menuitem", { name: "New Folder…" }));
+  const input = await screen.findByPlaceholderText("folder-name");
   fireEvent.change(input, { target: { value: "docs" } });
   await act(async () => {
     fireEvent.keyDown(input, { key: "Enter" });

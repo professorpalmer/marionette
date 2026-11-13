@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
 import { X, Cpu, HardDrive, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import LocalModelsSettingsPage from "./LocalModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
-import { useOverlayFocus } from "../lib/overlayFocus";
+import { Modal } from "./ui/overlay";
 
 type PageId = "models" | "local-models" | SettingsSection | "about";
 
@@ -55,12 +54,6 @@ export default function SettingsShell({
   const [page, setPage] = useState<PageId>(
     () => initialPage || takePendingSettingsPage() || "models",
   );
-  const shellRef = useRef<HTMLDivElement>(null);
-
-  useOverlayFocus(true, shellRef, {
-    onClose,
-  });
-
   // Add key / hotkeys can request Accounts & Keys while Settings is already open.
   useEffect(() => {
     const onPage = (e: Event) => {
@@ -74,14 +67,14 @@ export default function SettingsShell({
     return () => window.removeEventListener("harness-settings-page", onPage as EventListener);
   }, []);
 
-  return createPortal(
-    <div
-      ref={shellRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Settings"
-      className="fixed inset-0 z-[80] bg-bg flex flex-col"
-      data-testid="settings-shell"
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      label="Settings"
+      dismissOnOutsidePress={false}
+      className="fixed inset-0 z-[80] bg-bg flex flex-col outline-none"
+      testId="settings-shell"
     >
       {/* top bar -- fixed px pad clears macOS traffic lights (not rem) */}
       <div
@@ -141,7 +134,6 @@ export default function SettingsShell({
           )}
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }
