@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProviderKeyBanner from "../components/ProviderKeyBanner";
-import ConversationHeader from "../components/conversation/ConversationHeader";
+import ConversationHeader, { projectRepeatsTitle } from "../components/conversation/ConversationHeader";
 import {
   MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX,
   TITLEBAR_CHROME_PAD_X_PX,
@@ -66,6 +66,29 @@ describe("titlebar-safe clearance", () => {
     expect(screen.getByText(/Open Folder/).closest('[role="menuitem"]')).toBeInTheDocument();
     expect(screen.queryByText("Local")).toBeNull();
     expect(screen.getAllByText("master")).toHaveLength(1);
+  });
+
+  it("ConversationHeader does not repeat a project name that equals the title", () => {
+    render(
+      <ConversationHeader
+        pillStatus="done"
+        heading={{ title: "proj", project: "proj", branch: "master" }}
+      />,
+    );
+    // The title says "proj" once; the folder menu trigger stays, as an icon.
+    expect(screen.getAllByText("proj")).toHaveLength(1);
+    const project = screen.getByTestId("header-project");
+    expect(project.textContent).toBe("");
+    expect(project).toHaveAttribute("aria-label", "Switch folder (proj)");
+    fireEvent.click(project);
+    expect(screen.getByText(/Open Folder/).closest('[role="menuitem"]')).toBeInTheDocument();
+  });
+
+  it("projectRepeatsTitle ignores case and spaces, and never matches an empty title", () => {
+    expect(projectRepeatsTitle("proj", "proj")).toBe(true);
+    expect(projectRepeatsTitle(" Proj ", "proj")).toBe(true);
+    expect(projectRepeatsTitle("Fix the calc bug", "proj")).toBe(false);
+    expect(projectRepeatsTitle("", "")).toBe(false);
   });
 
   it("ConversationHeader keeps the error pill", () => {

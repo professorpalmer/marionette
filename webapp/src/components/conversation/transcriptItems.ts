@@ -623,6 +623,7 @@ export function transcriptResponseToItems(res: {
             ...(role === "user" && images ? { images } : {}),
             ...(role === "user" && documents ? { documents } : {}),
             ...(role === "user" && typeof m.model === "string" && m.model ? { model: m.model } : {}),
+            ...(typeof m.ts === "number" && Number.isFinite(m.ts) ? { ts: m.ts } : {}),
           }
         }];
       }

@@ -170,6 +170,8 @@ export type Msg = {
   stream_id?: string;
   /** Visible channel: progress (commentary) vs answer (final_answer). */
   channel?: "progress" | "answer" | string;
+  /** Epoch ms the row entered the saved transcript (hydrated rows only). */
+  ts?: number;
 };
 /** Bounded nested worker tool row (from local job actions[] / display hydrate). */
 export type NestedAction = {
@@ -415,7 +417,7 @@ export type GroupedItem =
   | { kind: "verification"; passed: boolean; output?: string; cmd?: string }
   | { kind: "turn_terminal"; id?: string; cause: string; state: string; text: string }
   | { kind: "activity_group"; items: ActivityItem[] }
-  | { kind: "turn_work"; rows: TurnWorkRow[] };
+  | { kind: "turn_work"; rows: TurnWorkRow[]; endTs?: number };
 
 /** One row inside a sealed turn's Worked for fold: a tool group or said prose. */
 type TurnWorkRow =
@@ -890,8 +892,14 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
   let heldEvents: GroupedItem[] = [];
   const closeRun = () => {
     const groups = run.filter((row) => row.kind === "activity_group").length;
-    if (groups > 0 && run.length >= 2) out.push({ kind: "turn_work", rows: run });
-    else out.push(...run);
+    if (groups > 0 && run.length >= 2) {
+      // The busy clock runs until the final answer, so the saved time of
+      // that answer ends the turn's work after a reload.
+      const endTs = heldFinal?.kind === "msg" ? heldFinal.msg.ts : undefined;
+      out.push({ kind: "turn_work", rows: run, ...(endTs != null ? { endTs } : {}) });
+    } else {
+      out.push(...run);
+    }
     run = [];
     out.push(...heldEvents);
     heldEvents = [];
@@ -1898,7 +1906,9 @@ export const TranscriptList = memo(function TranscriptList({
       const item = virtualGrouped[index];
       if (!item) return TRANSCRIPT_ROW_FALLBACK_PX;
       const rowId = rowKeys[index] ?? stableItemKey(item, index);
-      return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth);
+      const folded = item.kind === "turn_work"
+        && !resolveActivityGroupOpen(sessionFoldPrefKey(sessionId, `work:${turnWorkStableId(item.rows, index)}`));
+      return rowHeightCache.estimateRowHeight(item, rowId, feedInnerWidth, { folded });
     },
     overscan: FEED_VIRTUAL_OVERSCAN,
     scrollMargin,
@@ -2448,6 +2458,7 @@ export const TranscriptList = memo(function TranscriptList({
           key={key}
           foldId={sessionFoldPrefKey(sessionId, `work:${canon}`)}
           rows={it.rows}
+          endTs={it.endTs}
           rememberedMs={rememberedTurnMs(canon)}
           renderRow={(row, k) => {
             if (row.kind === "msg") {
@@ -3375,11 +3386,13 @@ const WHEEL_SWAP_MS = 220;
 function TurnWorkFold({
   foldId,
   rows,
+  endTs,
   rememberedMs,
   renderRow,
 }: {
   foldId: string;
   rows: TurnWorkRow[];
+  endTs?: number;
   rememberedMs: number | null;
   renderRow: (row: TurnWorkRow, index: number) => ReactNode;
 }) {
@@ -3389,7 +3402,7 @@ function TurnWorkFold({
     requestFeedRowRemeasure(rootRef.current);
   }, [open]);
   const items = rows.flatMap((row) => (row.kind === "activity_group" ? row.items : []));
-  const fromItems = maxKnown(activityWorkDurationMs(items), turnSpanMs(items));
+  const fromItems = maxKnown(activityWorkDurationMs(items), turnSpanMs(items, endTs));
   const durationMs = maxKnown(fromItems, rememberedMs) ?? 1000;
   return (
     <div className="my-0.5 w-full" ref={rootRef} data-testid="turn-work-fold" data-worked-for="1">

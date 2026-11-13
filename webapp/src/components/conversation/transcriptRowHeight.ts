@@ -29,6 +29,8 @@ export const TRANSCRIPT_USER_CLAMP_PX = 160;
 
 /** Fallback when Pretext or extraction cannot run (jsdom without canvas). */
 export const TRANSCRIPT_ROW_FALLBACK_PX = 72;
+/** A folded Worked for row: one fold header line (measured 30 px in the app). */
+export const TRANSCRIPT_FOLDED_WORK_PX = 30;
 
 const FEED_COLUMN_MAX_PX = 768;
 const FEED_HORIZONTAL_PADDING_PX = 48;
@@ -302,6 +304,7 @@ export type TranscriptRowHeightCache = {
     item: GroupedItem,
     rowId: string,
     feedInnerWidth: number,
+    opts?: { folded?: boolean },
   ) => number;
   /** Height a row was actually painted at (live tail), reused when it enters
    *  the list with the same content at the same width. */
@@ -367,11 +370,15 @@ export function createTranscriptRowHeightCache(): TranscriptRowHeightCache {
     item: GroupedItem,
     rowId: string,
     feedInnerWidth: number,
+    opts?: { folded?: boolean },
   ): number {
     const measured = measuredByRow.get(rowId);
     if (measured && measured.width === feedInnerWidth && measured.content === rowContentSignature(item)) {
       return measured.height;
     }
+    // A reload paints every sealed turn folded. The DOM-measure fallback
+    // (144 px) left a gap under each fold until the first measure.
+    if (item.kind === "turn_work" && opts?.folded) return TRANSCRIPT_FOLDED_WORK_PX;
     const fixed = FIXED_ROW_HEIGHT_PX[item.kind];
     if (fixed != null) return fixed;
 

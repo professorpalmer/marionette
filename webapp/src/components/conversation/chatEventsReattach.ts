@@ -33,6 +33,8 @@ import {
   storeBatchSawTerminal,
   storeRingMissFields,
   storeStreamToStreamEvent,
+  transcriptSettledThrough,
+  type TranscriptRing,
 } from "./storeEvents";
 import { HeldThoughts } from "./thinkingToolPrep";
 import {
@@ -95,6 +97,8 @@ export type ChatEventsReattachDeps = {
   setBackendPendingSwarms?: (v: boolean | ((prev: boolean) => boolean)) => void;
   turnSettledRef?: { current: boolean };
   abandonStaleLocalStreamRef?: { current: () => void };
+  /** Ring position at which the server read the loaded transcript. */
+  transcriptRingRef?: { current: TranscriptRing | null };
 };
 
 type SwarmCallIdentity = {
@@ -190,6 +194,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
     setBackendPendingSwarms,
     turnSettledRef,
     abandonStaleLocalStreamRef,
+    transcriptRingRef,
   } = deps;
 
   let consecutiveIdlePolls = 0;
@@ -527,6 +532,11 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       const generationFloor = since === 0 || batch.replay_reset
         ? replayGenerationFloor(events)
         : undefined;
+      // A reload replays the newest turn too. When the transcript was read
+      // after that turn's terminal frame, it holds those frames: painting
+      // them again streams the turn over the loaded rows for a moment.
+      const transcriptRing = generationFloor != null ? transcriptRingRef?.current ?? null : null;
+      const settledThrough = transcriptSettledThrough(events, transcriptRing);
       let sawTerminal = false;
       let wantRetry = false;
       // A run of reasoning deltas paints as one chunk. On a replay from the
@@ -587,6 +597,13 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
             cursor: ringCursor,
             generation: ringGeneration,
           });
+          if (
+            ringGeneration != null && ringGeneration === transcriptRing?.generation
+            && ringCursor != null && ringCursor <= settledThrough
+          ) {
+            if (terminal) sawTerminal = true;
+            continue;
+          }
           const streamEvent = storeStreamToStreamEvent(frame);
           if (thoughtRun.add(streamEvent, ringGeneration)) continue;
           thoughtRun.flush();

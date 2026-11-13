@@ -252,6 +252,7 @@ export function KeyProviderRow({
             spellCheck={false}
             placeholder={`Paste your ${provider.display_name || provider.name} API key`}
             aria-label={`${provider.display_name || provider.name} API key`}
+            {...(recommended ? { [FIRST_CONTROL]: "" } : {})}
             value={keyValue}
             onChange={(e) => setKeyValue(e.target.value)}
             disabled={saving || disabled}
@@ -353,7 +354,10 @@ function Disclosure({
   );
 }
 
-function DetectedRow({ title, detail, action, onAction }: { title: string; detail: string; action: string; onAction: () => void }) {
+/** Marks the control that takes focus when the provider load ends. */
+const FIRST_CONTROL = "data-onboarding-first";
+
+function DetectedRow({ title, detail, action, onAction, first = false }: { title: string; detail: string; action: string; onAction: () => void; first?: boolean }) {
   return (
     <div data-testid="detected-row" className="flex items-center justify-between gap-3 rounded-lg border border-good/30 bg-good/5 px-3 py-2.5">
       <div className="min-w-0">
@@ -363,6 +367,7 @@ function DetectedRow({ title, detail, action, onAction }: { title: string; detai
       <button
         type="button"
         onClick={onAction}
+        {...(first ? { [FIRST_CONTROL]: "" } : {})}
         className="shrink-0 bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-1 text-ui-11 font-medium"
       >
         {action}
@@ -386,6 +391,8 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const [oauthSessionId, setOauthSessionId] = useState("");
   const [oauthPasteCode, setOauthPasteCode] = useState("");
   const abortRef = useRef(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const userMovedRef = useRef(false);
   const loadNotice = usePanelNotice(loadError || null);
 
   const featured = useMemo(() => featuredOnboardingProviders(providers), [providers]);
@@ -393,6 +400,17 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const recommendedName = useMemo(() => defaultOnboardingProvider(providers), [providers]);
   const recommended = keyRows.find((p) => p.name === recommendedName);
   const otherKeyRows = keyRows.filter((p) => p.name !== recommendedName);
+
+  // When the load ends, focus the first useful control. Do not take focus
+  // back from a user who pressed a key or the pointer during the load.
+  useEffect(() => {
+    if (loading) return;
+    const frame = requestAnimationFrame(() => {
+      if (userMovedRef.current) return;
+      bodyRef.current?.querySelector<HTMLElement>(`[${FIRST_CONTROL}]`)?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -558,7 +576,21 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
     openSettingsPage(page);
   };
 
-  const found = detection.keys.length > 0 || detection.claudeCliInstalled || detection.localEndpoints.length > 0;
+  const foundNames = [
+    ...detection.keys.map((p) => `${p.display_name || p.name} key`),
+    ...(detection.claudeCliInstalled ? ["Claude Code CLI"] : []),
+    ...detection.localEndpoints.map(() => "Local model server"),
+  ];
+  const found = foundNames.length > 0;
+  const loadStatus = loading
+    ? "Looking for keys and local models."
+    : loadError
+      ? ""
+      : found
+        ? `Found on this Mac: ${foundNames.join(", ")}.`
+        : recommended
+          ? `Nothing found on this Mac. ${recommended.display_name || recommended.name} is recommended.`
+          : "Nothing found on this Mac.";
 
   return (
     <Modal
@@ -571,6 +603,11 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
       viewportClassName="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
       className="onboarding-card w-full max-w-[34rem] max-h-full flex flex-col rounded-2xl border border-edge bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.45)] outline-none"
     >
+      <div
+        className="contents"
+        onKeyDownCapture={() => { userMovedRef.current = true; }}
+        onPointerDownCapture={() => { userMovedRef.current = true; }}
+      >
         <header className="shrink-0 text-center px-7 pt-7 pb-5">
           <h1 id="onboarding-title" className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
             Connect a model
@@ -580,9 +617,10 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
           </p>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-5 space-y-5">
+        <p role="status" data-testid="onboarding-load-status" className="sr-only">{loadStatus}</p>
+        <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-7 pb-5 space-y-5">
           {loading ? (
-            <p className="text-center text-muted text-ui-13 py-10">Looking for keys and local models…</p>
+            <p aria-hidden="true" className="text-center text-muted text-ui-13 py-10">Looking for keys and local models…</p>
           ) : (
             <>
               {loadNotice ? (
@@ -595,9 +633,10 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
                 <section aria-label="Found on this Mac">
                   <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">Found on this Mac</h2>
                   <div className="space-y-2">
-                    {detection.keys.map((p) => (
+                    {detection.keys.map((p, index) => (
                       <DetectedRow
                         key={p.name}
+                        first={index === 0}
                         title={`${p.display_name || p.name} key`}
                         detail={`${p.has_env ? "From your shell environment" : "Saved in Marionette"}. ${capabilityLabel(p) || "Ready"}.`}
                         action={p.disconnected ? "Turn on" : "Use it"}
@@ -606,15 +645,17 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
                     ))}
                     {detection.claudeCliInstalled ? (
                       <DetectedRow
+                        first={detection.keys.length === 0}
                         title="Claude Code CLI"
                         detail="Installed, not signed in. Sign in to chat on your Claude plan. Workers still need an API key."
                         action="Sign in"
                         onAction={() => leaveFor("providers")}
                       />
                     ) : null}
-                    {detection.localEndpoints.map((endpoint) => (
+                    {detection.localEndpoints.map((endpoint, index) => (
                       <DetectedRow
                         key={endpoint.id}
+                        first={index === 0 && detection.keys.length === 0 && !detection.claudeCliInstalled}
                         title="Local model server"
                         detail={endpoint.label}
                         action="Set up"
@@ -722,6 +763,7 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
             I&apos;ll choose a provider later
           </button>
         </footer>
+      </div>
     </Modal>
   );
 }

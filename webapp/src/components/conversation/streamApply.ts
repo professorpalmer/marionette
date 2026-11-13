@@ -1214,8 +1214,10 @@ export function ensureWorkerStreamingBubble(
 export function finalizePilotMessage(
   items: Item[],
   text: string | undefined,
-  opts?: { isPlan?: boolean; streamed?: boolean },
+  opts?: { isPlan?: boolean; streamed?: boolean; ts?: number },
 ): Item[] {
+  // The time the server saved the row: a sealed turn's Worked for ends there.
+  const stamped = (msg: Msg): Msg => (opts?.ts != null ? { ...msg, ts: opts.ts } : msg);
   // Drop trailing worker-stream previews before finalizing the pilot's own text.
   const p = finalizeStreamingThinking(dropTrailingWorkerStreamBubbles(items));
   const streamIdx = findStreamingBubbleIdx(p, { excludeWorkerStream: true });
@@ -1232,7 +1234,7 @@ export function finalizePilotMessage(
     const updatedItems = [...p];
     updatedItems[streamIdx] = {
       kind: "msg",
-      msg: { ...lastMsg.msg, text: finalText, streaming: false },
+      msg: stamped({ ...lastMsg.msg, text: finalText, streaming: false }),
     };
     return deduplicateConsecutiveAssistantMessages(updatedItems);
   }
@@ -1254,7 +1256,12 @@ export function finalizePilotMessage(
     if (it.msg.streaming || it.msg.workerStream) continue;
     const prior = (it.msg.text || "").trim();
     if (!prior) continue;
-    if (prior === incoming) return p;
+    if (prior === incoming) {
+      if (opts?.ts == null || it.msg.ts != null) return p;
+      const updated = [...p];
+      updated[j] = { kind: "msg", msg: stamped(it.msg) };
+      return updated;
+    }
 
     if (!opts?.streamed) continue;
     const hasLaterSurface = p.slice(j + 1).some((later) => (
@@ -1271,12 +1278,12 @@ export function finalizePilotMessage(
     const updated = [...p];
     updated[j] = {
       kind: "msg",
-      msg: {
+      msg: stamped({
         ...it.msg,
         text,
         streaming: false,
         isPlan: opts?.isPlan ?? it.msg.isPlan,
-      },
+      }),
     };
     return deduplicateConsecutiveAssistantMessages(updated);
   }
@@ -1285,7 +1292,7 @@ export function finalizePilotMessage(
     ...p,
     {
       kind: "msg",
-      msg: { role: "assistant", text: text || "", isPlan: opts?.isPlan },
+      msg: stamped({ role: "assistant", text: text || "", isPlan: opts?.isPlan }),
     },
   ]);
 }

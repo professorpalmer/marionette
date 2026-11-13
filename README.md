@@ -9,7 +9,7 @@ It makes $0 off your tokens, so its whole job is spending fewer of them, and it 
 
 [Watch the demo on the site](https://professorpalmer.github.io/marionette/).
 
-Current release: **v0.9.664**. Still pre-1.0 on purpose.
+Current release: **v0.9.665**. Still pre-1.0 on purpose.
 Puppetmaster is the bundled kernel, not a second thing to set up: `puppetmaster-ai==1.50.0` gets pinned into the venv for you.
 
 ## Quick start
