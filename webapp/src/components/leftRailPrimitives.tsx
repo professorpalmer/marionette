@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { compactAge } from "../lib/relativeTime";
 import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 
 export type JobStatus = "pending" | "in_progress" | "completed" | "cancelled";
@@ -84,3 +85,24 @@ export const IconBtn = ({ onClick, children, title, disabled }: {
   </button>
 );
 export const Empty = ({ children }: any) => <div className="text-ui-11 text-faint italic px-1.5 py-1">{children}</div>;
+
+/** Age of a session row ("5m", "2d"); re-reads the clock each minute. */
+export function SessionAge({ updated }: { updated?: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const age = compactAge(updated, now);
+  if (!age) return null;
+  return (
+    <span
+      className="shrink-0 text-ui-10 font-normal tabular-nums text-faint"
+      data-testid="session-row-age"
+      aria-hidden
+      title={updated ? new Date(updated * 1000).toLocaleString() : undefined}
+    >
+      {age}
+    </span>
+  );
+}

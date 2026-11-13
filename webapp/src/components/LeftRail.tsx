@@ -100,7 +100,7 @@ import {
   remainingOpenAfterRemoveFromCache,
   type RunnerStatus,
 } from "./leftRailSessions";
-import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
+import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, SessionAge, type JobStatus } from "./leftRailPrimitives";
 
 export default function LeftRail({
   jobsRefresh,
@@ -1740,8 +1740,11 @@ export default function LeftRail({
                         <div className={`text-ui-12.5 truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
                           {displaySessionListTitle(s.title, s.title_user)}
                         </div>
+                        <SessionAge updated={s.updated ?? s.created} />
                       </div>
-                      <div className="text-ui-10 text-faint truncate font-mono">{label}</div>
+                      <div className="text-ui-10 text-faint truncate">
+                        {s.preview || <span className="font-mono">{label}</span>}
+                      </div>
                     </button>
                   );
                 })}
@@ -1917,13 +1920,19 @@ export default function LeftRail({
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`relative flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center text-ui-12 transition aria-disabled:opacity-60
+                                className={`relative flex-1 min-w-0 min-h-7 py-0.5 text-left rounded pl-6 pr-1.5 flex flex-col justify-center text-ui-12 transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
                                   : null}
-                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                  <SessionAge updated={s.updated ?? s.created} />
+                                </span>
+                                {s.preview ? (
+                                  <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
+                                ) : null}
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">

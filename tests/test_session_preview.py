@@ -53,7 +53,8 @@ def test_transcript_preview_prefers_spoken_finale(tmp_path):
     assert transcript_preview(state, sid) == "The redirect was missing a return."
 
 
-def test_transcript_preview_large_file_prefix_scan(tmp_path):
+def test_transcript_preview_large_file_prefix_scan(tmp_path, monkeypatch):
+    monkeypatch.setattr(sessions, "_PREVIEW_PARSE_BYTES", 8192)
     state = str(tmp_path)
     sid = "bigfile000001"
     trans_dir = tmp_path / "transcripts"
@@ -95,10 +96,41 @@ def test_list_includes_preview_not_history(tmp_path):
     assert "history" not in hit
 
 
+def test_transcript_preview_medium_file_prefers_finale(tmp_path):
+    """A transcript past the 8 KB prefix scan but under the parse cap still
+    shows the last answer, not the first prompt (the title repeats that)."""
+    state = str(tmp_path)
+    sid = "medium0000001"
+    (tmp_path / "transcripts").mkdir()
+    payload = {
+        "history": [
+            {"role": "user", "content": "fix the add function"},
+            {"role": "assistant", "content": "x" * 20000},
+            {"role": "assistant", "content": "Fixed and verified."},
+        ],
+        "display": [],
+        "job_ids": [],
+    }
+    (tmp_path / "transcripts" / f"{sid}.json").write_text(json.dumps(payload), encoding="utf-8")
+    assert transcript_preview(state, sid) == "Fixed and verified."
+
+
 def test_attach_session_previews_empty_ok(tmp_path):
-    rows = [{"id": "missing000001", "title": "x"}]
+    rows = [{"id": "missing000001", "title": "x", "created": 5.0}]
     attach_session_previews(rows, str(tmp_path))
     assert rows[0]["preview"] == ""
+    assert rows[0]["updated"] == 5.0
+
+
+def test_attach_session_previews_updated_is_transcript_mtime(tmp_path):
+    sid = "updated000001"
+    (tmp_path / "transcripts").mkdir()
+    path = tmp_path / "transcripts" / f"{sid}.json"
+    path.write_text(json.dumps({"history": []}), encoding="utf-8")
+    os.utime(path, (1_700_000_000, 1_700_000_000))
+    rows = [{"id": sid, "created": 5.0}]
+    attach_session_previews(rows, str(tmp_path))
+    assert rows[0]["updated"] == 1_700_000_000
 
 
 def test_list_preview_cache_skips_reread(tmp_path, monkeypatch):
