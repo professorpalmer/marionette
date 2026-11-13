@@ -53,6 +53,31 @@ def test_transcript_preview_prefers_spoken_finale(tmp_path):
     assert transcript_preview(state, sid) == "The redirect was missing a return."
 
 
+def test_transcript_preview_strips_markdown(tmp_path):
+    # Rig K12: the list showed "**Bug:** `src/calc.py` ha...".
+    state = str(tmp_path)
+    sid = "mdprev000001"
+    save_transcript(
+        state,
+        sid,
+        {
+            "history": [
+                {"role": "user", "content": "fix it"},
+                {
+                    "role": "assistant",
+                    "content": "**Bug:** `src/calc.py` had `add(a, b)` as *a - b*. "
+                    "See [the test](test_calc.py) and __init__.",
+                },
+            ],
+            "display": [],
+            "job_ids": [],
+        },
+    )
+    assert transcript_preview(state, sid) == (
+        "Bug: src/calc.py had add(a, b) as a - b. See the test and __init__."
+    )
+
+
 def test_transcript_preview_large_file_prefix_scan(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions, "_PREVIEW_PARSE_BYTES", 8192)
     state = str(tmp_path)
