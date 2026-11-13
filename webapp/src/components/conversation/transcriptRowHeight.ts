@@ -48,6 +48,7 @@ const FIXED_ROW_HEIGHT_PX: Partial<Record<GroupedItem["kind"], number>> = {
   checkpoint: 32,
   pending_review: 40,
   compaction: 36,
+  turn_changes: 28,
 };
 
 export type TranscriptRowPretextSpec = {
@@ -174,6 +175,7 @@ export function rowNeedsDomMeasure(item: GroupedItem): boolean {
       return Boolean(item.images?.length || item.documents?.length);
     case "activity_group":
     case "turn_work":
+    case "turn_changes":
       return true;
     case "command_approval":
     case "secret_request":

@@ -5,6 +5,8 @@ import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { visibleCommand } from "../lib/visibleCommand";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
+import { EditDiffCounts, EditDiffPatch, parseEditDiff } from "./conversation/EditDiff";
+import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
 import { commandRisk } from "../lib/commandRisk";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
@@ -211,7 +213,9 @@ export type Card = {
              /** Full spilled output length in characters (when known). */
              output_chars?: number;
              /** Bounded preview when spilled or truncated. */
-             output_preview?: string };
+             output_preview?: string;
+             /** Line diff of a file write; parse with parseEditDiff. */
+             diff?: unknown };
 };
 /**
  * Inline swarm status pill lifecycle (running spinner vs terminal chips).
@@ -355,6 +359,7 @@ export type Item =
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
   | ModelSwitchItem
+  | TurnChangesItem
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string; duration_ms?: number | null; started_at_ms?: number }
   | SwarmPendingItem
   | SwarmResultItem
@@ -917,13 +922,55 @@ export function insertModelSwitches(grouped: GroupedItem[]): GroupedItem[] {
   return out;
 }
 
+const FILE_WRITE_KINDS = new Set(["write_file", "edit_file", "hash_edit"]);
+
+/** The `+++ b/<path>` header of a unified patch. */
+function patchTargetPath(patch: string): string {
+  const m = /^\+\+\+ b\/(.+)$/m.exec(patch);
+  return m ? m[1] : "";
+}
+
 /**
- * Wrap each finished turn in its Worked for fold. The live turn (the span
- * after the last user message while the agent loop is open) stays in stream
- * order: prose, Explored group, prose, Exploring group.
+ * Files the turn's agent file writes changed, with summed line counts, and
+ * the turn's first restore point (taken before its first write). Null when
+ * the turn wrote no file with a diff receipt.
+ */
+export function turnChanges(span: GroupedItem[]): TurnChangesItem | null {
+  const files = new Map<string, TurnChangedFile>();
+  let checkpointId: string | null = null;
+  for (const row of span) {
+    if (row.kind !== "activity_group") continue;
+    for (const it of row.items) {
+      if (it.kind === "checkpoint") {
+        if (checkpointId === null && it.id) checkpointId = it.id;
+        continue;
+      }
+      if (it.kind !== "card" || !FILE_WRITE_KINDS.has(it.card.kind || "") || it.card.result?.error) continue;
+      const diff = parseEditDiff(it.card.result?.diff);
+      if (!diff) continue;
+      const path = patchTargetPath(diff.patch) || it.card.goal;
+      const prev = files.get(path);
+      files.set(path, {
+        path,
+        added: (prev?.added ?? 0) + diff.added,
+        removed: (prev?.removed ?? 0) + diff.removed,
+      });
+    }
+  }
+  if (files.size === 0) return null;
+  return { kind: "turn_changes", files: [...files.values()], checkpointId, canUndo: false };
+}
+
+/**
+ * Wrap each finished turn in its Worked for fold, and close a turn that
+ * wrote files with its changed-files footer. The live turn (the span after
+ * the last user message while the agent loop is open) stays in stream
+ * order: prose, Explored group, prose, Exploring group. Only the newest
+ * footer offers Undo, and only while no turn is open.
  */
 export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): GroupedItem[] {
   const out: GroupedItem[] = [];
+  let lastChanges = -1;
   let i = 0;
   while (i < grouped.length) {
     if (isUserRow(grouped[i])) {
@@ -935,9 +982,18 @@ export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): 
     while (j < grouped.length && !isUserRow(grouped[j])) j += 1;
     const span = grouped.slice(i, j);
     if (j === grouped.length && liveTurnOpen) out.push(...span);
-    else out.push(...wrapTurnSpan(span));
+    else {
+      out.push(...wrapTurnSpan(span));
+      const changes = turnChanges(span);
+      if (changes) {
+        lastChanges = out.length;
+        out.push(changes);
+      }
+    }
     i = j;
   }
+  const newest = out[lastChanges];
+  if (!liveTurnOpen && newest?.kind === "turn_changes") out[lastChanges] = { ...newest, canUndo: true };
   return out;
 }
 
@@ -1283,6 +1339,8 @@ export function stableItemKey(it: GroupedItem, i: number): string {
       return `steer-${i}`;
     case "model_switch":
       return `model-switch-${i}-${it.to}`;
+    case "turn_changes":
+      return `turn-changes-${it.checkpointId || i}`;
     case "turn_terminal":
       return it.id ? `turn-term-${it.id}` : `turn-term-${i}-${it.cause}-${it.state}`;
     case "quality_gate":
@@ -2241,6 +2299,8 @@ export const TranscriptList = memo(function TranscriptList({
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
       return <SteerNote key={key} item={it} onImageClick={onImageClick} />;
+    } else if (it.kind === "turn_changes") {
+      return <TurnChangesFooter key={key} item={it} />;
     } else if (it.kind === "model_switch") {
       return (
         <SystemEventRow
@@ -4271,6 +4331,7 @@ function ActionCard({
       ? card.result.output_chars
       : null;
   const hasExitCode = typeof card.result?.exit_code === "number";
+  const editDiff = parseEditDiff(card.result?.diff);
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
@@ -4402,6 +4463,7 @@ function ActionCard({
               {goalPreview}
             </button>
           ) : null}
+          {editDiff ? <EditDiffCounts added={editDiff.added} removed={editDiff.removed} /> : null}
           <ChevronRight
             size={11}
             aria-hidden
@@ -4523,6 +4585,7 @@ function ActionCard({
             </div>
           )}
           {card.cwd && <KV k="cwd" v={card.cwd} linkKind="workspace" />}
+          {editDiff?.patch ? <EditDiffPatch patch={editDiff.patch} truncated={editDiff.truncated} /> : null}
           {hasExitCode ? (
             <KV k="exit" v={String(card.result!.exit_code)} />
           ) : null}
