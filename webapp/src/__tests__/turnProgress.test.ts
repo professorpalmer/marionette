@@ -255,8 +255,9 @@ describe("exploring headline / live line / exploration summary", () => {
     expect(activityHeadline([step("run_command"), step("run_command")], false)).toBe("Ran 2 commands");
     expect(
       activityHeadline([step("read_file"), step("grep"), step("edit_file", "a"), step("edit_file", "b"), step("run_command")], false),
-    ).toBe("Explored 1 file, 1 search, edited 2 files, ran 1 command");
-    expect(activityHeadline([step("read_file"), step("run_command")], true)).toBe("Explored 1 file, running 1 command");
+    ).toBe("Edited 2 files, ran 1 command, explored 1 file, 1 search");
+    expect(activityHeadline([step("read_file"), step("run_command")], true)).toBe("Running 1 command, explored 1 file");
+    expect(activityHeadline([step("run_command"), step("read_file")], true)).toBe("Ran 1 command, exploring 1 file");
     expect(activityHeadline([], false)).toBe("Explored");
   });
 

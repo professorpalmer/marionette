@@ -27,7 +27,7 @@ describe("PilotPicker trigger chrome", () => {
         }}
       />,
     );
-    const trigger = screen.getByTitle("openrouter:deepseek/deepseek-v4-flash");
+    const trigger = screen.getByTitle("DeepSeek V4 Flash (openrouter:deepseek/deepseek-v4-flash)");
     expect(trigger.className).not.toMatch(/\bw-full\b/);
     expect(trigger.className).not.toMatch(/\bflex-1\b/);
     const label = trigger.querySelector("span");

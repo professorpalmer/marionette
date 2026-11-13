@@ -12,6 +12,7 @@ import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
+import { emptySessionContext } from "./components/conversation/TranscriptEmptyState";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
 import ComputerAccess from "./components/ComputerAccess";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
@@ -30,7 +31,7 @@ import type { PilotSetupGate } from "./components/conversation/composerSend";
 import { openAgentUrl, openAgentWorkspace } from "./lib/agentLinks";
 import { isCloseTabKey, requestCloseFocusedTab } from "./lib/closeTabShortcut";
 import { reclampRailWidths } from "./lib/railLayout";
-import { OPEN_ONBOARDING_EVENT } from "./lib/sessionNav";
+import { focusComposer, OPEN_ONBOARDING_EVENT } from "./lib/sessionNav";
 import {
   setConfigured,
   setManual,
@@ -419,7 +420,7 @@ export default function App() {
         case "i":                                                          // focus chat input (Cursor: toggle sidepanel)
         // Cmd/Ctrl+L focuses the composer. TerminalPane capture steals this
         // when the live xterm has a selection (Add to chat).
-        case "l": e.preventDefault(); window.dispatchEvent(new Event("harness-focus-input")); break;
+        case "l": e.preventDefault(); focusComposer(); break;
         case "n":                                                          // new session (Cursor: new chat)
         case "r": e.preventDefault(); window.dispatchEvent(new Event("harness-new-session")); break;
         default: break;
@@ -579,7 +580,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar update={availableUpdate}
+        <StatusBar update={availableUpdate} needsModel={emptySessionContext(config).needsModel}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={toggleRight}
           onOpenEconomics={() => openRightTo("economics")} />

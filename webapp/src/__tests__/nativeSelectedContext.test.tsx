@@ -344,7 +344,8 @@ it('shows owned context only on explicit reads while followed action reads stay 
   act(() => { f.store.setPendingSelections([], []); });
   await f.open();
   expect(f.detailReads.at(-1)?.url.searchParams.get('include_context')).toBe('true');
-  expect(screen.getByText('printf selected-context')).toBeVisible();
+  // The inspection is a Base UI Modal: it turns visible one tick after mount.
+  await waitFor(() => expect(screen.getByText('printf selected-context')).toBeVisible());
   expect(screen.getByText(/No model \(native execution\)/)).toBeVisible();
   expect(screen.queryByText(/Model: command/)).toBeNull();
 });

@@ -4025,6 +4025,13 @@ class ConversationalSession(
         except Exception:
             cls = None
 
+        # A model id the provider serves only on another endpoint (OpenRouter
+        # ":batch" variants serve /api/v1/batches, not chat).
+        if "cannot be used with the" in low and "endpoint" in low:
+            mtxt = f" '{model}'" if model else ""
+            return (f"pilot: the selected model{mtxt} does not take chat requests. "
+                    "Pick another model in the model picker.")
+
         # Model not available / not authorized for this key or plan -- checked
         # first because the classifier lumps it under FATAL/404 but it deserves
         # its own specific, common-case fix.
@@ -4145,6 +4152,11 @@ class ConversationalSession(
                 "run, or Retry the last step."
             )
 
+        # A provider JSON body: show its message, never the body.
+        message = _re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if message:
+            status_txt = f" HTTP {status}" if status else " an error"
+            return f"pilot: the provider returned{status_txt}: {message.group(1)[:300]}"
         return f"pilot: {s}"
 
     def _accumulate_session_meters(

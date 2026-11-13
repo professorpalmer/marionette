@@ -384,7 +384,9 @@ export function transcriptResponseToItems(res: {
     let turnTs: number | undefined;
     loadedItems = res.display.flatMap((m: any): Item[] => {
       const ts = typeof m.ts === "number" && Number.isFinite(m.ts) ? m.ts : undefined;
-      if ((m.type ?? "message") === "message" && m.role === "user") turnTs = ts;
+      // A steer is a user message inside the turn: the turn still started
+      // at the message that opened it.
+      if ((m.type ?? "message") === "message" && m.role === "user" && m.steer !== true) turnTs = ts;
       if (m.type === "card") {
         if (m.kind === "run_swarm") return [];
         // result == null means still in flight (persisted at action_start).

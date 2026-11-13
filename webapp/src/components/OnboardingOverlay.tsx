@@ -15,6 +15,7 @@ import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { setConfigured, setFlow, setMode, skipFirstRun } from "../state/onboardingStore";
 import { focusSettingsPage } from "./SettingsShell";
 import { Modal } from "./ui/overlay";
+import { focusComposer } from "../lib/sessionNav";
 
 export type OnboardingOverlayProps = {
   onClose: () => void;
@@ -392,6 +393,14 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const [oauthPasteCode, setOauthPasteCode] = useState("");
   const abortRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // The element focused when onboarding opened. The app opens it on first launch
+  // with nothing focused; then Escape must land in the composer, not on BODY.
+  const [opener] = useState(() => document.activeElement);
+  const finalFocus = () => {
+    if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) return true;
+    requestAnimationFrame(focusComposer);
+    return false;
+  };
   const userMovedRef = useRef(false);
   const loadNotice = usePanelNotice(loadError || null);
 
@@ -598,6 +607,7 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
       onClose={() => finishSkip(onClose)}
       labelledBy="onboarding-title"
       dismissOnOutsidePress={false}
+      finalFocus={finalFocus}
       testId="onboarding-overlay"
       backdropClassName="fixed inset-0 z-50 [background:radial-gradient(ellipse_at_50%_38%,rgba(224,164,90,0.08)_0%,transparent_52%),#0f1113]"
       viewportClassName="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"

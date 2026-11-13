@@ -7,6 +7,12 @@ import { isDefaultSessionTitle } from "./sessionTitle";
 export const SWITCH_SESSION_EVENT = "harness-switch-session";
 export const COMPOSER_PREFILL_EVENT = "harness-composer-prefill";
 export const OPEN_ONBOARDING_EVENT = "harness-open-onboarding";
+export const FOCUS_COMPOSER_EVENT = "harness-focus-input";
+
+/** Moves keyboard focus to the message box of the active session. */
+export function focusComposer(): void {
+  window.dispatchEvent(new Event(FOCUS_COMPOSER_EVENT));
+}
 
 /** LeftRail owns the switch (optimistic paint, attach, revert on failure). */
 export function requestSessionSwitch(sessionId: string): void {

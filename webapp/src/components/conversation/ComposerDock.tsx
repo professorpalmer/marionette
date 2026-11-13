@@ -7,7 +7,7 @@ import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
-import { useId, type ReactNode, type RefObject } from "react";
+import { useId, useRef, type ReactNode, type RefObject } from "react";
 import {
   ChevronDown,
   Code,
@@ -50,6 +50,7 @@ import { expandSkills } from "../../lib/memoryDeepLink";
 import { focusSettingsPage } from "../SettingsShell";
 import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
 import { pickerConfig } from "../../lib/sessionConfig";
+import type { TurnRecovery } from "../../lib/turnTerminal";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type ServerQueueItem = { id: string; text: string; images?: string[]; model?: string };
@@ -61,6 +62,11 @@ export type MemoryProposal = {
   refine?: { kind: string; scope: string };
 };
 export type SymbolHit = { name: string; kind: string; path: string; line: number };
+
+/** A press in a composer menu keeps focus in the message box, so its blur does not close the menu first. */
+function keepComposerFocus(event: React.MouseEvent) {
+  event.preventDefault();
+}
 
 export default function ComposerDock({
   config,
@@ -142,6 +148,7 @@ export default function ComposerDock({
   handleCancelEdit,
   handleInputChange,
   handleKeyDown,
+  handleComposerBlur,
   handlePaste,
   insertMention,
   insertFolder,
@@ -152,11 +159,8 @@ export default function ComposerDock({
   handleQueueAdd,
   stop,
   send,
-  recoveryAvailable = false,
-  recoveryRetryAvailable = false,
-  recoveryCause = null,
-  onContinue,
-  onRetry,
+  recovery = null,
+  onRecover,
 }: {
   config: Config | null;
   taRef: RefObject<HTMLTextAreaElement | null>;
@@ -245,6 +249,8 @@ export default function ComposerDock({
   handleCancelEdit: () => void;
   handleInputChange: (val: string, cursorPosition: number) => void;
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** The message box lost focus (Tab, outside click): close the slash and mention menus. */
+  handleComposerBlur: () => void;
   handlePaste: (e: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   insertMention: (fileName: string) => void;
   insertFolder: (folderPath: string) => void;
@@ -255,15 +261,21 @@ export default function ComposerDock({
   handleQueueAdd: () => void;
   stop: () => void;
   send: (mode?: "interrupt") => void;
-  recoveryAvailable?: boolean;
-  recoveryRetryAvailable?: boolean;
-  recoveryCause?: string | null;
-  onContinue?: () => void;
-  onRetry?: () => void;
+  /** The one recovery action after a failed or cut turn; null when none applies. */
+  recovery?: TurnRecovery | null;
+  onRecover?: () => void;
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
   const busyChrome = composerBusy && !sessionSwitching;
   const slashPrefs = useSlashMenuPrefs();
+  const contextRingRef = useRef<HTMLButtonElement>(null);
+  const closeContextOnEscape = (event: React.KeyboardEvent) => {
+    if (event.key !== "Escape" || !showContextPanel) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSetShowContextPanel(false);
+    contextRingRef.current?.focus();
+  };
   const menu = slashSearch !== null ? slashMenu(allSlashCommands, slashSearch, slashPrefs) : null;
   const matchingSlash = menu?.items ?? [];
   // Screen readers follow the highlighted suggestion while focus stays in
@@ -623,7 +635,9 @@ export default function ComposerDock({
             </div>
           )}
 
-          {showContextPanel && !contextUsage && (
+          {showContextPanel && (
+          <div className="contents" data-testid="context-usage-panel" onKeyDown={closeContextOnEscape}>
+          {!contextUsage && (
             <div className="flex items-center justify-between p-3.5 bg-panel border-b border-edge text-ui-11.5 select-none rounded-t-2xl">
               <div className="flex items-center gap-2 text-faint">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -635,7 +649,7 @@ export default function ComposerDock({
               </button>
             </div>
           )}
-          {showContextPanel && contextUsage && (
+          {contextUsage && (
             <div className="flex flex-col p-3.5 bg-panel border-b border-edge text-ui-11.5 select-none rounded-t-2xl">
               <div className="flex items-center justify-between font-medium mb-2.5">
                 <div className="flex items-center gap-1.5">
@@ -753,9 +767,11 @@ export default function ComposerDock({
               )}
             </div>
           )}
+          </div>
+          )}
 
           {mentionSearch !== null && (
-            <div id={`${suggestId}-mentions`} role="listbox" aria-label="Mentions" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
+            <div id={`${suggestId}-mentions`} role="listbox" aria-label="Mentions" onMouseDown={keepComposerFocus} className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[250px] w-[340px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
               {!showCodebaseMention
                 && filteredFiles.length === 0
                 && filteredFolders.length === 0
@@ -910,7 +926,7 @@ export default function ComposerDock({
           )}
 
           {menu && (
-            <div className="absolute left-2 bottom-full mb-1.5 z-50 w-[340px] max-w-[calc(100%-1rem)] bg-panel border border-edge rounded-xl shadow-2xl overflow-hidden">
+            <div onMouseDown={keepComposerFocus} className="absolute left-2 bottom-full mb-1.5 z-50 w-[340px] max-w-[calc(100%-1rem)] bg-panel border border-edge rounded-xl shadow-2xl overflow-hidden">
               <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="max-h-[260px] overflow-y-auto py-1">
                 {matchingSlash.length === 0 ? (
                   <div
@@ -948,8 +964,6 @@ export default function ComposerDock({
                 <button
                   type="button"
                   aria-pressed={slashPrefs.expert}
-                  // Keep focus in the textarea so the menu stays open.
-                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => setSlashExpertMode(!slashPrefs.expert)}
                   title={slashPrefs.expert
                     ? "Expert mode is on: the menu shows internal commands. Click to hide them."
@@ -1025,6 +1039,7 @@ export default function ComposerDock({
             aria-activedescendant={activeSuggestionId}
             onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
             onKeyDown={handleKeyDown}
+            onBlur={handleComposerBlur}
             onPaste={handlePaste}
             rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
             className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
@@ -1093,7 +1108,9 @@ export default function ComposerDock({
             <SwarmReasoningPicker key={sessionId} sessionId={sessionId} config={pickerConfig(config, sessionId)} />
             </>)}
             <button
+              ref={contextRingRef}
               type="button"
+              onKeyDown={closeContextOnEscape}
               onClick={() => {
                 onSetShowContextPanel(!showContextPanel);
                 if (!showContextPanel) {
@@ -1135,29 +1152,20 @@ export default function ComposerDock({
                 <span className="composer-toolbar-send-label">Interrupt</span>
               </button>
             )}
-            {!composerBusy && recoveryAvailable && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => onContinue?.()}
-                  disabled={editBusy || transcriptStale || !onContinue}
-                  title={recoveryCause ? `Continue the incomplete reply (${recoveryCause})` : "Continue from the preserved partial answer"}
-                  aria-label="Continue"
-                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
-                >
-                  <span className="composer-toolbar-send-label">Continue</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onRetry?.()}
-                  disabled={editBusy || transcriptStale || !recoveryRetryAvailable || !onRetry}
-                  title="Retry the latest user ask"
-                  aria-label="Retry"
-                  className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
-                >
-                  <RefreshCw size={9} /><span className="composer-toolbar-send-label">Retry</span>
-                </button>
-              </>
+            {!composerBusy && recovery && (
+              <button
+                type="button"
+                onClick={() => onRecover?.()}
+                disabled={editBusy || transcriptStale || !onRecover}
+                title={recovery.action === "continue"
+                  ? `Continue from the work this turn already did${recovery.cause ? ` (${recovery.cause})` : ""}`
+                  : "Send the latest request again"}
+                aria-label={recovery.action === "continue" ? "Continue" : "Retry"}
+                className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
+              >
+                {recovery.action === "retry" ? <RefreshCw size={9} /> : null}
+                <span className="composer-toolbar-send-label">{recovery.action === "continue" ? "Continue" : "Retry"}</span>
+              </button>
             )}
             {busyChrome
               ? <>

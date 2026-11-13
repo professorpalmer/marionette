@@ -3,7 +3,7 @@ import { Menu } from "@base-ui/react/menu";
 import { Popover } from "@base-ui/react/popover";
 import { Brain, ChevronDown, Check, Loader2, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
-import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
+import { modelLabelOf, modelNameOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { MenuPanel, MenuRoot } from "./ui/overlay";
@@ -242,6 +242,11 @@ export default function PilotPicker({
   // clickable so a lagging view can never strand the user without a picker.
   const pending = !config.driver;
   const currentLabel = pending ? "Select model" : labelOf(current);
+  // The pill spends its width on the model; the vendor stays in the title and the rows.
+  const triggerLabel = pending ? currentLabel : modelNameOf(currentLabel);
+  const triggerTitle = pending || !current
+    ? "Pilot model"
+    : currentLabel === current ? current : `${currentLabel} (${current})`;
   const showReasoning = !pending && showReasoningEffort(config?.reasoning_support, current);
   const hasRows = !!organized.current || organized.groups.some((g) => g.items.length > 0);
   // Selection is disabled only while App binds the chosen pilot to the session.
@@ -303,16 +308,19 @@ export default function PilotPicker({
           open={modelOpen}
           modal="trap-focus"
           onOpenChange={(next) => {
+            if (next && modelSelectionDisabled) return;
             if (next) setReasonOpen(false);
             setModelOpen(next);
           }}
         >
+          {/* aria-disabled, not disabled: App disables selection while it binds the
+              pick, and a native disabled button cannot take the returning focus. */}
           <Popover.Trigger
-            disabled={modelSelectionDisabled}
-            title={current || "Pilot model"}
+            aria-disabled={modelSelectionDisabled || undefined}
+            title={triggerTitle}
             className="composer-control flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
           >
-            <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
+            <span className="pilot-picker-trigger-label text-left">{triggerLabel}</span>
             {binding
               ? <Loader2 size={11} className="shrink-0 opacity-60 animate-spin" aria-hidden="true" />
               : <ChevronDown size={11} className="shrink-0 opacity-60" />}
@@ -353,6 +361,8 @@ export default function PilotPicker({
                     className="bg-transparent text-ui-11.5 text-txt placeholder:text-faint outline-none w-full"
                   />
                 </div>
+                {/* Base UI traps focus only when a Close part is inside the popup. */}
+                <Popover.Close className="sr-only">Close model picker</Popover.Close>
                 <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[340px] overflow-y-auto">
                   {!hasRows ? (
                     <div className="px-3 py-2 text-ui-11 text-faint">No matching models</div>

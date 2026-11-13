@@ -23,6 +23,7 @@ import {
   terminalSelectionLabel,
 } from "../lib/terminalSelection";
 import { hostHasLayout, safePtyDims } from "./terminalDims";
+import { MONO_STACK } from "../lib/fontStacks";
 import {
   decodeTerminalStreamEvent,
   terminalBareOnDoneAction,
@@ -54,7 +55,7 @@ type AgentView = { id: string; command: string };
  * column where the previous line ended.
  */
 export const AGENT_TERMINAL_OPTIONS: ITerminalOptions & ITerminalInitOnlyOptions = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontFamily: MONO_STACK,
   fontSize: 12,
   theme: {
     background: "#0a0a0c",
@@ -303,7 +304,7 @@ export default function TerminalPane() {
     setSubmission("");
     const host = hostRef.current;
     const term = new Terminal({
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+      fontFamily: MONO_STACK,
       fontSize: 12,
       theme: {
         background: "#0a0a0c",

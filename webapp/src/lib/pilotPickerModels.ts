@@ -73,6 +73,18 @@ export function modelLabelOf(spec: string, labels?: Record<string, string>): str
   return (id || spec).trim();
 }
 
+/**
+ * The model part of a picker label, for the narrow composer pill:
+ * "DeepSeek: DeepSeek V4.1 Flash" gives "DeepSeek V4.1 Flash", and a bare
+ * "vendor/model" id gives "model". The full label stays in the rows and title.
+ */
+export function modelNameOf(label: string): string {
+  const colon = label.indexOf(": ");
+  if (colon > 0 && label.slice(colon + 2).trim()) return label.slice(colon + 2).trim();
+  const slash = label.lastIndexOf("/");
+  return slash >= 0 && slash < label.length - 1 ? label.slice(slash + 1) : label;
+}
+
 /** Pin the current driver at the front when present; leave others in order. */
 export function pinCurrentPilot(models: string[], current: string): string[] {
   if (!current) return models.slice();

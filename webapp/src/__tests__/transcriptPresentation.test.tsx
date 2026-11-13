@@ -569,7 +569,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Swarm · 3 results/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 3 swarms/i }));
 
     const cards = screen.getAllByTestId("swarm-result-card");
     const byOutcome = Object.fromEntries(
@@ -602,7 +602,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Swarm · 1 result/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 swarm/i }));
 
     const card = screen.getByTestId("swarm-result-card");
     fireEvent.click(within(card).getByRole("button", { name: /swarm done/i }));
@@ -659,7 +659,7 @@ describe("transcript presentation contract", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Swarm · 1 result/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 1 swarm/i }));
 
     const heldCard = screen.getByTestId("swarm-result-card");
     expect(heldCard).toHaveAttribute("data-outcome", "held");
@@ -1034,7 +1034,7 @@ describe("job_id → Jobs deep-link chrome", () => {
 
     render(<navigation.Provider><TranscriptList {...listProps(hydratedItems)} sessionId="session-A" /></navigation.Provider>);
 
-    fireEvent.click(screen.getByRole("button", { name: /Swarm · 2 results/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran 2 swarms/i }));
 
     screen.getAllByText("swarm done").forEach((label) => {
       fireEvent.click(label.closest("button")!);

@@ -35,7 +35,7 @@ import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { useSlashMenuPrefs } from "./conversation/slashMenuPrefs";
 import { updatePillLabel, updatePillTitle, type UpdateAvailability } from "../lib/updateAvailability";
 
-type FooterRuntimeStatus = "ready" | "thinking" | "busy";
+type FooterRuntimeStatus = "ready" | "no_model" | "thinking" | "busy";
 
 /** Mirror Conversation/LeftRail: pilot state + active-view runner liveness. */
 export function deriveFooterRuntimeStatus(
@@ -82,12 +82,31 @@ export function footerStatusWithTurn(feed: FooterRuntimeStatus, turnBusy: boolea
   return turnBusy && feed === "ready" ? "thinking" : feed;
 }
 
+/** An idle footer with no connected model is not "ready": nothing can run. */
+export function footerStatusWithModel(status: FooterRuntimeStatus, needsModel: boolean): FooterRuntimeStatus {
+  return needsModel && status === "ready" ? "no_model" : status;
+}
+
 /** Footer label (hover and screen readers) — never paint raw FooterRuntimeStatus enums. */
 export function footerRuntimeStatusLabel(status: FooterRuntimeStatus): string {
-  if (status === "thinking") return "Thinking…";
-  if (status === "busy") return "Busy";
-  return "Idle";
+  switch (status) {
+    case "thinking": return "Thinking…";
+    case "busy": return "Busy";
+    case "no_model": return "No model connected";
+    case "ready": return "Idle";
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }
+
+const FOOTER_DOT: Record<FooterRuntimeStatus, { title: string; tone: string; dot: string }> = {
+  ready: { title: "Idle", tone: "text-good", dot: "fill-good text-good" },
+  no_model: { title: "No model connected", tone: "text-faint", dot: "text-faint" },
+  thinking: { title: "Working", tone: "text-accent", dot: "fill-accent text-accent animate-pulse" },
+  busy: { title: "Swarm or background work in progress", tone: "text-accent", dot: "fill-accent text-accent animate-pulse" },
+};
 
 /** Sticky session GOAL is chip-ready when it has text and is not cleared. */
 export function sessionGoalForChip(goal?: SessionGoal | null): SessionGoal | null {
@@ -108,8 +127,9 @@ function truncateGoalText(text: string, max = 36): string {
 // updates. Each fact has one owner: the header shows the project and branch,
 // the composer picker shows the model, and the Jobs pane lists jobs. Narrow
 // widths hide secondary labels via container queries.
-export default function StatusBar({ update, leftOpen, rightOpen, onToggleLeft, onToggleRight, onOpenEconomics }: {
+export default function StatusBar({ update, needsModel = false, leftOpen, rightOpen, onToggleLeft, onToggleRight, onOpenEconomics }: {
   update: UpdateAvailability | null;
+  needsModel?: boolean;
   leftOpen: boolean; rightOpen: boolean;
   onToggleLeft: () => void; onToggleRight: () => void;
   onOpenEconomics: () => void;
@@ -262,8 +282,11 @@ export default function StatusBar({ update, leftOpen, rightOpen, onToggleLeft, o
 
   const { expert } = useSlashMenuPrefs();
   const turnBusy = useActivitySource("turn");
-  const runtimeStatus = footerStatusWithTurn(deriveFooterRuntimeStatus(sessionState), turnBusy);
-  const runtimeReady = runtimeStatus === "ready";
+  const runtimeStatus = footerStatusWithModel(
+    footerStatusWithTurn(deriveFooterRuntimeStatus(sessionState), turnBusy),
+    needsModel,
+  );
+  const dot = FOOTER_DOT[runtimeStatus];
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
   const processUsage = useProcessUsage({ busy: usageBusy });
@@ -331,14 +354,11 @@ export default function StatusBar({ update, leftOpen, rightOpen, onToggleLeft, o
         </span>
       ) : (
         <span
-          className={`flex items-center shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
-          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Working"}
+          className={`flex items-center shrink-0 ${dot.tone}`}
+          title={dot.title}
           data-runtime-status={runtimeStatus}
         >
-          <Circle
-            size={7}
-            className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
-          />
+          <Circle size={7} className={dot.dot} />
           <span className="sr-only">{footerRuntimeStatusLabel(runtimeStatus)}</span>
         </span>
       )}

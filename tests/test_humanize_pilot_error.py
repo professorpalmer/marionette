@@ -213,3 +213,37 @@ def test_nonempty_chat_completion_400_is_not_misclassified():
     out = s._humanize_pilot_error(raw)
     assert "provider detail" in out
     assert "history protocol" not in out.lower()
+
+
+# The real OpenRouter body for a batch-only variant (2026-11-13 regression pass),
+# with the account id replaced by a fake of the same shape.
+_BATCH_404 = (
+    'HTTP 404: {"error":{"message":"deepseek/deepseek-v4.1-flash-1017:batch cannot be used '
+    'with the chat/completions endpoint (adapter SailResearchBatchAdapter).","code":404},'
+    '"user_id":"user_2ZZtestAccountId0000000000"}'
+)
+
+
+def test_batch_variant_404_is_one_plain_sentence():
+    s = _s()
+    s.config.driver = "openrouter:deepseek/deepseek-v4.1-flash-1017:batch"
+    out = s._humanize_pilot_error(_BATCH_404)
+    assert out.startswith("pilot: the selected model")
+    assert "does not take chat requests" in out
+    assert "Pick another model" in out
+    assert "{" not in out
+    assert "user_2ZZ" not in out and "user_id" not in out
+
+
+def test_unknown_json_error_shows_the_message_not_the_body():
+    s = _s()
+    out = s._humanize_pilot_error(
+        'HTTP 418: {"error":{"message":"teapot is busy","code":418},"user_id":"user_2ZZtestAccountId0000000000"}'
+    )
+    assert out == "pilot: the provider returned HTTP 418: teapot is busy"
+
+
+def test_account_ids_never_reach_the_error_line():
+    s = _s()
+    out = s._humanize_pilot_error("upstream said no; organization_id=org-ZZ9 account_id: acct_ZZ9")
+    assert "org-ZZ9" not in out and "acct_ZZ9" not in out

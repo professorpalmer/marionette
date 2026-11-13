@@ -24,6 +24,7 @@ import {
 import { useInFileReview } from "./useInFileReview";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
+import { MONO_STACK } from "../lib/fontStacks";
 
 const SLOW_READ_MS = 150;
 
@@ -154,7 +155,7 @@ const customTheme = EditorView.theme({
     height: "100%",
   },
   ".cm-scroller": {
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    fontFamily: MONO_STACK,
   },
 });
 

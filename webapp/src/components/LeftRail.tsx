@@ -417,13 +417,14 @@ export default function LeftRail({
   // Branches list: SWR keyed by repo so the first fetch stays warm across
   // session switches / config-changed events (no blank-then-refill lag).
   const {
-    data: workspaces = [],
+    data: workspacesData,
     revalidate: revalidateWorkspaces,
   } = useStaleWhileRevalidate<Workspace[]>(
     workspacesCacheKey(currentRepo),
     () => api.workspaces(currentRepo || undefined),
     { enabled: !!currentRepo && !!workspaceInfo?.is_git },
   );
+  const workspaces = workspacesData ?? [];
 
   const {
     data: sessions = [],
@@ -1953,7 +1954,8 @@ export default function LeftRail({
             </div>
           }
         >
-          {filterBranchWorkspaces(workspaces).length === 0 && (
+          {/* Before the first read the list is unknown, not empty. */}
+          {workspacesData !== undefined && filterBranchWorkspaces(workspaces).length === 0 && (
             <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
           <div

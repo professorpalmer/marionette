@@ -244,7 +244,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     // fold below it. The live fold's own chrome is the busy cue.
     const folds = screen.getAllByTestId("activity-fold");
     expect(folds).toHaveLength(2);
-    expect(folds[1].textContent).toMatch(/Swarm · running/);
+    expect(folds[1].textContent).toMatch(/Running 1 swarm/);
     const prose = screen.getByText(/Workers flying — validating when they land/i);
     expect(folds[0].compareDocumentPosition(prose) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(prose.compareDocumentPosition(folds[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -499,7 +499,7 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     );
 
     expect(screen.getAllByText(/Exploring/i)).toHaveLength(1);
-    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Running 1 swarm/i })).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
@@ -527,7 +527,7 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     );
 
     expect(screen.getAllByText(/Exploring/i)).toHaveLength(1);
-    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Running 1 swarm/i })).toBeTruthy();
   });
 
   it("does not paint the same reasoning paragraph twice in one Thought fold", () => {

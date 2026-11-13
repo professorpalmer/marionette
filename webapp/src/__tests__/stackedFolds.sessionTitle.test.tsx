@@ -321,7 +321,8 @@ describe("stacked Swarm done fold", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Running 1 swarm/i }));
+    // The fold counts each swarm once: the running card and the eight done pills.
+    fireEvent.click(screen.getByRole("button", { name: /Running 9 swarms/i }));
 
     const fold = screen.getByTestId("swarm-done-fold");
     expect(fold.querySelector(".transcript-fold-chrome")?.textContent || "").toMatch(/Swarm done · 8/);

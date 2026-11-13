@@ -25,7 +25,7 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 
 const noop = () => {};
 
-function renderDock(slashSearch: string | null, config: Config | null = null) {
+function renderDock(slashSearch: string | null, config: Config | null = null, handleComposerBlur: () => void = noop) {
   return render(
     <ComposerDock
       config={config}
@@ -95,6 +95,7 @@ function renderDock(slashSearch: string | null, config: Config | null = null) {
       handleCancelEdit={noop}
       handleInputChange={noop}
       handleKeyDown={noop}
+      handleComposerBlur={handleComposerBlur}
       handlePaste={noop}
       insertMention={noop}
       insertFolder={noop}
@@ -164,5 +165,18 @@ describe("ComposerDock with no model", () => {
     renderDock(null, { ...noKey, driver: "local:qwen3-coder-30b" });
     expect(screen.getByTestId("pilot-picker")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect a model" })).toBeNull();
+  });
+
+  it("closes the menu when the message box loses focus (Tab or an outside click)", () => {
+    const onBlur = vi.fn();
+    renderDock("", null, onBlur);
+    fireEvent.blur(screen.getByRole("textbox", { name: "Message" }));
+    expect(onBlur).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps focus in the message box when a command row is pressed", () => {
+    renderDock("help");
+    const pressed = fireEvent.mouseDown(screen.getByText("Show help"));
+    expect(pressed).toBe(false);
   });
 });

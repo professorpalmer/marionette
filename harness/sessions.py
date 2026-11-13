@@ -1150,6 +1150,29 @@ def _message_plain_text(msg: dict) -> str:
     return " ".join(str(content or "").split())
 
 
+_MD_LINK_RE = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
+_MD_FENCE_RE = re.compile(r"```[A-Za-z0-9_+-]*")
+_MD_HEADING_RE = re.compile(r"(^|\s)#{1,6}\s+")
+_MD_EMPHASIS_RE = re.compile(
+    r"(\*\*|~~|(?<![\w*])\*(?=\S)|(?<=\S)\*(?![\w*]))"
+)
+
+
+def _plain_preview(text: str) -> str:
+    """One line of plain text: markdown marks out, words and code kept.
+
+    The session list shows the preview as text, so ``**Bug:** `src/calc.py```
+    read with its stars and backticks. ``__`` stays, because ``__init__`` is
+    a name more often than emphasis.
+    """
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _MD_FENCE_RE.sub(" ", text)
+    text = text.replace("`", "")
+    text = _MD_HEADING_RE.sub(r"\1", text)
+    text = _MD_EMPHASIS_RE.sub("", text)
+    return " ".join(text.split())
+
+
 def _preview_from_messages(messages: Any, max_chars: int) -> str:
     """Prefer the last spoken assistant finale; fall back to first user prompt.
 
@@ -1178,7 +1201,7 @@ def _preview_from_messages(messages: Any, max_chars: int) -> str:
             continue
         if role == "assistant" and not is_activity_headline_text(text):
             last_finale = text
-    chosen = last_finale or first_user
+    chosen = _plain_preview(last_finale or first_user)
     return chosen[:max_chars] if chosen else ""
 
 
@@ -1231,8 +1254,7 @@ def transcript_preview(
             if not match:
                 text = ""
             else:
-                text = " ".join(_unescape_json_string(match.group(1)).split())
-                text = text[:cap]
+                text = _plain_preview(_unescape_json_string(match.group(1)))[:cap]
     except Exception:
         return ""
     with _preview_cache_lock:

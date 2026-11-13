@@ -1006,14 +1006,17 @@ def _driver_provider_available(spec: str) -> bool:
     return bool(p and p.available)
 
 
-def _driver_in_enabled_set(driver: str, enabled: list) -> bool:
-    """True if a driver spec matches any enabled picker spec. Handles the
-    spelling variants: an enabled spec is 'provider:model' while the driver may
-    be the same spec, the bare model id, or a bare catalog name whose provider
-    slug differs (e.g. 'qwen3-coder-30b' vs
-    'openrouter:qwen/qwen3-coder-30b-a3b-instruct')."""
-    if not driver:
-        return False
+def _picker_spec_for(driver: str, pilots: list):
+    """The picker spec *driver* names, or None.
+
+    An enabled spec is 'provider:model'. The driver may be that spec, the bare
+    model id, or a bare catalog name whose provider slug differs (e.g.
+    'qwen3-coder-30b' vs 'openrouter:qwen/qwen3-coder-30b-a3b-instruct').
+    """
+    if not driver or not pilots:
+        return None
+    if driver in pilots:
+        return driver
     aliases = {driver}
     try:
         from pmharness.registry import load_catalog
@@ -1022,18 +1025,16 @@ def _driver_in_enabled_set(driver: str, enabled: list) -> bool:
                 aliases.add(m["openrouter"])
     except Exception:
         pass
-    for spec in enabled:
+    for spec in pilots:
         model = spec.split(":", 1)[1] if ":" in spec else spec
         if spec in aliases or model in aliases:
-            return True
-    return False
+            return spec
+    return None
 
 
 def _driver_in_picker(driver: str, pilots: list) -> bool:
     """True when *driver* is a live picker spec (or a bare/alias of one)."""
-    if not driver or not pilots:
-        return False
-    return driver in pilots or _driver_in_enabled_set(driver, pilots)
+    return _picker_spec_for(driver, pilots) is not None
 
 
 def _resolve_available_driver():
@@ -1053,7 +1054,11 @@ def _resolve_available_driver():
         provider_ok = _driver_provider_available(_cfg.driver)
         if provider_ok and "HARNESS_DRIVER" in os.environ:
             return
-        if provider_ok and _driver_in_picker(_cfg.driver, candidates):
+        spec = _picker_spec_for(_cfg.driver, candidates) if provider_ok else None
+        if spec:
+            # A bare catalog alias (the compiled-in 'qwen3-coder-30b') runs, but
+            # the picker cannot label it or show its facts. Use the picker spec.
+            _cfg.driver = spec
             return
         for spec in candidates:
             if _driver_provider_available(spec):
