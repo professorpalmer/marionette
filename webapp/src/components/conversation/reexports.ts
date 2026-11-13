@@ -180,7 +180,9 @@ export {
   shouldBlockEmptySend,
   shouldSteerWhileBusy,
   formatHelpSlashReply,
-  formatCompactCompleteMessage,
+  appendCompactResult,
+  appendCompactFailure,
+  compactFailureIsNoop,
   formatCompactErrorMessage,
   shouldApplyCompactSettle,
   formatSteerErrorMessage,
@@ -210,7 +212,6 @@ export {
   codebaseMentionMatches,
   codebaseQueryFromMentionSearch,
   filterMentionPaths,
-  filterSlashCommands,
   cycleSelectIndex,
   mentionTokenForDroppedPath,
   appendMentionsToInput,
@@ -329,5 +330,4 @@ export {
   prefetchSessionTranscript,
   prefetchSessionTranscripts,
 } from "./transcriptPrefetch";
-export { useRunnersBusyPoll } from "./useRunnersBusyPoll";
 export { default as ConversationChatColumn } from "./ConversationChatColumn";

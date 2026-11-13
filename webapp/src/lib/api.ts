@@ -589,7 +589,7 @@ export type Workspace = {
 };
 export type SessionForkPreview = { revision: string; boundaries: { event_id: number; label: string; role: string }[] };
 
-export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; title_user?: boolean; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string; pilot_preferences?: { driver?: string; reasoning_effort?: ReasoningEffort; swarm_reasoning_effort?: ReasoningEffort } };
+export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; title_user?: boolean; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string; updated?: number; pilot_preferences?: { driver?: string; reasoning_effort?: ReasoningEffort; swarm_reasoning_effort?: ReasoningEffort } };
 
 export type AdviceReceipt = {
   session_id: string;
@@ -1439,6 +1439,8 @@ export type ContextCategory = {
 export type ContextUsageResponse = {
   total: number;
   limit: number;
+  /** Context size that starts automatic compaction (75% of the window or less). */
+  compaction_trigger_tokens?: number;
   categories: ContextCategory[];
   tool_output_tokens_saved?: number;
   tool_output_savings_usd?: number;
@@ -2366,6 +2368,11 @@ export const api = {
       after_tokens: number;
       error?: string;
       reason?: string;
+      mode?: string;
+      kept?: string[];
+      dropped?: string[];
+      handles?: string[];
+      story?: string[];
     }>("/api/session/compact", {}),
   stripSessionImages: () =>
     postJSON<{ ok: boolean; stripped?: number; error?: string }>(

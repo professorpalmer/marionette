@@ -116,6 +116,8 @@ export class JobMetadataStore {
   private readonly listeners = new Set<() => void>();
   private client: JobMetadataClient;
   private inFlight = false;
+  /** Jobs a view outside the Jobs pane shows, by selection key; the detail slot reads them. */
+  private wanted = new Map<string, { selection: MetadataSelection; live: boolean }>();
   // Host generations survive effect replay. A new authoritative host generation
   // retires the old one; retain only the last admitted capture, never a history.
   private sourceCapture: { key: string; error: MetadataErrorCode | null } | null = null;
@@ -854,6 +856,7 @@ export class JobMetadataStore {
         && pmActiveStatuses.some(status => status === cached.observation?.lifecycle)
         && Date.now() - (cached.refreshedAt ?? 0) >= DETAIL_REFRESH_MS)) out.push(selection);
     };
+    for (const { selection, live } of this.wanted.values()) consider(selection, 0, live);
     for (const observation of this.state.local.observations) {
       const canonical = observation.row.canonical;
       if (!canonical) continue;
@@ -869,6 +872,17 @@ export class JobMetadataStore {
     }
     return out.sort((a, b) => (this.state.detailCache[metadataSelectionKey(a)]?.refreshedAt ?? -Infinity)
       - (this.state.detailCache[metadataSelectionKey(b)]?.refreshedAt ?? -Infinity)).slice(0, 8);
+  }
+  /**
+   * Keep a job's detail in detailCache for a view outside the Jobs pane. The
+   * scheduler's detail slot reads it (never beside another read); a live job
+   * reads again on the detail cadence. Returns the release.
+   */
+  wantDetail(selection: MetadataSelection, live: boolean): () => void {
+    const key = metadataSelectionKey(selection);
+    const entry = { selection, live };
+    this.wanted.set(key, entry);
+    return () => { if (this.wanted.get(key) === entry) this.wanted.delete(key); };
   }
   /** Prefetch PM detail for local aliases so titles/quality do not wait on a click. */
   async hydrateListedDetails(options: DetailRefreshOptions = {}): Promise<MetadataActionResult> {

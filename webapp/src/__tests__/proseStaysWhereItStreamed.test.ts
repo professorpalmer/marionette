@@ -69,14 +69,35 @@ describe("prose stays where it streamed", () => {
     const said: Item = { kind: "msg", msg: { role: "assistant", text: "Checking" } };
     const steer: Item = { kind: "steer", text: "also the lexer" };
     const answer: Item = { kind: "msg", msg: { role: "assistant", text: "Done." } };
-    expect(shape([user, card("a"), explicit, said, card("b"), steer, card("c"), answer], false)).toEqual([
+    expect(shape([user, card("a"), explicit, said, card("b"), answer], false)).toEqual([
       "user:fix the parser",
       "fold[a]",
       "assistant:Here is the plan.",
       "work[assistant:Checking fold[b]]",
-      "steer",
-      "fold[c]",
       "assistant:Done.",
+    ]);
+  });
+
+  it("keeps one Worked for fold when the user steered mid-turn, with the steer after it", () => {
+    const said: Item = { kind: "msg", msg: { role: "assistant", text: "Checking" } };
+    const steer: Item = { kind: "steer", text: "also the lexer" };
+    const answer: Item = { kind: "msg", msg: { role: "assistant", text: "Done." } };
+    expect(shape([user, card("a"), said, card("b"), steer, card("c"), answer], false)).toEqual([
+      "user:fix the parser",
+      "work[fold[a] assistant:Checking fold[b] fold[c]]",
+      "steer",
+      "assistant:Done.",
+    ]);
+    const compaction: Item = { kind: "compaction", before_tokens: 9000, after_tokens: 3000 };
+    expect(shape([user, card("a"), said, compaction, card("b"), answer], false)).toEqual([
+      "user:fix the parser",
+      "work[fold[a] assistant:Checking fold[b]]",
+      "compaction",
+      "assistant:Done.",
+    ]);
+    // While the turn is live the steer stays where it was sent.
+    expect(shape([user, card("a"), said, card("b"), steer, card("c")], true)).toEqual([
+      "user:fix the parser", "fold[a]", "assistant:Checking", "fold[b]", "steer", "fold[c]",
     ]);
   });
 

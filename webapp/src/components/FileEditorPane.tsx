@@ -11,7 +11,10 @@ import { html } from "@codemirror/lang-html";
 import { markdown } from "@codemirror/lang-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Menu } from "@base-ui/react/menu";
+import { Popover } from "@base-ui/react/popover";
 import { api } from "../lib/api";
+import { MenuPanel, MenuRoot, pointAnchor } from "./ui/overlay";
 import { revealInFolderLabel, revealWorkspacePath } from "../lib/transport";
 import {
   mutationEventPath,
@@ -182,7 +185,7 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
   const [inlineError, setInlineError] = useState<string | null>(null);
   const editorViewRef = useRef<EditorView | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const editorAreaRef = useRef<HTMLDivElement>(null);
   const pendingJumpRef = useRef<{ line?: number; col?: number } | null>(
     line != null ? { line, col } : null
   );
@@ -226,37 +229,10 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    if (!pathMenu) return;
-    const close = () => setPathMenu(null);
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [pathMenu]);
-
-  useEffect(() => {
-    if (showInlinePrompt && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [showInlinePrompt]);
-
-  useEffect(() => {
-    if (!showInlinePrompt) return;
-    const handleOutsideClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setShowInlinePrompt(false);
-        setInlineRange(null);
-      }
-    };
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => {
-      document.removeEventListener("mousedown", handleOutsideClick);
-    };
-  }, [showInlinePrompt]);
+  const closeInlinePrompt = () => {
+    setShowInlinePrompt(false);
+    setInlineRange(null);
+  };
 
   const handleInlineEditSubmit = async () => {
     if (!inlineInstruction.trim() || !inlineRange || !editorViewRef.current) return;
@@ -573,13 +549,14 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
 
   return (
     <div className="flex-1 flex flex-col bg-bg h-full min-h-0 overflow-hidden relative">
-      {pathMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px]"
-          style={{ top: pathMenu.y, left: pathMenu.x }}
-          onClick={(e) => e.stopPropagation()}
+      <MenuRoot open={pathMenu !== null} onOpenChange={(next) => { if (!next) setPathMenu(null); }}>
+        <MenuPanel
+          label="Path actions"
+          anchor={pathMenu ? pointAnchor(pathMenu.x, pathMenu.y) : undefined}
+          sideOffset={0}
+          className="bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[160px] outline-none"
         >
-          <button
+          <Menu.Item
             onClick={async () => {
               setPathMenu(null);
               const res = await revealWorkspacePath(repoRoot, path);
@@ -591,12 +568,12 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                 );
               }
             }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-txt transition-colors outline-none"
           >
             {revealInFolderLabel()}
-          </button>
-        </div>
-      )}
+          </Menu.Item>
+        </MenuPanel>
+      </MenuRoot>
       <div className="flex items-center justify-between px-4 py-1.5 border-b border-edge bg-panel select-none shrink-0 gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span
@@ -809,21 +786,28 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
         </div>
       )}
 
-      <div className="flex-1 overflow-hidden relative min-h-0">
+      <div ref={editorAreaRef} className="flex-1 overflow-hidden relative min-h-0">
         {showCodeMirror && (
           <>
-            {showInlinePrompt && (
-              <div ref={containerRef} className="absolute top-2 right-4 z-50 w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2">
+            <Popover.Root open={showInlinePrompt} onOpenChange={(next) => { if (!next) closeInlinePrompt(); }}>
+              <Popover.Portal>
+                {/* Top right corner inside the editor area: 8px down, 16px in. */}
+                <Popover.Positioner
+                  anchor={editorAreaRef}
+                  side="bottom"
+                  align="end"
+                  sideOffset={({ anchor }) => 8 - anchor.height}
+                  alignOffset={16}
+                  className="z-50 outline-none"
+                >
+              <Popover.Popup aria-label="Inline edit" initialFocus={inputRef} className="w-96 bg-panel2 border border-edge rounded-md shadow-lg p-3 flex flex-col gap-2 outline-none">
                 <div className="flex items-center justify-between">
                   <span className="text-ui-11 font-semibold text-accent uppercase tracking-wider flex items-center gap-1">
                     <Wand2 size={12} className="text-accent shrink-0 animate-pulse" />
                     Inline Edit
                   </span>
                   <button
-                    onClick={() => {
-                      setShowInlinePrompt(false);
-                      setInlineRange(null);
-                    }}
+                    onClick={closeInlinePrompt}
                     className="text-ui-10 text-muted hover:text-txt transition-colors border border-edge rounded px-1.5 py-0.5 bg-panel"
                   >
                     Esc
@@ -842,10 +826,6 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                       if (e.key === "Enter") {
                         e.preventDefault();
                         await handleInlineEditSubmit();
-                      } else if (e.key === "Escape") {
-                        e.preventDefault();
-                        setShowInlinePrompt(false);
-                        setInlineRange(null);
                       }
                     }}
                   />
@@ -861,8 +841,10 @@ export default function FileEditorPane({ path, line, col, onClose, onDirtyChange
                     {inlineError}
                   </div>
                 )}
-              </div>
-            )}
+              </Popover.Popup>
+                </Popover.Positioner>
+              </Popover.Portal>
+            </Popover.Root>
             <CodeMirror
               value={content}
               theme={okaidia}

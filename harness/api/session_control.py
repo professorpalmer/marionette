@@ -148,6 +148,22 @@ def _event_data(event: Any) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+_RECEIPT_KEYS = ("mode", "kept", "dropped", "handles", "story")
+
+
+def _compaction_receipt(events: list) -> dict:
+    """Receipt fields of the last non-aborted compaction event, so the
+    transcript row for Compact Now matches the row an auto pass paints."""
+    for ev in reversed(events):
+        if _event_kind(ev) != "compaction":
+            continue
+        data = _event_data(ev)
+        if data.get("aborted"):
+            continue
+        return {k: data[k] for k in _RECEIPT_KEYS if data.get(k) not in (None, "", [])}
+    return {}
+
+
 def _successful_compaction(
     events: list, *, before_tokens: int, after_tokens: int
 ) -> bool:
@@ -377,6 +393,7 @@ def post_session_compact(svc: SessionControlServices) -> tuple[int, JsonPayload]
         "before_tokens": before,
         "after_tokens": after,
         "reason": "ok",
+        **_compaction_receipt(events),
     }
 
 

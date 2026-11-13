@@ -216,7 +216,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
   // background without blanking a cache hit.
   //
   // Busy chrome: on switchedSession default idle/turnOpen=false until runners
-  // resolve for the target. applyRunnerBusy / useRunnersBusyPoll re-arm Stop
+  // resolve for the target. applyRunnerBusy re-arms Stop
   // when the new session is actually running (no cross-session stickiness).
   useEffect(() => {
     const prevId = cachedSessionIdRef.current;
@@ -414,8 +414,13 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       abandonStaleLocalStreamRef,
     });
     let { startChatEventsReattach } = makeReattach();
+    // The store replay paints the newest turn on top of the loaded transcript.
+    // A replay that starts first changes the rows, so the load is then
+    // discarded as stale and only the replayed tail stays. The load's
+    // settle (finally below) starts the replay; a caller before it waits.
+    let transcriptSettled = false;
     ensureChatEventsReattachRef.current = () => {
-      if (cancelled || localStreamActiveRef.current) return;
+      if (cancelled || localStreamActiveRef.current || !transcriptSettled) return;
       if (reattachGen !== streamGenRef.current) {
         clearChatEventsPoll();
         reattachGen = streamGenRef.current;
@@ -506,7 +511,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        // Idle until useRunnersBusyPoll re-arms; never leave A's chrome stuck.
+        // Idle until the store replay re-arms; never leave A's chrome stuck.
         const failure = sessionStateFailureSwitchDecision();
         detachedBusyRef.current = false;
         setSessionSwitchPending(false);
@@ -626,6 +631,7 @@ export function useSessionSwitch(deps: UseSessionSwitchDeps) {
           }, 2000 * recoveryAttempts);
         }
       }).finally(() => {
+        transcriptSettled = true;
         if (!cancelled) void startChatEventsReattach();
       });
 

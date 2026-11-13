@@ -327,7 +327,7 @@ describe("feed collapse: telemetry joins the activity strip", () => {
     card: { id: "read-1", goal: "read file", running: false, open: false },
   };
 
-  it("folds compaction, gate, and verify into the investigation", () => {
+  it("folds gate and verify into the investigation and keeps compaction a divider row", () => {
     const items: Item[] = [
       card,
       { kind: "compaction", before_tokens: 12000, after_tokens: 4000, mode: "extractive" },
@@ -336,14 +336,9 @@ describe("feed collapse: telemetry joins the activity strip", () => {
       { kind: "msg", msg: { role: "assistant", text: "The import path was wrong." } },
     ];
     const grouped = groupAgentActivity(items, new Set());
-    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "msg"]);
-    if (grouped[0].kind !== "activity_group") return;
-    expect(grouped[0].items.map((item) => item.kind)).toEqual([
-      "card",
-      "compaction",
-      "quality_gate",
-      "verification",
-    ]);
+    expect(grouped.map((row) => row.kind)).toEqual(["activity_group", "compaction", "activity_group", "msg"]);
+    if (grouped[2].kind !== "activity_group") return;
+    expect(grouped[2].items.map((item) => item.kind)).toEqual(["quality_gate", "verification"]);
   });
 
   it("keeps question, auth, and steer as conversation rows", () => {
@@ -394,15 +389,13 @@ describe("feed collapse: telemetry joins the activity strip", () => {
     ]);
   });
 
-  it("does not let a lone compaction sit beside the sentence", () => {
+  it("paints a lone compaction as its own divider row", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "assistant", text: "Done." } },
       { kind: "compaction", before_tokens: 8000, after_tokens: 3000 },
     ];
     const grouped = groupAgentActivity(items, new Set());
-    expect(grouped.map((row) => row.kind)).toEqual(["msg", "activity_group"]);
-    if (grouped[1].kind !== "activity_group") return;
-    expect(grouped[1].items.map((item) => item.kind)).toEqual(["compaction"]);
+    expect(grouped.map((row) => row.kind)).toEqual(["msg", "compaction"]);
   });
 });
 

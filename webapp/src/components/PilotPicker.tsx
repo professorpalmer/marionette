@@ -1,10 +1,13 @@
 import { useEffect, useId, useMemo, useState, useRef } from "react";
-import { ChevronDown, Check, Loader2, Search } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { Popover } from "@base-ui/react/popover";
+import { Brain, ChevronDown, Check, Loader2, Search } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { modelLabelOf, organizePilotModels, providerLabelOf } from "../lib/pilotPickerModels";
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
-import { useOverlayFocus } from "../lib/overlayFocus";
+import { MenuPanel, MenuRoot } from "./ui/overlay";
+import { loadModelFacts, modelFactParts, type ModelFactsState } from "../lib/pilotModelFacts";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
 type PickerSeed = {
@@ -67,28 +70,16 @@ export default function PilotPicker({
   const listRef = useRef<HTMLDivElement>(null);
   const optionIdBase = useId();
   const [rerouteNotice, setRerouteNotice] = useState<string | null>(seed?.rerouteNotice ?? null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const modelMenuRef = useRef<HTMLDivElement>(null);
-  const reasonMenuRef = useRef<HTMLDivElement>(null);
-  const reasonSelectedRef = useRef<HTMLButtonElement>(null);
+  const reasonSelectedRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
-  const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const operation = useRef(0);
   const reasoningOperation = useRef(0);
   const retainOperation = useRef(0);
+  const [factsState, setFactsState] = useState<ModelFactsState>({ kind: "loading" });
   const [retainReasoning, setRetainReasoning] = useState(false);
   const [retainReady, setRetainReady] = useState(false);
   const [savingRetain, setSavingRetain] = useState(false);
   useEffect(() => () => { operation.current++; reasoningOperation.current++; retainOperation.current++; }, [sessionId]);
-
-  useOverlayFocus(modelOpen, modelMenuRef, {
-    initialFocusRef: filterRef,
-    onClose: () => setModelOpen(false),
-  });
-  useOverlayFocus(reasonOpen, reasonMenuRef, {
-    initialFocusRef: reasonSelectedRef,
-    onClose: () => setReasonOpen(false),
-  });
 
   useEffect(() => {
     if (!config) return;
@@ -106,25 +97,18 @@ export default function PilotPicker({
   }, []);
 
   useEffect(() => {
-    if (!modelOpen) {
-      setQuery("");
-      return;
-    }
-    const t = window.setTimeout(() => filterRef.current?.focus(), 0);
-    return () => window.clearTimeout(t);
+    if (!modelOpen) return;
+    let active = true;
+    loadModelFacts().then(
+      (facts) => { if (active) setFactsState({ kind: "ready", facts }); },
+      () => { if (active) setFactsState({ kind: "unavailable" }); },
+    );
+    return () => { active = false; };
   }, [modelOpen]);
 
   useEffect(() => {
-    if (!modelOpen && !reasonOpen) return;
-    const handleOutsideClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setModelOpen(false);
-        setReasonOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, [modelOpen, reasonOpen]);
+    if (!modelOpen) setQuery("");
+  }, [modelOpen]);
 
   useEffect(() => {
     if (!sessionId || !reasonOpen || reasoning === "none") return;
@@ -268,27 +252,39 @@ export default function PilotPicker({
     const isSelected = m === current;
     const isActive = m === activeModel;
     const label = labelOf(m);
+    const facts = factsState.kind === "ready" ? factsState.facts.get(m) : undefined;
+    // The line keeps its height while loading so rows never jump.
+    const meta = factsState.kind === "loading"
+      ? "\u00a0"
+      : facts
+        ? modelFactParts(facts).join(" \u00b7 ")
+        : "Details unknown";
     return (
       <div
         key={m}
         id={optionId(m)}
         role="option"
         aria-selected={isSelected}
+        aria-description={factsState.kind === "loading" ? undefined : meta}
         data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
         onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}
-        className={`flex items-center justify-between px-3 py-1.5 text-ui-11.5 cursor-pointer transition select-none ${
+        className={`flex flex-col px-3 py-1.5 text-ui-11.5 cursor-pointer transition-colors select-none ${
           isActive ? "bg-panel2" : ""
         } ${isSelected ? "text-accent font-medium" : "text-txt/90"}`}
+        title={m}
       >
-        <span className="min-w-0 flex-1 leading-snug" title={m}>{label}</span>
-        {isSelected && <Check size={11} className="shrink-0 ml-2" />}
+        <span className="flex items-center justify-between min-w-0">
+          <span className="leading-snug truncate">{label}</span>
+          {isSelected && <Check size={11} className="shrink-0 ml-2" />}
+        </span>
+        <span className="text-ui-10 text-faint font-normal tabular-nums leading-snug truncate" data-testid="pilot-model-facts">{meta}</span>
       </div>
     );
   };
 
   return (
-    <div className="relative inline-flex min-w-0" ref={containerRef}>
+    <div className="relative inline-flex min-w-0">
       {/* Notices float above the picker so the toolbar height never changes.
           Binding progress lives in the trigger; this region announces it. */}
       <span role="status" className="sr-only">{binding ? setupNotice : ""}</span>
@@ -303,123 +299,128 @@ export default function PilotPicker({
       ) : null}
       <div className="pilot-picker-controls relative inline-flex items-center gap-1 min-w-0">
       <div className="pilot-model-slot relative min-w-0">
-        <button
-          ref={modelTriggerRef}
-          disabled={modelSelectionDisabled}
-          aria-haspopup="dialog"
-          aria-expanded={modelOpen}
-          onClick={() => {
-            setReasonOpen(false);
-            setModelOpen((prev) => !prev);
+        <Popover.Root
+          open={modelOpen}
+          modal="trap-focus"
+          onOpenChange={(next) => {
+            if (next) setReasonOpen(false);
+            setModelOpen(next);
           }}
-          title={current || "Pilot model"}
-          className="flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
         >
-          <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
-          {binding
-            ? <Loader2 size={11} className="shrink-0 opacity-60 animate-spin" aria-hidden="true" />
-            : <ChevronDown size={11} className="shrink-0 opacity-60" />}
-        </button>
-
-        {modelOpen && (
-          <div
-            ref={modelMenuRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Pilot model picker"
-            className="absolute left-0 bottom-full mb-1 z-50 w-[min(20rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+          <Popover.Trigger
+            disabled={modelSelectionDisabled}
+            title={current || "Pilot model"}
+            className="composer-control flex items-center gap-1 min-w-0 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
           >
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
-              <Search size={12} className="text-faint shrink-0" />
-              <input
-                ref={filterRef}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.nativeEvent.isComposing) return;
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    e.preventDefault();
-                    if (!flat.length) return;
-                    const step = e.key === "ArrowDown" ? 1 : -1;
-                    setActiveIdx((i) => (Math.min(i, flat.length - 1) + step + flat.length) % flat.length);
-                  } else if (e.key === "Enter" && activeModel) {
-                    e.preventDefault();
-                    void swap(activeModel);
-                  }
-                }}
-                role="combobox"
-                aria-expanded="true"
-                aria-controls={`${optionIdBase}-list`}
-                aria-activedescendant={activeModel ? optionId(activeModel) : undefined}
-                aria-label="Search models or providers"
-                placeholder="Search models or providers"
-                className="bg-transparent text-ui-11.5 text-txt placeholder:text-faint outline-none w-full"
-              />
-            </div>
-            <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[280px] overflow-y-auto">
-              {!hasRows ? (
-                <div className="px-3 py-2 text-ui-11 text-faint">No matching models</div>
-              ) : (
-                <>
-                  {organized.current && renderRow(organized.current)}
-                  {organized.groups.map((g) => (
-                    <div key={g.provider} role="group" aria-label={providerLabelOf(g.provider)}>
-                      <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-ui-10 text-faint font-medium select-none">
-                        {providerLabelOf(g.provider)}
-                      </div>
-                      {g.items.map((m) => renderRow(m))}
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
-          </div>
-        )}
+            <span className="pilot-picker-trigger-label text-left">{currentLabel}</span>
+            {binding
+              ? <Loader2 size={11} className="shrink-0 opacity-60 animate-spin" aria-hidden="true" />
+              : <ChevronDown size={11} className="shrink-0 opacity-60" />}
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner className="z-50 outline-none" side="top" align="start" sideOffset={4}>
+              <Popover.Popup
+                aria-label="Pilot model picker"
+                initialFocus={filterRef}
+                className="w-[min(23rem,calc(100vw-2rem))] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden outline-none"
+              >
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 mb-0.5 border-b border-edge/50">
+                  <Search size={12} className="text-faint shrink-0" />
+                  <input
+                    ref={filterRef}
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") return;
+                      e.stopPropagation();
+                      if (e.nativeEvent.isComposing) return;
+                      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                        e.preventDefault();
+                        if (!flat.length) return;
+                        const step = e.key === "ArrowDown" ? 1 : -1;
+                        setActiveIdx((i) => (Math.min(i, flat.length - 1) + step + flat.length) % flat.length);
+                      } else if (e.key === "Enter" && activeModel) {
+                        e.preventDefault();
+                        void swap(activeModel);
+                      }
+                    }}
+                    role="combobox"
+                    aria-expanded="true"
+                    aria-controls={`${optionIdBase}-list`}
+                    aria-activedescendant={activeModel ? optionId(activeModel) : undefined}
+                    aria-label="Search models or providers"
+                    placeholder="Search models or providers"
+                    className="bg-transparent text-ui-11.5 text-txt placeholder:text-faint outline-none w-full"
+                  />
+                </div>
+                <div ref={listRef} id={`${optionIdBase}-list`} role="listbox" aria-label="Models" className="max-h-[340px] overflow-y-auto">
+                  {!hasRows ? (
+                    <div className="px-3 py-2 text-ui-11 text-faint">No matching models</div>
+                  ) : (
+                    <>
+                      {organized.current && renderRow(organized.current)}
+                      {organized.groups.map((g) => (
+                        <div key={g.provider} role="group" aria-label={providerLabelOf(g.provider)}>
+                          <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-ui-10 text-faint font-medium select-none">
+                            {providerLabelOf(g.provider)}
+                          </div>
+                          {g.items.map((m) => renderRow(m))}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
       </div>
 
       {showReasoning && (
         <div className="relative shrink-0">
-          <button
-            aria-haspopup="dialog"
-            aria-expanded={reasonOpen}
-            onClick={() => {
-              setModelOpen(false);
-              setReasonOpen((prev) => !prev);
+          <MenuRoot
+            open={reasonOpen}
+            onOpenChange={(next) => {
+              if (next) setModelOpen(false);
+              setReasonOpen(next);
             }}
-            title={`Reasoning effort (${labelForEffort(reasoning)})`}
-            className="flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+            onOpenChangeComplete={(next) => { if (next) reasonSelectedRef.current?.focus(); }}
           >
-            <span className="truncate max-w-[90px]">{labelForEffort(reasoning)}</span>
-            <ChevronDown size={11} className="shrink-0 opacity-60" />
-          </button>
-
-          {reasonOpen && (
-            <div
-              ref={reasonMenuRef}
-              role="dialog"
-              aria-modal="true"
-              aria-label="Reasoning effort picker"
-              className="absolute left-0 bottom-full mb-1 z-50 min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden"
+            <Menu.Trigger
+              aria-label={`Pilot reasoning: ${labelForEffort(reasoning)}`}
+              title={`Pilot reasoning effort: ${labelForEffort(reasoning)}. Applies to the chat pilot, not to workers.`}
+              className="composer-control flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
+            >
+              <Brain size={11} className="composer-toolbar-icon shrink-0 text-faint" aria-hidden="true" />
+              <span className="composer-toolbar-label text-faint">Reasoning</span>
+              <span className="truncate max-w-[90px]">{labelForEffort(reasoning)}</span>
+              <ChevronDown size={11} className="shrink-0 opacity-60" />
+            </Menu.Trigger>
+            <MenuPanel
+              side="top"
+              label="Reasoning effort picker"
+              className="min-w-[140px] bg-panel border border-edge rounded-lg shadow-lg py-1 overflow-hidden outline-none"
             >
               <ReasoningLevelOptions value={reasoning} onSelect={setReasoningEffort} selectedRef={reasonSelectedRef} />
               {sessionId && retainReady && reasoning !== "none" ? (
-                <label
-                  className="flex items-center gap-2 px-3 py-1.5 text-ui-11.5 text-txt/90 border-t border-edge/50 select-none cursor-pointer"
+                <Menu.CheckboxItem
+                  checked={retainReasoning}
+                  disabled={savingRetain}
+                  onCheckedChange={(checked) => { void setRetainThinking(checked); }}
+                  className="flex items-center gap-2 px-3 py-1.5 text-ui-11.5 text-txt/90 border-t border-edge/50 select-none cursor-pointer outline-none data-[highlighted]:bg-panel2 data-[disabled]:opacity-50"
                   title="Off by default. Retains signed or encrypted provider output in this session for cache reuse. Replay stays with the same provider and model."
                 >
-                  <input
-                    type="checkbox"
-                    aria-label="Keep thinking blocks"
-                    checked={retainReasoning}
-                    disabled={savingRetain}
-                    onChange={(event) => { void setRetainThinking(event.target.checked); }}
-                  />
+                  <span
+                    aria-hidden="true"
+                    className={`flex h-3 w-3 shrink-0 items-center justify-center rounded-sm border ${retainReasoning ? "border-accent bg-accent text-bg" : "border-edge2"}`}
+                  >
+                    <Menu.CheckboxItemIndicator><Check size={9} strokeWidth={3} /></Menu.CheckboxItemIndicator>
+                  </span>
                   Keep thinking blocks
-                </label>
+                </Menu.CheckboxItem>
               ) : null}
-            </div>
-          )}
+            </MenuPanel>
+          </MenuRoot>
         </div>
       )}
       </div>

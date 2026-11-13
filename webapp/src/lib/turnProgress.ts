@@ -287,7 +287,10 @@ type ExplorationBucket =
   | "edits"
   | "wiki"
   | "fetches"
+  | "swarms"
   | "other";
+
+const SWARM_KINDS = new Set(["run_swarm", "run_parallel", "run_implement", "run_flow", "flow_control"]);
 
 /** Bucket a tool kind into Cursor-style exploration categories. */
 export function explorationBucket(kind: string): ExplorationBucket {
@@ -323,6 +326,7 @@ export function explorationBucket(kind: string): ExplorationBucket {
   ) {
     return "searches";
   }
+  if (SWARM_KINDS.has(k) || k.includes("swarm")) return "swarms";
   if (
     k === "run_command"
     || k === "run_terminal"
@@ -346,6 +350,7 @@ const BUCKET_LABELS: Record<ExplorationBucket, [string, string]> = {
   edits: ["edit", "edits"],
   wiki: ["wiki query", "wiki queries"],
   fetches: ["fetch", "fetches"],
+  swarms: ["swarm", "swarms"],
   other: ["step", "steps"],
 };
 
@@ -357,26 +362,64 @@ const BUCKET_ORDER: ExplorationBucket[] = [
   "wiki",
   "fetches",
   "other",
+  "swarms",
 ];
 
+type HeadlineGroup = "explore" | "edit" | "run";
+
+const HEADLINE_VERBS: Record<HeadlineGroup, ToolVerbs> = {
+  explore: { past: "Explored", live: "Exploring" },
+  edit: { past: "Edited", live: "Editing" },
+  run: { past: "Ran", live: "Running" },
+};
+
+function headlineGroup(bucket: ExplorationBucket): HeadlineGroup {
+  if (bucket === "edits") return "edit";
+  if (bucket === "commands" || bucket === "swarms") return "run";
+  return "explore";
+}
+
 /**
- * Aggregate card kinds into Cursor's explored summary:
- * "4 files, 7 searches, ran 1 command".
+ * Fold headline whose verb matches what the fold holds:
+ * "Explored 3 files, 1 search, edited 2 files, ran 1 command".
+ * Edits count distinct targets when known. While live, the group of the
+ * newest step takes the live verb ("Editing 1 file").
  */
-export function aggregateExplorationSummary(kinds: string[]): string {
+export function activityHeadline(
+  steps: ReadonlyArray<{ kind: string; target?: string | null }>,
+  live: boolean,
+): string {
   const counts: Partial<Record<ExplorationBucket, number>> = {};
-  for (const kind of kinds) {
-    const b = explorationBucket(kind);
+  const editTargets = new Set<string>();
+  let anonymousEdits = 0;
+  for (const step of steps) {
+    const b = explorationBucket(step.kind);
+    if (b === "edits") {
+      const target = String(step.target || "").trim();
+      if (target) editTargets.add(target);
+      else anonymousEdits += 1;
+      continue;
+    }
     counts[b] = (counts[b] || 0) + 1;
   }
-  const parts: string[] = [];
+  if (editTargets.size + anonymousEdits > 0) counts.edits = editTargets.size + anonymousEdits;
+  const phrases: Record<HeadlineGroup, string[]> = { explore: [], edit: [], run: [] };
   for (const b of BUCKET_ORDER) {
     const n = counts[b];
     if (!n) continue;
-    const [one, many] = BUCKET_LABELS[b];
-    const phrase = `${n} ${n === 1 ? one : many}`;
-    parts.push(b === "commands" ? `ran ${phrase}` : phrase);
+    const [one, many] = b === "edits" ? ["file", "files"] : BUCKET_LABELS[b];
+    phrases[headlineGroup(b)].push(`${n} ${n === 1 ? one : many}`);
   }
+  const last = steps.length ? headlineGroup(explorationBucket(steps[steps.length - 1].kind)) : null;
+  const parts: string[] = [];
+  for (const group of ["explore", "edit", "run"] as HeadlineGroup[]) {
+    if (!phrases[group].length) continue;
+    const verbs = HEADLINE_VERBS[group];
+    const verb = live && group === last ? verbs.live : verbs.past;
+    const shown = parts.length ? verb.toLowerCase() : verb;
+    parts.push(`${shown} ${phrases[group].join(", ")}`);
+  }
+  if (!parts.length) return live ? "Exploring" : "Explored";
   return parts.join(", ");
 }
 
@@ -393,6 +436,8 @@ const TOOL_VERBS: Record<string, ToolVerbs> = {
   search: { past: "Searched", live: "Searching" },
   glob: { past: "Listed files", live: "Listing files" },
   run_command: { past: "Ran", live: "Running" },
+  // The goal names the batch ("command batch (3 commands)").
+  run_command_batch: { past: "Ran", live: "Running" },
   run_terminal: { past: "Ran", live: "Running" },
   execute: { past: "Ran", live: "Running" },
   shell: { past: "Ran", live: "Running" },
@@ -419,6 +464,9 @@ export function toolVerb(kind: string, live: boolean): string {
   const k = normalizeToolKind(kind) || (kind || "").toLowerCase().replace(/-/g, "_").trim();
   const verbs = TOOL_VERBS[k];
   if (verbs) return live ? verbs.live : verbs.past;
+  // A run_* tool already names its verb: "run_swarm" is Running swarm / Ran swarm.
+  const ran = /^run_(.+)$/.exec(k);
+  if (ran) return `${live ? "Running" : "Ran"} ${ran[1].replace(/_/g, " ")}`;
   const label = toolRowLabel(kind);
   return live ? `Running ${label.toLowerCase()}` : label;
 }
@@ -426,28 +474,25 @@ export function toolVerb(kind: string, live: boolean): string {
 /**
  * The one live status line under an Exploring fold (the "wheel" line).
  * A running tool names its verb and target; live reasoning is Thinking;
- * a quiet gap while the loop is open is Planning next moves.
+ * a quiet gap while the loop is open waits on the model, named like the
+ * first wait of the turn. `modelWait` is true for the two model lines,
+ * which carry a timer (see LiveActivityLine).
  */
 export function liveActivityLine(opts: {
   runningKind?: string | null;
   runningGoal?: string | null;
   liveThinking?: boolean;
-}): string {
+  modelLabel?: string | null;
+}): { text: string; modelWait: boolean } {
   const kind = String(opts.runningKind || "").trim();
   if (kind) {
     const goal = String(opts.runningGoal || "").trim();
     const verb = toolVerb(kind, true);
-    return goal && !isRedundantToolGoal(kind, goal) ? `${verb} ${goal}` : verb;
+    return { text: goal && !isRedundantToolGoal(kind, goal) ? `${verb} ${goal}` : verb, modelWait: false };
   }
-  if (opts.liveThinking) return "Thinking";
-  return "Planning next moves";
-}
-
-/** Fold headline: "Exploring 4 files, 1 search" live; "Explored ..." done. */
-export function exploringHeadline(kindSummary: string, live: boolean): string {
-  const verb = live ? "Exploring" : "Explored";
-  const summary = String(kindSummary || "").trim();
-  return summary ? `${verb} ${summary}` : verb;
+  if (opts.liveThinking) return { text: "Thinking", modelWait: true };
+  const model = shortPilotModelLabel(opts.modelLabel || "");
+  return { text: model ? `Waiting on ${model}…` : "Waiting on provider…", modelWait: true };
 }
 
 /** Compact duration for Worked for / Thought chrome (`23s`, `6m`, `1m 5s`). */
@@ -484,7 +529,7 @@ export function workFoldLabel(opts: {
   /** Swarm/hold pause — StatusPill-aligned cue instead of Investigating… */
   pausePoint?: boolean;
   durationMs?: number | null;
-  /** Live exploringHeadline (kind counts); ignored when empty or Working... */
+  /** Live activityHeadline (step counts); ignored when empty or Working... */
   headline?: string | null;
 }): string {
   if (opts.live) {
@@ -1149,13 +1194,15 @@ export function deriveBusyProgress(
  * beat before its arguments arrive; naming it then flashes the bare tool name
  * between every call, so name the latest card that has a goal until it does.
  */
-export function headlineFocusCard<C extends { goal?: string }>(
+export function headlineFocusCard<C extends { goal?: string; kind?: string }>(
   cards: readonly C[],
   running: C | undefined,
   goalOf: (card: C) => string,
 ): C | undefined {
   if (!running || goalOf(running)) return running;
-  return [...cards].reverse().find((c) => goalOf(c)) ?? running;
+  // Only a card of the same tool stands in: a tool that never gets a goal
+  // (run_swarm) must not name a finished tool of another kind.
+  return [...cards].reverse().find((c) => c.kind === running.kind && goalOf(c)) ?? running;
 }
 
 

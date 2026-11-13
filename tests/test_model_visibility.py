@@ -192,3 +192,27 @@ def test_enabled_pilots_falls_back_when_empty(mv, monkeypatch):
     # nothing curated -> full available set
     pilots = mv.enabled_pilots()
     assert len(pilots) == len(prov.get_provider("openrouter").pilot_models)
+
+
+def test_catalog_reports_image_input_from_the_vision_rule(mv, monkeypatch):
+    """The picker vision flag comes from vision.model_image_input; None stays unknown."""
+    import harness.providers as prov
+    import harness.vision as vision
+
+    openrouter = prov.get_provider("openrouter")
+    monkeypatch.setattr(prov, "available_providers", lambda: [openrouter])
+    monkeypatch.setattr(openrouter.__class__, "key", lambda self: None)
+    models = list(openrouter.pilot_models)
+    assert len(models) >= 2
+    answers = {models[0]: True, models[1]: None}
+    monkeypatch.setattr(
+        vision,
+        "model_image_input",
+        lambda provider, model_id, **_kw: answers.get(model_id, False),
+    )
+    rows = {row["model"]: row for row in mv.catalog(available_only=True) if row["provider"] == "openrouter"}
+    assert rows[models[0]]["image_input"] is True
+    assert rows[models[1]]["image_input"] is None
+    for model in models[2:]:
+        if model in rows:
+            assert rows[model]["image_input"] is False

@@ -1,20 +1,18 @@
-import { nativeActiveStatuses } from '../lib/localJobMetadata';
-import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
-import { MetadataStatus } from './MetadataJobs';
-import { openAgentSwarmJob } from '../lib/agentLinks';
-import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
-import { api, type Workspace, type WorkspaceInfo, type Session, type Job } from "../lib/api";
+import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
+import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
+import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
+import { api, type Workspace, type WorkspaceInfo, type Session } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
 import { useCodegraphIndexPoll } from "../lib/useCodegraphIndexPoll";
-import { moveMenuFocus, useOverlayFocus } from "../lib/overlayFocus";
+import { Menu } from "@base-ui/react/menu";
+import { MenuPanel, MenuRoot, pointAnchor } from "./ui/overlay";
 import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
-import { displaySessionListTitle } from "../lib/sessionTitle";
+import { displaySessionListTitle, SESSIONS_CHANGED_EVENT } from "../lib/sessionTitle";
 import { useSessionStateFeed } from "../lib/sessionStateFeed";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import {
@@ -32,7 +30,6 @@ import {
 import { SessionFork } from "./SessionFork";
 import { sharedReadinessNotice } from "../lib/operationalDiagnostic";
 import { useOperationalDiagnostic } from "../lib/useOperationalDiagnostic";
-import { filterJobsByScope, jobScopeForSession, loadJobScopeChoice, saveJobScope, type JobScopeChoice } from "../lib/jobScope";
 import {
   BRANCHES_MIN_HEIGHT,
   branchesHeightFromPointerDelta,
@@ -40,7 +37,6 @@ import {
   filterBranchWorkspaces,
 } from "./leftRailBranches";
 
-const RAIL_METADATA_FIELDS = [...METADATA_JOBS_FIELDS, 'working'] as const;
 
 export {
   SESSION_LEASE_EXHAUSTED_MESSAGE,
@@ -57,7 +53,6 @@ export {
   purgeSessionFromRootCaches,
   workspacesCacheKey,
   seedWorkspacesCache,
-  jobsCacheKey,
   shouldOfferBackgroundStop,
   isRedundantSessionSwitch,
   sessionSwitchSucceeded,
@@ -100,25 +95,29 @@ import {
   remainingOpenAfterRemoveFromCache,
   type RunnerStatus,
 } from "./leftRailSessions";
-import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
+import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
 
 export default function LeftRail({
   jobsRefresh,
   onSessionChange,
   onSessionCreated,
   activeSessionId: shownSessionId,
+  onCollapse,
 }: {
   jobsRefresh: number;
   onSessionChange?: (id: string | null, expectedPreviousId?: string) => void;
   onSessionCreated?: (id: string) => void;
   /** The session Conversation is showing. */
   activeSessionId?: string | null;
+  /** Hides the rail (Cmd+B). The button sits in the title band beside the traffic lights. */
+  onCollapse?: () => void;
 }) {
-  const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
-  const contextMenuRef = useRef<HTMLDivElement>(null);
-  const contextFirstItemRef = useRef<HTMLButtonElement>(null);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [contextReturnFocus, setContextReturnFocus] = useState(true);
+  const projectContextTrigger = useRef<HTMLElement | null>(null);
+  const [projectContextOpen, setProjectContextOpen] = useState(false);
   const [forkTrigger, setForkTrigger] = useState<HTMLElement | null>(null);
   const [forkOpen, setForkOpen] = useState(false);
   const [swapping, setSwapping] = useState<string | null>(null);
@@ -141,18 +140,6 @@ export default function LeftRail({
     projectPath: string;
   } | null>(null);
   const [confirmForgetPath, setConfirmForgetPath] = useState<string | null>(null);
-  const [sessionJobsCollapsed, setSessionJobsCollapsed] = useState(
-    () => localStorage.getItem(SESSION_JOBS_COLLAPSED_KEY) === "1",
-  );
-  const [hiddenJobIds, setHiddenJobIds] = useState<Set<string>>(loadHiddenSessionJobs);
-  const [jobScopeChoice, setJobScopeChoice] = useState<JobScopeChoice | null>(loadJobScopeChoice);
-  useEffect(() => {
-    const onScope = () => setJobScopeChoice(loadJobScopeChoice());
-    window.addEventListener("harness-job-scope-changed", onScope);
-    return () => window.removeEventListener("harness-job-scope-changed", onScope);
-  }, []);
-  const [showAllJobs, setShowAllJobs] = useState(false);
-  const [sessionJobsHeight, setSessionJobsHeight] = useState(loadSessionJobsHeight);
   const [branchesHeight, setBranchesHeight] = useState(loadBranchesHeight);
   const [pruningBranches, setPruningBranches] = useState(false);
   const pruningBranchesRef = useRef(false);
@@ -171,74 +158,27 @@ export default function LeftRail({
   const topChromeRef = useRef<HTMLDivElement>(null);
   const upperSectionsRef = useRef<HTMLDivElement>(null);
   const projectsSectionRef = useRef<HTMLDivElement>(null);
-  const sessionJobsHeightRef = useRef(sessionJobsHeight);
   const branchesHeightRef = useRef(branchesHeight);
-  const resizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
   const branchesResizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
 
-  sessionJobsHeightRef.current = sessionJobsHeight;
   branchesHeightRef.current = branchesHeight;
-
-  const getMaxSessionJobsHeight = () => {
-    const rail = railRef.current;
-    const top = topChromeRef.current;
-    const upper = upperSectionsRef.current;
-    if (!rail || !top || !upper) return sessionJobsMinHeight();
-    // A scroll container's scrollHeight cannot undercut its rendered height.
-    // Summing child heights preserves the natural content bound for both short
-    // and overflowing lists.
-    const upperContent = Array.from(upper.children).reduce(
-      (sum, el) => sum + (el as HTMLElement).offsetHeight,
-      0,
-    );
-    const available = rail.clientHeight - top.offsetHeight;
-    return Math.max(sessionJobsMinHeight(), available - upperContent);
-  };
-
-  const clampSessionJobsHeight = (height: number) =>
-    Math.min(getMaxSessionJobsHeight(), Math.max(sessionJobsMinHeight(), height));
 
   const getMaxBranchesHeight = () => {
     const rail = railRef.current;
     const top = topChromeRef.current;
     if (!rail || !top) return BRANCHES_DEFAULT_HEIGHT;
-    const jobsOccupied = sessionJobsCollapsed
-      ? 48
-      : sessionJobsHeightRef.current;
     // Keep Projects from being crushed out
     // of the upper rail when Branches is dragged tall.
     const projectsOccupied = projectsSectionRef.current?.offsetHeight
       ?? BRANCHES_PROJECTS_RESERVE;
     const reserved = Math.max(BRANCHES_PROJECTS_RESERVE, projectsOccupied);
     const available =
-      rail.clientHeight - top.offsetHeight - jobsOccupied - reserved;
+      rail.clientHeight - top.offsetHeight - reserved;
     return Math.max(BRANCHES_MIN_HEIGHT, available);
   };
 
   const clampBranchesHeight = (height: number) =>
     Math.min(getMaxBranchesHeight(), Math.max(BRANCHES_MIN_HEIGHT, height));
-
-  const onSessionJobsResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (sessionJobsCollapsed) return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    resizeDragRef.current = { startY: e.clientY, startH: sessionJobsHeightRef.current };
-  };
-
-  const onSessionJobsResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizeDragRef.current) return;
-    const delta = resizeDragRef.current.startY - e.clientY;
-    setSessionJobsHeight(clampSessionJobsHeight(resizeDragRef.current.startH + delta));
-  };
-
-  const finishSessionJobsResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizeDragRef.current) return;
-    resizeDragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-    saveSessionJobsHeight(sessionJobsHeightRef.current);
-  };
 
   const branchesResizeCleanupRef = useRef<(() => void) | null>(null);
   const finishBranchesResize = () => {
@@ -510,9 +450,6 @@ export default function LeftRail({
     },
   );
 
-  const browseMetadataSupported = metadata.view.kind !== 'idle' && repoPathsEqual(selectedProjectPath, metadata.view.target.repo);
-  const jobs = browseMetadataSupported ? metadataJobs(metadata) : [];
-  const jobsValidating = metadata.working;
 
   // Dim only on real workspace/session activation — never on jobs fetch that
   // follows browse-select of an already-listed project (that was the PROJECTS blink).
@@ -721,6 +658,13 @@ export default function LeftRail({
     }
   };
 
+  // A send named the session or a turn finished: refetch title, preview, age.
+  useEffect(() => {
+    const onSessionsChanged = () => { void revalidateSessions(); };
+    window.addEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+    return () => window.removeEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+  }, [revalidateSessions]);
+
   useEffect(() => {
     const handleConfigChanged = () => {
       // Workspace / branches / jobs follow cfg.repo. Do not refetch every
@@ -758,44 +702,18 @@ export default function LeftRail({
     await handleOpenProject(picked);
   };
 
+  const confirmNoRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!contextMenu) return;
-    const handleClose = () => {
-      setContextMenu(null);
-      setConfirmDeleteId(null);
-    };
-    window.addEventListener("click", handleClose);
-    return () => window.removeEventListener("click", handleClose);
-  }, [contextMenu]);
-  // Keyboard path (Shift+F10 / Menu key): focus enters the menu, Tab stays
-  // in it, Escape closes it and focus returns to the session row.
-  useOverlayFocus(!!contextMenu, contextMenuRef, {
-    initialFocusRef: contextFirstItemRef,
-    onClose: () => {
-      setContextMenu(null);
-      setConfirmDeleteId(null);
-    },
-  });
-
-  useEffect(() => {
-    if (!projectContextMenu) return;
-    const handleClose = () => {
-      setProjectContextMenu(null);
-      setConfirmForgetPath(null);
-    };
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setProjectContextMenu(null);
-        setConfirmForgetPath(null);
-      }
-    };
-    window.addEventListener("click", handleClose);
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("click", handleClose);
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [projectContextMenu]);
+    if (confirmDeleteId || confirmForgetPath) confirmNoRef.current?.focus();
+  }, [confirmDeleteId, confirmForgetPath]);
+  const onContextOpenChange = (next: boolean) => {
+    setContextOpen(next);
+    if (!next) setConfirmDeleteId(null);
+  };
+  const onProjectContextOpenChange = (next: boolean) => {
+    setProjectContextOpen(next);
+    if (!next) setConfirmForgetPath(null);
+  };
 
   const openWorktreeBranch = async (name: string, worktreePath: string) => {
     setSwapping(name);
@@ -1128,6 +1046,14 @@ export default function LeftRail({
     window.addEventListener("harness-new-session", onNew);
     return () => window.removeEventListener("harness-new-session", onNew);
   });
+  useEffect(() => {
+    const onSwitch = (e: Event) => {
+      const id = eventDetailString(e, "sessionId");
+      if (id) void switchSession(id);
+    };
+    window.addEventListener(SWITCH_SESSION_EVENT, onSwitch);
+    return () => window.removeEventListener(SWITCH_SESSION_EVENT, onSwitch);
+  });
   const followUpAfterSessionRemove = async (id: string, viewingId: string, projectPath: string) => {
     const remaining = remainingOpenAfterRemoveFromCache(projectPath, id);
     const action = actionAfterSessionRemove({
@@ -1218,10 +1144,13 @@ export default function LeftRail({
       contextTrigger.current = e.currentTarget;
       e.currentTarget.focus();
     }
+    setConfirmDeleteId(null);
+    setContextReturnFocus(true);
+    setContextOpen(true);
     setContextMenu({
       session: s,
-      x: Math.max(8, Math.min(e.clientX, window.innerWidth - 208)),
-      y: Math.max(8, Math.min(e.clientY, window.innerHeight - 400)),
+      x: e.clientX,
+      y: e.clientY,
       sessionId: s.id,
       title: displaySessionListTitle(s.title, s.title_user),
       archived: !!s.archived,
@@ -1426,67 +1355,23 @@ export default function LeftRail({
     }
   });
 
-  useEffect(() => { saveHiddenSessionJobs(hiddenJobIds); }, [hiddenJobIds]);
-
   useEffect(() => {
     const clampToViewport = () => {
-      setSessionJobsHeight((h) => clampSessionJobsHeight(h));
       setBranchesHeight((h) => clampBranchesHeight(h));
     };
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, sessionJobsCollapsed, sessionJobsHeight, workspaces.length]);
-
-  const toggleSessionJobsCollapsed = () => {
-    setSessionJobsCollapsed((v) => {
-      const next = !v;
-      localStorage.setItem(SESSION_JOBS_COLLAPSED_KEY, next ? "1" : "0");
-      return next;
-    });
-  };
-
-  const activeSessionId = sessions.find((session) => session.active)?.id || "";
-  const jobScope = jobScopeForSession(jobScopeChoice, activeSessionId);
-  const artifactContext = JSON.stringify([currentRepo, selectedProjectPath, activeSessionId]);
-  const artifactContextRef = useRef(artifactContext);
-  if (artifactContextRef.current !== artifactContext) {
-    artifactContextRef.current = artifactContext;
-  }
-  const sortedJobs = filterJobsByScope(jobs.slice().reverse(), jobScope, activeSessionId)
-    .filter(isJobsListRow)
-    .sort((a, b) =>
-    Number(b.read_status !== 'unavailable' && nativeActiveStatuses.includes(b.status))
-    - Number(a.read_status !== 'unavailable' && nativeActiveStatuses.includes(a.status)),
-  );
-  const visibleJobs = sortedJobs.filter(
-    (j) => !hiddenJobIds.has(j.metadata_key ?? j.id) || !isTerminalJob(j),
-  );
-  const hiddenJobCount = sortedJobs.filter(
-    (j) => hiddenJobIds.has(j.metadata_key ?? j.id) && isTerminalJob(j),
-  ).length;
-  const terminalVisibleJobs = visibleJobs.filter((j) => isTerminalJob(j));
-
-  const clearFinishedJobs = () => {
-    setHiddenJobIds((prev) => {
-      const next = new Set(prev);
-      for (const j of terminalVisibleJobs) next.add(j.metadata_key ?? j.id);
-      return next;
-    });
-  };
-
-  const restoreHiddenJobs = () => setHiddenJobIds(new Set());
-
-  const displayedJobs = showAllJobs
-    ? visibleJobs
-    : visibleJobs.slice(0, SESSION_JOBS_DISPLAY_CAP);
-  const hasMoreJobs = visibleJobs.length > SESSION_JOBS_DISPLAY_CAP;
+  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, workspaces.length]);
 
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
     // Home is a UI pin, not a forgettable recent — skip remove chrome.
     const homePath = workspaceInfo?.home || "";
     if (homePath && repoPathsEqual(path, homePath)) return;
     e.preventDefault();
+    projectContextTrigger.current = e.currentTarget instanceof HTMLElement ? e.currentTarget : null;
+    setConfirmForgetPath(null);
+    setProjectContextOpen(true);
     setProjectContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -1515,14 +1400,25 @@ export default function LeftRail({
   return (
     <aside ref={railRef} className="session-rail bg-transparent flex flex-col h-full overflow-hidden text-[0.8125rem]">
       <div ref={topChromeRef}>
-      {/* Keep the native traffic-light/titlebar area separate from the actions.
-          The same draggable region also preserves window movement on other
-          desktop platforms. */}
+      {/* Title band: the native traffic lights sit at its left, the hide
+          control at its right. The band is the window drag region. */}
       <div
-        aria-hidden="true"
-        className="session-rail-drag h-12 shrink-0"
-        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-      />
+        className="session-rail-drag flex items-center justify-end px-2.5 shrink-0"
+        style={{ height: MACOS_TITLEBAR_BAND_PX, WebkitAppRegion: "drag" } as React.CSSProperties}
+      >
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="Hide sidebar (⌘B)"
+            aria-label="Hide sidebar"
+            className="h-7 w-7 grid place-items-center rounded text-muted hover:text-txt hover:bg-panel2/60 transition"
+            style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          >
+            <PanelLeftClose size={14} />
+          </button>
+        )}
+      </div>
 
       <div className="px-2.5 pb-2 border-b border-edge/50">
         <button
@@ -1740,8 +1636,11 @@ export default function LeftRail({
                         <div className={`text-ui-12.5 truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
                           {displaySessionListTitle(s.title, s.title_user)}
                         </div>
+                        <SessionAge updated={s.updated ?? s.created} />
                       </div>
-                      <div className="text-ui-10 text-faint truncate font-mono">{label}</div>
+                      <div className="text-ui-10 text-faint truncate">
+                        {s.preview || <span className="font-mono">{label}</span>}
+                      </div>
                     </button>
                   );
                 })}
@@ -1917,13 +1816,19 @@ export default function LeftRail({
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`relative flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center text-ui-12 transition aria-disabled:opacity-60
+                                className={`relative flex-1 min-w-0 min-h-7 py-0.5 text-left rounded pl-6 pr-1.5 flex flex-col justify-center text-ui-12 transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
                                   : null}
-                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                  <SessionAge updated={s.updated ?? s.created} />
+                                </span>
+                                {s.preview ? (
+                                  <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
+                                ) : null}
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -2108,352 +2013,158 @@ export default function LeftRail({
 
       </div>
 
-      {/* JOBS -- clean task-list styling: a
-          slim status row per job, click to expand a card with richer detail
-          (adapter/role, tokens/cost, artifact headlines) instead of a lone
-          line of truncated text. Bounded height + collapsible header so a long
-          session doesn't swallow the left rail. Vertically resizable via the
-          grab handle above the header. */}
-      <div
-        data-slot="left-rail-jobs"
-        className="mt-auto px-2 shrink-0 border-t border-edge/40 min-w-0 flex flex-col"
-        style={sessionJobsCollapsed ? undefined : { height: sessionJobsHeight }}
-      >
-        {!sessionJobsCollapsed && (
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize session jobs panel"
-            onPointerDown={onSessionJobsResizePointerDown}
-            onPointerMove={onSessionJobsResizePointerMove}
-            onPointerUp={finishSessionJobsResize}
-            onPointerCancel={finishSessionJobsResize}
-            className="h-1.5 -mt-1.5 mb-0.5 cursor-row-resize touch-none flex items-center justify-center group shrink-0"
-          >
-            <div className="w-8 h-0.5 rounded-full bg-edge/80 group-hover:bg-muted/80 transition-colors" />
-          </div>
-        )}
-        {!sessionJobsCollapsed && (browseMetadataSupported ? <MetadataStatus hidden /> : <p role="status" className="p-2 text-xs text-muted">Job metadata is available for the active workspace only. This project remains selected for browsing.</p>)}
-        <div
-          data-slot="left-rail-jobs-header"
-          className={`shrink-0 min-w-0 ${sessionJobsCollapsed ? "mt-2" : ""}`}
-        >
-          <div className="h-7 flex items-center justify-between px-1.5 gap-2 min-w-0">
-            <button
-              onClick={toggleSessionJobsCollapsed}
-              className="h-6 flex items-center gap-1 min-w-0 rail-job-detail uppercase tracking-wider text-muted font-semibold hover:text-txt focus:outline-none"
-            >
-              {sessionJobsCollapsed ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
-              <span className="truncate">Jobs</span>
-              {jobsValidating && !sessionJobsCollapsed && (
-                <Loader2 size={10} className="animate-spin text-muted shrink-0" />
-              )}
-              {visibleJobs.length > 0 && (
-                <span className="text-faint/70 normal-case tracking-normal shrink-0">({visibleJobs.length})</span>
-              )}
-            </button>
-            {!sessionJobsCollapsed && terminalVisibleJobs.length > 0 && (
-              <button
-                type="button"
-                aria-label="Clear finished jobs"
-                onClick={clearFinishedJobs}
-                className="h-6 w-6 shrink-0 grid place-items-center rounded text-faint hover:bg-panel2/60 hover:text-risk focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/70 transition-colors"
-              >
-                <Trash2 size={11} />
-              </button>
-            )}
-          </div>
-          {!sessionJobsCollapsed && (
-            <div
-              data-slot="left-rail-job-scopes"
-              className="grid grid-cols-3 h-6 mx-1.5 mb-1 overflow-hidden rounded border border-edge/70"
-            >
-              {(["session", "repo", "all"] as const).map((scope) => (
-                <button
-                  key={scope}
-                  type="button"
-                  aria-pressed={jobScope === scope}
-                  aria-label={scope === "session" ? "This session" : scope === "repo" ? "This repo" : "All projects"}
-                  onClick={(e) => { e.stopPropagation(); saveJobScope(scope, activeSessionId); }}
-                  className={`min-w-0 text-ui-9 uppercase tracking-wider ${jobScope === scope ? "bg-accent/15 text-txt" : "text-muted hover:text-txt"}`}
-                >
-                  {scope === "session" ? "Session" : scope === "repo" ? "Repo" : "All"}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        {!sessionJobsCollapsed && (
-          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden min-w-0 pb-1">
-            {visibleJobs.length === 0 ? (
-              <div className="px-1 py-1">
-                {jobsValidating ? (
-                  <div className="rail-job-detail text-faint italic px-1 py-1 flex items-center gap-1.5">
-                    <Loader2 size={10} className="animate-spin shrink-0" />
-                    Loading jobs...
-                  </div>
-                ) : (
-                <Empty>
-                  {hiddenJobCount > 0 ? "All jobs in this view cleared" : "No jobs in this view"}
-                </Empty>
-                )}
-                {hiddenJobCount > 0 && (
-                  <button
-                    onClick={restoreHiddenJobs}
-                    className="mt-1 px-1 text-ui-10 text-accent hover:underline focus:outline-none"
-                  >
-                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
-                  </button>
-                )}
-              </div>
-            ) : (
-              <>
-                {displayedJobs.map((j) => {
-                  const st = jobStatus(j);
-                  const key = j.metadata_key ?? j.id;
-                  return (
-                    <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
-                      <button
-                        onClick={() => openAgentSwarmJob(j.id)}
-                        className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
-                      >
-                        <JobStatusIcon status={st} />
-                        <span
-                          className={`flex-1 min-w-0 truncate rail-job-title ${st === "completed" ? "text-muted" : st === "cancelled" ? "text-risk/90" : "text-txt"}`}
-                          title={jobDisplayTitle(j)}
-                        >
-                          {jobDisplayTitle(j)}
-                        </span>
-                      </button>
-                      {/* Selection opens Jobs rail PM embed via openAgentSwarmJob */}
-
-                    </div>
-                  );
-                })}
-                {hasMoreJobs && !showAllJobs && (
-                  <button
-                    onClick={() => setShowAllJobs(true)}
-                    className="w-full px-2 py-1 text-ui-10 text-accent hover:underline focus:outline-none"
-                  >
-                    Show all ({visibleJobs.length})
-                  </button>
-                )}
-                {hiddenJobCount > 0 && (
-                  <button
-                    onClick={restoreHiddenJobs}
-                    className="w-full px-2 py-1 text-ui-10 text-faint hover:text-accent hover:underline focus:outline-none"
-                  >
-                    Show {hiddenJobCount} hidden job{hiddenJobCount === 1 ? "" : "s"}
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
       {/* CONTEXT MENU */}
       {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          role="menu"
-          aria-label={`${contextMenu.title} actions`}
-          className="session-context-menu fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px]"
-          style={{ top: contextMenu.y, left: contextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => { if (moveMenuFocus(contextMenuRef.current, e.key)) e.preventDefault(); }}
-        >
-          <button ref={contextFirstItemRef} type="button" className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            onClick={() => {
-              setForkTrigger(contextTrigger.current);
-              setForkTarget(contextMenu.session);
-              setForkOpen(true);
-              setContextMenu(null);
-            }}>Fork session</button>
-          {contextMenu.running && (
-            <>
-              <button
-                onClick={async () => {
-                  await stopBackgroundSession(contextMenu.sessionId);
-                  setContextMenu(null);
-                }}
-                className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-              >
-                Stop
-              </button>
-              <div className="border-t border-edge my-1" />
-            </>
-          )}
-          <button
-            onClick={() => {
-              beginSessionRename(contextMenu.sessionId, contextMenu.title);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
+        <MenuRoot open={contextOpen} onOpenChange={onContextOpenChange}>
+          <MenuPanel
+            label={`${contextMenu.title} actions`}
+            anchor={pointAnchor(contextMenu.x, contextMenu.y)}
+            sideOffset={0}
+            finalFocus={contextReturnFocus ? contextTrigger : false}
+            className="session-context-menu bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px] outline-none"
           >
-            Rename
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={() => {
-              void handleCopyTranscriptId(contextMenu.sessionId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Copy transcript ID
-          </button>
-          <button
-            onClick={() => {
-              void handleExport(contextMenu.sessionId, "md");
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Export as Markdown
-          </button>
-          <button
-            onClick={() => {
-              void handleExport(contextMenu.sessionId, "json");
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            Export as JSON
-          </button>
-          <div className="border-t border-edge my-1" />
-          <button
-            onClick={async () => {
-              await archiveSession(contextMenu.sessionId, !contextMenu.archived);
-              setContextMenu(null);
-            }}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-          >
-            {contextMenu.archived ? "Unarchive" : "Archive"}
-          </button>
-          <div className="border-t border-edge my-1" />
-          {confirmDeleteId === contextMenu.sessionId ? (
-            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
-              <span className="text-muted font-medium">{contextMenu.running ? "Stop and delete?" : "Delete?"}</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await handleDeleteSession(contextMenu.sessionId);
-                    setContextMenu(null);
-                    setConfirmDeleteId(null);
-                  }}
-                  className="text-risk font-bold hover:underline"
-                >
-                  Yes
-                </button>
-                <button
-                  autoFocus
-                  onClick={() => setConfirmDeleteId(null)}
-                  className="text-muted hover:underline"
-                >
-                  No
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
+            <Menu.Item className={MENU_ITEM_CLASS}
               onClick={() => {
-                setConfirmDeleteId(contextMenu.sessionId);
+                setContextReturnFocus(false);
+                setForkTrigger(contextTrigger.current);
+                setForkTarget(contextMenu.session);
+                setForkOpen(true);
+              }}>Fork session</Menu.Item>
+            {contextMenu.running && (
+              <>
+                <Menu.Item
+                  onClick={() => { void stopBackgroundSession(contextMenu.sessionId); }}
+                  className={MENU_ITEM_CLASS}
+                >
+                  Stop
+                </Menu.Item>
+                <Menu.Separator className="border-t border-edge my-1" />
+              </>
+            )}
+            <Menu.Item
+              onClick={() => {
+                setContextReturnFocus(false);
+                beginSessionRename(contextMenu.sessionId, contextMenu.title);
               }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-risk font-medium transition-colors"
+              className={MENU_ITEM_CLASS}
             >
-              Delete
-            </button>
-          )}
-        </div>
+              Rename
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            <Menu.Item
+              onClick={() => { void handleCopyTranscriptId(contextMenu.sessionId); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Copy transcript ID
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => { void handleExport(contextMenu.sessionId, "md"); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Export as Markdown
+            </Menu.Item>
+            <Menu.Item
+              onClick={() => { void handleExport(contextMenu.sessionId, "json"); }}
+              className={MENU_ITEM_CLASS}
+            >
+              Export as JSON
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            <Menu.Item
+              onClick={() => { void archiveSession(contextMenu.sessionId, !contextMenu.archived); }}
+              className={MENU_ITEM_CLASS}
+            >
+              {contextMenu.archived ? "Unarchive" : "Archive"}
+            </Menu.Item>
+            <Menu.Separator className="border-t border-edge my-1" />
+            {confirmDeleteId === contextMenu.sessionId ? (
+              <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+                <span className="text-muted font-medium">{contextMenu.running ? "Stop and delete?" : "Delete?"}</span>
+                <div className="flex gap-2">
+                  <Menu.Item
+                    onClick={() => { void handleDeleteSession(contextMenu.sessionId); }}
+                    className="text-risk font-bold hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    Yes
+                  </Menu.Item>
+                  <Menu.Item
+                    ref={confirmNoRef}
+                    closeOnClick={false}
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="text-muted hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    No
+                  </Menu.Item>
+                </div>
+              </div>
+            ) : (
+              <Menu.Item
+                closeOnClick={false}
+                onClick={() => {
+                  setConfirmDeleteId(contextMenu.sessionId);
+                }}
+                className="w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-risk font-medium transition-colors cursor-pointer outline-none"
+              >
+                Delete
+              </Menu.Item>
+            )}
+          </MenuPanel>
+        </MenuRoot>
       )}
 
       {/* PROJECT CONTEXT MENU */}
       {projectContextMenu && (
-        <div
-          className="fixed z-50 bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px]"
-          style={{ top: projectContextMenu.y, left: projectContextMenu.x }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {confirmForgetPath === projectContextMenu.projectPath ? (
-            <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
-              <span className="text-muted font-medium">Remove?</span>
-              <div className="flex gap-2">
-                <button
-                  onClick={async () => {
-                    await handleForgetProject(projectContextMenu.projectPath);
-                    setProjectContextMenu(null);
-                    setConfirmForgetPath(null);
-                  }}
-                  className="text-accent font-bold hover:underline"
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => setConfirmForgetPath(null)}
-                  className="text-muted hover:underline"
-                >
-                  No
-                </button>
+        <MenuRoot open={projectContextOpen} onOpenChange={onProjectContextOpenChange}>
+          <MenuPanel
+            label="Project actions"
+            anchor={pointAnchor(projectContextMenu.x, projectContextMenu.y)}
+            sideOffset={0}
+            finalFocus={projectContextTrigger}
+            className="bg-panel border border-edge rounded shadow-lg text-ui-12 py-1 min-w-[150px] outline-none"
+          >
+            {confirmForgetPath === projectContextMenu.projectPath ? (
+              <div className="px-3 py-1.5 flex items-center justify-between gap-2 bg-panel2/50">
+                <span className="text-muted font-medium">Remove?</span>
+                <div className="flex gap-2">
+                  <Menu.Item
+                    onClick={() => { void handleForgetProject(projectContextMenu.projectPath); }}
+                    className="text-accent font-bold hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    Yes
+                  </Menu.Item>
+                  <Menu.Item
+                    ref={confirmNoRef}
+                    closeOnClick={false}
+                    onClick={() => setConfirmForgetPath(null)}
+                    className="text-muted hover:underline data-[highlighted]:underline cursor-pointer outline-none"
+                  >
+                    No
+                  </Menu.Item>
+                </div>
               </div>
-            </div>
-          ) : (
-            <button
-              onClick={() => {
-                setConfirmForgetPath(projectContextMenu.projectPath);
-              }}
-              className="w-full text-left px-3 py-1.5 hover:bg-panel2 text-txt transition-colors"
-            >
-              Remove from list
-            </button>
-          )}
-        </div>
+            ) : (
+              <Menu.Item
+                closeOnClick={false}
+                onClick={() => {
+                  setConfirmForgetPath(projectContextMenu.projectPath);
+                }}
+                className={MENU_ITEM_CLASS}
+              >
+                Remove from list
+              </Menu.Item>
+            )}
+          </MenuPanel>
+        </MenuRoot>
       )}
     </aside>
   );
 }
 
-const SESSION_JOBS_COLLAPSED_KEY = "pmharness.leftRail.sessionJobsCollapsed";
-const SESSION_JOBS_HEIGHT_KEY = "pmharness.leftRail.sessionJobsHeight.v1";
-const SESSION_JOBS_HIDDEN_KEY = "pmharness.leftRail.hiddenSessionJobs.v1";
-const SESSION_JOBS_DISPLAY_CAP = 20;
+const MENU_ITEM_CLASS = "w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 text-txt transition-colors cursor-pointer outline-none";
 
 const BRANCHES_HEIGHT_KEY = "pmharness.leftRail.branchesHeight.v1";
 const BRANCHES_DEFAULT_HEIGHT = 140;
 const BRANCHES_PROJECTS_RESERVE = 160;
-
-function sessionJobsMinHeight(): number {
-  if (typeof window === "undefined") return 280;
-  return Math.min(280, Math.round(window.innerHeight * 0.35));
-}
-
-function loadSessionJobsHeight(): number {
-  const fallback = sessionJobsMinHeight();
-  try {
-    const raw = localStorage.getItem(SESSION_JOBS_HEIGHT_KEY);
-    if (!raw) return fallback;
-    const n = Number.parseInt(raw, 10);
-    if (!Number.isFinite(n) || n <= 0) return fallback;
-    // Upper-bound against the window BEFORE first paint. The layout-aware
-    // clamp (getMaxSessionJobsHeight) needs refs that only exist after mount,
-    // so a tall height saved from a big window would otherwise flash a jobs
-    // panel that swallows the whole rail for one frame in a small window.
-    const conservativeMax = typeof window === "undefined"
-      ? n
-      : Math.max(sessionJobsMinHeight(), Math.round(window.innerHeight * 0.6));
-    return Math.min(conservativeMax, Math.max(sessionJobsMinHeight(), n));
-  } catch {
-    return fallback;
-  }
-}
-
-function saveSessionJobsHeight(height: number): void {
-  try {
-    localStorage.setItem(SESSION_JOBS_HEIGHT_KEY, String(Math.round(height)));
-  } catch {
-    // localStorage full/unavailable -- height still works for this session.
-  }
-}
 
 function loadBranchesHeight(): number {
   try {
@@ -2477,41 +2188,3 @@ function saveBranchesHeight(height: number): void {
     // localStorage full/unavailable -- height still works for this session.
   }
 }
-
-function loadHiddenSessionJobs(): Set<string> {
-  try {
-    const raw = localStorage.getItem(SESSION_JOBS_HIDDEN_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(arr) ? arr : []);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveHiddenSessionJobs(ids: Set<string>): void {
-  try {
-    localStorage.setItem(SESSION_JOBS_HIDDEN_KEY, JSON.stringify([...ids].slice(-2000)));
-  } catch {
-    // localStorage full/unavailable -- hide state still works for this session.
-  }
-}
-
-function isTerminalJob(j: Job): boolean {
-  const st = jobStatus(j);
-  return st === "completed" || st === "cancelled";
-}
-
-function jobStatus(j: Job): JobStatus {
-  const s = (j.status || "").toLowerCase();
-  if (s.includes("complete") || s.includes("done")) return "completed";
-  if (s.includes("fail") || s.includes("cancel") || s.includes("error") || s.includes("stall")) return "cancelled";
-  if (s.includes("run") || s.includes("progress") || s.includes("active")) return "in_progress";
-  return "pending";
-}
-
-// Compact metadata chips shown when a job card is expanded -- role/adapter and
-// usage so the card carries real signal instead of a truncated goal line.
-
-// Aggregate diffstat across a job's patch artifacts so a card can show a
-// git-style "+40 -12" summary at a glance. Returns null when the job produced
-// no patch (audits, reviews) so the caller can skip the row entirely.

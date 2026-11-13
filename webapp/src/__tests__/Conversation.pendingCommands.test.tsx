@@ -93,9 +93,8 @@ const finalAnswer = { kind: 'message', data: { text: 'The lifecycle command fini
 const naturalDone = { kind: 'assistant_done', data: { stop_cause: 'natural' } };
 
 function expectDone() {
-  expect(screen.queryByTitle('Open live activity')).toBeNull();
   expect(screen.queryAllByText('Still working…')).toHaveLength(0);
-  expect(screen.getByText('Done', { exact: true })).toBeTruthy();
+  expect(screen.getByTestId('conversation-header')).toHaveAttribute('data-turn-status', 'done');
   expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
   expect(screen.getByText(finalAnswer.data.text)).toBeTruthy();
 }
@@ -129,7 +128,7 @@ it('keeps real background work visible after the assistant finishes', async () =
   const stream = await mount();
   await stream.emit(receipt('running'));
   await stream.emit(finalAnswer, naturalDone);
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
   expect(screen.getByText(finalAnswer.data.text)).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Stop', exact: true })).toBeNull();
 });
@@ -138,7 +137,7 @@ it('clears awaiting chrome when the last command completes through SSE after the
   const stream = await mount();
   await stream.emit(receipt('running'));
   await stream.emit(finalAnswer, naturalDone);
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
   await stream.emit(receipt('completed'));
   expectDone();
 });
@@ -158,7 +157,7 @@ it('does not treat a polled running receipt as terminal', async () => {
   await stream.emit(receipt('running'));
   await stream.emit(finalAnswer, naturalDone);
   await stream.drain(receipt('running'));
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
 });
 
 it('does not leak terminal identities or old stream events across session switches', async () => {
@@ -170,7 +169,7 @@ it('does not leak terminal identities or old stream events across session switch
   await act(async () => oldEvent(receipt('completed')));
   await stream.emit(receipt('running'));
   await stream.emit(finalAnswer, naturalDone);
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
   expect(stream.chat).toHaveBeenCalledTimes(2);
 });
 
@@ -178,7 +177,7 @@ it('keeps a different running command pending when its sibling completes in the 
   const stream = await mount();
   await stream.emit(receipt('running'), receipt('running', 'local-command-sibling'));
   await stream.emit(receipt('completed'), finalAnswer, naturalDone);
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
   await stream.drain(receipt('completed', 'local-command-sibling'));
   expectDone();
 });
@@ -204,7 +203,7 @@ it('ignores a terminal drain from an earlier A epoch after an A-B-A switch', asy
   await stream.emit(receipt('running'));
   await stream.emit(finalAnswer, naturalDone);
   await act(async () => oldDrain({ results: [receipt('completed')] }));
-  expect(screen.getByTitle('Open live activity')).toBeTruthy();
+  expect(screen.getAllByText('Still working…').length).toBeGreaterThan(0);
 });
 
 it('honors an authoritative terminal command receipt loaded from the transcript', async () => {

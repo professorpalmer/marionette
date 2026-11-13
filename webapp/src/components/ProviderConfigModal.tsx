@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import type { ProviderInfo } from "../lib/api";
-import { OverlayPortal } from "../lib/overlayPortal";
+import { Modal } from "./ui/overlay";
 import {
   PROVIDER_CONFIG_GROUPS,
   PROVIDER_CONFIG_LABELS,
@@ -82,25 +82,17 @@ export default function ProviderConfigModal({
   };
 
   return (
-    <OverlayPortal
+    <Modal
       open={open}
       onClose={onClose}
+      label={title}
       testId="provider-config-modal"
-      className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center p-4"
-      initialFocusRef={manual ? nameRef : keyRef}
-      onBackdropClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      backdropClassName="fixed inset-0 z-[90] bg-black/50"
+      viewportClassName="fixed inset-0 z-[90] flex items-center justify-center p-4"
+      className="w-full max-w-md rounded-lg border border-edge bg-bg shadow-xl outline-none"
+      initialFocus={manual ? nameRef : keyRef}
     >
-      <form
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        data-manual={manual ? "true" : "false"}
-        onSubmit={handleSubmit}
-        className="w-full max-w-md rounded-lg border border-edge bg-bg shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <form data-manual={manual ? "true" : "false"} onSubmit={handleSubmit}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-edge/40">
           <h2 className="text-ui-13 font-semibold text-txt">{title}</h2>
           <button
@@ -195,6 +187,6 @@ export default function ProviderConfigModal({
           </button>
         </div>
       </form>
-    </OverlayPortal>
+    </Modal>
   );
 }

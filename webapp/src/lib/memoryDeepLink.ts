@@ -1,5 +1,5 @@
 /**
- * Deep-link for Settings → Advanced → Agent Memory.
+ * Deep-links for Settings → Advanced → Agent Memory and Skills & Rules.
  * Latches when SettingsPane is not mounted yet (Cmd-K / /memory before overlay opens).
  */
 
@@ -15,5 +15,20 @@ export function expandAgentMemory(): void {
 export function takePendingExpandMemory(): boolean {
   const pending = pendingExpandMemory;
   pendingExpandMemory = false;
+  return pending;
+}
+
+let pendingExpandSkills = false;
+
+/** Expand Skills & Rules; safe if SettingsPane mounts later in the same turn. */
+export function expandSkills(): void {
+  pendingExpandSkills = true;
+  window.dispatchEvent(new Event("harness-expand-skills"));
+}
+
+/** Consume latched Skills expand request (SettingsPane initial state). */
+export function takePendingExpandSkills(): boolean {
+  const pending = pendingExpandSkills;
+  pendingExpandSkills = false;
   return pending;
 }

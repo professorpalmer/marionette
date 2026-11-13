@@ -25,7 +25,6 @@ import { runnerBusySwitchDecision } from "../components/conversation/sessionHydr
 import { shouldApplySwarmLiveMerge } from "../components/conversation/streamApply";
 import { deriveBusyProgress, shouldShowBusyFooter } from "../lib/turnProgress";
 import {
-  derivePillBusyDetail,
   derivePillStatus,
   isPilotBusy,
   isSwarmPausePoint,
@@ -445,13 +444,6 @@ describe("swarm await chrome", () => {
     });
     expect(pill).toBe("awaiting_swarm");
     expect(statusPillLabel(pill)).toBe("Still working…");
-    expect(
-      derivePillBusyDetail({
-        liveInvestigation: true,
-        pillStatus: pill,
-        agentLoopOpen: true,
-      }),
-    ).toBe("Still working…");
   });
 
   it("hold+idle pause matches Explored + Still working (pilotBusy gate)", () => {
@@ -479,13 +471,6 @@ describe("swarm await chrome", () => {
       agentLoopOpen: true, // bare holdSwarmAwait still latches Stop/Steer
     });
     expect(pill).toBe("awaiting_swarm");
-    expect(
-      derivePillBusyDetail({
-        liveInvestigation: true,
-        pillStatus: pill,
-        agentLoopOpen: true,
-      }),
-    ).toBe("Still working…");
   });
 
   it("hold+thinking mid-turn keeps Investigating on pill when pilotBusy", () => {
@@ -521,13 +506,6 @@ describe("swarm await chrome", () => {
     });
     expect(pill).toBe("investigating");
     expect(statusPillLabel(pill)).toBe("Investigating…");
-    expect(
-      derivePillBusyDetail({
-        liveInvestigation: true,
-        pillStatus: pill,
-        agentLoopOpen: true,
-      }),
-    ).toBe("Investigating…");
   });
 
   it("agentLoopOpen latch and StatusPill stay clickable Still working… while awaiting", () => {

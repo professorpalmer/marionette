@@ -58,8 +58,7 @@ describe("SettingsShell Accounts & Keys focus", () => {
   it("Escape still closes Settings when no provider modal is stacked", () => {
     const onClose = vi.fn();
     render(<SettingsShell onClose={onClose} onOpenWizard={vi.fn()} />);
-    expect(screen.getByTestId("settings-shell")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(screen.getByTestId("settings-shell"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

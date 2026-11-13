@@ -212,9 +212,7 @@ describe("transcriptRowHeight", () => {
     expect(height).toBeLessThanOrEqual(TRANSCRIPT_USER_CLAMP_PX + 48);
     const spec = rowPretextSpec(item, 600);
     expect(spec?.maxProsePx).toBe(TRANSCRIPT_USER_CLAMP_PX);
-    expect(spec?.text.startsWith("steer:")).toBe(true);
-    const interrupt: GroupedItem = { kind: "steer", text: "stop", mode: "interrupt" };
-    expect(rowPretextSpec(interrupt, 600)?.text.startsWith("interrupt:")).toBe(true);
+    expect(spec?.text).toBe(wall);
     const short = cache.estimateRowHeight(
       { kind: "steer", text: "try again" },
       "s-short",

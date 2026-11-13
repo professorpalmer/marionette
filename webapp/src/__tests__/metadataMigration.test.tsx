@@ -160,6 +160,7 @@ it('two passive job panes do not create another schedule or automatically hydrat
   const before = fixture.calls.length;
   render(<JobMetadataContext.Provider value={store}><MetadataJobs /><SwarmPane /></JobMetadataContext.Provider>);
   expect(fixture.calls).toHaveLength(before);
+  fireEvent.click(screen.getAllByLabelText('Coverage details')[0]);
   expect(screen.getAllByText(/coverage incomplete/i).length).toBeGreaterThan(0);
 });
 

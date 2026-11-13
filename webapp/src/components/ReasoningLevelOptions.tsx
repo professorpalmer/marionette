@@ -1,11 +1,11 @@
-import type { KeyboardEvent, RefObject } from "react";
+import type { RefObject } from "react";
+import { Menu } from "@base-ui/react/menu";
 import { Check } from "lucide-react";
 import type { ReasoningEffort } from "../lib/api";
 import { REASONING_LEVELS } from "../lib/reasoningSupport";
-import { moveMenuFocus } from "../lib/overlayFocus";
 
-/** Reasoning-level rows for a picker menu. Pass ``selectedRef`` as the
- * overlay's initial focus so the keyboard starts on the current level. */
+/** Reasoning-level rows inside a `MenuPanel`. Pass ``selectedRef`` and focus it
+ * from `onOpenChangeComplete` so the keyboard starts on the current level. */
 export default function ReasoningLevelOptions({
   value,
   onSelect,
@@ -13,31 +13,33 @@ export default function ReasoningLevelOptions({
 }: {
   value: ReasoningEffort;
   onSelect: (level: ReasoningEffort) => void;
-  selectedRef?: RefObject<HTMLButtonElement | null>;
+  selectedRef?: RefObject<HTMLDivElement | null>;
 }) {
-  const moveFocus = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (moveMenuFocus(e.currentTarget.parentElement, e.key)) e.preventDefault();
-  };
-
-  const rows = REASONING_LEVELS.map(({ value: level, label }) => {
-    const isSelected = level === value;
-    return (
-      <button
-        type="button"
-        key={level}
-        ref={isSelected ? selectedRef : undefined}
-        role="radio"
-        aria-checked={isSelected}
-        onClick={() => onSelect(level)}
-        onKeyDown={moveFocus}
-        className={`w-full flex items-center justify-between px-3 py-1.5 text-ui-11.5 text-left hover:bg-panel2 focus-visible:bg-panel2 focus:outline-none cursor-pointer transition select-none ${
-          isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
-        }`}
-      >
-        <span>{label}</span>
-        {isSelected && <Check size={11} className="shrink-0 ml-2" />}
-      </button>
-    );
-  });
-  return <div role="radiogroup" aria-label="Reasoning level">{rows}</div>;
+  return (
+    <Menu.RadioGroup
+      aria-label="Reasoning level"
+      value={value}
+      onValueChange={(level: ReasoningEffort) => onSelect(level)}
+    >
+      {REASONING_LEVELS.map(({ value: level, label }) => {
+        const isSelected = level === value;
+        return (
+          <Menu.RadioItem
+            key={level}
+            value={level}
+            closeOnClick
+            ref={isSelected ? selectedRef : undefined}
+            className={`w-full flex items-center justify-between px-3 py-1.5 text-ui-11.5 text-left outline-none cursor-pointer transition-colors select-none data-[highlighted]:bg-panel2 ${
+              isSelected ? "text-accent font-medium bg-panel2/40" : "text-txt/90"
+            }`}
+          >
+            <span>{label}</span>
+            <Menu.RadioItemIndicator className="shrink-0 ml-2">
+              <Check size={11} />
+            </Menu.RadioItemIndicator>
+          </Menu.RadioItem>
+        );
+      })}
+    </Menu.RadioGroup>
+  );
 }

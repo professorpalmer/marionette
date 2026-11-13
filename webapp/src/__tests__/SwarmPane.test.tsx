@@ -28,12 +28,15 @@ import { expertMetadataFixture, expertSummary, expertDetail } from "./metadataEx
 import type { MetadataSummary, MetadataContext, MetadataSelection } from "../lib/jobMetadata";
 
 import { swarmCacheFixture } from "./swarmCache.fixtures";
+import { resetSlashMenuPrefsForTests, setSlashExpertMode } from "../components/conversation/slashMenuPrefs";
 
 import { view as metadataView, view, selection, selection as metadataSelection } from "./jobMetadata.fixtures";
 
 import { metadataSelectionKey } from "../lib/jobMetadata";
 
 import { queuePendingSwarmNavigation, peekPendingSwarmNavigation, clearPendingSwarmOpenJob } from "../lib/pendingSwarmOpenJob";
+import { openAgentSwarmJob } from "../lib/agentLinks";
+import { metadataJobs, useSharedJobMetadata } from "../lib/jobMetadataContext";
 
 import { terminalWorkerMetadataFixture } from "./workerIdentity.fixtures";
 
@@ -177,6 +180,7 @@ describe("SwarmPane sort and filter controls", () => {
   });
   afterEach(() => {
     cleanup();
+    resetSlashMenuPrefsForTests();
     metadata?.dispose();
     vi.unstubAllGlobals();
     expect(mockSwarmLive).not.toHaveBeenCalled();
@@ -184,14 +188,13 @@ describe("SwarmPane sort and filter controls", () => {
     expect(fetchJobArtifacts).not.toHaveBeenCalled();
   });
 
-  it("distributes filter and sort controls evenly across the toolbar", async () => {
+  it("keeps the scope and status filter in one toolbar row; sort is an expert control", async () => {
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     const filter = await screen.findByLabelText("Filter jobs");
-    const sort = screen.getByLabelText("Sort jobs");
-
-    expect(filter.parentElement).toHaveClass("grid", "grid-cols-2");
-    expect(filter).toHaveClass("w-full");
-    expect(sort).toHaveClass("w-full");
+    expect(within(filter.parentElement!).getByRole("button", { name: "This session" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Sort jobs")).toBeNull();
+    act(() => setSlashExpertMode(true));
+    expect(within(filter.parentElement!).getByLabelText("Sort jobs")).toBeInTheDocument();
   });
 
   async function hydrateDates() {
@@ -215,6 +218,7 @@ describe("SwarmPane sort and filter controls", () => {
   });
   it("reverses both lifecycle groups when Oldest is selected", async () => {
     await hydrateDates();
+    setSlashExpertMode(true);
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } });
     expectBefore(screen.getByRole('button', { name: /^Older active audit/ }), screen.getByRole('button', { name: /^Newest active build/ }));
@@ -236,7 +240,7 @@ describe("SwarmPane sort and filter controls", () => {
     expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /^Older completed review ·/ })).toBeVisible();
     expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
-    expect(screen.getByText('Completed lifecycle does not establish successful verification.')).toBeVisible();
+    expect(screen.queryByText('Completed lifecycle does not establish successful verification.')).toBeNull();
     fireEvent.change(screen.getByLabelText('Filter jobs'), { target: { value: 'untrustworthy' } });
     expect(screen.getByRole('button', { name: /^Degraded architecture review ·/ })).toBeVisible();
     expect(screen.queryByRole('button', { name: /^Newest failed review ·/ })).not.toBeInTheDocument();
@@ -250,7 +254,7 @@ describe("SwarmPane sort and filter controls", () => {
     await screen.findByRole("button", { name: /^Newest active build ·/ });
 
     fireEvent.change(screen.getByLabelText("Filter jobs"), { target: { value: "cancelled" } });
-    expect(await screen.findByText("No jobs match this filter")).toBeInTheDocument();
+    expect(await screen.findByText("No jobs match this filter.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
     expect(await screen.findByRole("button", { name: /^Newest active build ·/ })).toBeInTheDocument();
   });
@@ -2024,7 +2028,7 @@ describe("SwarmPane repo-scoped dismiss", () => {
   const REPO_A = "C:\\Users\\pwall\\Projects\\repo-a";
   const REPO_B = "C:\\Users\\pwall\\Projects\\repo-b";
   const SESSION = "sess-test";
-  const hiddenMessage = "Observed finished jobs are hidden. Show hidden jobs to restore them.";
+  const hiddenMessage = "Finished jobs are hidden.";
   let metadata: Awaited<ReturnType<typeof expertMetadataFixture>>;
 
   function row(id: string, goal: string, lifecycle = "complete", repo = REPO_A): MetadataSummary {
@@ -2220,6 +2224,18 @@ describe("SwarmPane harness-open-swarm-job deep-link", () => {
     expect(screen.getByLabelText('Filter jobs')).toHaveValue('active');
     open();
     await expectOpened('Deep-link target behind filter');
+  });
+  it("a manual pick ends a navigation without context and clears its notice", async () => {
+    await fixture('Picked by hand');
+    mount();
+    act(() => openAgentSwarmJob(selection.job_ref.job_id));
+    expect(await screen.findByText(/Target context is unknown/)).toBeInTheDocument();
+    const row = (await screen.findAllByRole('button', { name: /^Picked by hand/ }))
+      .find((btn) => btn.getAttribute('aria-expanded') != null);
+    if (!row) throw Error('Missing job row');
+    fireEvent.click(row);
+    expect(screen.queryByText(/Target context is unknown/)).not.toBeInTheDocument();
+    expect(peekPendingSwarmNavigation()).toBeNull();
   });
   it("consumes a pending open-job queued before mount", async () => {
     await fixture('Late-mount deep-link target', true);
@@ -2732,7 +2748,7 @@ describe("SwarmPane command vs swarm split", () => {
     render(<metadata.Provider><SwarmWithInspect /></metadata.Provider>);
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(0)");
     expect(screen.getByText("Swarm Tracker").parentElement).not.toHaveTextContent("(1)");
-    expect(screen.getByText("No jobs yet")).toBeInTheDocument();
+    expect(screen.getByText("Jobs that the pilot starts show here.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Active \(/ })).not.toBeInTheDocument();
     expect(screen.queryByText("sleep 999")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Command · running" })).not.toBeInTheDocument();

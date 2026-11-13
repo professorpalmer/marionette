@@ -10,6 +10,7 @@ type CheckResult = {
   behind?: number;
   branch?: string;
   current?: string;
+  latest?: string;
   runtimeStale?: boolean;
   runtimeNote?: string;
 };
@@ -71,6 +72,7 @@ describe("UpdateBanner update checks", () => {
         behind: 2,
         branch: "main",
         current: "0.9.245",
+        latest: "0.9.246",
       })
       .mockResolvedValueOnce({ available: false, downloaded: false });
     (window as any).harnessIPC.updates.check = check;
@@ -79,9 +81,10 @@ describe("UpdateBanner update checks", () => {
 
     expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
     expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      kind: "release",
       behind: 2,
       branch: "main",
-      version: "0.9.245",
+      version: "0.9.246",
     });
 
     now += 5 * 60 * 1000;
@@ -104,6 +107,7 @@ describe("UpdateBanner update checks", () => {
         behind: 1,
         branch: "main",
         current: "0.9.245",
+        latest: "0.9.246",
       })
       .mockResolvedValueOnce({ available: false, downloaded: false, busy: true })
       .mockRejectedValueOnce(new Error("network unavailable"));
@@ -136,6 +140,7 @@ describe("UpdateBanner update checks", () => {
         behind: 2,
         branch: "main",
         current: "0.9.245",
+        latest: "0.9.246",
       })
       .mockResolvedValueOnce({
         available: false,
@@ -147,9 +152,10 @@ describe("UpdateBanner update checks", () => {
     render(<UpdateBanner onAvailabilityChange={onAvailabilityChange} />);
     expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
     expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      kind: "release",
       behind: 2,
       branch: "main",
-      version: "0.9.245",
+      version: "0.9.246",
     });
 
     now += 5 * 60 * 1000;
@@ -158,9 +164,10 @@ describe("UpdateBanner update checks", () => {
     expect(screen.getByTestId("update-banner")).toBeInTheDocument();
     expect(onAvailabilityChange).toHaveBeenCalledTimes(1);
     expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      kind: "release",
       behind: 2,
       branch: "main",
-      version: "0.9.245",
+      version: "0.9.246",
     });
   });
 
@@ -366,6 +373,7 @@ describe("UpdateBanner update checks", () => {
         behind: 1,
         branch: "main",
         current: "0.9.245",
+        latest: "0.9.246",
       });
       return () => {};
     });
@@ -395,6 +403,7 @@ describe("UpdateBanner update checks", () => {
         behind: 1,
         branch: "main",
         current: "0.9.245",
+        latest: "0.9.246",
       });
       return () => {};
     });
@@ -407,9 +416,10 @@ describe("UpdateBanner update checks", () => {
     expect(screen.getByTestId("update-banner")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /restart now/i })).toBeInTheDocument();
     expect(onAvailabilityChange).toHaveBeenLastCalledWith({
+      kind: "release",
       behind: 1,
       branch: "main",
-      version: "0.9.245",
+      version: "0.9.246",
     });
     expect(onAvailabilityChange).not.toHaveBeenCalledWith(null);
     await waitFor(() => expect(toast).toHaveBeenCalled());

@@ -1,7 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { useOverlayFocus } from "../lib/overlayFocus";
 import { api, type Session, type SessionForkPreview } from "../lib/api";
+import { Modal } from "./ui/overlay";
 
 type ForkState =
   | { kind: "closed" }
@@ -23,11 +22,6 @@ export function SessionFork({ session, sessions, onSelect, onCreated, open, onCl
   onSelect: (id: string) => void;
   onCreated: (child: Session) => void;
 }) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useOverlayFocus(open === true, dialogRef, { onClose, restoreFocus: false });
-  useEffect(() => {
-    if (open) return () => { returnFocus?.focus(); };
-  }, [open, returnFocus]);
   const [state, setState] = useState<ForkState>({ kind: "closed" });
   const inFlight = useRef(false);
   const mounted = useRef(false);
@@ -127,18 +121,21 @@ export function SessionFork({ session, sessions, onSelect, onCreated, open, onCl
     </>}
   </section>;
   if (open === undefined) return content;
-  if (!open) return null;
-  return createPortal(
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/50"
-      onClick={event => { if (event.target === event.currentTarget) onClose?.(); }}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={`Fork ${session.title}`}
-        className="w-[480px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-32px)] overflow-y-auto rounded-xl border border-edge bg-panel p-4 text-txt">
-        <header className="flex items-center justify-between gap-2 mb-3">
-          <h2 className="text-sm font-semibold truncate">Fork {session.title}</h2>
-          <button type="button" className={buttonClass} aria-label={`Close Fork ${session.title}`} onClick={onClose}>Close</button>
-        </header>
-        {content}
-      </div>
-    </div>, document.body,
+  return (
+    <Modal
+      open={open}
+      onClose={() => onClose?.()}
+      label={`Fork ${session.title}`}
+      finalFocus={returnFocus ? { current: returnFocus } : undefined}
+      backdropClassName="fixed inset-0 z-[90] bg-black/50"
+      viewportClassName="fixed inset-0 z-[90] flex items-center justify-center"
+      className="w-[480px] max-w-[calc(100vw-32px)] max-h-[calc(100vh-32px)] overflow-y-auto rounded-xl border border-edge bg-panel p-4 text-txt outline-none"
+    >
+      <header className="flex items-center justify-between gap-2 mb-3">
+        <h2 className="text-sm font-semibold truncate">Fork {session.title}</h2>
+        <button type="button" className={buttonClass} aria-label={`Close Fork ${session.title}`} onClick={onClose}>Close</button>
+      </header>
+      {content}
+    </Modal>
   );
 }

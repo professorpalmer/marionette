@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
   deriveFooterRuntimeStatus,
   footerRuntimeStatusLabel,
+  footerStatusWithTurn,
   sessionGoalForChip,
 } from "../components/StatusBar";
 import EconomicsPane from "../components/EconomicsPane";
@@ -11,6 +12,8 @@ import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanne
 import { api, type LedgerBucket, type LedgerView } from "../lib/api";
 import { _resetProcessUsageForTests, refreshProcessUsage } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
+import { _resetActivityForTests, setActivity } from "../lib/appActivity";
+import { resetSlashMenuPrefsForTests, setSlashExpertMode } from "../components/conversation/slashMenuPrefs";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -88,7 +91,6 @@ afterEach(() => {
 });
 
 const statusBarProps = {
-  config: null,
   update: null,
   leftOpen: true,
   rightOpen: false,
@@ -167,6 +169,9 @@ describe("deriveFooterRuntimeStatus", () => {
 
   it("humanizes footer labels without flashing raw enums", () => {
     expect(footerRuntimeStatusLabel("ready")).toBe("Idle");
+    expect(footerStatusWithTurn("ready", true)).toBe("thinking");
+    expect(footerStatusWithTurn("busy", true)).toBe("busy");
+    expect(footerStatusWithTurn("ready", false)).toBe("ready");
     expect(footerRuntimeStatusLabel("thinking")).toBe("Thinking…");
     expect(footerRuntimeStatusLabel("busy")).toBe("Busy");
   });
@@ -307,6 +312,29 @@ describe("StatusBar runtime status", () => {
     });
   });
 
+  it("shows a working dot while the chat turn is open, even when the runner reply says idle", async () => {
+    _resetActivityForTests();
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      active_view_id: "sess-1",
+      runners: { "sess-1": "idle" },
+    });
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
+    act(() => setActivity("turn", true));
+    expect(document.querySelector("[data-runtime-status]")).toHaveAttribute("data-runtime-status", "thinking");
+    act(() => setActivity("turn", false));
+    expect(document.querySelector("[data-runtime-status]")).toHaveAttribute("data-runtime-status", "ready");
+  });
+
+  it("keeps the footer label out of sight (dot only)", async () => {
+    _resetActivityForTests();
+    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, active_view_id: "sess-1", runners: {} });
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(screen.getByText("Idle")).toHaveClass("sr-only"));
+  });
+
   it("shows Thinking… when the active session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
@@ -345,15 +373,6 @@ describe("StatusBar runtime status", () => {
     // B's own request is still in flight: no Idle from its old reply, no "…".
     expect(document.querySelector("[data-runtime-status]"))
       .toHaveAttribute("data-runtime-status", "thinking");
-  });
-
-  it("reserves the widest status label so neighbors do not shift", async () => {
-    mockGetSessionState.mockResolvedValue({
-      state: "idle", pending_swarms: false, active_view_id: "s", runners: { s: "idle" },
-    });
-    render(<StatusBar {...statusBarProps} />);
-    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
-    expect(screen.getByText("Idle")).toHaveAttribute("data-widest", "Thinking…");
   });
 
   it("shows Idle when only a background session runner is running", async () => {
@@ -552,15 +571,15 @@ describe("StatusBar update progress mirror", () => {
     const { rerender } = render(
       <StatusBar
         {...statusBarProps}
-        update={{ behind: 2, branch: "main", version: "0.9.245" }}
+        update={{ kind: "commits", behind: 2, branch: "main", version: "0.9.245" }}
       />,
     );
 
-    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "2 new commits" }));
     expect(applyRequest).toHaveBeenCalledTimes(1);
 
     rerender(<StatusBar {...statusBarProps} update={null} />);
-    expect(screen.queryByRole("button", { name: "update (2)" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "2 new commits" })).not.toBeInTheDocument();
     window.removeEventListener("harness-update-apply", applyRequest);
   });
 
@@ -590,10 +609,11 @@ describe("StatusBar update progress mirror", () => {
       behind: 2,
       branch: "main",
       current: "0.9.245",
+      latest: "0.9.246",
     }));
 
     expect(await screen.findByTestId("update-banner")).toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "update (2)" }));
+    fireEvent.click(await screen.findByRole("button", { name: "v0.9.246 ready" }));
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
 
     act(() => progressListeners.forEach((listener) => listener({
@@ -636,8 +656,10 @@ describe("StatusBar update progress mirror", () => {
 });
 
 describe("StatusBar task profile chip", () => {
+  afterEach(() => resetSlashMenuPrefsForTests());
   beforeEach(() => {
     vi.clearAllMocks();
+    setSlashExpertMode(true);
     mockWorkspaces.mockResolvedValue([]);
     mockGetSessionState.mockResolvedValue({
       state: "idle",
@@ -659,12 +681,22 @@ describe("StatusBar task profile chip", () => {
     });
 
     const chip = await screen.findByTestId("task-profile-chip");
-    expect(chip).toHaveTextContent("DEPTH");
-    expect(chip).toHaveTextContent("MICRO");
+    expect(chip).toHaveTextContent("Depth");
+    expect(chip).toHaveTextContent(/micro/i);
     expect(chip).toHaveAttribute(
       "title",
       expect.stringContaining("skipped wiki and CodeGraph auto-inject"),
     );
+  });
+
+  it("is an expert fact: hidden while expert mode is off", async () => {
+    setSlashExpertMode(false);
+    render(<StatusBar {...statusBarProps} />);
+    act(() => {
+      publishTaskProfile({ profile: "standard" });
+    });
+    await waitFor(() => expect(mockGetSessionState).toHaveBeenCalled());
+    expect(screen.queryByTestId("task-profile-chip")).not.toBeInTheDocument();
   });
 
   it("clears the chip on session change", async () => {
@@ -695,20 +727,15 @@ describe("StatusBar compact chrome", () => {
     mockSessions.mockResolvedValue([]);
   });
 
-  it("shortens long model ids", () => {
-    render(
-      <StatusBar
-        {...statusBarProps}
-        config={{
-          driver: "openrouter:deepseek/deepseek-v4-pro-0813",
-          reach: "openrouter",
-          budget: 0,
-        }}
-      />,
-    );
-
-    expect(screen.getByText("deepseek-v4-pro-0813")).toBeInTheDocument();
-    expect(screen.queryByText("openrouter:deepseek/deepseek-v4-pro-0813")).toBeNull();
+  it("shows no model, provider, branch or platform: other surfaces own those facts", async () => {
+    vi.mocked(api.getWorkspace).mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
+    const { container } = render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(mockGetSessionState).toHaveBeenCalled());
+    for (const text of ["dev", "openrouter", "standalone", "desktop", "web"]) {
+      expect(screen.queryByText(text)).toBeNull();
+    }
+    expect(container.querySelector(".status-bar-model")).toBeNull();
+    expect(api.getWorkspace).not.toHaveBeenCalled();
   });
 });
 
@@ -825,36 +852,6 @@ it("does not show a session Retry banner for an unrelated boot-store failure", a
   fireEvent.change(await screen.findByLabelText("Economics ownership"), { target: { value: "conversation" } });
   await waitFor(() => expect(screen.getAllByText(/33\.60/).length).toBeGreaterThan(0));
   expect(screen.queryAllByText(/Session usage partial \/ unavailable/)).toHaveLength(0);
-});
-
-describe("StatusBar branch label", () => {
-  const mockGetWorkspace = vi.mocked(api.getWorkspace);
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, runners: {} });
-    mockSessions.mockResolvedValue([]);
-  });
-
-  it("reads the branch once per repo, not once per config object", async () => {
-    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
-    const config = { repo: "/a", driver: "x", reach: "cloud", budget: 1 } as never;
-    const { rerender } = render(<StatusBar {...statusBarProps} config={config} />);
-    expect(await screen.findByText("dev")).toBeTruthy();
-    for (let i = 0; i < 5; i += 1) {
-      rerender(<StatusBar {...statusBarProps} config={{ ...(config as object) } as never} />);
-    }
-    expect(mockGetWorkspace).toHaveBeenCalledTimes(1);
-    expect(api.workspaces).not.toHaveBeenCalled();
-  });
-
-  it("clears the branch when the new workspace is not a git repo", async () => {
-    mockGetWorkspace.mockResolvedValue({ repo: "/a", branch: "dev", is_git: true, codegraph_status: "ready" });
-    const { rerender } = render(<StatusBar {...statusBarProps} config={{ repo: "/a" } as never} />);
-    expect(await screen.findByText("dev")).toBeTruthy();
-    mockGetWorkspace.mockResolvedValue({ repo: "/plain", branch: "", is_git: false, codegraph_status: "none" });
-    rerender(<StatusBar {...statusBarProps} config={{ repo: "/plain" } as never} />);
-    await waitFor(() => expect(screen.queryByText("dev")).toBeNull());
-  });
 });
 
 describe("StatusBar session switch", () => {

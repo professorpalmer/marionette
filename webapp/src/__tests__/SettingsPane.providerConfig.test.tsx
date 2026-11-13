@@ -66,7 +66,7 @@ describe("SettingsPane Accounts provider config", () => {
     });
     fireEvent.click(screen.getByTestId("add-provider"));
     const dialog = await screen.findByRole("dialog", { name: "Add provider" });
-    expect(dialog.getAttribute("data-manual")).toBe("true");
+    expect(dialog.querySelector("[data-manual]")?.getAttribute("data-manual")).toBe("true");
   });
 
   it("drills down into an existing provider from Accounts", async () => {
@@ -74,7 +74,7 @@ describe("SettingsPane Accounts provider config", () => {
     const name = await screen.findByTestId("provider-account-drilldown");
     fireEvent.click(name);
     const dialog = await screen.findByRole("dialog", { name: /Configure OpenRouter/ });
-    expect(dialog.getAttribute("data-manual")).toBe("false");
+    expect(dialog.querySelector("[data-manual]")?.getAttribute("data-manual")).toBe("false");
     expect((screen.getByTestId("provider-config-field-name") as HTMLInputElement).value).toBe("openrouter");
   });
 

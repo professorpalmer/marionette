@@ -336,6 +336,12 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
             elif isinstance(provider_metadata.get("name"), str) and provider_metadata["name"].strip():
                 display_name = provider_metadata["name"].strip()
             pricing = provider_metadata.get("pricing") or {}
+            # Same rule the vision sidecar uses; None when no source knows.
+            try:
+                from .vision import model_image_input
+                image_input = model_image_input(p, m) if is_avail else None
+            except Exception:
+                image_input = None
             if p.name == "local":
                 pricing = {"prompt": 0, "completion": 0}
                 display_name = picker_display_name(m) or display_name or m
@@ -351,6 +357,7 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
                 "pricing": pricing,
                 "price_in": pricing.get("prompt"),
                 "price_out": pricing.get("completion"),
+                "image_input": image_input,
                 "source": provider_metadata.get("source", status.get("source")),
                 "status": status.get("status"),
                 "provider_metadata": provider_metadata,

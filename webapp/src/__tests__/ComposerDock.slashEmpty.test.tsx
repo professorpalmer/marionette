@@ -1,11 +1,14 @@
 /**
  * Regression: slash picker must show an empty-state when slashSearch is open
- * but filterSlashCommands returns zero hits (parity with @mention no-matches).
+ * but slashMenu returns zero hits (parity with @mention no-matches).
  */
 import { createRef } from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetSlashMenuPrefsForTests } from "../components/conversation/slashMenuPrefs";
 import ComposerDock from "../components/conversation/ComposerDock";
+import { OPEN_ONBOARDING_EVENT } from "../lib/sessionNav";
+import type { Config } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {},
@@ -22,10 +25,10 @@ vi.mock("../components/conversation/WorkspaceChip", () => ({
 
 const noop = () => {};
 
-function renderDock(slashSearch: string | null) {
+function renderDock(slashSearch: string | null, config: Config | null = null) {
   return render(
     <ComposerDock
-      config={null}
+      config={config}
       taRef={createRef<HTMLTextAreaElement>()}
       input={slashSearch !== null ? `/${slashSearch}` : ""}
       auto={false}
@@ -56,6 +59,7 @@ function renderDock(slashSearch: string | null) {
       allSlashCommands={[
         { cmd: "/help", desc: "Show help" },
         { cmd: "/clear", desc: "Clear transcript" },
+        { cmd: "/refine", desc: "Propose a refine", visibility: "expert" },
       ]}
       attachedImages={[]}
       isDragOver={false}
@@ -106,6 +110,8 @@ function renderDock(slashSearch: string | null) {
 }
 
 describe("ComposerDock slash empty-state", () => {
+  afterEach(() => resetSlashMenuPrefsForTests());
+
   it("shows No matches when slashSearch is open with zero hits", () => {
     renderDock("zzzz-no-such-command");
     expect(screen.getByTestId("slash-no-matches")).toHaveTextContent("No matches");
@@ -115,13 +121,48 @@ describe("ComposerDock slash empty-state", () => {
     renderDock("help");
     expect(screen.queryByTestId("slash-no-matches")).toBeNull();
     expect(screen.getByText("Show help")).toBeInTheDocument();
-    expect(screen.getByText("Commands")).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: "Commands" })).toBeInTheDocument();
   });
 
   it("hides the picker when slashSearch is null", () => {
     renderDock(null);
     expect(screen.queryByTestId("slash-no-matches")).toBeNull();
-    expect(screen.queryByText("Commands")).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
     expect(screen.queryByText("Show help")).toBeNull();
+  });
+
+  it("hides internal commands until expert mode is on", () => {
+    renderDock("");
+    expect(screen.queryByText("/refine")).toBeNull();
+    const expert = screen.getByRole("button", { name: "Expert" });
+    expect(expert).toHaveAttribute("aria-pressed", "false");
+    expect(expert.getAttribute("title")).toContain("show 1 internal command");
+    act(() => { fireEvent.click(expert); });
+    expect(screen.getByRole("button", { name: "Expert" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("/refine")).toBeInTheDocument();
+  });
+});
+
+describe("ComposerDock with no model", () => {
+  const noKey = { driver: "qwen3-coder-30b", reach: "openrouter", budget: 0, pilot_ready: false } as Config;
+
+  it("shows Connect a model in place of a fallback model name", () => {
+    const onboarding = vi.fn();
+    window.addEventListener(OPEN_ONBOARDING_EVENT, onboarding);
+    renderDock(null, noKey);
+    expect(screen.queryByTestId("pilot-picker")).toBeNull();
+    expect(screen.queryByTestId("swarm-reasoning-picker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Connect a model" }));
+    expect(onboarding).toHaveBeenCalledTimes(1);
+    window.removeEventListener(OPEN_ONBOARDING_EVENT, onboarding);
+  });
+
+  it("keeps the picker for a ready pilot and for a keyless local pilot", () => {
+    renderDock(null, { ...noKey, pilot_ready: true });
+    expect(screen.getByTestId("pilot-picker")).toBeInTheDocument();
+    cleanup();
+    renderDock(null, { ...noKey, driver: "local:qwen3-coder-30b" });
+    expect(screen.getByTestId("pilot-picker")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connect a model" })).toBeNull();
   });
 });

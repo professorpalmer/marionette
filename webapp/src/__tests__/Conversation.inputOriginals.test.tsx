@@ -279,7 +279,7 @@ it('auto carries exact literal text and expanded delivery separately', async () 
   const raw = '  inspect @terminal:"zsh:1"\n\t';
   putTerminalSelection('A', 'zsh:1', 'auto output');
   fireEvent.change(input, { target: { value: raw } });
-  fireEvent.click(screen.getByTitle('Autopilot: the pilot plans and executes autonomously (vs. you steering each step)'));
+  fireEvent.click(screen.getByRole('button', { name: 'Autopilot', exact: true }));
   fireEvent.click(screen.getByRole('button', { name: 'Run', exact: true }));
   await waitFor(() => expect(auto).toHaveBeenCalled());
   expect(auto.mock.calls[0][0]).toBe('  inspect ```terminal\nauto output\n```\n\t');

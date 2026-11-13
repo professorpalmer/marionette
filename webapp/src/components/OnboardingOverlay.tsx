@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, KeyRound, LogIn } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ChevronRight, ExternalLink, HardDrive, KeyRound, LogIn } from "lucide-react";
 import { api, type ProviderInfo } from "../lib/api";
 import {
+  defaultOnboardingProvider,
   FEATURED_LABELS,
   featuredOnboardingProviders,
   featuredOAuthKind,
@@ -12,6 +13,8 @@ import {
 } from "../lib/onboardingProviders";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { setConfigured, setFlow, setMode, skipFirstRun } from "../state/onboardingStore";
+import { focusSettingsPage } from "./SettingsShell";
+import { Modal } from "./ui/overlay";
 
 export type OnboardingOverlayProps = {
   onClose: () => void;
@@ -125,8 +128,34 @@ export function FeaturedProviderRow({
   );
 }
 
+/** Plain words for worker_capability ("full stack" meant nothing to a new user). */
+export function capabilityLabel(provider: Pick<ProviderInfo, "worker_capability">): string {
+  switch (provider.worker_capability) {
+    case "full_stack":
+      return "Chat and workers";
+    case "pilot_only":
+      return "Chat only";
+    case "platform_worker":
+      return "Workers only";
+    case undefined:
+      return "";
+    default: {
+      const exhaustive: never = provider.worker_capability;
+      return exhaustive;
+    }
+  }
+}
+
+function CapabilityBadge({ provider }: { provider: ProviderInfo }) {
+  const label = capabilityLabel(provider);
+  if (!label) return null;
+  return <span className="text-ui-10 text-faint">{label}</span>;
+}
+
 export type KeyProviderRowProps = {
   provider: ProviderInfo;
+  /** Shows the "Recommended" tag. */
+  recommended?: boolean;
   expanded: boolean;
   onExpand: () => void;
   disabled: boolean;
@@ -135,6 +164,7 @@ export type KeyProviderRowProps = {
 
 export function KeyProviderRow({
   provider,
+  recommended = false,
   expanded,
   onExpand,
   disabled,
@@ -182,8 +212,16 @@ export function KeyProviderRow({
         disabled={disabled}
         className="w-full text-left"
       >
-        <div className="text-ui-13 font-semibold text-txt leading-tight">
-          {provider.display_name || provider.name}
+        <div className="flex items-center gap-2">
+          <span className="text-ui-13 font-semibold text-txt leading-tight">
+            {provider.display_name || provider.name}
+          </span>
+          {recommended ? (
+            <span className="text-ui-10 font-semibold text-accent border border-accent/40 rounded px-1.5 py-px">
+              Recommended
+            </span>
+          ) : null}
+          <CapabilityBadge provider={provider} />
         </div>
         <div className="text-ui-11 text-muted mt-0.5 leading-snug">{copy.tagline}</div>
       </button>
@@ -212,7 +250,8 @@ export function KeyProviderRow({
             type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder={provider.env_var || "API key"}
+            placeholder={`Paste your ${provider.display_name || provider.name} API key`}
+            aria-label={`${provider.display_name || provider.name} API key`}
             value={keyValue}
             onChange={(e) => setKeyValue(e.target.value)}
             disabled={saving || disabled}
@@ -239,11 +278,107 @@ export function KeyProviderRow({
   );
 }
 
+
+/** What first launch found on this Mac before the user chooses anything. */
+export type OnboardingDetection = {
+  /** Keys already saved or in the shell environment (a disconnected env key can be turned on). */
+  keys: ProviderInfo[];
+  /** Claude Code CLI is installed but not signed in (signed in counts as a key). */
+  claudeCliInstalled: boolean;
+  /** Local model servers found on this Mac or the LAN. */
+  localEndpoints: { id: string; label: string }[];
+};
+
+const NO_DETECTION: OnboardingDetection = { keys: [], claudeCliInstalled: false, localEndpoints: [] };
+
+/** Pure: providers plus the two optional probes, each of which may fail. */
+export function detectionFrom(
+  providers: ProviderInfo[],
+  claudeCli: { installed?: boolean; authenticated?: boolean } | null,
+  local: unknown,
+): OnboardingDetection {
+  const keys = providers.filter((p) => p.has_key || (p.has_env && p.disconnected));
+  const externals = local && typeof local === "object" && Array.isArray((local as { externals?: unknown }).externals)
+    ? ((local as { externals: unknown[] }).externals)
+    : [];
+  const localEndpoints = externals.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const endpoint = row as { id?: unknown; name?: unknown; vendor?: unknown; base_url?: unknown };
+    const id = typeof endpoint.id === "string" ? endpoint.id : "";
+    if (!id) return [];
+    const name = typeof endpoint.name === "string" && endpoint.name ? endpoint.name
+      : typeof endpoint.vendor === "string" ? endpoint.vendor : "Local server";
+    const url = typeof endpoint.base_url === "string" ? endpoint.base_url : "";
+    return [{ id, label: url ? `${name} at ${url}` : name }];
+  });
+  return {
+    keys,
+    claudeCliInstalled: !!(claudeCli?.installed && !claudeCli.authenticated),
+    localEndpoints,
+  };
+}
+
+function openSettingsPage(page: "local-models" | "providers"): void {
+  focusSettingsPage(page);
+  window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+}
+
+function Disclosure({
+  title,
+  detail,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  detail: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-lg border border-edge/70">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left rounded-lg hover:bg-panel2/60 transition"
+      >
+        <ChevronRight size={14} className={`text-muted shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+        <span className="text-ui-12.5 font-semibold text-txt">{title}</span>
+        <span className="text-ui-11 text-faint truncate">{detail}</span>
+      </button>
+      {open ? <div className="px-2 pb-2 space-y-2">{children}</div> : null}
+    </section>
+  );
+}
+
+function DetectedRow({ title, detail, action, onAction }: { title: string; detail: string; action: string; onAction: () => void }) {
+  return (
+    <div data-testid="detected-row" className="flex items-center justify-between gap-3 rounded-lg border border-good/30 bg-good/5 px-3 py-2.5">
+      <div className="min-w-0">
+        <div className="text-ui-13 font-semibold text-txt leading-tight">{title}</div>
+        <div className="text-ui-11 text-muted mt-0.5 leading-snug">{detail}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onAction}
+        className="shrink-0 bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-1 text-ui-11 font-medium"
+      >
+        {action}
+      </button>
+    </div>
+  );
+}
+
 export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [detection, setDetection] = useState<OnboardingDetection>(NO_DETECTION);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selectedKey, setSelectedKey] = useState("");
+  const [plansOpen, setPlansOpen] = useState(false);
+  const [othersOpen, setOthersOpen] = useState(false);
   const [oauthName, setOauthName] = useState("");
   const [oauthBusy, setOauthBusy] = useState(false);
   const [oauthHint, setOauthHint] = useState("");
@@ -255,14 +390,9 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
 
   const featured = useMemo(() => featuredOnboardingProviders(providers), [providers]);
   const keyRows = useMemo(() => keyOnboardingProviders(providers), [providers]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finishSkip(onClose);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const recommendedName = useMemo(() => defaultOnboardingProvider(providers), [providers]);
+  const recommended = keyRows.find((p) => p.name === recommendedName);
+  const otherKeyRows = keyRows.filter((p) => p.name !== recommendedName);
 
   useEffect(() => {
     let cancelled = false;
@@ -273,8 +403,18 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
         const list = await api.providers();
         if (cancelled) return;
         setProviders(list);
-        const keys = keyOnboardingProviders(list);
-        setSelectedKey(keys[0]?.name || "");
+        setSelectedKey(defaultOnboardingProvider(list));
+        // Optional probes: a missing CLI or local-model API only hides its row.
+        const [claude, local] = await Promise.allSettled([
+          Promise.resolve().then(() => api.getClaudeCliStatus()),
+          Promise.resolve().then(() => api.getLocalModels()),
+        ]);
+        if (cancelled) return;
+        setDetection(detectionFrom(
+          list,
+          claude.status === "fulfilled" ? claude.value : null,
+          local.status === "fulfilled" ? local.value : null,
+        ));
       } catch (err: unknown) {
         if (cancelled) return;
         setLoadError(err instanceof Error ? err.message : "Failed to load providers.");
@@ -401,40 +541,133 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
     }
   };
 
+  const useDetectedKey = async (provider: ProviderInfo) => {
+    if (provider.disconnected) {
+      try {
+        await api.setProviderEnabled(provider.name, true);
+      } catch {
+        setLoadError(`Could not turn on ${provider.display_name || provider.name}.`);
+        return;
+      }
+    }
+    finishConfigured(onClose);
+  };
+
+  const leaveFor = (page: "local-models" | "providers") => {
+    finishSkip(onClose);
+    openSettingsPage(page);
+  };
+
+  const found = detection.keys.length > 0 || detection.claudeCliInstalled || detection.localEndpoints.length > 0;
+
   return (
-    <div
-      data-testid="onboarding-overlay"
-      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
-      style={{
-        background:
-          "radial-gradient(ellipse at 50% 38%, rgba(224,164,90,0.08) 0%, transparent 52%), #0f1113",
-      }}
+    <Modal
+      open
+      onClose={() => finishSkip(onClose)}
+      labelledBy="onboarding-title"
+      dismissOnOutsidePress={false}
+      testId="onboarding-overlay"
+      backdropClassName="fixed inset-0 z-50 [background:radial-gradient(ellipse_at_50%_38%,rgba(224,164,90,0.08)_0%,transparent_52%),#0f1113]"
+      viewportClassName="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
+      className="onboarding-card w-full max-w-[34rem] max-h-full flex flex-col rounded-2xl border border-edge bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.45)] outline-none"
     >
-      <div className="onboarding-card w-full max-w-[36rem] max-h-full overflow-y-auto rounded-2xl border border-edge bg-panel px-7 py-8 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
-        <header className="text-center mb-6">
-          <h1 className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
-            Let&apos;s get you set up with Marionette
+        <header className="shrink-0 text-center px-7 pt-7 pb-5">
+          <h1 id="onboarding-title" className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
+            Connect a model
           </h1>
-          <p className="mt-2 text-ui-13 text-muted leading-relaxed">
-            Sign in with a plan or paste a Full stack key. One credential runs chat and swarms.
+          <p className="mt-2 text-ui-13 text-muted leading-relaxed text-balance">
+            Marionette runs its pilot and its workers on a model you choose. Pick one way to connect. You can add more later in Settings.
           </p>
         </header>
 
-        {loading ? (
-          <p className="text-center text-muted text-ui-13 py-10">Loading providers…</p>
-        ) : (
-          <>
-            {loadNotice ? (
-              <p className="mb-4 text-center text-ui-12 text-risk" role="alert">
-                {loadNotice}
-              </p>
-            ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-5 space-y-5">
+          {loading ? (
+            <p className="text-center text-muted text-ui-13 py-10">Looking for keys and local models…</p>
+          ) : (
+            <>
+              {loadNotice ? (
+                <p className="text-center text-ui-12 text-risk" role="alert">
+                  {loadNotice}
+                </p>
+              ) : null}
 
-            <section aria-label="Featured plan sign-in">
-              <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">
-                Sign in with a plan
-              </h2>
-              <div className="space-y-2">
+              {found ? (
+                <section aria-label="Found on this Mac">
+                  <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">Found on this Mac</h2>
+                  <div className="space-y-2">
+                    {detection.keys.map((p) => (
+                      <DetectedRow
+                        key={p.name}
+                        title={`${p.display_name || p.name} key`}
+                        detail={`${p.has_env ? "From your shell environment" : "Saved in Marionette"}. ${capabilityLabel(p) || "Ready"}.`}
+                        action={p.disconnected ? "Turn on" : "Use it"}
+                        onAction={() => void useDetectedKey(p)}
+                      />
+                    ))}
+                    {detection.claudeCliInstalled ? (
+                      <DetectedRow
+                        title="Claude Code CLI"
+                        detail="Installed, not signed in. Sign in to chat on your Claude plan. Workers still need an API key."
+                        action="Sign in"
+                        onAction={() => leaveFor("providers")}
+                      />
+                    ) : null}
+                    {detection.localEndpoints.map((endpoint) => (
+                      <DetectedRow
+                        key={endpoint.id}
+                        title="Local model server"
+                        detail={endpoint.label}
+                        action="Set up"
+                        onAction={() => leaveFor("local-models")}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {recommended ? (
+                <section aria-label="Recommended">
+                  <KeyProviderRow
+                    provider={recommended}
+                    recommended
+                    expanded={selectedKey === recommended.name}
+                    onExpand={() => setSelectedKey(recommended.name)}
+                    disabled={oauthBusy}
+                    onConnected={() => finishConfigured(onClose)}
+                  />
+                </section>
+              ) : null}
+
+              <section
+                aria-label="Local model"
+                data-testid="local-model-option"
+                className="flex items-center justify-between gap-3 rounded-lg border border-edge/70 bg-panel2 px-3 py-2.5"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <HardDrive size={13} className="text-muted" />
+                    <span className="text-ui-13 font-semibold text-txt leading-tight">Local model</span>
+                    <span className="text-ui-10 text-faint">Chat only</span>
+                  </div>
+                  <div className="text-ui-11 text-muted mt-0.5 leading-snug">
+                    Run a model on this Mac. No key and no cost per token. Slower than hosted models.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => leaveFor("local-models")}
+                  className="shrink-0 border border-edge text-txt hover:bg-panel rounded px-2.5 py-1 text-ui-11 font-medium"
+                >
+                  Set up
+                </button>
+              </section>
+
+              <Disclosure
+                title="Sign in with a plan"
+                detail="ChatGPT, Claude Max, SuperGrok, Nous"
+                open={plansOpen}
+                onToggle={() => setPlansOpen((v) => !v)}
+              >
                 {featured.map((p) => (
                   <FeaturedProviderRow
                     key={p.name}
@@ -450,20 +683,20 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
                     onCancel={cancelOAuth}
                   />
                 ))}
-              </div>
-            </section>
+              </Disclosure>
 
-            <section className="mt-6" aria-label="API key providers">
-              <h2 className="text-ui-11 font-semibold uppercase tracking-wide text-muted mb-2">
-                Or paste an API key
-              </h2>
-              {keyRows.length === 0 ? (
-                <p className="text-center text-muted text-ui-13 py-4">
-                  No key providers available. You can add a key later from Settings.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {keyRows.map((p) => (
+              <Disclosure
+                title="Other API keys"
+                detail={otherKeyRows.map((p) => p.display_name || p.name).slice(0, 4).join(", ")}
+                open={othersOpen}
+                onToggle={() => setOthersOpen((v) => !v)}
+              >
+                {otherKeyRows.length === 0 ? (
+                  <p className="text-center text-muted text-ui-12 py-3">
+                    No other key providers. You can add a key later in Settings.
+                  </p>
+                ) : (
+                  otherKeyRows.map((p) => (
                     <KeyProviderRow
                       key={p.name}
                       provider={p}
@@ -472,14 +705,15 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
                       disabled={oauthBusy}
                       onConnected={() => finishConfigured(onClose)}
                     />
-                  ))}
-                </div>
-              )}
-            </section>
-          </>
-        )}
+                  ))
+                )}
+              </Disclosure>
+            </>
+          )}
+        </div>
 
-        <div className="mt-6 text-center">
+        <footer className="shrink-0 flex items-center justify-between gap-3 border-t border-edge/70 px-7 py-3.5">
+          <span className="text-ui-11 text-faint">Esc also closes this.</span>
           <button
             type="button"
             onClick={() => finishSkip(onClose)}
@@ -487,8 +721,7 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
           >
             I&apos;ll choose a provider later
           </button>
-        </div>
-      </div>
-    </div>
+        </footer>
+    </Modal>
   );
 }

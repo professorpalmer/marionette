@@ -17,7 +17,7 @@ import DeviceAccess from "./DeviceAccess";
 import EncryptedSessions from "./EncryptedSessions";
 import MemoryPane from "./MemoryPane";
 import SchedulesPane from "./SchedulesPane";
-import { takePendingExpandMemory } from "../lib/memoryDeepLink";
+import { takePendingExpandMemory, takePendingExpandSkills } from "../lib/memoryDeepLink";
 import {
   readSettingsSnapshot,
   writeSettingsSnapshot,
@@ -153,7 +153,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // Expand/collapse states
   const [hooksOpen, setHooksOpen] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(() => takePendingExpandSkills());
   // Cmd-K / /memory may fire harness-expand-memory before this mounts — consume latch.
   const [memoryOpen, setMemoryOpen] = useState(() => takePendingExpandMemory());
   const [archiveStatus, setArchiveStatus] = useState<{
@@ -276,6 +276,17 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     };
     window.addEventListener("harness-expand-memory", onExpandMemory);
     return () => window.removeEventListener("harness-expand-memory", onExpandMemory);
+  }, []);
+
+  // Deep-link: the self-learning footer opens Skills & Rules.
+  useEffect(() => {
+    const onExpandSkills = () => {
+      takePendingExpandSkills();
+      setSkillsOpen(true);
+      window.dispatchEvent(new CustomEvent("harness-settings-page", { detail: "advanced" }));
+    };
+    window.addEventListener("harness-expand-skills", onExpandSkills);
+    return () => window.removeEventListener("harness-expand-skills", onExpandSkills);
   }, []);
 
   // Section-scoped loads. API keys summary ("N/M connected") is visible while

@@ -12,13 +12,6 @@ describe("ProviderKeyBanner", () => {
     expect(banner.className).toMatch(/\bpr-4\b/);
     expect(banner.className).not.toMatch(/\bpx-4\b/);
     expect((banner as HTMLElement).style.paddingLeft).toBe(`${TITLEBAR_TRAFFIC_PAD_PX}px`);
-    expect(screen.getByText(/Add a provider key to run real analysis/i)).toBeTruthy();
-  });
-
-  it("tells a pilot-only user to add a Full stack key for swarms", () => {
-    render(<ProviderKeyBanner onAddKey={vi.fn()} variant="workers" />);
-    const banner = screen.getByTestId("provider-key-banner");
-    expect(banner.getAttribute("data-variant")).toBe("workers");
     expect(screen.getByText(/Chat works. Add an API key for swarms/i)).toBeTruthy();
   });
 

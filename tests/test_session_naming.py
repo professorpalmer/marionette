@@ -51,6 +51,11 @@ def test_derive_title():
     assert derive_title("   \n   \n") == "New session"
     # Collapses whitespace
     assert derive_title("   hello    world   ") == "Hello world"
+    # Marks inside a word are not markdown.
+    assert derive_title("Fix the bug so test_calc.py passes") == "Fix the bug so test_calc.py passes"
+    assert derive_title("**re-run** the _flaky_ suite") == "Re-run the flaky suite"
+    assert derive_title("# Heading here") == "Heading here"
+    assert derive_title("> quoted ask") == "Quoted ask"
     # Activity headlines never become session titles
     assert derive_title("Investigating ActionForm redirect…") == "New session"
     assert derive_title("Explored 1 search, 3 commands") == "New session"
@@ -184,3 +189,22 @@ def test_sessions_carry_repo_branch(tmp_path):
     listed = store.list()
     assert listed[0]["repo"] == "/path/to/repo"
     assert listed[0]["branch"] == "main"
+
+
+def test_folder_name_title_is_a_placeholder(tmp_path):
+    """Open Folder names the session after the folder. The first prompt
+    still names it, and a typed rename to the folder name sticks."""
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    store = SessionStore(str(tmp_path / "sessions.json"))
+    sid = store.create(title="proj", repo=str(repo))["id"]
+    store.set_title_if_default(sid, "Fix the add function")
+    assert store.list()[0]["title"] == "Fix the add function"
+    # The auto-title is not a placeholder: a later prompt keeps it.
+    store.set_title_if_default(sid, "Something else")
+    assert store.list()[0]["title"] == "Fix the add function"
+
+    other = store.create(title="proj", repo=str(repo))["id"]
+    assert store.rename(other, "proj") is True
+    store.set_title_if_default(other, "Fix the add function")
+    assert next(r for r in store.list() if r["id"] == other)["title"] == "proj"

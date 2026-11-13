@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { ExternalLink, KeyRound } from "lucide-react";
 import { api, type ProviderInfo } from "../lib/api";
 import {
@@ -7,7 +7,7 @@ import {
   onboardingCopy,
   openOnboardingKeyUrl,
 } from "../lib/onboardingProviders";
-import { OverlayPortal } from "../lib/overlayPortal";
+import { Modal } from "./ui/overlay";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { setConfigured, skipFirstRun } from "../state/onboardingStore";
 
@@ -31,6 +31,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const errorNotice = usePanelNotice(error || null);
+  const titleId = useId();
 
   const tiles = useMemo(() => onboardableProviders(providers), [providers]);
   const copy = onboardingCopy(selected);
@@ -87,19 +88,18 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
   };
 
   return (
-    <OverlayPortal
+    <Modal
       open
       onClose={skip}
+      labelledBy={titleId}
+      dismissOnOutsidePress={false}
       testId="provider-onboarding"
-      className="fixed inset-0 z-[90] flex items-center justify-center px-4 py-6"
-      style={{
-        background:
-          "radial-gradient(ellipse at 50% 38%, rgba(224,164,90,0.08) 0%, transparent 52%), #0f1113",
-      }}
+      backdropClassName="fixed inset-0 z-[90] [background:radial-gradient(ellipse_at_50%_38%,rgba(224,164,90,0.08)_0%,transparent_52%),#0f1113]"
+      viewportClassName="fixed inset-0 z-[90] flex items-center justify-center px-4 py-6"
+      className="onboarding-card w-full max-w-[34rem] max-h-full overflow-y-auto rounded-2xl border border-edge bg-panel px-7 py-8 shadow-[0_24px_80px_rgba(0,0,0,0.45)] outline-none"
     >
-      <div className="onboarding-card w-full max-w-[34rem] max-h-full overflow-y-auto rounded-2xl border border-edge bg-panel px-7 py-8 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
         <header className="text-center mb-6">
-          <h1 className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
+          <h1 id={titleId} className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
             Let&apos;s get you set up with Marionette
           </h1>
           <p className="mt-2 text-ui-13 text-muted leading-relaxed">
@@ -211,7 +211,6 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
             I&apos;ll choose a provider later
           </button>
         </div>
-      </div>
-    </OverlayPortal>
+    </Modal>
   );
 }

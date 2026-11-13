@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, Folder, GitBranch, Home } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import { ChevronDown, Folder, Home } from "lucide-react";
+import { MenuPanel, MenuRoot } from "../ui/overlay";
 import { api } from "../../lib/api";
 import { repoPathsEqual } from "../../lib/pathNormalize";
 import { pickFolder } from "../../lib/transport";
@@ -34,13 +36,16 @@ export function isWorkspaceHomeActive(repo: string | undefined, home?: string): 
 
 /** Popover panel: fixed width + clip so long paths cannot expand the menu. */
 export const WORKSPACE_CHIP_POPOVER_CLASS =
-  "absolute bottom-full left-0 mb-1 w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 z-50";
+  "w-64 overflow-hidden bg-panel border border-edge rounded-lg shadow-xl shadow-black/40 py-1 outline-none";
 
 /** Recent/Home rows: bounded flex child so `truncate` can ellipsize. */
 export const WORKSPACE_CHIP_ROW_CLASS =
-  "w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 transition";
+  "w-full max-w-full min-w-0 overflow-hidden text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 outline-none transition";
 
-export default function WorkspaceChip() {
+/** The header's project name; a click opens the folder menu (Home, recents,
+ *  Open Folder). The header owns the project fact, so the composer has no
+ *  second copy of it. */
+export default function WorkspaceChip({ label }: { label?: string }) {
   const operationalDiagnostic = useOperationalDiagnostic();
   const [ws, setWs] = useState<{ repo: string; branch: string; recents?: string[]; home?: string } | null>(null);
   const [open, setOpen] = useState(false);
@@ -52,15 +57,6 @@ export default function WorkspaceChip() {
     window.addEventListener("harness-config-changed", h);
     return () => window.removeEventListener("harness-config-changed", h);
   }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    const onClick = () => setOpen(false);
-    window.addEventListener("keydown", onKey);
-    window.addEventListener("click", onClick);
-    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("click", onClick); };
-  }, [open]);
-
   // Auto-fade so a failed open doesn't leave a permanent error chip.
   useEffect(() => {
     if (!openError) return;
@@ -104,24 +100,19 @@ export default function WorkspaceChip() {
   const recents = workspaceChipRecents(ws?.recents, ws?.repo, home);
 
   return (
-    <div className="flex items-center gap-1.5 px-1 pb-1.5 text-ui-11 relative">
-      <button
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
-        className="flex items-center gap-1 text-muted hover:text-txt transition rounded px-1 py-0.5 hover:bg-panel2/60">
-        <Folder size={11} className="text-faint" />
-        <span className="font-medium">{name}</span>
-        <ChevronDown size={11} className="text-faint" />
-      </button>
-      {ws?.branch ? <span className="text-faint flex items-center gap-0.5"><GitBranch size={10} />{ws.branch}</span> : null}
-      <span className="text-faint/70">Local</span>
-      {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
-      {open && (
-        <div onClick={(e) => e.stopPropagation()}
-          className={WORKSPACE_CHIP_POPOVER_CLASS}>
+    <div className="relative flex items-center gap-1.5 min-w-0 shrink text-ui-11">
+      <MenuRoot open={open} onOpenChange={setOpen}>
+        <Menu.Trigger
+          data-testid="header-project"
+          title="Switch folder"
+          className="flex items-center gap-0.5 min-w-0 text-muted/80 hover:text-txt transition rounded px-1 -mx-1 hover:bg-panel2/60">
+          <span className="truncate">{label || name}</span>
+          <ChevronDown size={10} className="text-faint shrink-0" />
+        </Menu.Trigger>
+        <MenuPanel side="bottom" align="start" sideOffset={4} label="Workspace folders" className={WORKSPACE_CHIP_POPOVER_CLASS}>
           {home ? (
             <>
-              <button
-                type="button"
+              <Menu.Item
                 onClick={() => openPath(home)}
                 title={home}
                 className={`${WORKSPACE_CHIP_ROW_CLASS} flex items-center gap-2 text-ui-11 ${
@@ -130,29 +121,30 @@ export default function WorkspaceChip() {
               >
                 <Home size={12} className={homeActive ? "text-accent shrink-0" : "text-faint shrink-0"} />
                 <span className="truncate">Home</span>
-              </button>
-              <div className="border-t border-edge/50 my-1" />
+              </Menu.Item>
+              <Menu.Separator className="border-t border-edge/50 my-1" />
             </>
           ) : null}
           {recents.length > 0 && (
             <>
               <div className="text-ui-9 uppercase tracking-wider text-faint px-3 py-1">Recents</div>
               {recents.map((r) => (
-                <button key={r} type="button" onClick={() => openPath(r)} title={r}
+                <Menu.Item key={r} onClick={() => openPath(r)} title={r}
                   className={`${WORKSPACE_CHIP_ROW_CLASS} flex flex-col`}>
                   <span className="text-txt font-medium text-ui-11 truncate">{base(r)}</span>
                   <span className="text-faint text-ui-9 font-mono truncate">{r}</span>
-                </button>
+                </Menu.Item>
               ))}
-              <div className="border-t border-edge/50 my-1" />
+              <Menu.Separator className="border-t border-edge/50 my-1" />
             </>
           )}
-          <button onClick={browse}
-            className="w-full text-left px-3 py-1.5 hover:bg-panel2 transition flex items-center gap-2 text-txt text-ui-11">
+          <Menu.Item onClick={browse}
+            className="w-full text-left px-3 py-1.5 hover:bg-panel2 data-[highlighted]:bg-panel2 outline-none transition flex items-center gap-2 text-txt text-ui-11">
             <Folder size={12} className="text-accent" /> Open Folder...
-          </button>
-        </div>
-      )}
+          </Menu.Item>
+        </MenuPanel>
+      </MenuRoot>
+      {openError && <span className="text-risk/90 truncate max-w-[240px]" title={openError}>{openError}</span>}
     </div>
   );
 }

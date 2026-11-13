@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Circle,
-  GitBranch,
-  Cpu,
   PanelLeft,
   PanelRight,
   Coins,
@@ -15,7 +13,7 @@ import {
   Check,
   X,
 } from "lucide-react";
-import { api, type Config, type SessionGoal, type SessionState } from "../lib/api";
+import { api, type SessionGoal, type SessionState } from "../lib/api";
 import { activeSessionUsage, refreshProcessUsage, useProcessUsage } from "../lib/processUsage";
 import {
   subscribeTaskProfile,
@@ -23,7 +21,7 @@ import {
   type TaskProfileChip,
 } from "../lib/taskProfileChrome";
 import { toastDurationMs } from "../lib/harnessToast";
-import { isDesktop } from "../lib/transport";
+import { useActivitySource } from "../lib/appActivity";
 import {
   knownRunnerState,
   refreshSessionStateFeed,
@@ -34,16 +32,10 @@ import {
 
 import { formatTokenCount, formatUsd, hasLedger, ledgerFooter } from "../lib/ledgerDisplay";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
-import { shortPilotModelLabel } from "../lib/turnProgress";
-import type { UpdateAvailability } from "./UpdateBanner";
+import { useSlashMenuPrefs } from "./conversation/slashMenuPrefs";
+import { updatePillLabel, updatePillTitle, type UpdateAvailability } from "../lib/updateAvailability";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
-
-// The label keeps the widest label's width (a zero-height generated copy), so
-// Idle <-> Thinking… does not move the branch, depth chip and usage beside it.
-const WIDEST_STATUS_LABEL = "Thinking…";
-const STATUS_LABEL_CLASS =
-  "status-bar-optional-sm inline-flex flex-col after:invisible after:h-0 after:overflow-hidden after:content-[attr(data-widest)]";
 
 /** Mirror Conversation/LeftRail: pilot state + active-view runner liveness. */
 export function deriveFooterRuntimeStatus(
@@ -82,7 +74,15 @@ export function seedSessionState(
   };
 }
 
-/** Visible footer label — never paint raw FooterRuntimeStatus enums. */
+/**
+ * Footer state with the open chat turn: a turn that shows Stop is never
+ * "ready", whatever the runner feed last said.
+ */
+export function footerStatusWithTurn(feed: FooterRuntimeStatus, turnBusy: boolean): FooterRuntimeStatus {
+  return turnBusy && feed === "ready" ? "thinking" : feed;
+}
+
+/** Footer label (hover and screen readers) — never paint raw FooterRuntimeStatus enums. */
 export function footerRuntimeStatusLabel(status: FooterRuntimeStatus): string {
   if (status === "thinking") return "Thinking…";
   if (status === "busy") return "Busy";
@@ -104,19 +104,16 @@ function truncateGoalText(text: string, max = 36): string {
   return `${text.slice(0, max - 1)}…`;
 }
 
-// Bottom status strip (Hermes shell/statusbar pattern): runtime health, active
-// workspace branch, pilot model, spend, and shell toggles. Job inventory lives
-// in LeftRail SESSION JOBS -- a footer total was stale across dir swaps and
-// disagreed with the scoped list, so it was removed. Narrow widths hide
-// secondary labels via container queries instead of overlapping the clusters.
-export default function StatusBar({ config, update, leftOpen, rightOpen, onToggleLeft, onToggleRight, onOpenEconomics }: {
-  config: Config | null;
+// Bottom status strip: shell toggles, the run dot, the session goal, spend and
+// updates. Each fact has one owner: the header shows the project and branch,
+// the composer picker shows the model, and the Jobs pane lists jobs. Narrow
+// widths hide secondary labels via container queries.
+export default function StatusBar({ update, leftOpen, rightOpen, onToggleLeft, onToggleRight, onOpenEconomics }: {
   update: UpdateAvailability | null;
   leftOpen: boolean; rightOpen: boolean;
   onToggleLeft: () => void; onToggleRight: () => void;
   onOpenEconomics: () => void;
 }) {
-  const [branch, setBranch] = useState("");
   const [apply, setApply] = useState<{ stage: string; message: string; percent: number | null } | null>(null);
   const [toast, setToast] = useState<{
     id: number;
@@ -263,34 +260,9 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, []);
 
-  // Branch label: keyed on the repo, not the config object (which is rebuilt
-  // on every config retry and event), and read from /api/workspace rather
-  // than the full worktree listing. A burst of config events (turn end,
-  // pilot change) refreshes it once, so a checkout still shows.
-  const repo = config?.repo ?? "";
-  useEffect(() => {
-    let gen = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const load = () => {
-      const mine = ++gen;
-      api.getWorkspace().then((ws) => {
-        if (mine === gen) setBranch(ws?.is_git ? ws.branch || "" : "");
-      }).catch(() => {});
-    };
-    const onConfig = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(load, 300);
-    };
-    load();
-    window.addEventListener("harness-config-changed", onConfig);
-    return () => {
-      gen += 1;
-      if (timer) clearTimeout(timer);
-      window.removeEventListener("harness-config-changed", onConfig);
-    };
-  }, [repo]);
-
-  const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
+  const { expert } = useSlashMenuPrefs();
+  const turnBusy = useActivitySource("turn");
+  const runtimeStatus = footerStatusWithTurn(deriveFooterRuntimeStatus(sessionState), turnBusy);
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
@@ -342,10 +314,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       }));
     }, 0);
   };
-  const driverLabel = shortPilotModelLabel(config?.driver) || "pilot";
-  const driverProvider = config?.driver?.includes(":")
-    ? config.driver.split(":")[0]
-    : (config?.reach || "");
 
   return (
     <div className="shell-inset-footer status-bar px-3 h-7 text-ui-10 text-muted select-none">
@@ -355,33 +323,33 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       <button onClick={onToggleRight} title="Toggle floating panels (Ctrl/Cmd+J)"
         className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
       <span className="w-px h-3 bg-edge shrink-0" />
-      {statePending ? (
-        <span className="flex items-center gap-1 shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
+      {/* A dot only: the transcript live line says what the turn does. */}
+      {statePending && !turnBusy ? (
+        <span className="flex items-center shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
           <Circle size={7} className="text-faint" />
-          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>…</span>
+          <span className="sr-only">Loading</span>
         </span>
       ) : (
         <span
-          className={`flex items-center gap-1 shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
-          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
+          className={`flex items-center shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
+          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Working"}
           data-runtime-status={runtimeStatus}
         >
           <Circle
             size={7}
             className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
           />
-          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>{footerRuntimeStatusLabel(runtimeStatus)}</span>
+          <span className="sr-only">{footerRuntimeStatusLabel(runtimeStatus)}</span>
         </span>
       )}
-      {branch && <span className="status-bar-optional-sm flex items-center gap-1"><GitBranch size={10} />{branch}</span>}
-      {taskProfile && (
+      {taskProfile && expert && (
         <span
           data-testid="task-profile-chip"
           className="status-bar-optional-xs inline-flex items-center gap-1 px-1.5 py-px rounded-full bg-panel2 border border-edge text-txt/90"
           title={taskProfileTitle(taskProfile)}
         >
           <Zap size={10} className="shrink-0 text-accent" aria-hidden="true" />
-          <span className="uppercase tracking-wide text-faint shrink-0 status-bar-optional-md">DEPTH</span>
+          <span className="text-faint shrink-0 status-bar-optional-md">Depth</span>
           <span>{taskProfile.profile}</span>
         </span>
       )}
@@ -538,26 +506,6 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
           ) : null}
         </span>
       )}
-      <span className="status-bar-model" title={config?.driver || "pilot"}>
-        <Cpu size={10} className="shrink-0" />
-        <span>{driverLabel}</span>
-      </span>
-      {/* Show the ACTIVE model's provider (the driver spec's prefix), not the
-          fallback reach. A "provider:model" driver routes through that provider;
-          only a bare, unprefixed model actually falls back to reach. Showing
-          reach unconditionally made e.g. anthropic:claude-opus read "openrouter". */}
-      {driverProvider ? (
-        <span className="status-bar-optional-md">{driverProvider}</span>
-      ) : null}
-      {config?.edit_engine === "agentic" && (
-        <span
-          className="flex items-center gap-1 text-good/80 shrink-0"
-          title="Standalone: edits and swarms route directly through your provider keys -- no external agent CLI"
-        >
-          <Zap size={10} className="text-good/70" />
-          <span className="status-bar-optional-md">standalone</span>
-        </span>
-      )}
       {apply ? (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-accent"
@@ -572,14 +520,13 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       ) : update ? (
         <button
           onClick={runUpdate}
-          title={`${update.behind ? update.behind + " commit(s)" : "An update is"} behind ${update.branch} -- click to update and relaunch`}
+          title={updatePillTitle(update)}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition font-medium"
         >
           <ArrowUpCircle size={11} />
-          <span>update{update.behind ? ` (${update.behind})` : ""}</span>
+          <span>{updatePillLabel(update)}</span>
         </button>
       ) : null}
-      <span className="text-muted/60 status-bar-optional-lg">{isDesktop() ? "desktop" : "web"}</span>
       </div>
     </div>
   );

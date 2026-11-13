@@ -2,6 +2,7 @@ import { usePolling } from "../lib/usePolling";
 import { IDLE_POLL_MS } from "../lib/appActivity";
 import { useSharedJobMetadata, metadataActivity } from '../lib/jobMetadataContext';
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Menu } from "@base-ui/react/menu";
 import {
   Database,
   FolderTree,
@@ -21,8 +22,8 @@ import {
 import { api } from "../lib/api";
 import { lastSelectedProjectRoot } from "../lib/panelTransition";
 import { JOB_SCOPE_CHANGED_EVENT } from "../lib/jobScope";
-import { moveMenuFocus } from "../lib/overlayFocus";
 import { REVIEWS_COUNT_EVENT } from "../lib/inFileReview";
+import { MenuPanel, MenuRoot } from "./ui/overlay";
 
 /** Curated destinations for the floating tool windows — Cursor-style icon strip.
  *  Settings is pinned to the foot of the floating pill. */
@@ -87,6 +88,15 @@ function readStoredList(key: string): string[] {
   }
 }
 
+/** Panels the Add menu offers: stored tab order first, minus open cards and Settings. */
+function addablePanels() {
+  const order = [...new Set([...readStoredList("pmharness.tabOrder"), ...PANEL_OPTIONS.map(option => option.tab)])];
+  const openCards = readStoredList("pmharness.board.openCards");
+  return order
+    .filter(tab => tab !== "settings" && !openCards.includes(tab))
+    .flatMap(tab => PANEL_OPTIONS.filter(option => option.tab === tab));
+}
+
 export default function RightDock({
   onOpenTab,
   onExpand,
@@ -107,11 +117,6 @@ export default function RightDock({
   const [swarmRepo, setSwarmRepo] = useState<string | undefined>(
     () => lastSelectedProjectRoot() || undefined,
   );
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
-  const [menuVersion, setMenuVersion] = useState(0);
-  const addTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const addMenuRef = useRef<HTMLDivElement | null>(null);
-  const addMenuListRef = useRef<HTMLDivElement | null>(null);
   const [activitySessionId, setActivitySessionId] = useState("");
   const [scopeEpoch, setScopeEpoch] = useState(0);
   const activityEpoch = useRef(0);
@@ -134,24 +139,6 @@ export default function RightDock({
       window.removeEventListener(JOB_SCOPE_CHANGED_EVENT, onScope);
     };
   }, []);
-
-  useEffect(() => {
-    if (!addMenuOpen) return;
-    addMenuListRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (event.target instanceof Node && addMenuRef.current?.contains(event.target)) return;
-      setAddMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setAddMenuOpen(false); addTriggerRef.current?.focus(); }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOnOutsideClick);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [addMenuOpen]);
 
   useEffect(() => {
     const onProject = (e: Event) => {
@@ -241,68 +228,33 @@ export default function RightDock({
 
         <span className="my-0.5 h-px w-4 bg-edge/50" aria-hidden />
 
-        <div ref={addMenuRef} className="relative">
-          <button
-            type="button"
-            onClick={() => { setAddMenuOpen(open => !open); setMenuVersion(version => version + 1); }}
-            ref={addTriggerRef}
-            aria-expanded={addMenuOpen}
-            aria-haspopup="menu"
+        <MenuRoot>
+          <Menu.Trigger
             aria-label="Add panel"
             title="Add panel"
             className="flex h-7 w-7 items-center justify-center rounded-xl text-faint hover:text-muted hover:bg-panel2/50 transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
           >
             <Plus size={15} strokeWidth={1.75} />
-          </button>
-          {addMenuOpen && (
-            <div
-              key={menuVersion}
-              ref={addMenuListRef}
-              role="menu"
-              aria-label="Add panel"
-              className="right-pane-add-menu right-[calc(100%+8px)] left-auto top-0"
-              onKeyDown={(e) => { if (moveMenuFocus(addMenuListRef.current, e.key)) e.preventDefault(); }}
-            >
-              <div className="px-2 py-1 text-ui-9 uppercase tracking-wider text-faint">Add panel</div>
-              {(() => {
-                const stored = readStoredList("pmharness.tabOrder");
-                const fallback = PANEL_OPTIONS.map(option => option.tab);
-                return [...new Set([...stored, ...fallback])];
-              })().filter(tab => tab !== "settings").map(tab => {
-                const option = PANEL_OPTIONS.find(item => item.tab === tab);
-                if (!option || readStoredList("pmharness.board.openCards").includes(tab)) return null;
-                return (
-                  <button
-                    role="menuitem"
-                    key={tab}
-                    type="button"
-                    aria-label={option.label}
-                    onClick={() => {
-                      setAddMenuOpen(false);
-                      addTriggerRef.current?.focus();
-                      onOpenTab(tab);
-                    }}
-                    className="right-pane-add-item"
-                  >
-                    {option.icon}<span>{option.label}</span>
-                  </button>
-                );
-              })}
-              <button
-                role="menuitem"
-                type="button"
-                onClick={() => {
-                  setAddMenuOpen(false);
-                  addTriggerRef.current?.focus();
-                  onOpenTab("settings");
-                }}
-                className="right-pane-add-item"
-              >
+          </Menu.Trigger>
+          <MenuPanel label="Add panel" side="left" align="start" sideOffset={8} className="right-pane-add-menu outline-none">
+            <Menu.Group>
+              <Menu.GroupLabel className="px-2 py-1 text-ui-9 uppercase tracking-wider text-faint">Add panel</Menu.GroupLabel>
+              {addablePanels().map(option => (
+                <Menu.Item
+                  key={option.tab}
+                  aria-label={option.label}
+                  onClick={() => onOpenTab(option.tab)}
+                  className="right-pane-add-item outline-none"
+                >
+                  {option.icon}<span>{option.label}</span>
+                </Menu.Item>
+              ))}
+              <Menu.Item onClick={() => onOpenTab("settings")} className="right-pane-add-item outline-none">
                 <Settings size={12} /><span>Settings</span>
-              </button>
-            </div>
-          )}
-        </div>
+              </Menu.Item>
+            </Menu.Group>
+          </MenuPanel>
+        </MenuRoot>
 
         {DOCK_LINKS.map((link) => (
           <button

@@ -162,13 +162,14 @@ describe("ComposerDock attached image thumbnails", () => {
 });
 
 describe("ComposerDock picker layout and accessibility", () => {
-  it.each([false, true])("exposes icon toggles with stable names and pressed state %s", (pressed) => {
+  it.each([false, true])("shows mode pills with a visible label and on/off state %s", (pressed) => {
     renderBusyDock("", { auto: pressed, plan: pressed });
-    for (const name of ["Autopilot", "Plan mode"]) {
+    for (const [name, label] of [["Autopilot", "Auto"], ["Plan mode", "Plan"]]) {
       const button = screen.getByRole("button", { name, exact: true });
       expect(button).toHaveAttribute("aria-pressed", String(pressed));
-      expect(button).toHaveAttribute("title");
-      expect(button.textContent).toBe("");
+      expect(button).toHaveAttribute("data-state", pressed ? "on" : "off");
+      expect(button.getAttribute("title")).toContain(pressed ? "is on" : "is off");
+      expect(button.textContent).toBe(label);
       expect(button.querySelector("svg")).toBeTruthy();
     }
   });
@@ -178,8 +179,8 @@ describe("ComposerDock picker layout and accessibility", () => {
     fireEvent.click(screen.getByRole("button", { name: /GPT-6 Astra Long Model Name/ }));
     expect(screen.getByRole("dialog", { name: "Pilot model picker" })).toBeInTheDocument();
     fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-    fireEvent.click(screen.getByTitle("Reasoning effort (High)"));
-    expect(screen.getByRole("dialog", { name: "Reasoning effort picker" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: High" }));
+    expect(screen.getByRole("menu", { name: "Reasoning effort picker" })).toBeInTheDocument();
     expect(screen.getByTestId("swarm-reasoning-picker")).toHaveTextContent("Workers");
   });
 

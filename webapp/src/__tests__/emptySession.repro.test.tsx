@@ -82,7 +82,7 @@ describe("empty session folds", () => {
       />,
     );
     expect(
-      screen.getByText("Message the pilot. It plans, investigates via swarms, and explains."),
+      screen.getByText("What should we work on?"),
     ).toBeTruthy();
   });
 });

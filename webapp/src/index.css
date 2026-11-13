@@ -39,7 +39,7 @@ html.app-idle:not(.app-hidden) .semantic-activity-spinner {
 html { font-size: clamp(11.5px, 0.62vw + 7.1px, 16px); }
 
 body {
-  background: var(--shell-chrome, #0f1113); color: #ececef;
+  background: var(--shell-frame, #0f1113); color: #ececef;
   overflow: hidden;
   font-size: 0.8125rem; /* was 13px; now scales with the responsive root */
   -webkit-font-smoothing: antialiased;
@@ -102,6 +102,11 @@ body {
   --titlebar-chrome-pad-x: 24px;
   /* Inset shell chrome (Claude Code-style floating panels). */
   --shell-chrome: #0f1113;
+  /* Window frame: body tint and left rail. Glass thins these only. */
+  --shell-frame: #0f1113;
+  --shell-sidebar: #13161a;
+  --shell-frame-border: rgba(255, 255, 255, 0.05);
+  /* Content surfaces: always opaque, with or without glass. */
   --shell-chat: #0f1113;
   --shell-panel: #13161a;
   --shell-panel-border: rgba(255, 255, 255, 0.05);
@@ -117,22 +122,50 @@ body {
 }
 
 /* Window glass (Settings → General → Transparent background).
-   Native vibrancy / DWM acrylic composites BELOW the page. Field tokens go
-   transparent so <body> is the only painter; inset panels and cards keep
-   their own fills for contrast. Tint is --translucency-glass-keep. */
+   Native vibrancy / DWM acrylic composites BELOW the page. Glass is a frame
+   material, as in Finder, Codex and Cursor: only the window frame (left rail,
+   its title band and the gutters) thins. The chat card, the composer, the
+   status bar, tool cards and flyouts keep opaque fills, so text contrast does
+   not depend on the desktop behind the window.
+   <body> is the one frame painter: --shell-frame is its tint, and the rail
+   goes transparent over it so the tint is not stacked twice.
+   --translucency-frame-keep is the tint that stays (lib/windowGlass.ts). */
 :root[data-marionette-glass] {
   background-color: transparent !important;
   --shell-chrome: transparent;
-  /* Keep every shell surface on one glass curve. Panels retain their borders
-     and slightly lighter base, but no longer become opaque islands.
-     --shell-overlay stays solid: flyouts sit over scrolling chat. */
-  --shell-chat: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 80%), transparent);
-  --shell-panel: color-mix(in srgb, #13161a var(--translucency-glass-keep, 80%), transparent);
+  --shell-frame: color-mix(in srgb, #0f1113 var(--translucency-frame-keep, 60%), transparent);
+  --shell-sidebar: transparent;
+  --shell-frame-border: transparent;
   --shell-panel-border: rgba(255, 255, 255, 0.08);
 }
 
-:root[data-marionette-glass] body {
-  background: color-mix(in srgb, #0f1113 var(--translucency-glass-keep, 100%), transparent);
+
+/* The left rail is part of the window frame. */
+.shell-sidebar {
+  border-radius: var(--shell-panel-radius);
+  border: 1px solid var(--shell-frame-border);
+  background: var(--shell-sidebar);
+  overflow: hidden;
+}
+
+/* Secondary text on the thinned frame: one step lighter than muted/faint, so
+   it keeps 4.5:1 over the native material at every intensity. */
+:root[data-marionette-glass] .shell-sidebar :is(.text-muted, .text-faint) {
+  color: #b9bfc8;
+}
+
+/* The chat column is one opaque card on the frame. A top strip (update,
+   key notices) follows the card's rounded top. */
+.shell-chat-card {
+  border: 1px solid var(--shell-panel-border);
+  border-radius: var(--shell-panel-radius);
+  background-color: var(--shell-chat);
+  background-image: radial-gradient(120% 80% at 50% -10%, rgba(139, 150, 196, 0.06), rgba(139, 150, 196, 0) 60%);
+}
+
+.shell-chat-card > [data-top-strip]:first-child {
+  border-top-left-radius: calc(var(--shell-panel-radius) - 1px);
+  border-top-right-radius: calc(var(--shell-panel-radius) - 1px);
 }
 
 /* Side rails + footer sit "within" the window: rounded, lightly bordered,
@@ -188,21 +221,6 @@ body {
   flex: 0 1 auto;
   justify-content: flex-end;
   overflow: hidden;
-}
-
-.status-bar-model {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  min-width: 0;
-  max-width: 11rem;
-  overflow: hidden;
-}
-
-.status-bar-model > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .chat-column {
@@ -274,16 +292,10 @@ body {
   white-space: nowrap;
 }
 
-@container (max-width: 1180px) {
-  .status-bar-optional-lg { display: none; }
-  .status-bar-model { max-width: 8rem; }
-}
-
 @container (max-width: 980px) {
   .status-bar,
   .status-bar-cluster { gap: 0.5rem; }
   .status-bar-optional-md { display: none; }
-  .status-bar-model { max-width: 6.5rem; }
 }
 
 @container (max-width: 820px) {
@@ -292,7 +304,6 @@ body {
 
 @container (max-width: 640px) {
   .status-bar-optional-xs { display: none; }
-  .status-bar-model { max-width: 5rem; }
 }
 
 @container (max-width: 520px) {
@@ -311,13 +322,27 @@ body {
   flex: 0 1 auto;
 }
 
+/* One control height for every composer toolbar control. */
+.composer-control {
+  height: 22px;
+}
+
+/* Text labels yield to icons in narrow docks: the icon shows only while the
+   label is hidden, so a control never shows a bare value with no name. */
+.composer-toolbar-icon { display: none; }
+
+@container (max-width: 600px) {
+  .composer-mode-label { display: none; }
+}
+
 @container (max-width: 560px) {
   .composer-toolbar-label { display: none; }
+  .composer-toolbar-icon { display: inline-block; }
   .pilot-picker-trigger-label { max-width: 8rem; }
 }
 
 @container (max-width: 480px) {
-  .composer-toolbar-label { display: none; }
+  .composer-context-label { display: none; }
   .pilot-picker-trigger-label { max-width: 7.5rem; }
 }
 
@@ -531,10 +556,6 @@ body.is-row-resizing iframe {
 }
 
 .right-pane-add-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 4px);
-  right: 0;
   width: 150px;
   padding: 4px;
   border: 1px solid var(--shell-panel-border);
@@ -555,7 +576,8 @@ body.is-row-resizing iframe {
   text-align: left;
 }
 
-.right-pane-add-item:hover {
+.right-pane-add-item:hover,
+.right-pane-add-item[data-highlighted] {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text, #e4e7eb);
 }
@@ -872,16 +894,11 @@ body.is-row-resizing iframe {
   animation: diff-applied-pop theme('transitionDuration.base') theme('transitionTimingFunction.base') forwards;
 }
 
-/* Body-portaled overlays (conversation lightbox/spill, command palette).
-   data-starting-style: first paint at starting opacity (no pop-in).
-   data-instant: skip transition on close. Attribute selectors only. */
+/* Base UI overlays (components/ui/overlay.tsx) set data-starting-style for the
+   first frame, so popups fade in from the starting opacity. Close is instant:
+   do not style data-ending-style. */
 [data-starting-style] {
   opacity: 0;
-}
-[data-instant] {
-  transition: none !important;
-  animation: none !important;
-  opacity: 1;
 }
 
 .scrollbar-none {

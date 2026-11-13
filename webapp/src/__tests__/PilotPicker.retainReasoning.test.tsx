@@ -56,7 +56,7 @@ describe("PilotPicker thinking retention", () => {
 
   it("keeps thinking retention out of the picker when there is no session", async () => {
     render(<PilotPicker config={sonnetConfig} />);
-    fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
     expect(screen.queryByLabelText("Keep thinking blocks")).toBeNull();
     expect(getCache).not.toHaveBeenCalled();
   });
@@ -64,7 +64,7 @@ describe("PilotPicker thinking retention", () => {
   it("hides thinking retention when the cache preference cannot load", async () => {
     getCache.mockRejectedValueOnce(new Error("unavailable"));
     render(<PilotPicker sessionId="s1" config={sonnetConfig} />);
-    fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
     await waitFor(() => expect(getCache).toHaveBeenCalledWith("s1"));
     expect(screen.queryByLabelText("Keep thinking blocks")).toBeNull();
   });
@@ -73,9 +73,9 @@ describe("PilotPicker thinking retention", () => {
     getCache.mockResolvedValueOnce(cacheOf("s1", false));
     updateCache.mockResolvedValueOnce(cacheOf("s1", true));
     render(<PilotPicker sessionId="s1" config={sonnetConfig} />);
-    fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
-    const box = await screen.findByLabelText("Keep thinking blocks");
-    expect(box).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
+    const box = await screen.findByRole("menuitemcheckbox", { name: "Keep thinking blocks" });
+    expect(box).toHaveAttribute("aria-checked", "false");
     fireEvent.click(box);
     await waitFor(() => {
       expect(updateCache).toHaveBeenCalledWith("s1", { action: "preferences", retain_reasoning: true });
@@ -85,7 +85,7 @@ describe("PilotPicker thinking retention", () => {
   it("hides thinking retention when reasoning effort is none", async () => {
     getCache.mockResolvedValue(cacheOf("s1", true));
     render(<PilotPicker sessionId="s1" config={{ ...sonnetConfig, reasoning_effort: "none" }} />);
-    fireEvent.click(screen.getByTitle("Reasoning effort (None)"));
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: None" }));
     expect(screen.queryByLabelText("Keep thinking blocks")).toBeNull();
     expect(getCache).not.toHaveBeenCalled();
   });
@@ -100,7 +100,7 @@ describe("PilotPicker reasoning capability", () => {
       reasoning_support: { "local:Qwen/Qwen3-8B": false },
     }} />);
 
-    expect(screen.queryByTitle("Reasoning effort (Low)")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pilot reasoning: Low" })).toBeNull();
   });
 
   it("shows reasoning effort for an explicitly supported provider driver", () => {
@@ -109,13 +109,13 @@ describe("PilotPicker reasoning capability", () => {
       reasoning_support: { "anthropic:claude-sonnet-4-6": true },
     }} />);
 
-    expect(screen.getByTitle("Reasoning effort (Low)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pilot reasoning: Low" })).toBeInTheDocument();
   });
 
   it("keeps the permissive fallback when reasoning support is missing", () => {
     render(<PilotPicker config={sonnetConfig} />);
 
-    expect(screen.getByTitle("Reasoning effort (Low)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pilot reasoning: Low" })).toBeInTheDocument();
   });
 });
 
@@ -141,23 +141,22 @@ describe("PilotPicker initial session model", () => {
     expect(api.swapPilot).not.toHaveBeenCalled();
   });
 
-  it("stages a reasoning level chosen before a session exists", () => {
+  it("stages a reasoning level chosen before a session exists", async () => {
     const onPendingReasoningChange = vi.fn();
     const { rerender } = render(<PilotPicker config={sonnetConfig} onPendingReasoningChange={onPendingReasoningChange} />);
 
-    fireEvent.click(screen.getByTitle("Reasoning effort (Low)"));
-    const high = screen.getByRole("radio", { name: "High" });
-    expect(high.tagName).toBe("BUTTON");
-    expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Pilot reasoning: Low" }));
+    const high = screen.getByRole("menuitemradio", { name: "High" });
+    expect(screen.getByRole("menuitemradio", { name: "Low" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(high);
 
     expect(onPendingReasoningChange).toHaveBeenCalledExactlyOnceWith("high", "anthropic:claude-sonnet-4-6");
-    expect(screen.getByTitle("Reasoning effort (High)")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Reasoning effort picker" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Pilot reasoning: High" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Reasoning effort picker" })).toBeNull());
     expect(api.setPilotPreferences).not.toHaveBeenCalled();
 
     rerender(<PilotPicker config={{ ...sonnetConfig }} pendingReasoning="high" onPendingReasoningChange={onPendingReasoningChange} />);
-    expect(screen.getByTitle("Reasoning effort (High)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pilot reasoning: High" })).toBeInTheDocument();
   });
 
   it("keeps existing-session selection session scoped", async () => {
@@ -185,26 +184,25 @@ describe("PilotPicker initial session model", () => {
 describe("Reasoning menus from the keyboard", () => {
   it("opens on the current level and moves with arrow keys", async () => {
     render(<PilotPicker config={{ ...sonnetConfig, reasoning_effort: "medium" }} />);
-    const trigger = screen.getByTitle("Reasoning effort (Medium)");
+    const trigger = screen.getByRole("button", { name: "Pilot reasoning: Medium" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(trigger);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("radiogroup", { name: "Reasoning level" })).toBeTruthy();
-    const medium = screen.getByRole("radio", { name: "Medium" });
+    expect(screen.getByRole("group", { name: "Reasoning level" })).toBeTruthy();
+    const medium = screen.getByRole("menuitemradio", { name: "Medium" });
     await waitFor(() => expect(medium).toHaveFocus());
     fireEvent.keyDown(medium, { key: "ArrowDown" });
-    expect(screen.getByRole("radio", { name: "High" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("radio", { name: "High" }), { key: "Home" });
-    expect(screen.getByRole("radio", { name: "None" })).toHaveFocus();
-    fireEvent.keyDown(screen.getByRole("radio", { name: "None" }), { key: "ArrowUp" });
-    expect(screen.getByRole("radio", { name: "Max" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "High" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "High" }), { key: "Home" });
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "None" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("menuitemradio", { name: "None" }), { key: "ArrowUp" });
+    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveFocus());
   });
 
   it("gives the worker picker the same keyboard rows", async () => {
     render(<SwarmReasoningPicker config={{ ...sonnetConfig, swarm_reasoning_effort: "low" }} sessionId="s1" />);
     fireEvent.click(screen.getByTitle(/Worker reasoning/));
-    const low = screen.getByRole("radio", { name: "Low" });
-    expect(low.tagName).toBe("BUTTON");
+    const low = screen.getByRole("menuitemradio", { name: "Low" });
     await waitFor(() => expect(low).toHaveFocus());
   });
 });

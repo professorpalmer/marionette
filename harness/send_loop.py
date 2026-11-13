@@ -127,7 +127,7 @@ POST_SWARM_SYNTHESIS_FALLBACK = (
 
 _ACTION_RESULT_DISPLAY_FIELDS = (
     "job_id", "num", "types", "adapter", "artifacts",
-    "error", "duration_ms", "chars", "status", "message",
+    "error", "duration_ms", "chars", "status", "message", "diff",
 )
 
 
@@ -816,6 +816,17 @@ class SendLoopMixin:
                             if call_id:
                                 card["call_id"] = call_id
                             self._display_transcript.append(card)
+                elif ev.kind == "checkpoint":
+                    # The restore point row stays after a reload: the turn's
+                    # changed-files footer undoes to the first one.
+                    cp_id = str((ev.data or {}).get("id") or "").strip()
+                    if cp_id:
+                        self._display_transcript.append({
+                            "type": "checkpoint",
+                            "id": cp_id,
+                            "label": str(ev.data.get("label") or ""),
+                            "trigger": str(ev.data.get("trigger") or ""),
+                        })
 
                 if ev.kind == "error":
                     turn_error = str((ev.data or {}).get("error") or "")[:200]

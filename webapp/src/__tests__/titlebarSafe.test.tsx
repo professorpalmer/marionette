@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import ProviderKeyBanner from "../components/ProviderKeyBanner";
 import ConversationHeader from "../components/conversation/ConversationHeader";
@@ -36,6 +36,41 @@ describe("titlebar-safe clearance", () => {
     document.documentElement.style.fontSize = SMALLEST_ROOT_FONT_SIZE;
     expect(paddingLeftPx(banner)).toBe(TITLEBAR_TRAFFIC_PAD_PX);
     expect(paddingLeftPx(banner)).toBeGreaterThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
+  });
+
+  it("ConversationHeader shows the session title, project, and branch, not the turn state", () => {
+    render(
+      <ConversationHeader
+        pillStatus="investigating"
+        heading={{ title: "Fix the calc bug", project: "proj", branch: "master" }}
+      />,
+    );
+    expect(screen.getByTestId("header-session-title").textContent).toBe("Fix the calc bug");
+    expect(screen.getByTestId("header-project").textContent).toBe("proj");
+    expect(screen.getByTestId("header-branch").textContent).toBe("master");
+    expect(screen.queryByText(/Investigating|Still working|Done/)).toBeNull();
+  });
+
+  it("ConversationHeader owns the project: a click opens the folder menu", () => {
+    render(
+      <ConversationHeader
+        pillStatus="done"
+        heading={{ title: "Fix the calc bug", project: "proj", branch: "master" }}
+      />,
+    );
+    const project = screen.getByTestId("header-project");
+    expect(project).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(project);
+    expect(project).toHaveAttribute("aria-expanded", "true");
+    // jsdom has no width, so the narrow-header rule hides the chip from role queries.
+    expect(screen.getByText(/Open Folder/).closest('[role="menuitem"]')).toBeInTheDocument();
+    expect(screen.queryByText("Local")).toBeNull();
+    expect(screen.getAllByText("master")).toHaveLength(1);
+  });
+
+  it("ConversationHeader keeps the error pill", () => {
+    render(<ConversationHeader pillStatus="error" detail="Provider key rejected" />);
+    expect(screen.getByText("Error")).toBeInTheDocument();
   });
 
   it("ConversationHeader does not advertise session cache in the brand strip", () => {

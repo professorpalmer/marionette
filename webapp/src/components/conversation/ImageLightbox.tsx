@@ -5,7 +5,7 @@
 import { ImageResource } from "./ImageResource";
 import { useRef } from "react";
 import { X } from "lucide-react";
-import { OverlayPortal } from "../../lib/overlayPortal";
+import { Modal } from "../ui/overlay";
 
 export default function ImageLightbox({
   url,
@@ -14,24 +14,20 @@ export default function ImageLightbox({
   url: string | null;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <OverlayPortal
+    <Modal
       open={url !== null}
       onClose={onClose}
-      focusRootRef={panelRef}
-      initialFocusRef={closeRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm transition-opacity duration-200"
-      onBackdropClick={onClose}
+      label="Image preview"
+      initialFocus={closeRef}
+      backdropClassName="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm transition-opacity duration-200"
+      viewportClassName="fixed inset-0 z-50 flex items-center justify-center"
+      className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center outline-none"
     >
       {url ? (
-        <div
-          ref={panelRef}
-          className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <>
           <button
             ref={closeRef}
             onClick={onClose}
@@ -45,8 +41,8 @@ export default function ImageLightbox({
             alt="Enlarged screenshot"
             className="max-w-full max-h-[80vh] object-contain rounded-lg border border-edge shadow-2xl"
           />
-        </div>
+        </>
       ) : null}
-    </OverlayPortal>
+    </Modal>
   );
 }

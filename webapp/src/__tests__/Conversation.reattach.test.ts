@@ -1998,7 +1998,7 @@ describe("mid-turn store-event cursor reattach", () => {
 
     const transcriptProps = () => mountedTranscriptProps(items, { status, turnOpen });
     const mounted = render(createElement(TranscriptList, transcriptProps()));
-    expect(screen.getByText(/Exploring/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Running 1 swarm/i })).toBeTruthy();
 
     await pullChatEvents();
     await pullChatEvents();
@@ -2062,7 +2062,7 @@ describe("mid-turn store-event cursor reattach", () => {
         && item.card.running,
     )).toBe(true);
     render(createElement(TranscriptList, mountedTranscriptProps(itemsRef.current)));
-    expect(screen.getByText(/Exploring/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Running 1 swarm/i })).toBeTruthy();
   });
 
   it("keeps an unrelated active swarm whose call id only cross-matches a terminal", async () => {
@@ -2112,7 +2112,7 @@ describe("mid-turn store-event cursor reattach", () => {
       (item) => item.kind === "card" && item.card.id === "active-card" && item.card.running,
     )).toBe(true);
     render(createElement(TranscriptList, mountedTranscriptProps(itemsRef.current)));
-    expect(screen.getByText(/Exploring/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Running 1 swarm/i })).toBeTruthy();
   });
 
   it("ignores a disk transcript after a new send bumps generation during the await", async () => {

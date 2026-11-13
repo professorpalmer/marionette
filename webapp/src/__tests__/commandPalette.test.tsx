@@ -97,9 +97,8 @@ describe("CommandPalette UI", () => {
 
   afterEach(() => {
     // Close any leftover open palette from a prior assertion.
-    if (screen.queryByTestId("command-palette")) {
-      fireEvent.keyDown(window, { key: "Escape" });
-    }
+    const input = screen.queryByTestId("command-palette-input");
+    if (input) fireEvent.keyDown(input, { key: "Escape" });
   });
 
   it("opens on Cmd/Ctrl-K and closes on Escape", async () => {
@@ -109,7 +108,7 @@ describe("CommandPalette UI", () => {
     expect(screen.queryByTestId("command-palette")).toBeNull();
     pressPaletteShortcut();
     expect(screen.getByTestId("command-palette")).toBeTruthy();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(screen.getByTestId("command-palette-input"), { key: "Escape" });
     await waitFor(() => {
       expect(screen.queryByTestId("command-palette")).toBeNull();
     });
@@ -160,8 +159,13 @@ describe("CommandPalette UI", () => {
       <CommandPalette onToggleLeft={() => {}} onToggleRight={() => {}} />,
     );
     pressPaletteShortcut();
-    expect(screen.getByTestId("command-palette")).toBeTruthy();
-    fireEvent.mouseDown(screen.getByTestId("command-palette-backdrop"));
+    const viewport = screen.getByTestId("command-palette").parentElement;
+    expect(viewport).toBeTruthy();
+    fireEvent.pointerDown(viewport!);
+    fireEvent.mouseDown(viewport!);
+    fireEvent.pointerUp(viewport!);
+    fireEvent.mouseUp(viewport!);
+    fireEvent.click(viewport!);
     await waitFor(() => {
       expect(screen.queryByTestId("command-palette")).toBeNull();
     });

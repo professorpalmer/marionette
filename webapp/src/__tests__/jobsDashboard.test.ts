@@ -3,7 +3,6 @@ import {
   buildDashboardEmbedUrl,
   dashboardLocateError,
   dashboardUnavailableMessage,
-  jobsListEmptyTruth,
   trackerReadState,
   jobsRailIsPuppetmasterViewport,
   jobsRailViewportUrl,
@@ -62,25 +61,6 @@ describe("Jobs rail honesty", () => {
       detail: "No Puppetmaster project store for this workspace.",
     })).toBe("No Puppetmaster project store for this workspace.");
     expect(dashboardUnavailableMessage()).toBe("Could not locate the Puppetmaster dashboard.");
-    expect(jobsListEmptyTruth({
-      failedRead: true,
-      viewReady: true,
-      working: false,
-      hiddenCount: 0,
-      filter: "all",
-      hasJobs: false,
-    })).toEqual({
-      title: "Job observations could not be loaded",
-      detail: "Retry updates; an empty view does not establish no work.",
-    });
-    expect(jobsListEmptyTruth({
-      failedRead: false,
-      viewReady: true,
-      working: false,
-      hiddenCount: 0,
-      filter: "all",
-      hasJobs: false,
-    }).title).toBe("No jobs yet");
   });
 });
 
