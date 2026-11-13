@@ -8,6 +8,7 @@ import { JobMetadataStore } from '../lib/useJobMetadata';
 import { localKey, nativeActiveStatuses, parseLocalList } from '../lib/localJobMetadata';
 import type { LocalSummary } from '../lib/localJobMetadata';
 import { clearPendingSwarmOpenJob } from '../lib/pendingSwarmOpenJob';
+import { resetSlashMenuPrefsForTests, setSlashExpertMode } from '../components/conversation/slashMenuPrefs';
 import wire from './metadataActive.backend.json';
 import nativeWire from './nativeExpert.backend.json';
 import { context, handshake, initial, list, summary, token, view } from './jobMetadata.fixtures';
@@ -86,14 +87,13 @@ beforeEach(() => {
   } });
   store = new JobMetadataStore(new JobMetadataClient(1000));
 });
-afterEach(() => { cleanup(); store.dispose(); vi.restoreAllMocks(); clearPendingSwarmOpenJob(); Reflect.deleteProperty(window, 'harnessIPC'); });
+afterEach(() => { cleanup(); resetSlashMenuPrefsForTests(); store.dispose(); vi.restoreAllMocks(); clearPendingSwarmOpenJob(); Reflect.deleteProperty(window, 'harnessIPC'); });
 
 it('restores a balanced filter/sort toolbar and newest-first lifecycle groups using only known creation times', async () => {
+  setSlashExpertMode(true);
   await start(); mount();
   const control = screen.getByLabelText('Filter jobs');
-  expect(control.parentElement).toHaveClass('grid', 'grid-cols-2');
-  expect(control).toHaveClass('w-full');
-  expect(screen.getByLabelText('Sort jobs')).toHaveClass('w-full');
+  expect(control.parentElement).toContainElement(screen.getByLabelText('Sort jobs'));
   expect(screen.getByRole('button', { name: /^Finished/ })).toHaveAttribute('aria-expanded', 'true');
   expect(order()).toEqual(['newest-active', 'older-active', 'undated-active', 'newest-failed', 'older-complete', 'job_1']);
   fireEvent.change(screen.getByLabelText('Sort jobs'), { target: { value: 'oldest' } });
@@ -102,12 +102,13 @@ it('restores a balanced filter/sort toolbar and newest-first lifecycle groups us
 it('never presents partial history ordering or quality filtering as complete', async () => {
   partial = true; await start(); mount();
   expect(store.getSnapshot().streams.some(s => s.state === 'partial')).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Coverage details' }));
   expect(screen.getByText(/Sorting and filters apply only to observed jobs/)).toBeInTheDocument();
   expect(screen.getByText(/undated jobs remain last/)).toBeInTheDocument();
   filter('failed');
   expect(order()).toEqual(['newest-failed']);
   filter('untrustworthy');
-  expect(screen.getByText(/Showing recorded degraded quality/)).toBeVisible();
+  expect(screen.getByText(/Jobs with a failed check/)).toBeVisible();
   expect(screen.queryByText('No jobs match this filter')).toBeNull();
   expect(order()).toEqual([]);
 });
@@ -183,13 +184,13 @@ it('stays passive while hidden and does not consume navigation or start extra re
   expect(paths.filter(discovery)).toHaveLength(paths.slice(0, baseline).filter(discovery).length);
 });
 it('distinguishes cold loading, failed discovery, and a known empty observed window', async () => {
-  store.setTarget(target); mount(); expect(screen.getByText(/Waiting for job metadata/)).toBeVisible();
+  store.setTarget(target); mount(); expect(screen.getByText('Loading jobs...')).toBeVisible();
   unavailable = true; await act(async () => { await store.readView(); });
   expect(screen.getByRole('alert')).toBeVisible();
   expect(screen.queryByText(/No jobs match this filter/)).toBeNull();
   unavailable = false; native = []; pm = []; await start();
-  expect(screen.getByText(/No jobs yet/)).toBeVisible();
-  expect(screen.getByText(/Every dispatched worker lands here/)).toBeVisible();
+  expect(screen.getByText('Jobs that the pilot starts show here.')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Start a swarm' })).toBeVisible();
 });
 it('clears an empty matching filter without implying the retained window is all history', async () => {
   await start(); mount(); filter('cancelled');
