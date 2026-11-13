@@ -212,7 +212,6 @@ export {
   codebaseMentionMatches,
   codebaseQueryFromMentionSearch,
   filterMentionPaths,
-  filterSlashCommands,
   cycleSelectIndex,
   mentionTokenForDroppedPath,
   appendMentionsToInput,

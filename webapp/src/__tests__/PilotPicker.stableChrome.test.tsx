@@ -24,7 +24,7 @@ describe("PilotPicker first paint", () => {
   it("paints the model label and reasoning level before any effect runs", () => {
     const html = renderToString(<PilotPicker config={config} sessionId="s1" />);
     expect(html).toContain("Sonnet 4.6");
-    expect(html).toContain("Reasoning effort (High)");
+    expect(html).toContain("Pilot reasoning: High");
   });
 
   it("paints the staged pending model on a new session", () => {

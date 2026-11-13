@@ -1,10 +1,11 @@
 /**
  * Regression: slash picker must show an empty-state when slashSearch is open
- * but filterSlashCommands returns zero hits (parity with @mention no-matches).
+ * but slashMenu returns zero hits (parity with @mention no-matches).
  */
 import { createRef } from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetSlashMenuPrefsForTests } from "../components/conversation/slashMenuPrefs";
 import ComposerDock from "../components/conversation/ComposerDock";
 
 vi.mock("../lib/api", () => ({
@@ -56,6 +57,7 @@ function renderDock(slashSearch: string | null) {
       allSlashCommands={[
         { cmd: "/help", desc: "Show help" },
         { cmd: "/clear", desc: "Clear transcript" },
+        { cmd: "/refine", desc: "Propose a refine", visibility: "expert" },
       ]}
       attachedImages={[]}
       isDragOver={false}
@@ -106,6 +108,8 @@ function renderDock(slashSearch: string | null) {
 }
 
 describe("ComposerDock slash empty-state", () => {
+  afterEach(() => resetSlashMenuPrefsForTests());
+
   it("shows No matches when slashSearch is open with zero hits", () => {
     renderDock("zzzz-no-such-command");
     expect(screen.getByTestId("slash-no-matches")).toHaveTextContent("No matches");
@@ -115,13 +119,24 @@ describe("ComposerDock slash empty-state", () => {
     renderDock("help");
     expect(screen.queryByTestId("slash-no-matches")).toBeNull();
     expect(screen.getByText("Show help")).toBeInTheDocument();
-    expect(screen.getByText("Commands")).toBeInTheDocument();
+    expect(screen.getByRole("listbox", { name: "Commands" })).toBeInTheDocument();
   });
 
   it("hides the picker when slashSearch is null", () => {
     renderDock(null);
     expect(screen.queryByTestId("slash-no-matches")).toBeNull();
-    expect(screen.queryByText("Commands")).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
     expect(screen.queryByText("Show help")).toBeNull();
+  });
+
+  it("hides internal commands until expert mode is on", () => {
+    renderDock("");
+    expect(screen.queryByText("/refine")).toBeNull();
+    const expert = screen.getByRole("button", { name: "Expert" });
+    expect(expert).toHaveAttribute("aria-pressed", "false");
+    expect(expert.getAttribute("title")).toContain("show 1 internal command");
+    act(() => { fireEvent.click(expert); });
+    expect(screen.getByRole("button", { name: "Expert" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("/refine")).toBeInTheDocument();
   });
 });

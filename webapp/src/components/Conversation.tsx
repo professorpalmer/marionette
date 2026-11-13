@@ -57,7 +57,9 @@ import {
   type MentionListingCap,
   mergeSlashCommands,
   isBuiltInSlashCommand,
+  slashMenu,
 } from "./conversation/slashCommands";
+import { readSlashMenuPrefs, recordSlashCommandUse } from "./conversation/slashMenuPrefs";
 import {
   pathIsUnder,
   filterTabsAfterDelete,
@@ -179,7 +181,6 @@ import {
   cycleSelectIndex,
   detectComposerTrigger,
   filterMentionPaths,
-  filterSlashCommands,
   collectFilesFromDirectoryEntry,
   DROP_FOLDER_FILE_CAP,
   droppedDirectoryPlan,
@@ -2300,6 +2301,7 @@ export default function Conversation({
   };
 
   const insertSlashCommand = (cmd: string) => {
+    recordSlashCommandUse(cmd);
     setInput(cmd + " ");
     setSlashSearch(null);
     
@@ -2647,7 +2649,7 @@ export default function Conversation({
     }
 
     if (slashSearch !== null) {
-      const matchingSlash = filterSlashCommands(allSlashCommands, slashSearch);
+      const matchingSlash = slashMenu(allSlashCommands, slashSearch, readSlashMenuPrefs()).items;
       if (matchingSlash.length > 0) {
         if (e.key === "ArrowDown") {
           setSelectedSlashIndex((prev) => cycleSelectIndex(prev, 1, matchingSlash.length));

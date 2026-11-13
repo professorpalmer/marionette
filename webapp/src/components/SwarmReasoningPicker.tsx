@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Users } from "lucide-react";
 import { api, type Config, type ReasoningEffort } from "../lib/api";
 import { labelForEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
@@ -62,10 +62,12 @@ export default function SwarmReasoningPicker({ config, sessionId = "" }: { confi
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
-        title="Worker reasoning for swarms and implement (not the chat pilot)"
-        className="flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 h-[22px] bg-transparent hover:bg-panel2 border border-edge/40 transition select-none"
+        aria-label={`Worker reasoning: ${labelForEffort(effort)}`}
+        title={`Worker reasoning effort: ${labelForEffort(effort)}. Applies to swarm and implement workers, not to the chat pilot.`}
+        className="composer-control flex items-center gap-1 text-ui-11 text-muted hover:text-txt rounded-md px-2 bg-transparent hover:bg-panel2 border border-edge/40 transition-colors select-none"
       >
-        <span className="composer-toolbar-label">Workers</span>
+        <Users size={11} className="composer-toolbar-icon shrink-0 text-faint" aria-hidden="true" />
+        <span className="composer-toolbar-label text-faint">Workers</span>
         <span className="truncate max-w-[72px]">{labelForEffort(effort)}</span>
         <ChevronDown size={11} className="shrink-0 opacity-60" />
       </button>

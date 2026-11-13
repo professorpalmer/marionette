@@ -7,7 +7,7 @@ import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
-import { useId, type RefObject } from "react";
+import { useId, type ReactNode, type RefObject } from "react";
 import {
   ChevronDown,
   Code,
@@ -34,8 +34,9 @@ import SwarmReasoningPicker from "../SwarmReasoningPicker";
 import WorkspaceChip from "./WorkspaceChip";
 import ComposerContextMenu from "./ComposerContextMenu";
 import ComposerActivityRail from "./ComposerActivityRail";
-import { formatMentionListingCapMessage, type MentionListingCap } from "./slashCommands";
-import { filterSlashCommands } from "./composerInput";
+import { formatMentionListingCapMessage, slashMenu, type MentionListingCap, type SlashCommand } from "./slashCommands";
+import { setSlashExpertMode, useSlashMenuPrefs } from "./slashMenuPrefs";
+import { ContextRing, contextRingFacts } from "./ContextRing";
 import {
   CONTEXT_USAGE_COLORS,
   contextUsagePercent,
@@ -58,7 +59,6 @@ export type MemoryProposal = {
   refine?: { kind: string; scope: string };
 };
 export type SymbolHit = { name: string; kind: string; path: string; line: number };
-export type SlashCommand = { cmd: string; desc: string; scope?: string };
 
 export default function ComposerDock({
   config,
@@ -261,10 +261,9 @@ export default function ComposerDock({
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
   const busyChrome = composerBusy && !sessionSwitching;
-  const matchingSlash =
-    slashSearch !== null
-      ? filterSlashCommands(allSlashCommands, slashSearch)
-      : [];
+  const slashPrefs = useSlashMenuPrefs();
+  const menu = slashSearch !== null ? slashMenu(allSlashCommands, slashSearch, slashPrefs) : null;
+  const matchingSlash = menu?.items ?? [];
   // Screen readers follow the highlighted suggestion while focus stays in
   // the textarea (the listbox pattern for an inline autocomplete).
   const suggestId = useId();
@@ -279,6 +278,7 @@ export default function ComposerDock({
 
   // Defense in depth: usage is validated upstream (normalizeContextUsage),
   // but a malformed payload must degrade to an empty breakdown, not a crash.
+  const ringFacts = contextRingFacts(contextUsage);
   const contextCategories = Array.isArray(contextUsage?.categories)
     ? contextUsage.categories
     : [];
@@ -908,21 +908,18 @@ export default function ComposerDock({
             </div>
           )}
 
-          {slashSearch !== null && (
-            <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="absolute left-2 bottom-full mb-1.5 z-50 max-h-[220px] w-[320px] overflow-y-auto bg-panel border border-edge rounded-xl shadow-2xl py-1">
-              {matchingSlash.length === 0 ? (
-                <div
-                  className="px-3 py-2 text-ui-11 text-muted select-none"
-                  data-testid="slash-no-matches"
-                >
-                  No matches
-                </div>
-              ) : (
-                <>
-                  <div aria-hidden="true" className="px-2.5 py-1 text-ui-10 uppercase font-bold tracking-wider text-faint border-b border-edge/30 select-none">
-                    Commands
+          {menu && (
+            <div className="absolute left-2 bottom-full mb-1.5 z-50 w-[340px] max-w-[calc(100%-1rem)] bg-panel border border-edge rounded-xl shadow-2xl overflow-hidden">
+              <div id={`${suggestId}-commands`} role="listbox" aria-label="Commands" className="max-h-[260px] overflow-y-auto py-1">
+                {matchingSlash.length === 0 ? (
+                  <div
+                    className="px-3 py-2 text-ui-11 text-muted select-none"
+                    data-testid="slash-no-matches"
+                  >
+                    No matches
                   </div>
-                  {matchingSlash.map((s, idx) => {
+                ) : (
+                  matchingSlash.map((s, idx) => {
                     const isSelected = idx === selectedSlashIndex;
                     return (
                       <div
@@ -932,19 +929,37 @@ export default function ComposerDock({
                         aria-selected={isSelected}
                         onClick={() => insertSlashCommand(s.cmd)}
                         onMouseEnter={() => onSetSelectedSlashIndex(idx)}
-                        className={`flex flex-col px-3 py-1.5 cursor-pointer transition select-none ${
-                          isSelected ? "bg-panel2 text-accent font-medium" : "text-txt/90 hover:bg-panel2/50"
+                        className={`flex items-baseline gap-2 px-3 py-1.5 cursor-pointer transition-colors select-none ${
+                          isSelected ? "bg-panel2" : "hover:bg-panel2/50"
                         }`}
                       >
-                        <div className="flex items-center gap-1.5 text-ui-11.5 font-mono font-semibold">
-                          <span>{s.cmd}</span>
-                        </div>
-                        <span className="text-ui-10 text-muted leading-tight">{s.desc}</span>
+                        <span className={`shrink-0 text-ui-11.5 font-mono font-semibold ${isSelected ? "text-accent" : "text-txt/90"}`}>{s.cmd}</span>
+                        <span className="min-w-0 truncate text-ui-10.5 text-muted" title={s.desc}>{s.desc}</span>
                       </div>
                     );
-                  })}
-                </>
-              )}
+                  })
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 px-3 py-1 border-t border-edge/40 text-ui-10 text-faint select-none">
+                <span data-testid="slash-menu-footer">
+                  {menu.moreCount > 0 ? `${menu.moreCount} more: type to filter` : "Cmd+K for all actions"}
+                </span>
+                <button
+                  type="button"
+                  aria-pressed={slashPrefs.expert}
+                  // Keep focus in the textarea so the menu stays open.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setSlashExpertMode(!slashPrefs.expert)}
+                  title={slashPrefs.expert
+                    ? "Expert mode is on: the menu shows internal commands. Click to hide them."
+                    : `Expert mode is off. Click to show ${menu.internalCount} internal ${menu.internalCount === 1 ? "command" : "commands"}.`}
+                  className={`shrink-0 px-1.5 rounded-full border transition-colors ${
+                    slashPrefs.expert ? "border-accent/40 bg-accent/15 text-accent" : "border-edge/50 hover:text-muted hover:border-edge2"
+                  }`}
+                >
+                  Expert
+                </button>
+              </div>
             </div>
           )}
 
@@ -1015,28 +1030,40 @@ export default function ComposerDock({
           <ComposerContextMenu textareaRef={taRef} />
           <div className="composer-toolbar px-3 pb-2">
             <div className="composer-toolbar-actions">
-            <button type="button" onClick={() => {
-              onSetAuto((a) => {
-                const next = !a;
-                if (next) onSetPlan(false);
-                return next;
-              });
-            }} aria-label="Autopilot" aria-pressed={auto} title="Autopilot: the pilot plans and executes autonomously (vs. you steering each step)"
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
-                ${auto ? "bg-warn/15 text-warn" : "text-faint hover:text-muted"}`}>
-              <Zap size={11} aria-hidden="true" />
-            </button>
-            <button type="button" onClick={() => {
-              onSetPlan((p) => {
-                const next = !p;
-                if (next) onSetAuto(false);
-                return next;
-              });
-            }} aria-label="Plan mode" aria-pressed={plan} title="Plan mode -- get an actionable plan instead of execution (read-only)"
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 flex items-center gap-1 shrink-0 transition
-                ${plan ? "bg-accent/15 text-accent" : "text-faint hover:text-muted"}`}>
-              <ListChecks size={11} aria-hidden="true" />
-            </button>
+            <ModeToggle
+              label="Auto"
+              ariaLabel="Autopilot"
+              on={auto}
+              tone="warn"
+              icon={<Zap size={11} aria-hidden="true" />}
+              title={auto
+                ? "Autopilot is on: the pilot plans and runs on its own. Click to turn it off."
+                : "Autopilot is off: you steer each step. Click to let the pilot plan and run on its own."}
+              onToggle={() => {
+                onSetAuto((a) => {
+                  const next = !a;
+                  if (next) onSetPlan(false);
+                  return next;
+                });
+              }}
+            />
+            <ModeToggle
+              label="Plan"
+              ariaLabel="Plan mode"
+              on={plan}
+              tone="accent"
+              icon={<ListChecks size={11} aria-hidden="true" />}
+              title={plan
+                ? "Plan mode is on: the pilot returns a plan and does not edit (read-only). Click to turn it off."
+                : "Plan mode is off. Click to get a read-only plan instead of execution."}
+              onToggle={() => {
+                onSetPlan((p) => {
+                  const next = !p;
+                  if (next) onSetAuto(false);
+                  return next;
+                });
+              }}
+            />
             <div className="pilot-picker-slot">
               <PilotPicker
                 key={sessionId}
@@ -1060,18 +1087,16 @@ export default function ComposerDock({
                   fetchContextUsage();
                 }
               }}
-              title="View context window usage breakdown"
-              aria-label="Context window usage"
+              title={ringFacts?.tooltip ?? "Context window usage: no data yet. Click to load the breakdown."}
+              aria-label={ringFacts ? `Context window usage ${ringFacts.label}` : "Context window usage"}
               aria-expanded={showContextPanel}
-              className={`px-1.5 h-[20px] rounded-md text-ui-10.5 font-mono flex items-center gap-1 shrink-0 transition
-                ${showContextPanel ? "bg-accent/15 text-accent border border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border border-edge/30 hover:bg-panel2/80"}`}
+              className={`composer-control px-1.5 rounded-md text-ui-10.5 font-mono tabular-nums flex items-center gap-1 shrink-0 border transition-colors
+                ${showContextPanel ? "bg-accent/15 text-accent border-accent/20" : "text-faint hover:text-muted bg-panel2/40 border-edge/30 hover:bg-panel2/80"}`}
             >
-              <FileText size={11} />
-              {contextUsage ? (
-                <span>{contextUsagePercent(contextUsage.total, contextUsage.limit)}%</span>
-              ) : (
-                <span className="composer-toolbar-label">Usage</span>
-              )}
+              <ContextRing facts={ringFacts} />
+              {ringFacts ? (
+                <span className="composer-context-label">{ringFacts.label}</span>
+              ) : null}
             </button>
             </div>
             <div className="composer-toolbar-send">
@@ -1155,5 +1180,43 @@ export default function ComposerDock({
 
       </div>
     </div>
+  );
+}
+
+/** Composer mode pill: the label says what it is, the fill says it is on. */
+function ModeToggle({
+  label,
+  ariaLabel,
+  on,
+  tone,
+  icon,
+  title,
+  onToggle,
+}: {
+  label: string;
+  ariaLabel: string;
+  on: boolean;
+  tone: "warn" | "accent";
+  icon: ReactNode;
+  title: string;
+  onToggle: () => void;
+}) {
+  const onClass = tone === "warn"
+    ? "bg-warn/15 text-warn border-warn/40"
+    : "bg-accent/15 text-accent border-accent/40";
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={ariaLabel}
+      aria-pressed={on}
+      title={title}
+      data-state={on ? "on" : "off"}
+      className={`composer-control px-1.5 rounded-full text-ui-10.5 font-medium flex items-center gap-1 shrink-0 border transition-colors
+        ${on ? onClass : "border-edge/50 text-faint hover:text-muted hover:border-edge2"}`}
+    >
+      {icon}
+      <span className="composer-mode-label">{label}</span>
+    </button>
   );
 }

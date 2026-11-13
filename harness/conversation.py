@@ -82,7 +82,7 @@ from .session_actions import SessionActionStore, SteerQueueView
 from .session_loop import SessionLoop
 from .steer_mixin import SteerMixin
 from .adapter_resolve import AdapterResolveMixin
-from .compaction_mixin import CompactionContextMixin
+from .compaction_mixin import CompactionContextMixin, compaction_trigger_tokens
 from .local_jobs import LocalJobsMixin
 from .conversation_jobs import ConversationJobsMixin
 from .wiki_distill import WikiDistillMixin
@@ -2944,6 +2944,9 @@ class ConversationalSession(
         return {
             "total": total_tokens,
             "limit": budget,
+            "compaction_trigger_tokens": compaction_trigger_tokens(
+                budget, getattr(self.pilot, "max_tokens", None)
+            ),
             "categories": categories,
             **self._schema_token_calibration_fields(
                 cold_start_total=cold_start_total,
