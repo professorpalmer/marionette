@@ -479,7 +479,7 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
-  it("prior-fold swarm_pending only shows Swarm pending, not a second Investigating", () => {
+  it("prior-fold swarm_pending shows its swarm state, not a second Investigating", () => {
     const items: Item[] = [
       { kind: "msg", msg: { role: "user", text: "do the work" } },
       {
@@ -499,7 +499,7 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     );
 
     expect(screen.getAllByText(/Exploring/i)).toHaveLength(1);
-    expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
+    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
   });
 
@@ -527,7 +527,7 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     );
 
     expect(screen.getAllByText(/Exploring/i)).toHaveLength(1);
-    expect(screen.getByText(/Swarm · 1 pending/i)).toBeTruthy();
+    expect(screen.getByText(/Swarm · running/i)).toBeTruthy();
   });
 
   it("does not paint the same reasoning paragraph twice in one Thought fold", () => {

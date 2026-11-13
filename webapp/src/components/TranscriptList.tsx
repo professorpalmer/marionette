@@ -7,6 +7,7 @@ import { visibleCommand } from "../lib/visibleCommand";
 import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
 import { EditDiffCounts, EditDiffPatch, parseEditDiff } from "./conversation/EditDiff";
 import { SwarmWorkerRows } from "./conversation/SwarmWorkerRows";
+import { swarmPendingStatusOf } from "./conversation/swarmPendingIdentity";
 import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
 import { commandRisk } from "../lib/commandRisk";
@@ -235,6 +236,25 @@ export type SwarmPendingItem = {
   /** Job ids that already received a swarm_result (for run_parallel). */
   terminal_job_ids?: string[];
 };
+
+const SWARM_FOLD_STATUS_ORDER: readonly SwarmPendingStatus[] = ["done", "partial", "failed", "ended"];
+
+/**
+ * Fold label for swarm pills: the state of each swarm. A pill stays in the
+ * transcript after its swarm ends (as done, partial, failed or ended), so a
+ * count of pills is not a count of pending swarms.
+ */
+export function swarmPendingFoldLabel(pills: readonly SwarmPendingItem[]): string {
+  const statuses = pills.map(swarmPendingStatusOf);
+  if (statuses.includes("running")) return "Swarm · running";
+  if (statuses.includes("waiting")) return "Swarm · waiting";
+  if (statuses.length === 1) return `Swarm · ${statuses[0]}`;
+  const parts = SWARM_FOLD_STATUS_ORDER
+    .map((status) => [status, statuses.filter((s) => s === status).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([status, n]) => `${n} ${status}`);
+  return `Swarm · ${parts.join(", ")}`;
+}
 
 type SwarmArtifact = {
   id?: string;
@@ -2756,15 +2776,12 @@ function ActivityGroup({
   const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
   const runningSwarmKeys = swarmPendingItems
     .filter((it) => {
-      const status = it.status || (it.resolved ? "done" : "running");
+      const status = swarmPendingStatusOf(it);
       return status === "running" || status === "waiting";
     })
     .map((it) => String(it.job_ids?.[0] || "").trim())
     .filter(Boolean);
-  const swarmPendingRunning = swarmPendingItems.some((it) => {
-    const status = it.status || (it.resolved ? "done" : "running");
-    return status === "running";
-  });
+  const swarmPendingRunning = swarmPendingItems.some((it) => swarmPendingStatusOf(it) === "running");
 
   const [open, setOpen] = useState(() => resolveActivityGroupOpen(groupId));
   const foldRootRef = useRef<HTMLDivElement>(null);
@@ -3057,7 +3074,7 @@ function ActivityGroup({
   const quietSummary = (() => {
     if (investigating) {
       if (swarmPendingItems.length > 0 && actionCount === 0) {
-        return swarmPendingRunning ? "Swarm · running" : `Swarm · ${swarmPendingItems.length} pending`;
+        return swarmPendingFoldLabel(swarmPendingItems);
       }
       // Work-fold chrome owns Exploring — never spoken-prose Working...
       return workFoldLabel({ live: true, headline: stepHeadline });
@@ -3072,7 +3089,7 @@ function ActivityGroup({
         return `Swarm · ${swarmResults.length} result${swarmResults.length === 1 ? "" : "s"}`;
       }
       if (swarmPendingItems.length > 0 && actionCount === 0 && thinkingItems.length === 0) {
-        return `Swarm · ${swarmPendingItems.length} pending`;
+        return swarmPendingFoldLabel(swarmPendingItems);
       }
       return workFoldLabel({ live: false, durationMs: sealedWorkMs });
     }

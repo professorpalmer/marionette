@@ -231,7 +231,6 @@ import {
   recordPrimaryStreamFrame,
 } from "./conversation/chatEvents";
 import { useSessionSwitch } from "./conversation/useSessionSwitch";
-import { useRunnersBusyPoll } from "./conversation/useRunnersBusyPoll";
 import { IDLE_POLL_MS, setActivity } from "../lib/appActivity";
 import {
   appendMemoryProposal,
@@ -1936,32 +1935,6 @@ export default function Conversation({
     recoveryDispatchingRef,
     recoveryContextRef,
   });
-
-
-  useRunnersBusyPoll({
-    activeSessionId,
-    clearChatEventsPoll,
-    itemsRef,
-    cachedSessionIdRef,
-    transcriptFpRef,
-    localStreamActiveRef,
-    detachedBusyRef,
-    userStoppedRef,
-    runnerBusyPollGenRef,
-    chatEventsPollTimerRef,
-    chatEventsLiveCancelRef,
-    ensureChatEventsReattachRef,
-    turnSettledRef,
-    abandonStaleLocalStreamRef,
-    setItems,
-    setTranscriptStale,
-    setTurnOpen,
-    setStatus,
-    setCompactingStatus,
-    setWaitHint,
-    setBackendPendingSwarms,
-  });
-
 
   useEffect(() => {
     setPendingJobIds([]);
