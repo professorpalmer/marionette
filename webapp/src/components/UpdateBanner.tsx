@@ -2,31 +2,33 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpCircle, RefreshCw, X } from "lucide-react";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { useTitlebarLeftPad } from "../lib/useTitlebarLeftPad";
+import {
+  parseUpdateAvailability,
+  releaseFromProgress,
+  versionLabel,
+  type UpdateAvailability,
+} from "../lib/updateAvailability";
 
-// The loud counterpart to the StatusBar's small "update" pill. When the tracked
-// branch has moved ahead of this checkout, this slides a prominent bar across the
-// top of the window -- Hermes-style -- so a waiting update is impossible to miss.
-// Restart applies it (git pull + rebuild + relaunch); dismiss hides it until the
-// next launch or the next commit lands. Because Marionette can edit its own
-// source, apply() may return a structured code (dirty/diverged/conflict) that we
-// turn into a real choice (stash + reapply, or point at the diverged commits)
-// instead of a dead-end error.
+export type { UpdateAvailability };
+
+// The loud counterpart to the StatusBar's small update pill, shown at the top of
+// the chat card only when a different version is ready (a release or a packaged
+// installer). New commits that keep the running version (a source run between
+// releases) show in the pill alone. Restart applies the update (git pull +
+// rebuild + relaunch); dismiss hides the banner until the next launch. Because
+// Marionette can edit its own source, apply() may return a structured code
+// (dirty/diverged/conflict) that we turn into a real choice (stash + reapply,
+// or point at the diverged commits) instead of a dead-end error.
 //
-// The pill stays as the always-present compact indicator; this banner is the
-// occasional "your update is ready, one click to finish" nudge.
-export type UpdateAvailability = {
-  behind: number;
-  branch: string;
-  version: string;
-};
+// This component is the one apply() driver for both surfaces: it stays mounted
+// and publishes what it found, even when it renders nothing.
 
 export default function UpdateBanner({
   onAvailabilityChange,
 }: {
   onAvailabilityChange?: (update: UpdateAvailability | null) => void;
 } = {}) {
-  const [latest, setLatest] = useState<string>("");
-  const [ready, setReady] = useState(false);
+  const [available, setAvailable] = useState<UpdateAvailability | null>(null);
   const [applying, setApplying] = useState(false);
   const [progress, setProgress] = useState<string>("");
   const [dismissed, setDismissed] = useState(false);
@@ -39,17 +41,15 @@ export default function UpdateBanner({
   const committedRef = useRef(false);
   const lastRuntimeNoteRef = useRef<string | null>(null);
   const [leftPad, stripRef] = useTitlebarLeftPad();
-  const publishAvailability = useCallback((res: any) => {
-    onAvailabilityChange?.({
-      behind: res.behind || 0,
-      branch: res.branch || "main",
-      version: res.current || "",
-    });
+  const latch = useCallback((next: UpdateAvailability | null) => {
+    if (!next) return;
+    readyRef.current = true;
+    setAvailable(next);
+    onAvailabilityChange?.(next);
   }, [onAvailabilityChange]);
   const revokeAvailability = useCallback(() => {
     readyRef.current = false;
-    setReady(false);
-    setLatest("");
+    setAvailable(null);
     onAvailabilityChange?.(null);
   }, [onAvailabilityChange]);
 
@@ -102,14 +102,9 @@ export default function UpdateBanner({
             lastRuntimeNoteRef.current = res.runtimeNote;
             window.dispatchEvent(new CustomEvent("harness-toast", { detail: res.runtimeNote }));
           }
-          if (res.available || res.downloaded) {
-            // Only a real version string labels the banner. Source-run updates
-            // track a branch tip, and falling back to the branch name rendered
-            // the nonsense "vmain of Marionette is ready".
-            setLatest(res.latest || "");
-            readyRef.current = true;
-            setReady(true);
-            publishAvailability(res);
+          const found = parseUpdateAvailability(res);
+          if (found) {
+            latch(found);
           } else if (res.error) {
             // Live updates.check() resolves git/network/remote failures as
             // {available:false,error:...} instead of rejecting. A transient
@@ -140,10 +135,7 @@ export default function UpdateBanner({
     const offAvailable = ipc.updates.onAvailable
       ? ipc.updates.onAvailable((res: any) => {
           if (cancelled || !res || committedRef.current) return;
-          setLatest(res.latest || "");
-          readyRef.current = true;
-          setReady(true);
-          publishAvailability(res);
+          latch(parseUpdateAvailability(res));
         })
       : null;
 
@@ -153,7 +145,6 @@ export default function UpdateBanner({
     // -> another check, an infinite loop that was the visible "blinking".
     const off = ipc.updates.onProgress((p: any) => {
       if (!p || !p.stage) return;
-      if (p.version) setLatest(p.version);
 
       // Packaged shell check finished with nothing to install -- drop transient
       // "Checking for app shell update" chrome without treating idle as progress.
@@ -182,10 +173,10 @@ export default function UpdateBanner({
       }
 
       if (p.stage === "available" || p.stage === "downloaded") {
-        // Surface the actionable "ready -- Restart now" view. Latch it so late
-        // background download-progress can't flip it back and forth.
-        readyRef.current = true;
-        setReady(true);
+        // The packaged updater found an installer: surface the actionable
+        // "ready -- Restart now" view. Latch it so late background
+        // download-progress can't flip it back and forth.
+        latch(releaseFromProgress(p.version));
         setApplying(false);
         return;
       }
@@ -206,7 +197,7 @@ export default function UpdateBanner({
       if (off) off();
       if (offAvailable) offAvailable();
     };
-  }, [publishAvailability, revokeAvailability]);
+  }, [latch, revokeAvailability]);
 
   const restart = (strategy?: "ff" | "stash") => {
     const ipc = (window as any).harnessIPC;
@@ -316,9 +307,9 @@ export default function UpdateBanner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (dismissed || (!ready && !applying)) return null;
-
-  const versionLabel = latest ? (latest.startsWith("v") ? latest : `v${latest}`) : "A new version";
+  // Commits that keep the running version stay in the status bar pill, which
+  // also mirrors apply progress for them.
+  if (dismissed || available?.kind !== "release") return null;
 
   return (
     // Deliberately NOT a drag region: Electron intermittently swallows clicks on
@@ -340,7 +331,7 @@ export default function UpdateBanner({
       ) : (
         <>
           <span className="font-medium">
-            {versionLabel} of Marionette is ready.
+            {versionLabel(available.version)} of Marionette is ready.
           </span>
           <span className="text-muted">Restart to finish updating.</span>
           <div className="flex-1" />

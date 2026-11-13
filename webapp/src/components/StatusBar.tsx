@@ -35,7 +35,7 @@ import {
 import { formatTokenCount, formatUsd, hasLedger, ledgerFooter } from "../lib/ledgerDisplay";
 import { sanitizeUpdateMessage } from "../lib/updateMessages";
 import { shortPilotModelLabel } from "../lib/turnProgress";
-import type { UpdateAvailability } from "./UpdateBanner";
+import { updatePillLabel, updatePillTitle, type UpdateAvailability } from "../lib/updateAvailability";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
 
@@ -572,11 +572,11 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       ) : update ? (
         <button
           onClick={runUpdate}
-          title={`${update.behind ? update.behind + " commit(s)" : "An update is"} behind ${update.branch} -- click to update and relaunch`}
+          title={updatePillTitle(update)}
           className="flex items-center gap-1 px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 transition font-medium"
         >
           <ArrowUpCircle size={11} />
-          <span>update{update.behind ? ` (${update.behind})` : ""}</span>
+          <span>{updatePillLabel(update)}</span>
         </button>
       ) : null}
       <span className="text-muted/60 status-bar-optional-lg">{isDesktop() ? "desktop" : "web"}</span>
