@@ -1,3 +1,5 @@
+import { MONO_FONTS, SANS_FONTS } from "./src/lib/fontStacks.ts";
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
@@ -33,8 +35,8 @@ export default {
         [8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 15].map((px) => [`ui-${px}`, `${px}px`]),
       ),
       fontFamily: {
-        sans: ["-apple-system","BlinkMacSystemFont","Segoe UI","Roboto","sans-serif"],
-        mono: ["ui-monospace","SFMono-Regular","Menlo","monospace"],
+        sans: SANS_FONTS,
+        mono: MONO_FONTS,
       },
     },
   },

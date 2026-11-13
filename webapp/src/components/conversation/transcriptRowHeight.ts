@@ -11,14 +11,12 @@ import { layout, prepare, type PreparedText } from "@chenglou/pretext";
 import type { GroupedItem, Msg } from "../TranscriptList";
 import { isWorkingEllipsisFallback } from "../../lib/turnProgress";
 import { isAssistantStatusOnly } from "./thinkingToolPrep";
+import { MONO_STACK, SANS_STACK } from "../../lib/fontStacks";
 
 /** Canvas font strings synced with TranscriptList bubble typography. */
-export const TRANSCRIPT_USER_FONT =
-  'normal 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-export const TRANSCRIPT_ASSISTANT_FONT =
-  'normal 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-export const TRANSCRIPT_CHIP_FONT =
-  'normal 10.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+export const TRANSCRIPT_USER_FONT = `normal 13px ${SANS_STACK}`;
+export const TRANSCRIPT_ASSISTANT_FONT = `normal 13px ${SANS_STACK}`;
+export const TRANSCRIPT_CHIP_FONT = `normal 10.5px ${MONO_STACK}`;
 
 export const TRANSCRIPT_USER_LINE_HEIGHT_PX = 21;
 export const TRANSCRIPT_ASSISTANT_LINE_HEIGHT_PX = 22;

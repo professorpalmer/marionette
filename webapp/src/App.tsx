@@ -12,6 +12,7 @@ import Conversation from "./components/Conversation";
 import RightPane from "./components/RightPane";
 import RightDock from "./components/RightDock";
 import StatusBar from "./components/StatusBar";
+import { emptySessionContext } from "./components/conversation/TranscriptEmptyState";
 import UpdateBanner, { type UpdateAvailability } from "./components/UpdateBanner";
 import ComputerAccess from "./components/ComputerAccess";
 import ProviderKeyBanner from "./components/ProviderKeyBanner";
@@ -579,7 +580,7 @@ export default function App() {
         </div>
       </div>
       <div className="shrink-0 px-px py-px">
-        <StatusBar update={availableUpdate}
+        <StatusBar update={availableUpdate} needsModel={emptySessionContext(config).needsModel}
           leftOpen={leftOpen} rightOpen={rightOpen}
           onToggleLeft={() => setLeftOpen((v) => !v)} onToggleRight={toggleRight}
           onOpenEconomics={() => openRightTo("economics")} />

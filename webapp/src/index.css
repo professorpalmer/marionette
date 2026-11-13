@@ -46,7 +46,11 @@ body {
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: 0.005em;
 }
-* { scrollbar-width: thin; scrollbar-color: #3b4046 transparent; }
+/* One scrollbar style on every OS: 7px, drawn by these rules. Do not set
+   scrollbar-width or scrollbar-color here. Chromium 121+ then ignores every
+   ::-webkit-scrollbar rule on that element and draws the OS scrollbar, which
+   takes layout width on Windows. `scrollbar-width: none` on one element
+   still hides it. */
 *::-webkit-scrollbar { width: 7px; height: 7px; }
 *::-webkit-scrollbar-thumb { background: #2c3036; border-radius: 4px; }
 *::-webkit-scrollbar-thumb:hover { background: #3b4046; }
@@ -152,6 +156,11 @@ body {
    it keeps 4.5:1 over the native material at every intensity. */
 :root[data-marionette-glass] .shell-sidebar :is(.text-muted, .text-faint) {
   color: #b9bfc8;
+}
+/* Accent text (Open Folder...) gets the same lift: #e0a45a measured 4.48:1
+   over the material at intensity 60. */
+:root[data-marionette-glass] .shell-sidebar .text-accent {
+  color: #ecbe84;
 }
 
 /* The chat column is one opaque card on the frame. A top strip (update,
@@ -673,7 +682,7 @@ body.is-row-resizing iframe {
 }
 .swarm-metric strong {
   color: theme('colors.txt');
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: theme('fontFamily.mono');
   font-size: theme('fontSize.ui-10');
   font-weight: 550;
   font-variant-numeric: tabular-nums;
@@ -736,7 +745,7 @@ body.is-row-resizing iframe {
   align-items: center;
   gap: 3px;
   color: theme('colors.faint');
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: theme('fontFamily.mono');
   font-size: theme('fontSize.ui-9');
 }
 .swarm-worker-status { grid-column: 3; grid-row: 1; }

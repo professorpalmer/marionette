@@ -83,14 +83,16 @@ export default function ConversationHeader({
           {heading.title || "Marionette"}
         </span>
         {heading.project ? (
-          <span className="hidden min-[420px]:flex min-w-0 shrink">
+          // The project and branch keep their own width up to a cap, so the
+          // title is the one text that truncates first.
+          <span className="hidden min-[420px]:flex min-w-0 shrink-0 max-w-[30%]" data-testid="header-project-slot">
             <WorkspaceChip label={heading.project} showLabel={!projectRepeatsTitle(heading.title, heading.project)} />
           </span>
         ) : null}
         {heading.branch ? (
-          <span className="text-faint text-ui-11 truncate shrink min-w-0 hidden min-[520px]:inline-flex items-center gap-1" data-testid="header-branch">
+          <span className="text-faint text-ui-11 shrink-0 max-w-[30%] min-w-0 hidden min-[520px]:inline-flex items-center gap-1" data-testid="header-branch">
             <GitBranch size={10} aria-hidden className="shrink-0" />
-            {heading.branch}
+            <span className="truncate">{heading.branch}</span>
           </span>
         ) : null}
       </span>
