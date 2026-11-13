@@ -27,6 +27,7 @@ function reattach(opts: {
   ringGeneration: number | undefined;
   applied: { kind: string; text: string }[];
   items?: Item[];
+  transcriptRing?: { generation: number; cursor: number } | null;
 }) {
   const refs = {
     lastAppliedCursorRef: { current: opts.since },
@@ -66,6 +67,7 @@ function reattach(opts: {
     setTranscriptStale: () => {},
     setTurnOpen: () => {},
     setStatus: () => {},
+    transcriptRingRef: { current: opts.transcriptRing ?? null },
   });
   return { pullChatEvents, refs };
 }
@@ -120,6 +122,78 @@ describe("session switch store replay", () => {
     await pullChatEvents();
 
     expect(applied).toEqual([]);
+  });
+});
+
+describe("reload replay over a transcript that holds the turn", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const replay = (events: unknown[], cursor: number) => vi.spyOn(api, "readEventsSince").mockResolvedValue({
+    ok: true, session_id: "sess", cursor, events, replay_reset: true,
+  } as any);
+
+  it("does not paint a settled turn again over the loaded rows", async () => {
+    // Measured in the rig: after a reload the replay streamed the settled
+    // newest turn over the 13 loaded rows (12 rows, then 13 again) before it
+    // deduped. The transcript was read at ring (2, 3), past the turn's
+    // terminal frame, so it already holds every frame of that turn.
+    replay([...turnFrames(1, "turn one answer", 1), ...turnFrames(2, "turn two answer", 4)], 6);
+    const applied: { kind: string; text: string }[] = [];
+    const { pullChatEvents, refs } = reattach({
+      since: 0, ringCursor: 0, ringGeneration: undefined, applied, transcriptRing: { generation: 2, cursor: 3 },
+    });
+
+    expect(await pullChatEvents()).toBe(true);
+
+    expect(applied).toEqual([]);
+    expect(refs.ringGenerationRef.current).toBe(2);
+    expect(refs.lastAppliedRingCursorRef.current).toBe(3);
+    expect(refs.lastAppliedCursorRef.current).toBe(6);
+  });
+
+  it("applies the frames that came after the transcript read", async () => {
+    const events = [
+      ...turnFrames(2, "answer", 4),
+      { id: 7, kind: "stream", data: { kind: "notice", data: { message: "later" }, cursor: 4, generation: 2 }, session_id: "sess" },
+    ];
+    replay(events, 7);
+    const applied: { kind: string; text: string }[] = [];
+    const { pullChatEvents, refs } = reattach({
+      since: 0, ringCursor: 0, ringGeneration: undefined, applied, transcriptRing: { generation: 2, cursor: 3 },
+    });
+
+    await pullChatEvents();
+
+    expect(applied.map((a) => a.kind)).toEqual(["notice"]);
+    expect(refs.lastAppliedRingCursorRef.current).toBe(4);
+  });
+
+  it("replays the whole turn when the transcript was read before the turn ended", async () => {
+    // Mid-turn the display can lag the ring, so only a terminal frame at or
+    // before the read cursor proves that the transcript holds the turn.
+    replay(turnFrames(2, "answer", 4), 6);
+    const applied: { kind: string; text: string }[] = [];
+    const { pullChatEvents } = reattach({
+      since: 0, ringCursor: 0, ringGeneration: undefined, applied, transcriptRing: { generation: 2, cursor: 2 },
+    });
+
+    await pullChatEvents();
+
+    expect(applied.map((a) => a.kind)).toEqual(["message_delta", "message", "assistant_done"]);
+  });
+
+  it("replays the turn when the transcript was read in another generation", async () => {
+    replay(turnFrames(3, "answer", 4), 6);
+    const applied: { kind: string; text: string }[] = [];
+    const { pullChatEvents } = reattach({
+      since: 0, ringCursor: 0, ringGeneration: undefined, applied, transcriptRing: { generation: 2, cursor: 3 },
+    });
+
+    await pullChatEvents();
+
+    expect(applied.map((a) => a.kind)).toEqual(["message_delta", "message", "assistant_done"]);
   });
 });
 

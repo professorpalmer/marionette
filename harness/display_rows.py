@@ -13,14 +13,21 @@ import time
 from typing import Any, Iterable, SupportsIndex
 
 
-def _now_ms() -> int:
+def now_ms() -> int:
     return int(time.time() * 1000)
 
 
 def _stamp(row: Any, ts: int | None = None) -> Any:
     if isinstance(row, dict) and not isinstance(row.get("ts"), (int, float)):
-        row["ts"] = ts if ts is not None else _now_ms()
+        row["ts"] = ts if ts is not None else now_ms()
     return row
+
+
+def assistant_message_row(text: str) -> dict:
+    """An assistant prose row stamped now. Its ``message`` event carries the
+    same ``ts``: the UI ends a turn's Worked for at the final answer, the live
+    bubble from the event and a reload from the row."""
+    return {"type": "message", "role": "assistant", "text": text, "ts": now_ms()}
 
 
 class DisplayRows(list):

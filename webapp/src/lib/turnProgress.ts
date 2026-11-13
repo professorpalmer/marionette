@@ -613,14 +613,17 @@ export function activityWorkDurationMs(
 
 /**
  * Wall-clock span of a saved turn: from the user's message to the end of the
- * last action, read from the times the backend stamps on transcript rows, so
- * it survives a reload. Null when the rows predate those times.
+ * last action, or to the final answer when ``endTs`` gives its time. It reads
+ * the times the backend stamps on transcript rows, so it survives a reload.
+ * Null when the rows predate those times.
  */
 export function turnSpanMs(
   items: Array<{ kind: string; card?: { ts?: number; turn_ts?: number; result?: { duration_ms?: number | null } | null } }>,
+  /** Saved time of the turn's final answer, when the turn has one. */
+  endTs?: number,
 ): number | null {
   let start = Infinity;
-  let end = -Infinity;
+  let end = endTs ?? -Infinity;
   for (const it of items) {
     const card = it.kind === "card" ? it.card : undefined;
     if (card?.ts == null || card.turn_ts == null) continue;

@@ -501,6 +501,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         // Backend flags prose already painted via message_delta so we merge
         // into the sealed bubble instead of appending a duplicate after tools.
         streamed: Boolean(d.streamed),
+        ts: typeof d.ts === "number" && Number.isFinite(d.ts) ? d.ts : undefined,
       }));
     } else if (ev.kind === "action_start") {
       clearWaitHintOnProgress();

@@ -112,6 +112,40 @@ export function replayGenerationFloor(events: readonly StoreEvent[]): number | u
   return newest;
 }
 
+/** SSE ring position at the moment the server read a transcript. */
+export type TranscriptRing = { generation: number; cursor: number };
+
+/** The ``ring`` field of a transcript response, or null when it is absent or malformed. */
+export function parseTranscriptRing(value: unknown): TranscriptRing | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { generation, cursor } = value as { generation?: unknown; cursor?: unknown };
+  const gen = positiveGeneration(generation);
+  if (gen == null || typeof cursor !== "number" || !Number.isInteger(cursor) || cursor < 1) return null;
+  return { generation: gen, cursor };
+}
+
+/**
+ * Ring cursor through which a replay repeats the loaded transcript, or 0.
+ * The server writes a display row before it puts the frame in the ring, but
+ * a message row lands one frame late. So only a terminal frame at or before
+ * the read cursor proves that the transcript holds the turn up to that frame.
+ */
+export function transcriptSettledThrough(
+  events: readonly StoreEvent[],
+  ring: TranscriptRing | null,
+): number {
+  if (!ring) return 0;
+  let through = 0;
+  for (const ev of events) {
+    if (ev.kind !== "stream" || typeof ev.data !== "object" || ev.data === null) continue;
+    const frame = ev.data as { kind?: unknown; cursor?: unknown; generation?: unknown };
+    if (positiveGeneration(frame.generation) !== ring.generation) continue;
+    if (typeof frame.cursor !== "number" || frame.cursor > ring.cursor) continue;
+    if (isTerminalStreamKind(String(frame.kind || ""))) through = Math.max(through, frame.cursor);
+  }
+  return through;
+}
+
 type StreamEvent = { kind: string; data?: any };
 
 /** Join consecutive reasoning deltas of one stream into one chunk. */

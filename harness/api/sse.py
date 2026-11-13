@@ -152,6 +152,12 @@ class SseEventRing:
             self._changed.notify_all()
             return self._cursor
 
+    @property
+    def cursor(self) -> int:
+        """Cursor of the newest frame (0 before the first frame)."""
+        with self._lock:
+            return self._cursor
+
     def _prune_unlocked(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
         while self._entries and (now - self._entries[0][1]) > self.ttl:
@@ -274,6 +280,17 @@ def _sse_ring_lookup(
         if gen is None:
             return None
         return _sse_rings.get((sid, gen))
+
+
+def sse_ring_position(session_id: str) -> Optional[dict]:
+    """Generation and newest cursor of the session's live ring, or None."""
+    ring = _sse_ring_lookup(session_id)
+    if ring is None:
+        return None
+    cursor = ring.cursor
+    if cursor < 1:
+        return None
+    return {"generation": ring.generation, "cursor": cursor}
 
 
 def _sse_ring_clear_for_tests() -> None:

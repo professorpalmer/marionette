@@ -49,6 +49,7 @@ from .pilot_tool_recovery import (
     invalid_only_halt_reason,
     parse_native_tool_turn,
 )
+from .display_rows import assistant_message_row
 from .local_models import local_send_stale_seconds
 from .send_image_prep import prepare_turn_images
 from .send_loop_actions import execute_turn_actions
@@ -1761,23 +1762,22 @@ class SendLoopMixin:
                 # frontend finalizes the existing streaming bubble in place instead
                 # of treating it as a brand-new message (which would re-dump it).
                 _already_streamed = bool(self._streamed_prose.strip())
-                yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text, "streamed": _already_streamed})
+                _say_row = assistant_message_row(cleaned_say_text)
+                yield ConvEvent("message", {"role": "assistant", "text": cleaned_say_text, "streamed": _already_streamed, "ts": _say_row["ts"]})
                 turn_prose.append(cleaned_say_text)
-                self._display_transcript.append({"type": "message", "role": "assistant", "text": cleaned_say_text})
+                self._display_transcript.append(_say_row)
             if _promoted_say and _promoted_say.strip() != (cleaned_say_text or "").strip():
                 step_emitted_user_prose = True
+                _promoted_row = assistant_message_row(_promoted_say)
                 yield ConvEvent("message", {
                     "role": "assistant",
                     "text": _promoted_say,
                     "streamed": False,
                     "promoted_from_reasoning": True,
+                    "ts": _promoted_row["ts"],
                 })
                 turn_prose.append(_promoted_say)
-                self._display_transcript.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "text": _promoted_say,
-                })
+                self._display_transcript.append(_promoted_row)
             _history_text = commentary_history_text or cleaned_say_text or ""
             if _promoted_say:
                 if _history_text and _promoted_say.strip() != _history_text.strip():
@@ -1936,16 +1936,10 @@ class SendLoopMixin:
                         self._history[-1]["content"] = fallback
                     else:
                         self._history.append({"role": "assistant", "content": fallback})
-                    yield ConvEvent("message", {
-                        "role": "assistant",
-                        "text": fallback,
-                    })
+                    _fallback_row = assistant_message_row(fallback)
+                    yield ConvEvent("message", {"role": "assistant", "text": fallback, "ts": _fallback_row["ts"]})
                     turn_prose.append(fallback)
-                    self._display_transcript.append({
-                        "type": "message",
-                        "role": "assistant",
-                        "text": fallback,
-                    })
+                    self._display_transcript.append(_fallback_row)
                 disposition, user_message = yield from drain_idle_turn(
                     self,
                     user_message=user_message,

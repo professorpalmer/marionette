@@ -27,6 +27,7 @@ from ..sessions import (
     session_visible_for_workspace,
 )
 from ..session_runners import LeaseExhaustedError
+from .sse import sse_ring_position
 
 
 # ---------------------------------------------------------------------------
@@ -703,14 +704,22 @@ def get_sessions_transcript(qs: dict, svc: SessionServices) -> tuple[int, dict]:
     # mid-turn detached UI poll sees cards as they land (not a stale
     # disk snapshot). Fall back to disk for evicted / never-attached ids.
     data = None
+    # Ring position before the export. The send loop writes a display row
+    # before the frame reaches the ring, so the live display holds the turn
+    # up to every terminal frame at or before this cursor. The client then
+    # does not replay those frames over the loaded rows. A disk transcript
+    # can lag the ring, so it gets no position.
+    ring = None
     try:
         live = svc.runners.get(sid) if sid else None
         if live is not None and hasattr(live, "export_transcript_data"):
+            ring = sse_ring_position(sid)
             data = live.export_transcript_data()
     except Exception as e:
         svc.diag("server.transcript_live_export", e)
         data = None
     if data is None:
+        ring = None
         data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
     if isinstance(data, dict):
         history_list = data.get("history", [])
@@ -723,11 +732,14 @@ def get_sessions_transcript(qs: dict, svc: SessionServices) -> tuple[int, dict]:
     # The renderer builds rows from display and reads history only for legacy
     # transcripts without one; sending both doubled what every switch,
     # preload and settle serialized, downloaded and parsed.
-    return 200, {
+    body = {
         "history": [] if display_list else history_list,
         "display": display_list,
         "job_ids": job_ids_list,
     }
+    if ring is not None:
+        body["ring"] = ring
+    return 200, body
 
 
 @dataclass
