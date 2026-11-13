@@ -26,8 +26,9 @@ describe("slashMenu", () => {
     expect(names(menu.items)).toEqual(["/new", "/compact", "/clear", "/todo", "/advise", "/routines", "/privacy", "/help"]);
     expect(menu.items).toHaveLength(SLASH_MENU_LIMIT);
     for (const c of menu.items) expect(c.desc).not.toMatch(/\n/);
-    // /images-strip, /advice, /model and the custom /ship wait behind a filter.
-    expect(menu.moreCount).toBe(4);
+    // /images-strip, /advice and the custom /ship wait behind a filter.
+    // /model is typed-only: Cmd+K owns its menu entry.
+    expect(menu.moreCount).toBe(3);
     // /refine, /ping and the seeded /example are internal.
     expect(menu.internalCount).toBe(3);
   });

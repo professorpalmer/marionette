@@ -21,7 +21,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { cmd: "/help", desc: "Open the command palette (Cmd+K)" },
   { cmd: "/images-strip", desc: "Remove image attachments from session history" },
   { cmd: "/advice", desc: "Show the second opinions from this session" },
-  { cmd: "/model", desc: "Open the model picker" },
+  { cmd: "/model", desc: "Open the model picker (Cmd+K)", visibility: "typed" },
   { cmd: "/refine", desc: "Propose a harness refine (internal)", visibility: "expert" },
   { cmd: "/ping", desc: "Keep the session cache warm: start, stop, or status", visibility: "expert" },
   { cmd: "/swarm", desc: "Open Jobs (Cmd+K)", visibility: "typed" },
