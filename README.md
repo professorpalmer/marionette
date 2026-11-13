@@ -5,7 +5,7 @@ Paste one API key and you got the whole thing: chat pilot, workers, swarms, flow
 No Cursor, Claude Code, or Codex CLI needed.
 It makes $0 off your tokens, so its whole job is spending fewer of them, and it shows you the receipts.
 
-<img src="docs/assets/media/hero-poster.webp" alt="Marionette desktop app with the pilot chat in the center and the job dock on the right" width="100%" />
+<a href="https://professorpalmer.github.io/marionette/"><img src="docs/assets/media/hero.webp" alt="Screen recording of Marionette running a three-worker swarm audit and streaming the findings" width="100%" /></a>
 
 Current release: **v0.9.662**. Still pre-1.0 on purpose.
 Puppetmaster is the bundled kernel, not a second thing to set up: `puppetmaster-ai==1.50.0` gets pinned into the venv for you.
