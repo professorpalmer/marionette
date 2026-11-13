@@ -146,7 +146,7 @@ def expand_allowed_names_for_lazy_activate(
     called_names: Any,
     catalog: Any = None,
 ) -> Optional[list]:
-    """Allow first-call web_search / web_fetch / browser_* without schema exposure.
+    """Allow a first call to a lazily activated tool without schema exposure.
 
     Hidden tools stay out of the schema. search_tools activate is applied on
     the catalog (never cached as a no-op). ``allowed_names is None`` already

@@ -64,6 +64,22 @@ def _core_always() -> Set[str]:
 _PILOT_EXTRAS: Set[str] = {
     "search_codegraph",
     "search_files",
+    "todo",
+    "wait",
+    "run_command_batch",
+    "cancel_job",
+    "query_wiki",
+    "run_swarm",
+    "run_implement",
+    "run_parallel",
+    "run_flow",
+    "flow_control",
+}
+
+# Session plumbing a coding turn rarely calls. Their schemas were 9.4k chars
+# of every request. search_tools finds them, and a first call by name
+# activates them (LAZY_ACTIVATE_NAMES).
+_PILOT_ON_DEMAND: Set[str] = {
     "search_state",
     "search_archive",
     "read_archived_chat",
@@ -79,21 +95,11 @@ _PILOT_EXTRAS: Set[str] = {
     "peek_history",
     "peek_artifact",
     "job_findings",
-    "cancel_job",
     "manage_mcp",
     "open_project",
     "relocate_session",
     "session_bank",
     "route_task",
-    "run_swarm",
-    "run_implement",
-    "run_parallel",
-    "run_flow",
-    "flow_control",
-    "run_command_batch",
-    "wait",
-    "todo",
-    "query_wiki",
 }
 
 # Worker leaf extras (no delegation tools).
@@ -143,9 +149,9 @@ CORE_WORKER: Set[str] = CORE_ALWAYS | _WORKER_EXTRAS
 # Hidden built-ins the model may still name on the first call. Activate then
 # dispatch instead of INVALID TOOL CALL. They must not appear in the schema
 # until activated (search_tools or this first-call path).
-LAZY_ACTIVATE_NAMES: Set[str] = {
-    # Named with their arguments in PILOT_SYSTEM, so a first call from the
-    # prompt alone must activate rather than bounce off the catalog.
+LAZY_ACTIVATE_NAMES: Set[str] = _PILOT_ON_DEMAND | {
+    # Named in the pilot prompt or in tool results, so a first call by name
+    # must activate rather than bounce off the catalog.
     "read_pdf",
     "lsp",
     "call_mcp",
@@ -169,7 +175,7 @@ LAZY_ACTIVATE_NAMES: Set[str] = {
 
 
 def is_lazy_activatable_name(name: str) -> bool:
-    """True for web_search / web_fetch / browser_* first-call activation."""
+    """True for a hidden tool that its first call activates."""
     key = (name or "").strip()
     if not key:
         return False
@@ -639,7 +645,7 @@ class ToolCatalog:
         return activated
 
     def try_lazy_activate(self, keys: Iterable[str]) -> List[str]:
-        """Activate hidden web/browser built-ins on first call.
+        """Activate a hidden built-in (LAZY_ACTIVATE_NAMES) on its first call.
 
         Unknown names are ignored. Known lazy names that are not yet in the
         catalog (browser off) are still marked activated so parse can dispatch
