@@ -829,6 +829,10 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
         sampling = resolved.get("sampling") or {}
         if sampling:
             extra_body = {**(extra_body or {}), **sampling}
+        from .reasoning_effort import endpoint_reasoning_effort
+        effort = endpoint_reasoning_effort()
+        if effort:
+            extra_body = {**(extra_body or {}), "reasoning_effort": effort}
         max_tokens = local_output_limit(max_tokens, sampling)
         if vendor == "llama.cpp":
             driver_name = "llama-cpp:%s" % model

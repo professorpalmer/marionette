@@ -19,6 +19,16 @@ REASONING_EFFORT_LEVELS: Tuple[str, ...] = (
 DEFAULT_CODEX_REASONING_EFFORT = "low"
 DEFAULT_SWARM_REASONING_EFFORT = "medium"
 SWARM_REASONING_EFFORT_ENV = "HARNESS_SWARM_REASONING_EFFORT"
+# Set by `harness exec --reasoning-effort`. An OpenAI-compatible endpoint pilot
+# (local:<id>/<model>) then sends reasoning_effort on every call. Unset, it
+# sends none, so a GUI user's endpoint keeps its server default.
+ENDPOINT_REASONING_EFFORT_ENV = "HARNESS_ENDPOINT_REASONING_EFFORT"
+
+
+def endpoint_reasoning_effort() -> Optional[str]:
+    """The effort an endpoint pilot sends, or None to send no field."""
+    raw = os.environ.get(ENDPOINT_REASONING_EFFORT_ENV, "").strip()
+    return normalize_reasoning_effort(raw) if raw else None
 _turn_efforts: ContextVar[Optional[Tuple[str, str]]] = ContextVar("turn_efforts", default=None)
 
 
