@@ -37,6 +37,13 @@ function useTitlebarLeftPad(ref: { current: HTMLElement | null }): number {
  */
 const NO_HEADING: SessionHeading = { title: "", project: "", branch: "" };
 
+/** An older Open Folder session keeps the folder name as its title. Then the
+ *  project label would repeat the title ("proj proj"). */
+export function projectRepeatsTitle(title: string, project: string): boolean {
+  const t = title.trim().toLowerCase();
+  return t !== "" && t === project.trim().toLowerCase();
+}
+
 export default function ConversationHeader({
   heading = NO_HEADING,
   pillStatus,
@@ -77,7 +84,7 @@ export default function ConversationHeader({
         </span>
         {heading.project ? (
           <span className="hidden min-[420px]:flex min-w-0 shrink">
-            <WorkspaceChip label={heading.project} />
+            <WorkspaceChip label={heading.project} showLabel={!projectRepeatsTitle(heading.title, heading.project)} />
           </span>
         ) : null}
         {heading.branch ? (
