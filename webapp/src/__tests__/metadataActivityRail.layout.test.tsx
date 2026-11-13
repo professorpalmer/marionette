@@ -1,5 +1,5 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
 import MetadataActivity from '../components/conversation/MetadataActivity';
 import { JobMetadataContext, metadataJobs, useSharedJobMetadata } from '../lib/jobMetadataContext';
 import { JobMetadataStore } from '../lib/useJobMetadata';
@@ -8,11 +8,6 @@ import { CombinedMetadataFixture } from './metadataMigration.fixtures';
 import { context, list, summary } from './jobMetadata.fixtures';
 
 const stores: JobMetadataStore[] = [];
-beforeEach(() => {
-  // jsdom does not implement the browser's top layer or dialog methods.
-  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: vi.fn(function (this: HTMLDialogElement) { this.setAttribute('open', ''); }) });
-  Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: vi.fn(function (this: HTMLDialogElement) { this.removeAttribute('open'); }) });
-});
 afterEach(() => { cleanup(); stores.splice(0).forEach(store => store.dispose()); Reflect.deleteProperty(window, 'harnessIPC'); vi.restoreAllMocks(); });
 
 function Rail({ sessionId, empty }: { sessionId: string; empty: boolean }) {
@@ -70,18 +65,17 @@ it('opens a labelled modal outside composer clipping and restores keyboard focus
   const f = await fixture();
   const opener = screen.getByRole('button', { name: 'PM harness job · running' }); opener.focus();
   fireEvent.click(opener);
-  const dialog = screen.getByRole('dialog', { name: 'Selected job inspection' });
+  const dialog = await screen.findByRole('dialog', { name: 'Selected job inspection' });
   expect(dialog).toHaveAccessibleDescription('Inspect the selected job without leaving the conversation.');
   expect(screen.getByTestId('composer-context')).not.toContainElement(dialog);
-  expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1);
   const close = within(dialog).getByRole('button', { name: 'Close selected inspection' });
-  expect(close).toHaveFocus();
+  await waitFor(() => expect(close).toHaveFocus());
   fireEvent.keyDown(close, { key: 'Escape' });
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  expect(opener).toHaveFocus();
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await waitFor(() => expect(opener).toHaveFocus());
   fireEvent.click(opener); f.rerender(true);
-  fireEvent.click(screen.getByRole('button', { name: 'Close selected inspection' }));
-  expect(screen.getByRole('region', { name: 'Observed job activity' })).toHaveFocus();
+  fireEvent.click(await screen.findByRole('button', { name: 'Close selected inspection' }));
+  await waitFor(() => expect(screen.getByRole('region', { name: 'Observed job activity' })).toHaveFocus());
   expect(f.store.getSnapshot().detail.kind).toBe('none');
 });
 
@@ -100,9 +94,9 @@ it('preserves inspection when real store tombstones remove the last observed job
   for (let i = 0; i < 8; i++) await act(async () => { await f.store.advance(); });
   expect(metadataJobs(f.store.getSnapshot())).toEqual([]);
   expect(f.store.getSnapshot().contextEpoch).toBe(epoch);
-  expect(screen.getByRole('dialog', { name: 'Selected job inspection' })).toBeVisible();
+  await waitFor(() => expect(screen.getByRole('dialog', { name: 'Selected job inspection' })).toBeVisible());
   expect(screen.getByText(/Lifecycle: running/)).toBeVisible();
-  fireEvent(screen.getByRole('dialog'), new Event('cancel', { bubbles: false, cancelable: true }));
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  expect(screen.getByRole('region', { name: 'Observed job activity' })).toHaveFocus();
+  fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole('region', { name: 'Observed job activity' })).toHaveFocus());
 });

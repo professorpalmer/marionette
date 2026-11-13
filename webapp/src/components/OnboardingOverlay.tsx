@@ -14,6 +14,7 @@ import {
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { setConfigured, setFlow, setMode, skipFirstRun } from "../state/onboardingStore";
 import { focusSettingsPage } from "./SettingsShell";
+import { Modal } from "./ui/overlay";
 
 export type OnboardingOverlayProps = {
   onClose: () => void;
@@ -394,14 +395,6 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const otherKeyRows = keyRows.filter((p) => p.name !== recommendedName);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finishSkip(onClose);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
@@ -568,18 +561,16 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
   const found = detection.keys.length > 0 || detection.claudeCliInstalled || detection.localEndpoints.length > 0;
 
   return (
-    <div
-      data-testid="onboarding-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="onboarding-title"
-      className="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
-      style={{
-        background:
-          "radial-gradient(ellipse at 50% 38%, rgba(224,164,90,0.08) 0%, transparent 52%), #0f1113",
-      }}
+    <Modal
+      open
+      onClose={() => finishSkip(onClose)}
+      labelledBy="onboarding-title"
+      dismissOnOutsidePress={false}
+      testId="onboarding-overlay"
+      backdropClassName="fixed inset-0 z-50 [background:radial-gradient(ellipse_at_50%_38%,rgba(224,164,90,0.08)_0%,transparent_52%),#0f1113]"
+      viewportClassName="fixed inset-0 z-50 flex items-center justify-center px-4 py-6"
+      className="onboarding-card w-full max-w-[34rem] max-h-full flex flex-col rounded-2xl border border-edge bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.45)] outline-none"
     >
-      <div className="onboarding-card w-full max-w-[34rem] max-h-full flex flex-col rounded-2xl border border-edge bg-panel shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
         <header className="shrink-0 text-center px-7 pt-7 pb-5">
           <h1 id="onboarding-title" className="text-[1.45rem] font-semibold tracking-tight text-txt leading-tight">
             Connect a model
@@ -731,7 +722,6 @@ export default function OnboardingOverlay({ onClose }: OnboardingOverlayProps) {
             I&apos;ll choose a provider later
           </button>
         </footer>
-      </div>
-    </div>
+    </Modal>
   );
 }

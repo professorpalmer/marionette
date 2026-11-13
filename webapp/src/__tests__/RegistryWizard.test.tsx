@@ -111,7 +111,6 @@ describe("RegistryWizard first-run connect", () => {
   });
 
   it("portals above the Settings shell so Connect a provider is not buried", async () => {
-    expect(wizardSrc).toContain("OverlayPortal");
     expect(wizardSrc).toContain("z-[90]");
     expect(settingsSrc).toContain("z-[80]");
 
@@ -131,11 +130,14 @@ describe("RegistryWizard first-run connect", () => {
     const settings = screen.getByTestId("settings-shell");
     expect(document.body.contains(wizard)).toBe(true);
     expect(host.contains(wizard)).toBe(false);
-    expect(wizard.className).toMatch(/z-\[90\]/);
+    expect(wizard.getAttribute("role")).toBe("dialog");
+    const titleId = wizard.getAttribute("aria-labelledby") ?? "";
+    expect(document.getElementById(titleId)?.textContent).toMatch(/set up with Marionette/i);
+    expect(wizard.parentElement?.className).toMatch(/z-\[90\]/);
     expect(settings.className).toContain("z-[80]");
 
-    fireEvent.keyDown(window, { key: "Escape" });
-    expect(onWizardClose).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(wizard, { key: "Escape" });
+    await waitFor(() => expect(onWizardClose).toHaveBeenCalledTimes(1));
     expect(onSettingsClose).not.toHaveBeenCalled();
     host.remove();
   });

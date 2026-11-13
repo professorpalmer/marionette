@@ -123,7 +123,7 @@ describe("ProviderConfigModal", () => {
   it("opens Add provider with manual=true and empty identity", async () => {
     renderModal({ manual: true, provider: null });
     const dialog = await screen.findByRole("dialog", { name: "Add provider" });
-    expect(dialog.getAttribute("data-manual")).toBe("true");
+    expect(dialog.querySelector("form")?.getAttribute("data-manual")).toBe("true");
     expect((screen.getByTestId("provider-config-field-name") as HTMLInputElement).value).toBe("");
     expect(emptyProviderConfig().api_key).toBe("");
   });
