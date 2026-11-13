@@ -1,47 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_SESSION_TITLE,
-  deriveSessionTitle,
   displaySessionListTitle,
-  isDefaultSessionTitle,
+  refreshSessionRowsAfterFirstSend,
+  SESSIONS_CHANGED_EVENT,
 } from "../lib/sessionTitle";
-
-/** Mirrors tests/test_session_naming.py::test_derive_title */
-describe("deriveSessionTitle", () => {
-  it("truncates and capitalizes the first meaningful line", () => {
-    expect(deriveSessionTitle("fix the resize bug in the tab bar please")).toBe(
-      "Fix the resize bug in the tab bar",
-    );
-  });
-
-  it("keeps trailing question marks on short titles", () => {
-    expect(deriveSessionTitle("Why does /api/usage return 0?")).toBe(
-      "Why does /api/usage return 0",
-    );
-  });
-
-  it("strips code fences and markdown", () => {
-    expect(deriveSessionTitle("```python\ndef foo():\n    return True\n```")).toBe("Def foo()");
-  });
-
-  it("handles bullet items", () => {
-    expect(deriveSessionTitle("- item 1\n- item 2")).toBe("Item 1");
-  });
-
-  it("returns the default title for empty prompts", () => {
-    expect(deriveSessionTitle("   \n   \n")).toBe(DEFAULT_SESSION_TITLE);
-    expect(deriveSessionTitle("")).toBe(DEFAULT_SESSION_TITLE);
-  });
-
-  it("collapses whitespace", () => {
-    expect(deriveSessionTitle("   hello    world   ")).toBe("Hello world");
-  });
-
-  it("rejects investigating / Explored activity headlines", () => {
-    expect(deriveSessionTitle("Investigating · read config")).toBe(DEFAULT_SESSION_TITLE);
-    expect(deriveSessionTitle("Explored 3 files, 1 search")).toBe(DEFAULT_SESSION_TITLE);
-  });
-});
 
 describe("displaySessionListTitle", () => {
   it("shows a title the user typed even when it reads like activity", () => {
@@ -56,10 +18,18 @@ describe("displaySessionListTitle", () => {
   });
 });
 
-describe("isDefaultSessionTitle", () => {
-  it("treats blank and New session as default", () => {
-    expect(isDefaultSessionTitle("")).toBe(true);
-    expect(isDefaultSessionTitle("New session")).toBe(true);
-    expect(isDefaultSessionTitle("Fix the bug")).toBe(false);
+describe("refreshSessionRowsAfterFirstSend", () => {
+  it("asks the sidebar to refetch rows after the server names the session", () => {
+    vi.useFakeTimers();
+    const seen: string[] = [];
+    const on = (e: Event) => seen.push(e.type);
+    window.addEventListener(SESSIONS_CHANGED_EVENT, on);
+    refreshSessionRowsAfterFirstSend(1500);
+    vi.advanceTimersByTime(1499);
+    expect(seen).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(seen).toEqual([SESSIONS_CHANGED_EVENT]);
+    window.removeEventListener(SESSIONS_CHANGED_EVENT, on);
+    vi.useRealTimers();
   });
 });

@@ -48,6 +48,7 @@ const FIXED_ROW_HEIGHT_PX: Partial<Record<GroupedItem["kind"], number>> = {
   checkpoint: 32,
   pending_review: 40,
   compaction: 36,
+  turn_changes: 28,
 };
 
 export type TranscriptRowPretextSpec = {
@@ -174,6 +175,7 @@ export function rowNeedsDomMeasure(item: GroupedItem): boolean {
       return Boolean(item.images?.length || item.documents?.length);
     case "activity_group":
     case "turn_work":
+    case "turn_changes":
       return true;
     case "command_approval":
     case "secret_request":
@@ -257,15 +259,25 @@ export function rowPretextSpec(
         whiteSpace: "pre-wrap",
         chromePx: 56,
       };
-    case "steer": {
-      const label = item.mode === "interrupt" ? "interrupt:" : "steer:";
+    case "model_switch":
       return {
-        text: `${label} ${item.text}`,
+        text: `Model switched · ${item.from} to ${item.to}`,
         font: TRANSCRIPT_CHIP_FONT,
         lineHeight: TRANSCRIPT_CHIP_LINE_HEIGHT_PX,
         maxWidth: feedInnerWidth,
+        whiteSpace: "normal",
+        chromePx: 16,
+      };
+    case "steer": {
+      const imageExtra = (item.images?.length ? 52 : 0) + (item.documents?.length ? 34 : 0);
+      return {
+        text: item.text,
+        font: TRANSCRIPT_USER_FONT,
+        lineHeight: TRANSCRIPT_USER_LINE_HEIGHT_PX,
+        maxWidth: transcriptBubbleMaxWidth(feedInnerWidth, "user"),
         whiteSpace: "pre-wrap",
-        chromePx: 36,
+        // Bubble chrome plus the "sent while working" tag line.
+        chromePx: 44 + imageExtra,
         maxProsePx: TRANSCRIPT_USER_CLAMP_PX,
       };
     }

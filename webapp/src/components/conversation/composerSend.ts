@@ -6,7 +6,8 @@ import { inputFailureMessage } from "../../lib/inputFailure";
 import type { CommandPaletteActionId } from "../../lib/commandPalette";
 import { isPilotMouthBusy } from "./runnersBusy";
 import type { InputDocument, ReasoningEffort } from "../../lib/api";
-import type { SteerItem } from "../TranscriptList";
+import type { Item, SteerItem } from "../TranscriptList";
+import { appendCompaction } from "./streamApply";
 
 export type PilotSetupGate =
   | { kind: "awaiting_session"; model: string; reasoning?: ReasoningEffort; requestId: number }
@@ -96,17 +97,48 @@ export function formatHelpSlashReply(
   );
 }
 
-export function formatCompactCompleteMessage(
-  beforeTokens: number,
-  afterTokens: number,
-): string {
-  return (
-    "System Note: Manual context compaction complete ("
-    + beforeTokens
-    + " -> "
-    + afterTokens
-    + " tokens)."
-  );
+/** What POST /api/session/compact returns on success. */
+export type CompactSessionResult = {
+  before_tokens: number;
+  after_tokens: number;
+  mode?: string;
+  kept?: string[];
+  dropped?: string[];
+  handles?: string[];
+  story?: string[];
+};
+
+/** Manual Compact Now settled: the same compaction row an auto pass paints. */
+export function appendCompactResult(items: Item[], res: CompactSessionResult): Item[] {
+  return appendCompaction(items, res.before_tokens, res.after_tokens, {
+    mode: res.mode,
+    kept: res.kept,
+    dropped: res.dropped,
+    handles: res.handles,
+    story: res.story,
+  });
+}
+
+/** Manual Compact Now did not compact: an aborted compaction row says why. */
+export function appendCompactFailure(items: Item[], err: unknown): Item[] {
+  const reason = compactErrorReason(err);
+  return appendCompaction(items, 0, 0, {
+    aborted: true,
+    reason: reason || undefined,
+    message: formatCompactErrorMessage(err).replace(/^\[error\]\s*/, ""),
+  });
+}
+
+/** True when Compact Now found nothing to do: a no-op, not a failure. */
+export function compactFailureIsNoop(err: unknown): boolean {
+  const reason = compactErrorReason(err);
+  return reason === "no_compactable_history" || reason === "below_min_compactable";
+}
+
+function compactErrorReason(err: unknown): string {
+  return err && typeof err === "object" && "reason" in err
+    ? String((err as { reason?: unknown }).reason || "")
+    : "";
 }
 
 /**
@@ -122,22 +154,14 @@ export function shouldApplyCompactSettle(opts: {
 }
 
 export function formatCompactErrorMessage(err: unknown): string {
-  const reason =
-    err && typeof err === "object" && "reason" in err
-      ? String((err as { reason?: unknown }).reason || "")
-      : "";
-  return COMPACT_REASON_MESSAGES[reason] ?? formatComposerActionError(err, "Compaction");
+  return COMPACT_REASON_MESSAGES[compactErrorReason(err)] ?? formatComposerActionError(err, "Compaction");
 }
 
 const COMPACT_REASON_MESSAGES: Record<string, string> = {
-  no_compactable_history:
-    "System Note: Recent turn is already compact — nothing further to summarize.",
-  summary_rejected:
-    "System Note: Compaction summary was rejected; history left unchanged. You can try again or continue.",
-  below_min_compactable:
-    "System Note: Not enough history to compact yet; history left unchanged.",
-  archive_failed:
-    "System Note: Compaction could not save the old history to its archive; history left unchanged.",
+  no_compactable_history: "Nothing to compact: the recent turn is already compact",
+  summary_rejected: "Compaction summary rejected: history unchanged",
+  below_min_compactable: "Not enough history to compact yet",
+  archive_failed: "Compaction could not archive the old history: history unchanged",
 };
 
 function formatComposerActionError(err: unknown, action: string): string {

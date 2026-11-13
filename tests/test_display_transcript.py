@@ -50,7 +50,7 @@ def test_display_transcript_accumulation():
     assert receipt['original_text'] == "how do I build a wooden table?"
     assert receipt['status'] == 'injected'
     assert all(isinstance(row.pop("ts"), int) for row in display)
-    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id}
+    assert display[0] == {"type": "message", "role": "user", "text": "how do I build a wooden table?", "input_id": input_id, "model": session.config.driver}
     assert display[1] == {"type": "message", "role": "assistant", "text": "Sure, I can help you with that."}
 
     # Verify that the raw history has the raw pilot output formatting
@@ -223,3 +223,19 @@ def test_display_rows_are_stamped_with_append_time():
     import copy as _copy
     unstamped = type(rows)([{"type": "message", "text": "no time"}])
     assert "ts" not in _copy.deepcopy(unstamped)[0]
+
+
+def test_checkpoint_event_persists_as_display_row():
+    """A restore point row stays after a reload (turn Undo needs its id)."""
+    session = ConversationalSession(HarnessConfig())
+
+    def fake_send_locked(*_args, **_kwargs):
+        yield ConvEvent("checkpoint", {"id": "abc123", "trigger": "edit_file", "label": "Before editing a.py"})
+        yield ConvEvent("checkpoint", {"id": "", "trigger": "edit_file", "label": "no id"})
+
+    session._send_locked = fake_send_locked  # type: ignore[method-assign]
+    list(session.send("edit a.py"))
+    rows = [r for r in session.export_display_transcript() if r.get("type") == "checkpoint"]
+    for row in rows:
+        row.pop("ts", None)
+    assert rows == [{"type": "checkpoint", "id": "abc123", "label": "Before editing a.py", "trigger": "edit_file"}]

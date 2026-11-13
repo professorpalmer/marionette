@@ -370,7 +370,7 @@ describe("holdSwarmAwait transcript latch + awaiting_swarm pause-point", () => {
     expect(screen.getByText(/Exploring/i)).toBeTruthy();
     expect(screen.queryByText(/Worked for/i)).toBeNull();
     // Finished cards, loop still open: the live line says what comes next.
-    expect(screen.getByTestId("live-activity-line").textContent).toMatch(/Planning next moves/);
+    expect(screen.getByTestId("live-activity-line").textContent).toMatch(/Waiting on provider…/);
   });
 
   it("awaiting_swarm pause-point does not keep Investigating spinner over settled tools", () => {

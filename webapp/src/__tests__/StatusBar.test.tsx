@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StatusBar, {
   deriveFooterRuntimeStatus,
   footerRuntimeStatusLabel,
+  footerStatusWithTurn,
   sessionGoalForChip,
 } from "../components/StatusBar";
 import EconomicsPane from "../components/EconomicsPane";
@@ -11,6 +12,7 @@ import UpdateBanner, { type UpdateAvailability } from "../components/UpdateBanne
 import { api, type LedgerBucket, type LedgerView } from "../lib/api";
 import { _resetProcessUsageForTests, refreshProcessUsage } from "../lib/processUsage";
 import { publishTaskProfile } from "../lib/taskProfileChrome";
+import { _resetActivityForTests, setActivity } from "../lib/appActivity";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -167,6 +169,9 @@ describe("deriveFooterRuntimeStatus", () => {
 
   it("humanizes footer labels without flashing raw enums", () => {
     expect(footerRuntimeStatusLabel("ready")).toBe("Idle");
+    expect(footerStatusWithTurn("ready", true)).toBe("thinking");
+    expect(footerStatusWithTurn("busy", true)).toBe("busy");
+    expect(footerStatusWithTurn("ready", false)).toBe("ready");
     expect(footerRuntimeStatusLabel("thinking")).toBe("Thinking…");
     expect(footerRuntimeStatusLabel("busy")).toBe("Busy");
   });
@@ -307,6 +312,29 @@ describe("StatusBar runtime status", () => {
     });
   });
 
+  it("shows a working dot while the chat turn is open, even when the runner reply says idle", async () => {
+    _resetActivityForTests();
+    mockGetSessionState.mockResolvedValue({
+      state: "idle",
+      pending_swarms: false,
+      active_view_id: "sess-1",
+      runners: { "sess-1": "idle" },
+    });
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
+    act(() => setActivity("turn", true));
+    expect(document.querySelector("[data-runtime-status]")).toHaveAttribute("data-runtime-status", "thinking");
+    act(() => setActivity("turn", false));
+    expect(document.querySelector("[data-runtime-status]")).toHaveAttribute("data-runtime-status", "ready");
+  });
+
+  it("keeps the footer label out of sight (dot only)", async () => {
+    _resetActivityForTests();
+    mockGetSessionState.mockResolvedValue({ state: "idle", pending_swarms: false, active_view_id: "sess-1", runners: {} });
+    render(<StatusBar {...statusBarProps} />);
+    await waitFor(() => expect(screen.getByText("Idle")).toHaveClass("sr-only"));
+  });
+
   it("shows Thinking… when the active session runner is running", async () => {
     mockGetSessionState.mockResolvedValue({
       state: "idle",
@@ -345,15 +373,6 @@ describe("StatusBar runtime status", () => {
     // B's own request is still in flight: no Idle from its old reply, no "…".
     expect(document.querySelector("[data-runtime-status]"))
       .toHaveAttribute("data-runtime-status", "thinking");
-  });
-
-  it("reserves the widest status label so neighbors do not shift", async () => {
-    mockGetSessionState.mockResolvedValue({
-      state: "idle", pending_swarms: false, active_view_id: "s", runners: { s: "idle" },
-    });
-    render(<StatusBar {...statusBarProps} />);
-    await waitFor(() => expect(screen.getByText("Idle")).toBeInTheDocument());
-    expect(screen.getByText("Idle")).toHaveAttribute("data-widest", "Thinking…");
   });
 
   it("shows Idle when only a background session runner is running", async () => {

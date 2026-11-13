@@ -1,4 +1,3 @@
-import { useOpenSwarmJob } from '../lib/useOpenSwarmJob';
 import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs } from '../lib/jobMetadataContext';
 import { inputFailureMessage } from "../lib/inputFailure";
 import { imagePath, nativeFs } from "../lib/transport";
@@ -37,7 +36,7 @@ import {
   type TurnLifecycle,
   type TurnSettle,
 } from "../lib/turnTerminal";
-import { renameDefaultSessionIfNeeded } from "../lib/sessionTitle";
+import { refreshSessionRowsAfterFirstSend, SESSIONS_CHANGED_EVENT } from "../lib/sessionTitle";
 import { notifyWorkspaceMutated } from "../lib/workspaceMutationEvents";
 import { publishSessionTodos } from "../lib/sessionTodos";
 
@@ -69,7 +68,6 @@ import {
   appendStreamingTextToItems,
 } from "./conversation/streamBubbles";
 import {
-  derivePillBusyDetail,
   derivePillStatus,
   isSwarmPausePoint,
 } from "./conversation/pillStatus";
@@ -99,8 +97,9 @@ import {
   composerEnterAction,
   EDIT_BUSY_PROGRESS_NOTICE,
   executeSendGate,
-  formatCompactCompleteMessage,
-  formatCompactErrorMessage,
+  appendCompactResult,
+  appendCompactFailure,
+  compactFailureIsNoop,
   shouldApplyCompactSettle,
   formatRenderCommandErrorMessage,
   formatSteerErrorMessage,
@@ -188,7 +187,7 @@ import {
   uploadErrorMessage,
   type DirectoryEntryLike,
 } from "./conversation/composerInput";
-import { openAgentBusyDetail, openAgentWorkspace } from "../lib/agentLinks";
+import { openAgentWorkspace } from "../lib/agentLinks";
 import { AUTH_FAILURE, sharedReadinessNotice, malformedBackendDiagnostic, parseBackendDiagnostic } from "../lib/operationalDiagnostic";
 import { getActiveDiagnostic, publishDiagnostic } from "../lib/operationalDiagnosticBus";
 import {
@@ -214,6 +213,7 @@ import { createApplyStreamEvent } from "./conversation/streamEventHandler";
 import EditorTabStrip from "./conversation/EditorTabStrip";
 import ComposerDock, { type MemoryProposal } from "./conversation/ComposerDock";
 import ConversationHeader from "./conversation/ConversationHeader";
+import { useSessionHeading } from "./conversation/useSessionHeading";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 import ImageLightbox from "./conversation/ImageLightbox";
 import SpillPreviewModal, {
@@ -312,7 +312,6 @@ export default function Conversation({
     pendingInitialSendRef.current = null;
   };
   const { store: metadataStore, state: metadata } = useSharedJobMetadataFields(CONVERSATION_METADATA_FIELDS);
-  const openSwarmJob = useOpenSwarmJob(activeSessionId ?? "");
   const [items, setRenderedItems] = useState<Item[]>([]);
   // Mirror of items for session-switch cache writes without stale closures.
   const itemsRef = useRef<Item[]>([]);
@@ -682,6 +681,7 @@ export default function Conversation({
   const queueMutationPendingRef = useRef(false);
   const queueDrainPendingRef = useRef(false);
   const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
+  const sessionHeading = useSessionHeading(activeSessionId, config?.repo ?? "");
   const operationalDiagnostic = useOperationalDiagnostic({ sessionId: activeSessionId ?? undefined, repo: config?.repo });
   const queueFetchGenRef = useRef(0);
   const [queueDragIndex, setQueueDragIndex] = useState<number | null>(null);
@@ -766,10 +766,6 @@ export default function Conversation({
     waitingPhaseStartedAtRef.current != null
       ? Math.max(0, busyNow - waitingPhaseStartedAtRef.current)
       : null;
-  const busyProgress = deriveBusyProgress(items, status, busyElapsedMs, {
-    ...chromeOpts,
-    providerElapsedMs: phaseElapsedMs,
-  });
   // Runner/SSE can briefly report idle while a card is still running (or the
   // reverse). Prefer investigation / open-turn truth for the header pill.
   // StatusPill follows agentLoopOpen (workers still visible). The mouth is
@@ -1272,6 +1268,8 @@ export default function Conversation({
   }, []);
 
   const triggerCompletionEffects = () => {
+    // The finished turn changed the row's preview and age.
+    window.dispatchEvent(new Event(SESSIONS_CHANGED_EVENT));
     const isNotifyEnabled = notifyPrefEnabled();
     const isSoundEnabled = soundPrefEnabled();
 
@@ -2068,33 +2066,21 @@ export default function Conversation({
             activeSessionId: activeSessionIdRef.current,
           })) return;
           setStatus("done");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
-              },
-            },
-          ]);
+          setItems((p) => appendCompactResult(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            res,
+          ));
         })
         .catch((err) => {
           if (!shouldApplyCompactSettle({
             requestSessionId: compactSid,
             activeSessionId: activeSessionIdRef.current,
           })) return;
-          setStatus("error");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactErrorMessage(err),
-              },
-            },
-          ]);
+          setStatus(compactFailureIsNoop(err) ? "done" : "error");
+          setItems((p) => appendCompactFailure(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            err,
+          ));
         });
     };
     window.addEventListener("harness-clear-transcript", onClearTranscript);
@@ -3243,6 +3229,10 @@ export default function Conversation({
       // a finished background job, so we don't add a user bubble or send images.
       // Echo id matches the persisted display `input_id` so hydrate does not remount.
       const echoId = String(requestSubmission.input_id || "").trim();
+      // Read before the echo lands: the echo is a user row too.
+      const hasPriorUserTurn = itemsRef.current.some(
+        (it) => it.kind === "msg" && it.msg.role === "user",
+      );
       setItems((p) => [...p, {
         kind: "msg",
         msg: optimisticUserEchoMsg({
@@ -3250,6 +3240,7 @@ export default function Conversation({
           images: imgsToSend,
           documents: documentChips(submission.documents ?? attachedDocuments),
           id: echoId,
+          model: config?.driver || undefined,
         }),
       }]);
       pinnedToBottomRef.current = true;
@@ -3289,15 +3280,8 @@ export default function Conversation({
           });
         });
       });
-      const hasPriorUserTurn = itemsRef.current.some(
-        (it) => it.kind === "msg" && it.msg.role === "user",
-      );
       if (activeSessionId && msg.trim() && !hasPriorUserTurn) {
-        void renameDefaultSessionIfNeeded(
-          activeSessionId,
-          msg,
-          repoRoot || config?.repo,
-        );
+        refreshSessionRowsAfterFirstSend();
       }
     }
     setTurnOpen(true);
@@ -3782,33 +3766,21 @@ export default function Conversation({
             activeSessionId: activeSessionIdRef.current,
           })) return;
           setStatus("done");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactCompleteMessage(res.before_tokens, res.after_tokens),
-              }
-            }
-          ]);
+          setItems((p) => appendCompactResult(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            res,
+          ));
         })
         .catch((err) => {
           if (!shouldApplyCompactSettle({
             requestSessionId: compactSid,
             activeSessionId: activeSessionIdRef.current,
           })) return;
-          setStatus("error");
-          setItems((p) => [
-            ...p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
-            {
-              kind: "msg",
-              msg: {
-                role: "assistant",
-                text: formatCompactErrorMessage(err),
-              }
-            }
-          ]);
+          setStatus(compactFailureIsNoop(err) ? "done" : "error");
+          setItems((p) => appendCompactFailure(
+            p.filter((it) => !(it.kind === "thinking" && it.id === thinkingId)),
+            err,
+          ));
         });
       return;
     }
@@ -4373,33 +4345,15 @@ export default function Conversation({
     <main className="flex flex-col h-full min-w-0 bg-transparent" data-active-editor-tab={activeTab}>
       {/* Brand + idle share equal inset so they line up with the floating dock. */}
       <ConversationHeader
+        heading={sessionHeading}
         pillStatus={pillStatus}
         correlationId={
           pillStatus === "error" && operationalDiagnostic?.correlationId
             ? operationalDiagnostic.correlationId
             : undefined
         }
-        detail={
-          pillStatus === "error" && operationalDiagnostic
-            ? operationalDiagnostic.summary
-            : (
-              !transcriptStale && pillStatus !== "idle" && composerBusy
-                ? (
-                  busyProgress.label
-                    ? busyProgress.pill
-                    : derivePillBusyDetail({
-                      liveInvestigation,
-                      pillStatus,
-                      agentLoopOpen,
-                    })
-                )
-                : undefined
-            )
-        }
+        detail={pillStatus === "error" ? operationalDiagnostic?.summary : undefined}
         recoveryAction={recoveryAction}
-        onBusyDetailClick={() => {
-          openAgentBusyDetail(pillStatus, pendingJobIdsRef.current, openSwarmJob);
-        }}
       />
 
       <EditorTabStrip

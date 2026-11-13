@@ -1,7 +1,7 @@
 import { nativeActiveStatuses } from '../lib/localJobMetadata';
 import { METADATA_JOBS_FIELDS, useSharedJobMetadataFields, metadataJobs, isJobsListRow } from '../lib/jobMetadataContext';
 import { MetadataStatus } from './MetadataJobs';
-import { openAgentSwarmJob } from '../lib/agentLinks';
+import { useOpenSwarmJobRow } from '../lib/useOpenSwarmJob';
 import { jobDisplayTitle } from '../lib/jobDisplayTitle';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X } from "lucide-react";
@@ -14,7 +14,7 @@ import { pickFolder } from "../lib/transport";
 import { dispatchProjectSelected, dispatchProjectSwitching, panelOpacityClass } from "../lib/panelTransition";
 import { repoPathsEqual } from "../lib/pathNormalize";
 import { mapSessionSearchHits, type SessionSearchRow } from "../lib/sessionSearch";
-import { displaySessionListTitle } from "../lib/sessionTitle";
+import { displaySessionListTitle, SESSIONS_CHANGED_EVENT } from "../lib/sessionTitle";
 import { useSessionStateFeed } from "../lib/sessionStateFeed";
 import { readSWRCache, writeSWRCache, useStaleWhileRevalidate } from "../lib/useStaleWhileRevalidate";
 import {
@@ -100,7 +100,7 @@ import {
   remainingOpenAfterRemoveFromCache,
   type RunnerStatus,
 } from "./leftRailSessions";
-import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, type JobStatus } from "./leftRailPrimitives";
+import { Section, IconBtn, Empty, JobStatusIcon, RunnerStatusDot, SessionAge, type JobStatus } from "./leftRailPrimitives";
 
 export default function LeftRail({
   jobsRefresh,
@@ -115,6 +115,7 @@ export default function LeftRail({
   activeSessionId?: string | null;
 }) {
   const { state: metadata } = useSharedJobMetadataFields(RAIL_METADATA_FIELDS);
+  const openJobRow = useOpenSwarmJobRow();
   const [forkTarget, setForkTarget] = useState<Pick<Session, "id" | "title" | "forked_from"> | null>(null);
   const contextTrigger = useRef<HTMLElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -720,6 +721,13 @@ export default function LeftRail({
       else await revalidateWorkspace();
     }
   };
+
+  // A send named the session or a turn finished: refetch title, preview, age.
+  useEffect(() => {
+    const onSessionsChanged = () => { void revalidateSessions(); };
+    window.addEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+    return () => window.removeEventListener(SESSIONS_CHANGED_EVENT, onSessionsChanged);
+  }, [revalidateSessions]);
 
   useEffect(() => {
     const handleConfigChanged = () => {
@@ -1740,8 +1748,11 @@ export default function LeftRail({
                         <div className={`text-ui-12.5 truncate flex-1 ${isActive ? "text-txt font-semibold" : "text-muted"}`}>
                           {displaySessionListTitle(s.title, s.title_user)}
                         </div>
+                        <SessionAge updated={s.updated ?? s.created} />
                       </div>
-                      <div className="text-ui-10 text-faint truncate font-mono">{label}</div>
+                      <div className="text-ui-10 text-faint truncate">
+                        {s.preview || <span className="font-mono">{label}</span>}
+                      </div>
                     </button>
                   );
                 })}
@@ -1917,13 +1928,19 @@ export default function LeftRail({
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
                                 onContextMenu={(e) => handleContextMenu(e, s)}
-                                className={`relative flex-1 min-w-0 h-7 text-left rounded pl-6 pr-1.5 flex items-center text-ui-12 transition aria-disabled:opacity-60
+                                className={`relative flex-1 min-w-0 min-h-7 py-0.5 text-left rounded pl-6 pr-1.5 flex flex-col justify-center text-ui-12 transition aria-disabled:opacity-60
                                   ${s.active ? "text-txt font-medium" : "text-muted group-hover:text-txt"}
                                   ${switchingSessionId === s.id ? "opacity-70" : ""}`}>
                                 {switchingSessionId === s.id
                                   ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
                                   : null}
-                                <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
+                                  <SessionAge updated={s.updated ?? s.created} />
+                                </span>
+                                {s.preview ? (
+                                  <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
+                                ) : null}
                               </button>
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
@@ -2214,7 +2231,7 @@ export default function LeftRail({
                   return (
                     <div key={key} className="border-b border-edge/35 overflow-hidden min-w-0">
                       <button
-                        onClick={() => openAgentSwarmJob(j.id)}
+                        onClick={() => openJobRow(j)}
                         className="w-full min-w-0 h-7 flex items-center gap-1.5 px-1.5 text-left hover:bg-panel2/50 transition-colors focus:outline-none"
                       >
                         <JobStatusIcon status={st} />
@@ -2225,7 +2242,6 @@ export default function LeftRail({
                           {jobDisplayTitle(j)}
                         </span>
                       </button>
-                      {/* Selection opens Jobs rail PM embed via openAgentSwarmJob */}
 
                     </div>
                   );

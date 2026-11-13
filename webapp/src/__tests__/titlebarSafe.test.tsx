@@ -38,6 +38,24 @@ describe("titlebar-safe clearance", () => {
     expect(paddingLeftPx(banner)).toBeGreaterThan(MACOS_TRAFFIC_LIGHT_RIGHT_EDGE_PX);
   });
 
+  it("ConversationHeader shows the session title, project, and branch, not the turn state", () => {
+    render(
+      <ConversationHeader
+        pillStatus="investigating"
+        heading={{ title: "Fix the calc bug", project: "proj", branch: "master" }}
+      />,
+    );
+    expect(screen.getByTestId("header-session-title").textContent).toBe("Fix the calc bug");
+    expect(screen.getByTestId("header-project").textContent).toBe("proj");
+    expect(screen.getByTestId("header-branch").textContent).toBe("master");
+    expect(screen.queryByText(/Investigating|Still working|Done/)).toBeNull();
+  });
+
+  it("ConversationHeader keeps the error pill", () => {
+    render(<ConversationHeader pillStatus="error" detail="Provider key rejected" />);
+    expect(screen.getByText("Error")).toBeInTheDocument();
+  });
+
   it("ConversationHeader does not advertise session cache in the brand strip", () => {
     render(<ConversationHeader pillStatus="done" />);
     expect(screen.queryByText(/Cache:/i)).toBeNull();

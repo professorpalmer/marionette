@@ -622,6 +622,7 @@ export function transcriptResponseToItems(res: {
             ...(m.is_plan === true || m.isPlan === true ? { isPlan: true } : {}),
             ...(role === "user" && images ? { images } : {}),
             ...(role === "user" && documents ? { documents } : {}),
+            ...(role === "user" && typeof m.model === "string" && m.model ? { model: m.model } : {}),
           }
         }];
       }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  aggregateExplorationSummary,
+  activityHeadline,
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
@@ -10,7 +10,6 @@ import {
   resolveSealedWorkMs,
   formatBusyElapsed,
   latchWaitingPhaseStartedAt,
-  exploringHeadline,
   liveActivityLine,
   partitionActivityRows,
   toolVerb,
@@ -227,37 +226,38 @@ describe("deriveBusyProgress", () => {
 
 describe("exploring headline / live line / exploration summary", () => {
   it("names the running tool with a progressive verb and its target", () => {
-    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "config.txt" })).toBe("Reading config.txt");
-    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "pytest -q" })).toBe("Running pytest -q");
-    expect(liveActivityLine({ runningKind: "web_fetch", runningGoal: "https://x.dev" })).toBe("Fetching https://x.dev");
+    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "config.txt" }).text).toBe("Reading config.txt");
+    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "pytest -q" }).text).toBe("Running pytest -q");
+    expect(liveActivityLine({ runningKind: "web_fetch", runningGoal: "https://x.dev" }).text).toBe("Fetching https://x.dev");
   });
 
   it("drops a goal that only restates the tool or is model junk", () => {
-    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "read file" })).toBe("Reading");
-    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "null | wc -l" })).toBe("Running");
+    expect(liveActivityLine({ runningKind: "read_file", runningGoal: "read file" }).text).toBe("Reading");
+    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "null | wc -l" }).text).toBe("Running");
   });
 
-  it("says Thinking during live reasoning and Planning next moves in a quiet gap", () => {
-    expect(liveActivityLine({ liveThinking: true })).toBe("Thinking");
-    expect(liveActivityLine({})).toBe("Planning next moves");
+  it("names the model in a quiet gap and marks both model lines as timed waits", () => {
+    expect(liveActivityLine({ liveThinking: true })).toEqual({ text: "Thinking", modelWait: true });
+    expect(liveActivityLine({ modelLabel: "openrouter:deepseek/deepseek-v4.1-flash" })).toEqual({
+      text: "Waiting on deepseek-v4.1-flash…",
+      modelWait: true,
+    });
+    expect(liveActivityLine({})).toEqual({ text: "Waiting on provider…", modelWait: true });
+    expect(liveActivityLine({ runningKind: "run_command", runningGoal: "ls" }).modelWait).toBe(false);
   });
 
-  it("reads Exploring while live and Explored when done", () => {
-    expect(exploringHeadline("2 files, 1 search", true)).toBe("Exploring 2 files, 1 search");
-    expect(exploringHeadline("3 files, 1 search", false)).toBe("Explored 3 files, 1 search");
-    expect(exploringHeadline("", false)).toBe("Explored");
-  });
-
-  it("buckets kinds Cursor-style", () => {
+  it("gives the fold headline the verb of what the fold holds", () => {
+    const step = (kind: string, target?: string) => ({ kind, target });
+    expect(activityHeadline([step("read_file"), step("read_file"), step("grep")], true)).toBe("Exploring 2 files, 1 search");
+    expect(activityHeadline([step("read_file"), step("read_file"), step("read_file"), step("grep")], false)).toBe("Explored 3 files, 1 search");
+    expect(activityHeadline([step("edit_file", "src/a.py")], true)).toBe("Editing 1 file");
+    expect(activityHeadline([step("edit_file", "src/a.py"), step("edit_file", "src/a.py")], false)).toBe("Edited 1 file");
+    expect(activityHeadline([step("run_command"), step("run_command")], false)).toBe("Ran 2 commands");
     expect(
-      aggregateExplorationSummary([
-        "read_file",
-        "read_file",
-        "read_file",
-        "grep",
-        "run_command",
-      ]),
-    ).toBe("3 files, 1 search, ran 1 command");
+      activityHeadline([step("read_file"), step("grep"), step("edit_file", "a"), step("edit_file", "b"), step("run_command")], false),
+    ).toBe("Explored 1 file, 1 search, edited 2 files, ran 1 command");
+    expect(activityHeadline([step("read_file"), step("run_command")], true)).toBe("Explored 1 file, running 1 command");
+    expect(activityHeadline([], false)).toBe("Explored");
   });
 
   it("gives each tool a past verb for its row and a live verb for the wheel line", () => {

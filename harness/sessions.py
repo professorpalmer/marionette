@@ -33,6 +33,10 @@ from .paths import same_workspace_path
 # Cap bytes read from a transcript when building list previews (OMP-style
 # cheap listing — avoid hydrating multi-MB histories for the sidebar).
 _PREVIEW_READ_BYTES = 8192
+# Transcripts up to this size are parsed whole, so the preview is the last
+# assistant answer. Larger ones fall back to a prefix scan for the first
+# prompt. Results are cached per mtime, so each file parses once per change.
+_PREVIEW_PARSE_BYTES = 2 * 1024 * 1024
 _USER_CONTENT_RE = re.compile(
     r'"role"\s*:\s*"user"\s*,\s*"content"\s*:\s*"((?:\\.|[^"\\])*)"',
     re.DOTALL,
@@ -160,6 +164,23 @@ def _open_title(row: dict) -> str:
     except (seal.SealLocked, seal.SealError):
         pass
     return SEALED_TITLE
+
+
+def _is_default_title(row: dict) -> bool:
+    """True while a session still has a placeholder title.
+
+    Open Folder names a new session after its folder. That name is a
+    placeholder too, so the first prompt still names the session. A title
+    the user typed is never a placeholder.
+    """
+    if row.get("title_user"):
+        return False
+    current = str(row.get("title") or "").strip()
+    if not current or current == "New session":
+        return True
+    root = str(row.get("workspace_root") or row.get("repo") or "").strip()
+    folder = os.path.basename(os.path.abspath(root)) if root else ""
+    return current in (folder, "Workspace")
 
 
 def _disk_row(row: dict) -> dict:
@@ -636,8 +657,7 @@ class SessionStore:
         with self._lock:
             for s in self._sessions:
                 if s["id"] == sid:
-                    current = s.get("title", "")
-                    if not current or current == "New session":
+                    if _is_default_title(s):
                         s["title"] = cleaned
                         _seal_title(s)
                         self._save()
@@ -889,7 +909,10 @@ def derive_title(prompt: str) -> str:
     for line in lines:
         cleaned = re.sub(r'```[a-zA-Z0-9_\-+]*', '', line)
         cleaned = re.sub(r'`', '', cleaned)
-        cleaned = re.sub(r'[*_~#\-+>]', '', cleaned)
+        # Markdown markers only: a heading, quote or list lead, and emphasis
+        # at word edges. Marks inside a word stay (test_calc.py, re-run).
+        cleaned = re.sub(r'^\s*(?:[#>]+|[-+*]|\d+[.)])\s+', '', cleaned)
+        cleaned = re.sub(r'(?<!\w)[*_~]+|[*_~]+(?!\w)', '', cleaned)
         cleaned = ' '.join(cleaned.split())
         if cleaned:
             first_line = cleaned
@@ -1197,7 +1220,7 @@ def transcript_preview(
         if is_sealed_file(path):
             # No prefix scan of ciphertext: open the whole file (cached by mtime).
             text = _preview_from_messages(read_json(path, safe_sid, "transcript"), cap)
-        elif size <= _PREVIEW_READ_BYTES:
+        elif size <= _PREVIEW_PARSE_BYTES:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             text = _preview_from_messages(data, cap)
@@ -1223,12 +1246,21 @@ def attach_session_previews(
     *,
     max_chars: int = 120,
 ) -> None:
-    """Mutate session list rows with a ``preview`` field (empty string ok)."""
+    """Mutate session list rows with ``preview`` (empty string ok) and
+    ``updated`` (transcript mtime in epoch seconds, else ``created``)."""
     if not state_dir or not rows:
         return
     for row in rows:
         sid = str(row.get("id") or "")
+        row["updated"] = float(row.get("created") or 0.0)
         if not sid:
             row["preview"] = ""
             continue
         row["preview"] = transcript_preview(state_dir, sid, max_chars=max_chars)
+        safe_sid = "".join(c for c in sid if c.isalnum() or c in ("-", "_"))
+        try:
+            row["updated"] = os.path.getmtime(
+                os.path.join(state_dir, "transcripts", f"{safe_sid}.json")
+            )
+        except OSError:
+            pass

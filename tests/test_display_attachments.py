@@ -55,9 +55,17 @@ def test_sent_message_row_lists_its_attachments(session):  # noqa: F811
 
 
 def test_rows_without_a_receipt_stay_plain(session):  # noqa: F811
-    assert user_display_row(session, "hello", None) == {"type": "message", "role": "user", "text": "hello"}
+    model = session.config.driver
+    assert user_display_row(session, "hello", None) == {
+        "type": "message", "role": "user", "text": "hello", "model": model}
     assert user_display_row(session, "hello", "missing-id") == {
-        "type": "message", "role": "user", "text": "hello", "input_id": "missing-id"}
+        "type": "message", "role": "user", "text": "hello", "input_id": "missing-id", "model": model}
+
+
+def test_user_rows_record_the_model_and_steers_do_not(session):  # noqa: F811
+    session.config.driver = "openrouter:deepseek/deepseek-v4.1-flash"
+    assert user_display_row(session, "hello", None)["model"] == "openrouter:deepseek/deepseek-v4.1-flash"
+    assert "model" not in user_display_row(session, "also this", None, steer=True)
 
 
 def test_strip_images_removes_image_attachments_from_rows(session):  # noqa: F811

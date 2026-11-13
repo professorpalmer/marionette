@@ -63,7 +63,11 @@ it('opens the Jobs rail PM embed on hire click (no inline artifact expand)', asy
   await waitFor(() => expect(metadata.store.getSnapshot().view.kind).toBe('target'));
   await metadata.observe();
   fireEvent.click(await screen.findByRole('button', { name: /Artifact test job/ }));
-  expect(openAgentSwarmJob).toHaveBeenCalledWith('job_one');
+  // The row carries its view context, so the Jobs pane can place it.
+  expect(openAgentSwarmJob).toHaveBeenCalledWith(expect.objectContaining({
+    jobId: 'job_one',
+    context: expect.objectContaining({ repo: expect.any(String), session_id: expect.any(String) }),
+  }));
   expect(screen.queryByText('Loading artifacts...')).toBeNull();
   expect(screen.queryByText('No artifacts recorded')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Retry', exact: true })).toBeNull();

@@ -23,6 +23,7 @@ import {
   type TaskProfileChip,
 } from "../lib/taskProfileChrome";
 import { toastDurationMs } from "../lib/harnessToast";
+import { useActivitySource } from "../lib/appActivity";
 import { isDesktop } from "../lib/transport";
 import {
   knownRunnerState,
@@ -38,12 +39,6 @@ import { shortPilotModelLabel } from "../lib/turnProgress";
 import type { UpdateAvailability } from "./UpdateBanner";
 
 type FooterRuntimeStatus = "ready" | "thinking" | "busy";
-
-// The label keeps the widest label's width (a zero-height generated copy), so
-// Idle <-> Thinking… does not move the branch, depth chip and usage beside it.
-const WIDEST_STATUS_LABEL = "Thinking…";
-const STATUS_LABEL_CLASS =
-  "status-bar-optional-sm inline-flex flex-col after:invisible after:h-0 after:overflow-hidden after:content-[attr(data-widest)]";
 
 /** Mirror Conversation/LeftRail: pilot state + active-view runner liveness. */
 export function deriveFooterRuntimeStatus(
@@ -82,7 +77,15 @@ export function seedSessionState(
   };
 }
 
-/** Visible footer label — never paint raw FooterRuntimeStatus enums. */
+/**
+ * Footer state with the open chat turn: a turn that shows Stop is never
+ * "ready", whatever the runner feed last said.
+ */
+export function footerStatusWithTurn(feed: FooterRuntimeStatus, turnBusy: boolean): FooterRuntimeStatus {
+  return turnBusy && feed === "ready" ? "thinking" : feed;
+}
+
+/** Footer label (hover and screen readers) — never paint raw FooterRuntimeStatus enums. */
 export function footerRuntimeStatusLabel(status: FooterRuntimeStatus): string {
   if (status === "thinking") return "Thinking…";
   if (status === "busy") return "Busy";
@@ -290,7 +293,8 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
     };
   }, [repo]);
 
-  const runtimeStatus = deriveFooterRuntimeStatus(sessionState);
+  const turnBusy = useActivitySource("turn");
+  const runtimeStatus = footerStatusWithTurn(deriveFooterRuntimeStatus(sessionState), turnBusy);
   const runtimeReady = runtimeStatus === "ready";
   const sessionGoal = sessionGoalForChip(sessionState?.goal);
   const usageBusy = runtimeStatus === "busy" || runtimeStatus === "thinking";
@@ -355,22 +359,23 @@ export default function StatusBar({ config, update, leftOpen, rightOpen, onToggl
       <button onClick={onToggleRight} title="Toggle floating panels (Ctrl/Cmd+J)"
         className={`p-0.5 rounded hover:bg-panel2 shrink-0 ${rightOpen ? "text-txt" : "text-muted"}`}><PanelRight size={12} /></button>
       <span className="w-px h-3 bg-edge shrink-0" />
-      {statePending ? (
-        <span className="flex items-center gap-1 shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
+      {/* A dot only: the transcript live line says what the turn does. */}
+      {statePending && !turnBusy ? (
+        <span className="flex items-center shrink-0 text-faint" title="Loading session state" data-runtime-status="pending">
           <Circle size={7} className="text-faint" />
-          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>…</span>
+          <span className="sr-only">Loading</span>
         </span>
       ) : (
         <span
-          className={`flex items-center gap-1 shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
-          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Session runner active"}
+          className={`flex items-center shrink-0 ${runtimeReady ? "text-good" : "text-accent"}`}
+          title={runtimeReady ? "Idle" : runtimeStatus === "busy" ? "Swarm or background work in progress" : "Working"}
           data-runtime-status={runtimeStatus}
         >
           <Circle
             size={7}
             className={runtimeReady ? "fill-good text-good" : "fill-accent text-accent animate-pulse"}
           />
-          <span className={STATUS_LABEL_CLASS} data-widest={WIDEST_STATUS_LABEL}>{footerRuntimeStatusLabel(runtimeStatus)}</span>
+          <span className="sr-only">{footerRuntimeStatusLabel(runtimeStatus)}</span>
         </span>
       )}
       {branch && <span className="status-bar-optional-sm flex items-center gap-1"><GitBranch size={10} />{branch}</span>}

@@ -4,7 +4,12 @@ import { useEffect, useLayoutEffect, useRef, useState, useCallback, useSyncExter
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
 import { measureAfterCommit } from "../lib/virtualRowMeasure";
 import { visibleCommand } from "../lib/visibleCommand";
-import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText } from "lucide-react";
+import { ChevronRight, Loader2, ChevronDown, ChevronUp, Play, Copy, Check, Pencil, RefreshCw, History, Share2, CheckCircle2, XCircle, Eye, Shield, FileText, AlertTriangle, Minimize2, Repeat } from "lucide-react";
+import { EditDiffCounts, EditDiffPatch, parseEditDiff } from "./conversation/EditDiff";
+import { SwarmWorkerRows } from "./conversation/SwarmWorkerRows";
+import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
+import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
+import { commandRisk } from "../lib/commandRisk";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -45,11 +50,10 @@ import { splitMarkdownBlocks, splitStreamingMarkdown } from "../lib/streamMarkdo
 import { rehypeStreamCaret, STREAM_CARET_CLASS } from "../lib/streamCaret";
 import {
   activityWorkDurationMs,
-  aggregateExplorationSummary,
+  activityHeadline,
   cardEffectivelyRunning,
   cardHasDurableJob,
   deriveBusyProgress,
-  exploringHeadline,
   joinThoughtFoldText,
   liveActivityLine,
   partitionActivityRows,
@@ -70,6 +74,8 @@ import {
   turnSpanMs,
   maxKnown,
   headlineFocusCard,
+  formatBusyElapsed,
+  shortPilotModelLabel,
 } from "../lib/turnProgress";
 import { isAgentLoopOpen } from "./conversation/runnersBusy";
 import {
@@ -128,6 +134,9 @@ import {
   vaultCiteChipLabel,
 } from "./conversation/streamApply";
 
+/** Divider before the first user turn that runs on a different pilot model. */
+export type ModelSwitchItem = { kind: "model_switch"; from: string; to: string };
+
 /** Mid-turn steer/interrupt row; carries the attachments it was sent with. */
 export type SteerItem = {
   kind: "steer";
@@ -141,6 +150,8 @@ export type Msg = {
   role: "user" | "assistant";
   text: string;
   /** Durable identity — optimistic echo and persist hydrate share this. */
+  /** Pilot model spec a user turn ran on (server stamps it on the row). */
+  model?: string;
   id?: string;
   isPlan?: boolean;
   images?: { path: string; name: string; previewUrl: string }[];
@@ -203,7 +214,9 @@ export type Card = {
              /** Full spilled output length in characters (when known). */
              output_chars?: number;
              /** Bounded preview when spilled or truncated. */
-             output_preview?: string };
+             output_preview?: string;
+             /** Line diff of a file write; parse with parseEditDiff. */
+             diff?: unknown };
 };
 /**
  * Inline swarm status pill lifecycle (running spinner vs terminal chips).
@@ -346,6 +359,8 @@ export type Item =
 
 export type GroupedItem =
   | { kind: "msg"; msg: Msg }
+  | ModelSwitchItem
+  | TurnChangesItem
   | { kind: "thinking"; text: string; streaming?: boolean; id?: string; stream_id?: string; duration_ms?: number | null; started_at_ms?: number }
   | SwarmPendingItem
   | SwarmResultItem
@@ -458,59 +473,43 @@ function CompactionReceipt({
   it: Extract<Item, { kind: "compaction" }>;
   fold?: boolean;
 }) {
-  const [openHandle, setOpenHandle] = useState<string | null>(null);
   const chrome = compactionRowChrome(it);
-  const counts = !it.aborted ? compactionKeptDroppedLine(it.kept, it.dropped) : undefined;
   const handles = it.handles || [];
-  const story = it.story || [];
-  const pillClass = fold
-    ? "flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono"
-    : `flex items-center gap-1.5 py-1 px-3 rounded-full w-fit select-none font-mono text-ui-10.5 ${
-        it.aborted
-          ? "bg-warn/10 border border-warn/25 text-warn/90"
-          : "bg-panel2/10 border border-edge/10 text-faint"
-      }`;
-  return (
-    <div className={fold ? undefined : "flex flex-col gap-0.5 my-1"}>
-      <div
-        role={fold ? undefined : "status"}
-        title={chrome.title}
-        className={pillClass}
-      >
-        <span>{chrome.label}</span>
+  if (fold) {
+    return (
+      <div>
+        <div title={chrome.title} className="flex items-center gap-1.5 py-0.5 text-ui-10 text-faint/80 select-none font-mono">
+          <span>{chrome.label}</span>
+        </div>
+        {handles.length > 0 ? (
+          <span className="text-ui-10 text-faint/70 font-mono" title={handles.join(" · ")}>
+            {handles.length} handle{handles.length === 1 ? "" : "s"}
+          </span>
+        ) : null}
       </div>
-      {!fold && counts ? (
-        <div className="text-ui-10.5 text-faint font-mono px-3">{counts}</div>
-      ) : null}
-      {handles.length > 0 && !fold ? (
-        <div className="flex flex-wrap gap-1 px-3">
-          {handles.map((handle) => (
-            <button
-              type="button"
-              key={handle}
-              title={handle}
-              onClick={() => setOpenHandle((cur) => (cur === handle ? null : handle))}
-              className="text-ui-10.5 text-faint font-mono bg-transparent border-0 p-0 cursor-pointer hover:underline underline-offset-2"
-            >
-              {handle}
-            </button>
-          ))}
+    );
+  }
+  const counts = !it.aborted ? compactionKeptDroppedLine(it.kept, it.dropped) : undefined;
+  const story = it.story || [];
+  const hasSummary = Boolean(counts) || handles.length > 0 || story.length > 0;
+  const shrank = !it.aborted && it.before_tokens > 0 && it.after_tokens >= 0;
+  return (
+    <SystemEventRow
+      testId="compaction-event"
+      icon={it.aborted ? AlertTriangle : Minimize2}
+      tone={it.aborted ? "warn" : "quiet"}
+      label={chrome.label}
+      detail={shrank ? `${compactTokens(it.before_tokens)} to ${compactTokens(it.after_tokens)} tokens` : undefined}
+      title={chrome.title}
+      moreLabel={hasSummary ? "View summary" : undefined}
+      more={hasSummary ? (
+        <div className="flex flex-col gap-1 font-mono break-words" data-testid="compaction-summary">
+          {counts ? <div>{counts}</div> : null}
+          {handles.length > 0 ? <div className="text-faint/90">{handles.join(" · ")}</div> : null}
+          {story.map((line) => <div key={line}>{line}</div>)}
         </div>
-      ) : null}
-      {handles.length > 0 && fold ? (
-        <span className="text-ui-10 text-faint/70 font-mono" title={handles.join(" · ")}>
-          {handles.length} handle{handles.length === 1 ? "" : "s"}
-        </span>
-      ) : null}
-      {openHandle && !fold ? (
-        <div className="text-ui-10.5 text-faint font-mono px-3 whitespace-pre-wrap break-all">
-          <div>{openHandle}</div>
-          {story.map((line) => (
-            <div key={line}>{line}</div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+      ) : undefined}
+    />
   );
 }
 
@@ -814,6 +813,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
           ? item
           : { ...item, job_ids: uncoveredJobIds },
       );
+    } else if (item.kind === "compaction") {
+      // A system event: one divider row, never folded into the tool strip.
+      flush();
+      grouped.push(item);
     } else if (isActivityTelemetry(item)) {
       pushActivity(item);
     } else if (
@@ -861,11 +864,17 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
   const out: GroupedItem[] = [];
   let run: TurnWorkRow[] = [];
   let heldFinal: GroupedItem | null = null;
+  // A steer (a user message sent while the turn worked) and a compaction
+  // divider must not split the turn's one Worked for fold, and must stay
+  // visible, so they paint after the fold and before the final answer.
+  let heldEvents: GroupedItem[] = [];
   const closeRun = () => {
     const groups = run.filter((row) => row.kind === "activity_group").length;
     if (groups > 0 && run.length >= 2) out.push({ kind: "turn_work", rows: run });
     else out.push(...run);
     run = [];
+    out.push(...heldEvents);
+    heldEvents = [];
     if (heldFinal) {
       out.push(heldFinal);
       heldFinal = null;
@@ -884,6 +893,10 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
       run.push({ kind: "msg", msg: row.msg });
       return;
     }
+    if ((row.kind === "steer" || row.kind === "compaction") && !unfinished) {
+      heldEvents.push(row);
+      return;
+    }
     closeRun();
     out.push(row);
   });
@@ -892,12 +905,73 @@ function wrapTurnSpan(span: GroupedItem[]): GroupedItem[] {
 }
 
 /**
- * Wrap each finished turn in its Worked for fold. The live turn (the span
- * after the last user message while the agent loop is open) stays in stream
- * order: prose, Explored group, prose, Exploring group.
+ * Insert a model-switch divider before each user turn whose pilot model
+ * differs from the turn before it. Turns without a recorded model keep the
+ * last known one.
+ */
+export function insertModelSwitches(grouped: GroupedItem[]): GroupedItem[] {
+  let last = "";
+  const out: GroupedItem[] = [];
+  for (const row of grouped) {
+    if (row.kind === "msg" && row.msg.role === "user" && row.msg.model) {
+      const model = row.msg.model;
+      if (last && model !== last) out.push({ kind: "model_switch", from: last, to: model });
+      last = model;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+const FILE_WRITE_KINDS = new Set(["write_file", "edit_file", "hash_edit"]);
+
+/** The `+++ b/<path>` header of a unified patch. */
+function patchTargetPath(patch: string): string {
+  const m = /^\+\+\+ b\/(.+)$/m.exec(patch);
+  return m ? m[1] : "";
+}
+
+/**
+ * Files the turn's agent file writes changed, with summed line counts, and
+ * the turn's first restore point (taken before its first write). Null when
+ * the turn wrote no file with a diff receipt.
+ */
+export function turnChanges(span: GroupedItem[]): TurnChangesItem | null {
+  const files = new Map<string, TurnChangedFile>();
+  let checkpointId: string | null = null;
+  for (const row of span) {
+    if (row.kind !== "activity_group") continue;
+    for (const it of row.items) {
+      if (it.kind === "checkpoint") {
+        if (checkpointId === null && it.id) checkpointId = it.id;
+        continue;
+      }
+      if (it.kind !== "card" || !FILE_WRITE_KINDS.has(it.card.kind || "") || it.card.result?.error) continue;
+      const diff = parseEditDiff(it.card.result?.diff);
+      if (!diff) continue;
+      const path = patchTargetPath(diff.patch) || it.card.goal;
+      const prev = files.get(path);
+      files.set(path, {
+        path,
+        added: (prev?.added ?? 0) + diff.added,
+        removed: (prev?.removed ?? 0) + diff.removed,
+      });
+    }
+  }
+  if (files.size === 0) return null;
+  return { kind: "turn_changes", files: [...files.values()], checkpointId, canUndo: false };
+}
+
+/**
+ * Wrap each finished turn in its Worked for fold, and close a turn that
+ * wrote files with its changed-files footer. The live turn (the span after
+ * the last user message while the agent loop is open) stays in stream
+ * order: prose, Explored group, prose, Exploring group. Only the newest
+ * footer offers Undo, and only while no turn is open.
  */
 export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): GroupedItem[] {
   const out: GroupedItem[] = [];
+  let lastChanges = -1;
   let i = 0;
   while (i < grouped.length) {
     if (isUserRow(grouped[i])) {
@@ -909,9 +983,18 @@ export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): 
     while (j < grouped.length && !isUserRow(grouped[j])) j += 1;
     const span = grouped.slice(i, j);
     if (j === grouped.length && liveTurnOpen) out.push(...span);
-    else out.push(...wrapTurnSpan(span));
+    else {
+      out.push(...wrapTurnSpan(span));
+      const changes = turnChanges(span);
+      if (changes) {
+        lastChanges = out.length;
+        out.push(changes);
+      }
+    }
     i = j;
   }
+  const newest = out[lastChanges];
+  if (!liveTurnOpen && newest?.kind === "turn_changes") out[lastChanges] = { ...newest, canUndo: true };
   return out;
 }
 
@@ -1255,6 +1338,10 @@ export function stableItemKey(it: GroupedItem, i: number): string {
       return `auth-${it.id || i}`;
     case "steer":
       return `steer-${i}`;
+    case "model_switch":
+      return `model-switch-${i}-${it.to}`;
+    case "turn_changes":
+      return `turn-changes-${it.checkpointId || i}`;
     case "turn_terminal":
       return it.id ? `turn-term-${it.id}` : `turn-term-${i}-${it.cause}-${it.state}`;
     case "quality_gate":
@@ -1684,7 +1771,7 @@ export const TranscriptList = memo(function TranscriptList({
     const intermediate = collectIntermediateAssistantItems(items, agentLoopOpen);
     return {
       intermediateItems: intermediate,
-      grouped: wrapSealedTurns(groupAgentActivity(items, intermediate), agentLoopOpen),
+      grouped: insertModelSwitches(wrapSealedTurns(groupAgentActivity(items, intermediate), agentLoopOpen)),
     };
   }, [items, agentLoopOpen]);
   const viewportKeys = useMemo(() => transcriptViewportKeys(grouped), [grouped]);
@@ -2213,6 +2300,19 @@ export const TranscriptList = memo(function TranscriptList({
       return <CompactionReceipt key={key} it={it} />;
     } else if (it.kind === "steer") {
       return <SteerNote key={key} item={it} onImageClick={onImageClick} />;
+    } else if (it.kind === "turn_changes") {
+      return <TurnChangesFooter key={key} item={it} />;
+    } else if (it.kind === "model_switch") {
+      return (
+        <SystemEventRow
+          key={key}
+          testId="model-switch-event"
+          icon={Repeat}
+          label="Model switched"
+          detail={`${shortPilotModelLabel(it.from)} to ${shortPilotModelLabel(it.to)}`}
+          title={`${it.from} → ${it.to}`}
+        />
+      );
     } else if (it.kind === "quality_gate") {
       const gate = qualityGatePresentation(it);
       const toneClass =
@@ -2317,6 +2417,7 @@ export const TranscriptList = memo(function TranscriptList({
           busyElapsedMs={i === liveFoldIdx ? busyElapsedMs : null}
           sealedTitle={inLiveTurn ? "explored" : "worked"}
           rememberedTurnMs={rememberedTurnMs(canon)}
+          modelLabel={i === liveFoldIdx ? modelLabel : null}
           onToggleCard={(card) => onSetCard(card.id, { open: !card.open })}
         />
       );
@@ -2614,6 +2715,7 @@ function ActivityGroup({
   busyElapsedMs: busyElapsedMsProp,
   sealedTitle: sealedTitleProp,
   rememberedTurnMs: rememberedTurnMsProp,
+  modelLabel: modelLabelProp,
 }: {
   items: ActivityItem[];
   onToggleCard: (card: Card) => void;
@@ -2637,7 +2739,10 @@ function ActivityGroup({
   sealedTitle?: "worked" | "explored";
   /** The turn's remembered busy clock, for a group that is the whole turn. */
   rememberedTurnMs?: number | null;
+  /** Pilot model the live line names while the turn waits on it. */
+  modelLabel?: string | null;
 }) {
+  const modelLabel = modelLabelProp ?? "";
   const sealedTitle = sealedTitleProp ?? "worked";
   const rememberedTurnMs = rememberedTurnMsProp ?? null;
   const loopOpen = loopOpenProp ?? false;
@@ -2649,6 +2754,13 @@ function ActivityGroup({
   // opens the fold when they want the step list. Seed from the module map so
   // a remount does not yank an explicit toggle mid-stream.
   const swarmPendingItems = items.filter((it) => it.kind === "swarm_pending");
+  const runningSwarmKeys = swarmPendingItems
+    .filter((it) => {
+      const status = it.status || (it.resolved ? "done" : "running");
+      return status === "running" || status === "waiting";
+    })
+    .map((it) => String(it.job_ids?.[0] || "").trim())
+    .filter(Boolean);
   const swarmPendingRunning = swarmPendingItems.some((it) => {
     const status = it.status || (it.resolved ? "done" : "running");
     return status === "running";
@@ -2740,12 +2852,12 @@ function ActivityGroup({
         : "");
 
   // Cursor-style kind buckets ("3 files, 1 search") for Explored / Investigating.
-  const kindSummary = aggregateExplorationSummary([
-    ...cards.map((c) => c.card.kind || "action"),
-    ...nestedRows.map((a) => a.kind || "action"),
-  ]);
-  const stepHeadline = actionCount > 0 ? exploringHeadline(kindSummary, true) : "Thinking";
-  const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking });
+  const headlineSteps = [
+    ...cards.map((c) => ({ kind: c.card.kind || "action", target: resolveCardCliInput(c.card) })),
+    ...nestedRows.map((a) => ({ kind: a.kind || "action", target: a.goal })),
+  ];
+  const stepHeadline = actionCount > 0 ? activityHeadline(headlineSteps, true) : "Thinking";
+  const liveLine = liveActivityLine({ runningKind, runningGoal, liveThinking, modelLabel });
   // The live line under the fold shows the newest step. Its row joins the
   // list only when the next step replaces it, so no step paints twice.
   const liveLineShown = investigating && actionCount > 0;
@@ -2832,7 +2944,7 @@ function ActivityGroup({
           aria-label={`restore point created: ${it.label}`}
         >
           <History size={10} className="text-faint/70" aria-hidden />
-          <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
+          <span title={it.id}>Restore point · {it.label}</span>
         </div>
       );
     }
@@ -2867,6 +2979,7 @@ function ActivityGroup({
           jobIds={it.job_ids || []}
           objective={it.objective || ""}
           status={it.status || (it.resolved ? "done" : "running")}
+          hasResultCard={swarmResults.length > 0}
         />
       );
     }
@@ -2951,7 +3064,7 @@ function ActivityGroup({
     }
     if (!isLiveFold && durableJobRunning) return "job still running";
     if (sealedTitle === "explored" && (actionCount > 0 || thinkingItems.length > 0)) {
-      return actionCount > 0 ? exploringHeadline(kindSummary, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
+      return actionCount > 0 ? activityHeadline(headlineSteps, false) : thoughtFoldLabel({ durationMs: activityWorkDurationMs(items) });
     }
     // Sealed turn: Cursor-style Worked for {duration} — not Explored counts.
     if (actionCount > 0 || thinkingItems.length > 0 || swarmResults.length > 0 || swarmPendingItems.length > 0) {
@@ -3102,8 +3215,12 @@ function ActivityGroup({
         </div>
       )}
       {liveLineShown ? (
-        <LiveActivityLine text={liveLine} onOpen={liveLineOpen} />
+        <LiveActivityLine text={liveLine.text} timed={liveLine.modelWait} onOpen={liveLineOpen} />
       ) : null}
+      {/* A closed live fold still shows the workers of its running swarm. */}
+      {investigating && !open
+        ? runningSwarmKeys.map((key) => <SwarmWorkerRows key={key} swarmKey={key} running />)
+        : null}
     </div>
   );
 }
@@ -3111,7 +3228,7 @@ function ActivityGroup({
 /** The verb of fold chrome paints brighter than its counts or duration. */
 function splitFoldLabel(label: string): [string, string] {
   const text = String(label || "").trim();
-  const lead = /^(Worked for|Exploring|Explored|Thought)\s+/.exec(text);
+  const lead = /^(Worked for|Exploring|Explored|Editing|Edited|Running|Ran|Thought)\s+/.exec(text);
   return lead ? [lead[1], text.slice(lead[0].length)] : [text, ""];
 }
 
@@ -3162,16 +3279,17 @@ function FoldHeader({
  * below while the old one rolls up and out (the wheel), and the live text
  * shimmers. Reduced motion shows the swap without movement (index.css).
  */
-function LiveActivityLine({ text, onOpen }: { text: string; onOpen?: () => void }) {
-  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean }>(
-    () => ({ current: text, previous: null, turn: 0, swapping: false }),
+function LiveActivityLine({ text, timed = false, onOpen }: { text: string; timed?: boolean; onOpen?: () => void }) {
+  const [lines, setLines] = useState<{ current: string; previous: string | null; turn: number; swapping: boolean; since: number }>(
+    () => ({ current: text, previous: null, turn: 0, swapping: false, since: Date.now() }),
   );
+  const elapsed = useLineElapsed(timed, lines.since);
   if (lines.current !== text) {
     // An unfocused window pauses every animation (html.app-idle in index.css).
     // A swap paused at its first frame sits below the box at opacity 0, so
     // the live line looked empty. Unfocused, swap at once without motion.
     const animate = !document.documentElement.classList.contains("app-idle");
-    setLines({ current: text, previous: animate ? lines.current : null, turn: lines.turn + 1, swapping: animate });
+    setLines({ current: text, previous: animate ? lines.current : null, turn: lines.turn + 1, swapping: animate, since: Date.now() });
   }
   useEffect(() => {
     if (!lines.swapping) return;
@@ -3204,10 +3322,31 @@ function LiveActivityLine({ text, onOpen }: { text: string; onOpen?: () => void 
             {lines.current}
           </button>
         ) : lines.current}
+        {elapsed ? <span className="tabular-nums" data-testid="live-activity-elapsed"> · {elapsed}</span> : null}
       </span>
     </div>
   );
 }
+
+/**
+ * Seconds a model wait line has shown, as "4s". The clock starts when the
+ * line text changes, so each wait counts from its own start.
+ */
+function useLineElapsed(timed: boolean, since: number): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!timed) return;
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [timed, since]);
+  if (!timed) return "";
+  const ms = now - since;
+  return ms >= 1000 ? formatBusyElapsed(ms) : "";
+}
+
+/** A write command's Run button waits this long for its confirm click. */
+const RUN_CONFIRM_MS = 4000;
 
 /** Drop the outgoing line just after the 200ms base swap in index.css ends. */
 const WHEEL_SWAP_MS = 220;
@@ -3926,6 +4065,11 @@ function ClampedProse({
   );
 }
 
+/** Tag under a mid-turn user message: why it is not a new turn. */
+function steerTagLabel(mode: SteerItem["mode"]): string {
+  return mode === "interrupt" ? "stopped the turn and sent" : "sent while working";
+}
+
 function SteerNote({
   item,
   onImageClick,
@@ -3933,19 +4077,24 @@ function SteerNote({
   item: SteerItem;
   onImageClick?: (url: string) => void;
 }) {
-  // The whole pill is selectable, like a user bubble, so a drag that starts on
-  // the label or padding still selects. The label is generated content: it
-  // stays out of copied text.
+  // A steer is a user message sent mid-turn: same bubble as a user message,
+  // with a small tag. The tag is generated content, so it stays out of
+  // copied text.
   return (
-    <div
-      data-testid="steer-note"
-      data-label={item.mode === "interrupt" ? "interrupt:" : "steer:"}
-      className="transcript-msg-body flex w-fit max-w-[85%] items-start gap-1.5 py-1 px-3 rounded-xl bg-panel2/15 border border-edge/20 text-ui-10.5 text-faint my-1 font-mono before:shrink-0 before:text-muted before:content-[attr(data-label)]"
-    >
-      <div className="min-w-0">
-        <ClampedProse text={item.text} fadeClassName="from-bg" />
+    <div className="flex flex-col items-end gap-0.5 my-1 w-full">
+      <div
+        data-testid="steer-note"
+        data-mode={item.mode === "interrupt" ? "interrupt" : "steer"}
+        className="transcript-msg-body select-text font-normal rounded-xl px-3 py-1 min-w-0 max-w-[85%] text-ui-13 leading-relaxed whitespace-pre-wrap break-words border bg-accent2 text-txt border-edge/30"
+      >
+        <ClampedProse text={item.text} fadeClassName="from-accent2" />
         <MessageAttachments images={item.images} documents={item.documents} onImageClick={onImageClick} />
       </div>
+      <span
+        data-testid="steer-tag"
+        data-label={steerTagLabel(item.mode)}
+        className="px-1 text-ui-10 text-faint select-none before:content-[attr(data-label)]"
+      />
     </div>
   );
 }
@@ -4195,6 +4344,7 @@ function ActionCard({
       ? card.result.output_chars
       : null;
   const hasExitCode = typeof card.result?.exit_code === "number";
+  const editDiff = parseEditDiff(card.result?.diff);
   const nonZeroExit = hasExitCode && card.result!.exit_code !== 0;
 
   // Hermes tool-row spec: monochrome. Success is SILENT (no glyph -- the row
@@ -4247,9 +4397,22 @@ function ActionCard({
     else if (linkKind === "spill") openAgentSpill(goalValue);
   };
 
+  // A command that deletes, moves, or writes needs a second click to run.
+  const runRisk = linkKind === "command" && goalValue ? commandRisk(goalValue) : "read";
+  const [confirmRun, setConfirmRun] = useState(false);
+  useEffect(() => {
+    if (!confirmRun) return;
+    const id = window.setTimeout(() => setConfirmRun(false), RUN_CONFIRM_MS);
+    return () => window.clearTimeout(id);
+  }, [confirmRun]);
   const onRunCommand = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (runRisk === "write" && !confirmRun) {
+      setConfirmRun(true);
+      return;
+    }
+    setConfirmRun(false);
     openAgentCommand(goalValue, { run: true });
   };
 
@@ -4313,6 +4476,7 @@ function ActionCard({
               {goalPreview}
             </button>
           ) : null}
+          {editDiff ? <EditDiffCounts added={editDiff.added} removed={editDiff.removed} /> : null}
           <ChevronRight
             size={11}
             aria-hidden
@@ -4320,16 +4484,24 @@ function ActionCard({
           />
         </div>
 
-        <div className="flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        <div className={`flex items-center gap-2 shrink-0 text-ui-10 text-faint/50 select-none tabular-nums ml-2 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${confirmRun ? "opacity-100" : "opacity-0"}`}>
           {linkKind === "command" && goalValue && (
             <button
               type="button"
               onClick={onRunCommand}
-              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-edge/35 hover:bg-panel2/40 hover:text-txt cursor-pointer bg-transparent text-ui-10 font-sans"
-              title="Run in terminal"
+              data-testid="command-run"
+              data-risk={runRisk}
+              className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded border cursor-pointer bg-transparent text-ui-10 font-sans ${
+                confirmRun
+                  ? "border-risk/50 text-risk hover:bg-risk/10"
+                  : "border-edge/35 hover:bg-panel2/40 hover:text-txt"
+              }`}
+              title={runRisk === "write"
+                ? "This command changes files, git state, or processes. Click, then confirm, to run it in the terminal."
+                : "Run in terminal"}
             >
-              <Play size={9} />
-              Run
+              {confirmRun ? <AlertTriangle size={9} aria-hidden /> : <Play size={9} aria-hidden />}
+              {confirmRun ? "Confirm run" : runRisk === "write" ? "Run…" : "Run"}
             </button>
           )}
           {meta && <span>{meta}</span>}
@@ -4426,6 +4598,7 @@ function ActionCard({
             </div>
           )}
           {card.cwd && <KV k="cwd" v={card.cwd} linkKind="workspace" />}
+          {editDiff?.patch ? <EditDiffPatch patch={editDiff.patch} truncated={editDiff.truncated} /> : null}
           {hasExitCode ? (
             <KV k="exit" v={String(card.result!.exit_code)} />
           ) : null}
@@ -4659,10 +4832,13 @@ function SwarmPendingPill({
   jobIds,
   objective,
   status,
+  hasResultCard = false,
 }: {
   jobIds: string[];
   objective: string;
   status: SwarmPendingStatus;
+  /** A result card beside the pill shows the workers of a finished swarm. */
+  hasResultCard?: boolean;
 }) {
   const truncatedObj = objective.length > 60 ? objective.slice(0, 60) + "..." : objective;
   const label = status === "failed"
@@ -4696,19 +4872,24 @@ function SwarmPendingPill({
         : status === "done"
           ? "bg-good/40"
           : "bg-faint/40";
+  const swarmKey = String(jobIds[0] || "").trim();
+  const running = status === "running" || status === "waiting";
   return (
-    <div
-      data-testid="swarm-pending-pill"
-      data-status={status}
-      className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}
-    >
-      {status === "running"
-        ? <Loader2 size={11} className="animate-spin text-accent" />
-        : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
-      <span className="inline-flex items-center gap-1 flex-wrap">
-        <span>{label}: {truncatedObj}</span>
-        <SwarmJobIdChips jobIds={jobIds} />
-      </span>
+    <div className="flex flex-col">
+      <div
+        data-testid="swarm-pending-pill"
+        data-status={status}
+        className={`flex items-center gap-1.5 py-1 px-3 rounded-full border text-ui-11 w-fit my-1 select-none ${shell}`}
+      >
+        {status === "running"
+          ? <Loader2 size={11} className="animate-spin text-accent" />
+          : <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />}
+        <span className="inline-flex items-center gap-1 flex-wrap">
+          <span>{label}: {truncatedObj}</span>
+          <SwarmJobIdChips jobIds={jobIds} />
+        </span>
+      </div>
+      {swarmKey && (running || !hasResultCard) ? <SwarmWorkerRows swarmKey={swarmKey} running={running} /> : null}
     </div>
   );
 }
@@ -4912,6 +5093,11 @@ function SwarmResultCard({ jobId, applied, files, summary, error, objective, cwd
           ? <ChevronDown size={12} className="text-faint shrink-0" />
           : <ChevronRight size={12} className="text-faint shrink-0" />)}
       </button>
+      {primaryJobId ? (
+        <div className="px-2.5">
+          <SwarmWorkerRows swarmKey={primaryJobId} running={false} />
+        </div>
+      ) : null}
 
       {open && hasBody && (
         <div className="px-2.5 pb-2 pt-1.5 border-t border-edge/30 flex flex-col gap-1.5">

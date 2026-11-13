@@ -30,6 +30,7 @@ from typing import Any, Dict, Iterator, Optional
 from pmharness.bridge import execute_intent
 from pmharness.drivers.base import known_assistant_phase
 
+from .edit_diff import edit_diff, read_text_for_diff
 from .goal_mode import reset_turn_goal_state
 from .repeat_tool_reminder import reset_repeat_chain
 from .runaway_guard import reset_runaway_state
@@ -2821,6 +2822,15 @@ def drain_idle_turn(
     return ("return", user_message)
 
 
+def _diff_field(before: Any, target_path: str, display_path: str) -> dict:
+    """``{"diff": ...}`` for an action_result, or ``{}``. Never raises."""
+    try:
+        diff = edit_diff(before, target_path, display_path)
+    except Exception:
+        diff = None
+    return {"diff": diff} if diff else {}
+
+
 def dispatch_readonly_action(
     session: Any,
     act: PilotAction,
@@ -3518,6 +3528,7 @@ def dispatch_local_action(
                 import sys
                 print(f"Checkpoint error before write_file: {cp_err}", file=sys.stderr)
 
+            diff_before = read_text_for_diff(target_path)
             ok, status, msg = session._do_write_file(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
@@ -3535,6 +3546,7 @@ def dispatch_local_action(
                 # the pre-write checkpoint SSE was skipped or failed.
                 "path": act.path,
                 "artifacts": [{"type": "file", "headline": f"Wrote {bytes_written} bytes to {act.path}"}],
+                **_diff_field(diff_before, target_path, act.path),
             })
             session._append_action_result(act, aid, f"(write_file {act.path} successfully wrote {bytes_written} bytes)", is_native)
             maybe_refresh_workspace_rules(session, act.path)
@@ -3592,6 +3604,7 @@ def dispatch_local_action(
                 import sys
                 print(f"Checkpoint error before edit_file: {cp_err}", file=sys.stderr)
 
+            diff_before = read_text_for_diff(target_path)
             ok, status, msg = session._do_edit_file(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
@@ -3607,6 +3620,7 @@ def dispatch_local_action(
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                 "path": act.path,
                 "artifacts": [{"type": "file", "headline": headline}],
+                **_diff_field(diff_before, target_path, act.path),
             })
             session._append_action_result(act, aid, f"(edit_file {act.path} successfully edited: {headline})", is_native)
             maybe_refresh_workspace_rules(session, act.path)
@@ -3664,6 +3678,7 @@ def dispatch_local_action(
                 import sys
                 print(f"Checkpoint error before hash_edit: {cp_err}", file=sys.stderr)
 
+            diff_before = read_text_for_diff(target_path)
             ok, status, msg = session._do_hash_edit(act, write=True)
             if not ok:
                 yield ConvEvent("action_result", {"id": aid, "error": msg})
@@ -3679,6 +3694,7 @@ def dispatch_local_action(
                 "id": aid, "num": 1, "types": ["file"], "adapter": "local", "mode": "tool",
                 "path": act.path,
                 "artifacts": [{"type": "file", "headline": headline}],
+                **_diff_field(diff_before, target_path, act.path),
             }
             # AST preview (round 6, opt-in): structural diff
             # computed by _do_hash_edit on the write pass.

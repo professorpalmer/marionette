@@ -641,6 +641,14 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
       })
       .catch((err: unknown) => { setNotice(dashboardUnavailableMessage(err)); });
   };
+  // A job the user picks by hand ends a navigation that could not place its target.
+  const pickRow = () => {
+    if (!pending) return;
+    takePendingSwarmNavigation(pending);
+    handled.current = pending;
+    setPending(null);
+    setNotice('');
+  };
   const renderJob = (job: Job) => {
     const key = job.metadata_key ?? '', title = jobDisplayTitle(job), open = preferences.expanded.includes(key);
     const listedLocal = job.local_ref
@@ -663,7 +671,7 @@ function ObservedJobs({ enabled, preferenceKey }: { enabled: boolean; preference
     // the display class must flip with the attribute or the row stays visible.
     return <div className={`relative shrink-0 ${rowHidden ? 'hidden' : 'flex'} flex-col border-b border-edge/25 last:border-b-0`} key={key} hidden={rowHidden} data-job-id={job.id} data-job-source={job.source} data-testid={`inspect-${job.source}-${job.id}`} data-quality={quality(job)}
       onFocus={() => { focusedRow.current = key; }} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) focusedRow.current = null; }}>
-      <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-8' : 'pr-5'}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) }))}>
+      <button ref={element => { if (element) rowButtons.current.set(key, element); else rowButtons.current.delete(key); }} className={`w-full flex items-center gap-2 py-1 px-1.5 hover:bg-panel2/25 text-left select-none cursor-pointer min-h-[1.625rem] focus-visible:outline focus-visible:outline-accent ${isFinished(job) && job.read_status !== 'unavailable' ? 'pr-8' : 'pr-5'}`} aria-label={`${title} · ${metadataOutcomeLabel(job.status)}`} aria-expanded={open} onClick={() => { pickRow(); setPreferences(p => ({ ...p, expanded: open ? p.expanded.filter(k => k !== key) : [...p.expanded, key].slice(-8) })); }}>
         <span className="shrink-0 text-faint">{open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</span>
         <span className="shrink-0">{runningIcon ? <MetadataActivityIndicator /> : isLiveObservation(job) ? <Loader2 size={12} className="animate-spin semantic-activity-spinner text-accent" /> : failedOutcomeStatuses.has(job.status) ? <XCircle size={12} className="text-risk" /> : quality(job) === 'degraded' ? <AlertTriangle size={12} className="text-warn" /> : ['completed', 'complete', 'done'].includes(job.status) ? <CheckCircle2 size={12} className="text-faint" /> : job.status === 'cancelled' ? <XCircle size={12} className="text-muted" /> : <Circle size={12} className="text-muted" />}</span>
         <span className="font-semibold text-ui-11 text-txt truncate min-w-0 flex-1">{title}</span>

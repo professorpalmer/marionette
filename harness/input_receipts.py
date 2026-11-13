@@ -874,6 +874,12 @@ def user_display_row(session, text, input_id=None, *, steer=False):
                 row['attachments'] = attachments
     if steer:
         row['steer'] = True
+    else:
+        # The model this turn ran on: the transcript marks a model switch
+        # between turns from it.
+        model = str(getattr(getattr(session, 'config', None), 'driver', '') or '').strip()
+        if model:
+            row['model'] = model
     return row
 
 
