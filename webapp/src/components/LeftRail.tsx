@@ -880,7 +880,10 @@ export default function LeftRail({
     if (currentRows) mutateSessions(currentRows);
     setSessionsCacheEpoch((n) => n + 1);
     const target = cachedSessionRow(id);
-    const targetRepo = target ? target.row.repo || target.row.workspace_root || target.root : "";
+    // A nested session's repo is its worktree; the rail stays on its project.
+    const targetRepo = !target ? ""
+      : target.row.nest?.parent_id ? target.row.workspace_root || target.root
+        : target.row.repo || target.row.workspace_root || target.root;
     // Set or clear on every switch: a quick switch back to the open project
     // must not keep the previous click's target.
     setSwitchTargetRepo(targetRepo && !repoPathsEqual(targetRepo, repoBeforeSwitch)

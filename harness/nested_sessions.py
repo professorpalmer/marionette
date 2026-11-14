@@ -623,6 +623,24 @@ def with_live_status(rows: Any) -> Any:
     return rows
 
 
+def active_child_tree() -> str:
+    """The worktree of the active session when it is a nested session, or "".
+
+    The view stays on the parent project while a child is open, so the
+    workspace read adds the child's own repo and branch from this path.
+    """
+    sup = _supervisor
+    if sup is None:
+        return ""
+    sid = getattr(sup.svc.sessions, "active", None) or ""
+    if not sid:
+        return ""
+    row = next((r for r in sup.svc.sessions.nested_rows() if r.get("id") == sid), None)
+    if not row or not (row.get("nest") or {}).get("parent_id"):
+        return ""
+    return run_repo(row)
+
+
 def deliver_when_ready(session_id: str, get_runner: Callable[[str], Any]) -> None:
     """After a view switch: deliver waiting notes once the runner is built."""
     sup = _supervisor

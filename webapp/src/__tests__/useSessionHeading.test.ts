@@ -1,11 +1,15 @@
-import { renderHook } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const reads = vi.hoisted(() => ({
+  // The reads stay pending unless a test sets one: the first paint after a reload.
+  workspace: null as null | (() => Promise<unknown>),
+}));
 
 vi.mock("../lib/api", () => ({
   api: {
-    // The reads stay pending: this is the first paint after a reload.
     sessions: () => new Promise(() => {}),
-    getWorkspace: () => new Promise(() => {}),
+    getWorkspace: () => (reads.workspace ? reads.workspace() : new Promise(() => {})),
   },
 }));
 
@@ -71,9 +75,37 @@ describe("useSessionHeading on a switch", () => {
       { id: "kid", title: "kid", created: 1, repo: "/w/.pmharness-worktrees/nest_kid-abc123",
         workspace_root: "/w/proj", branch: "nest/kid-abc123", nest: { parent_id: "p1", name: "kid" } },
     ]);
-    // The view stays on the project, so the workspace read names its branch.
+    // The project read names "main". The worktree read (cached from an
+    // earlier /api/workspace session_repo) names the child branch.
     writeSWRCache("workspace:/w/proj", { repo: "/w/proj", branch: "main", is_git: true });
+    writeSWRCache("workspace:/w/.pmharness-worktrees/nest_kid-abc123",
+      { repo: "/w/.pmharness-worktrees/nest_kid-abc123", branch: "nest/kid-abc123", is_git: true });
     expect(renderHook(() => useSessionHeading("kid", "/w/proj")).result.current)
       .toEqual({ title: "kid", project: "proj", branch: "nest/kid-abc123" });
+    // The row's start branch is never shown: with no worktree read, no branch.
+    clearSWRCache();
+    writeSWRCache("sessions:/w/proj", [
+      { id: "kid", title: "kid", created: 1, repo: "/w/.pmharness-worktrees/nest_kid-abc123",
+        workspace_root: "/w/proj", branch: "nest/kid-abc123", nest: { parent_id: "p1", name: "kid" } },
+    ]);
+    expect(renderHook(() => useSessionHeading("kid", "/w/proj")).result.current.branch).toBe("");
+  });
+
+  it("takes a nested session's branch from the workspace read of its worktree", async () => {
+    writeSWRCache("sessions:/w/proj", [
+      { id: "kid", title: "kid", created: 1, repo: "/w/t/nest_kid", workspace_root: "/w/proj",
+        branch: "nest/kid", nest: { parent_id: "p1", name: "kid" } },
+    ]);
+    reads.workspace = () => Promise.resolve({
+      repo: "/w/proj", branch: "main", is_git: true, codegraph_status: "ready",
+      session_repo: "/w/t/nest_kid", session_branch: "nest/kid-moved",
+    });
+    try {
+      const { result } = renderHook(() => useSessionHeading("kid", "/w/proj"));
+      await waitFor(() => expect(result.current.branch).toBe("nest/kid-moved"));
+      expect(result.current.project).toBe("proj");
+    } finally {
+      reads.workspace = null;
+    }
   });
 });

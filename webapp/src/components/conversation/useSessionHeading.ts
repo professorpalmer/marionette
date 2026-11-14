@@ -50,24 +50,14 @@ function headingSeed(sessionId: string | null): HeadingSeed {
   if (!hit) return null;
   const { row, root } = hit;
   const repo = row.repo || row.workspace_root || root;
-  if (row.nest?.parent_id) {
-    // A nested session works in its own worktree, which is locked to the
-    // child's branch. The view stays on the parent project, so no workspace
-    // read names that branch: the row does.
-    return {
-      title: displaySessionListTitle(row.title, row.title_user),
-      repo,
-      root: row.workspace_root || root || repo,
-      branch: row.branch || "",
-    };
-  }
   // The row's own branch is the one the session started on; the repo may
-  // be on another branch now. Show only a branch read from that repo.
+  // be on another branch now. Show only a branch read from that repo. For a
+  // nested session ``repo`` is its worktree.
   const workspace = readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(repo));
   return {
     title: displaySessionListTitle(row.title, row.title_user),
     repo,
-    root: repo,
+    root: row.nest?.parent_id ? row.workspace_root || root || repo : repo,
     branch: workspace?.is_git ? workspace.branch || "" : "",
   };
 }
@@ -107,7 +97,14 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
       }
       api.getWorkspace().then((ws) => {
         if (ws?.repo) writeSWRCache(workspaceInfoCacheKey(ws.repo), ws);
-        if (mine === gen) setWorkspace({ repo: ws?.repo || "", branch: ws?.is_git ? ws.branch || "" : "" });
+        // A nested session: the read also names its worktree and branch.
+        const tree = ws?.session_repo
+          ? { repo: ws.session_repo, branch: ws.session_branch || "", is_git: true, codegraph_status: "none" }
+          : null;
+        if (tree) writeSWRCache(workspaceInfoCacheKey(tree.repo), tree);
+        if (mine !== gen) return;
+        if (tree && repoPathsEqual(tree.repo, shownRepo)) setWorkspace({ repo: tree.repo, branch: tree.branch });
+        else setWorkspace({ repo: ws?.repo || "", branch: ws?.is_git ? ws.branch || "" : "" });
       }).catch(() => {});
     };
     const later = () => {
@@ -135,6 +132,6 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
   const workspaceBranch = workspace && (!shownRepo || repoPathsEqual(workspace.repo, shownRepo))
     ? workspace.branch
     : null;
-  const branch = (seed && seed.root !== seed.repo ? seed.branch : null) ?? workspaceBranch ?? seed?.branch ?? "";
+  const branch = workspaceBranch ?? seed?.branch ?? "";
   return { title, project: projectName(projectRoot), branch };
 }

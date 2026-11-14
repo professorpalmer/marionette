@@ -550,3 +550,20 @@ def test_a_child_worktree_starts_from_the_project_codegraph_index(tmp_path):
     # The first staleness check sees the copy as old and runs one incremental pass.
     assert os.path.getmtime(tree / ".codegraph") == 0
     assert not ns.seed_codegraph(str(tmp_path / "no-index"), str(tree))
+
+
+def test_the_workspace_read_finds_the_open_child_worktree(tmp_path):
+    h = Harness(tmp_path)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    h.sup.svc.add_worktree = lambda repo, branch: {"path": str(tree), "branch": branch}
+    parent = h.parent()
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    ns.set_supervisor(h.sup)
+    try:
+        h.store.switch(parent.harness_session_id)
+        assert ns.active_child_tree() == ""
+        h.store.switch(child_id)
+        assert ns.active_child_tree() == str(tree)
+    finally:
+        ns.set_supervisor(None)

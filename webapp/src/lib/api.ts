@@ -577,6 +577,10 @@ export type WorkspaceInfo = {
   codegraph_status: string;
   recents?: string[];
   home?: string;
+  /** Set while a nested session is open: its worktree and that worktree's
+   *  branch. ``repo`` and ``branch`` stay on the parent project. */
+  session_repo?: string;
+  session_branch?: string;
 };
 
 export type Workspace = {
