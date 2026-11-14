@@ -48,6 +48,7 @@ class Harness:
         self.turns: list = []
         self.persisted: list = []
         self.trees: list = []
+        self.tokens: dict = {}
         self.sup = ns.NestedSupervisor(ns.NestServices(
             sessions=self.store,
             get_runner=self.runners.get,
@@ -59,8 +60,9 @@ class Harness:
             ensure_runner=self._ensure_runner,
         ))
 
-    def _run_turn(self, sid, message, *, resume=False, driver=""):
+    def _run_turn(self, sid, message, *, resume=False, driver="", token=0):
         self.turns.append({"sid": sid, "message": message, "resume": resume, "driver": driver})
+        self.tokens[sid] = token
         self.status[sid] = "running"
 
     def _add_worktree(self, repo, branch):
@@ -111,10 +113,31 @@ def test_report_is_the_last_reply_cut_to_the_limit():
     assert ns.report_from_history([]) == ""
 
 
+def test_a_turn_with_no_reply_has_no_report():
+    """Live 2026-11-14: a child stopped before it replied reported its previous turn."""
+    history = [
+        {"role": "user", "content": "task one"},
+        {"role": "assistant", "content": "All three steps ran."},
+        {"role": "user", "content": "Run sleep 60."},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "interrupted"},
+    ]
+    assert ns.report_from_history(history) == ""
+    # A tool result in user role (Anthropic shape) is not a new user message.
+    history.append({"role": "user", "content": [{"type": "tool_result", "content": "ok"}]})
+    history.insert(3, {"role": "assistant", "content": "Starting the sleep."})
+    assert ns.report_from_history(history) == "Starting the sleep."
+
+
 def test_live_status_prefers_a_running_runner():
     assert ns.live_status("done", "running") == "working"
     assert ns.live_status("stopped", "idle") == "stopped"
     assert ns.live_status("", "missing") == "done"
+    # A started turn counts before its runner exists.
+    assert ns.live_status("working", "missing", in_flight=True) == "working"
+    # A stored "working" with no turn running is dead, never "Working".
+    assert ns.live_status("working", "idle") == "stopped"
+    assert ns.live_status("working", "missing") == "stopped"
 
 
 def test_wake_rule():
@@ -171,16 +194,29 @@ def test_start_refuses_bad_input_and_grandchildren(tmp_path):
     assert not grandchild["ok"] and "cannot start" in grandchild["error"]
 
 
-def test_worktree_failure_keeps_the_project_folder(tmp_path):
+def test_no_worktree_means_no_child(tmp_path):
+    """Each child writes only in its own worktree, so two children never
+    write the same files. A child never falls back to the project folder."""
     h = Harness(tmp_path)
 
     def broken(repo, branch):
         raise RuntimeError("not a git repository")
 
     h.sup.svc.add_worktree = broken
-    res = h.sup.start(h.parent(), name="no-git", brief="b")
-    assert res["ok"] and res["worktree"] == "/work/proj"
-    assert "not a git repository" in res["worktree_error"]
+    parent = h.parent()
+    res = h.sup.start(parent, name="no-git", brief="b")
+    assert not res["ok"] and "not a git repository" in res["error"]
+    assert h.store.children_of(parent.harness_session_id) == []
+    assert h.turns == []
+
+
+def test_two_children_get_two_worktrees(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    a = h.sup.start(parent, name="same", brief="a")
+    b = h.sup.start(parent, name="same", brief="b")
+    assert a["worktree"] != b["worktree"] and a["branch"] != b["branch"]
+    assert "/work/proj" not in (a["worktree"], b["worktree"])
 
 
 def test_create_child_refuses_an_encrypted_parent(tmp_path, monkeypatch):
@@ -200,8 +236,10 @@ def test_store_persists_links_and_inbox_across_reload(tmp_path):
     again = SessionStore(h.store.path)
     assert again.nest_of(child_id)["parent_id"] == parent.harness_session_id
     assert [r["id"] for r in again.children_of(parent.harness_session_id)] == [child_id]
-    assert again.take_nest_notes(parent.harness_session_id)[0]["child_id"] == child_id
-    assert again.take_nest_notes(parent.harness_session_id) == []
+    notes = again.peek_nest_notes(parent.harness_session_id)
+    assert notes[0]["child_id"] == child_id
+    again.drop_nest_notes(parent.harness_session_id, [ns.note_id(n) for n in notes])
+    assert again.peek_nest_notes(parent.harness_session_id) == []
 
 
 # -- report-back -----------------------------------------------------------
@@ -220,11 +258,12 @@ def test_child_report_lands_in_parent_and_wakes_it(tmp_path):
     assert "<nested-session-event>" in parent._history[-1]["content"]
     row = parent._display_transcript[-1]
     assert row["type"] == "session_note" and row["name"] == "full-bag" and row["status"] == "done"
+    assert row["ts"] > 10**12  # milliseconds, as for every display row
     assert h.persisted == [pid]
     wake = h.turns[-1]
     assert wake == {"sid": pid, "message": "", "resume": True, "driver": "wake"}
     assert h.store.nest_parent_state(pid)["auto_wakes"] == 1
-    assert h.store.take_nest_notes(pid) == []
+    assert h.store.peek_nest_notes(pid) == []
 
 
 def test_parent_wakes_once_after_the_last_working_child(tmp_path):
@@ -320,7 +359,7 @@ def test_message_steers_a_busy_child_and_starts_a_turn_on_an_idle_one(tmp_path):
     runner = h.runners.setdefault(child_id, FakeRunner(child_id))
     res = h.sup.message(parent, "kid", "also check the shop")
     assert res["delivered"] == "steer" and runner.steers == ["also check the shop"]
-    h.status[child_id] = "idle"
+    h.end_turn(child_id, reply="first part done")
     res = h.sup.message(parent, child_id, "next step")
     assert res["delivered"] == "turn" and h.turns[-1]["message"] == "next step"
     assert not h.sup.message(parent, "nobody", "x")["ok"]
@@ -373,3 +412,141 @@ def test_headless_handler_reads_the_turn_outcome():
     refused = HeadlessHandler()
     refused._send(409, '{"code": "lease_exhausted"}')
     assert refused.outcome == "failed"
+
+
+# -- robustness --------------------------------------------------------------
+
+
+def test_a_child_whose_turn_died_never_shows_working(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    pid = parent.harness_session_id
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    # Started, runner not built yet: Working.
+    h.status[child_id] = "missing"
+    assert h.sup.children(pid)[0]["status"] == "working"
+    # The turn thread ends with no finalize_turn (it died). The stored row
+    # still says working, but the turn is gone.
+    h.sup.turn_exited(child_id, h.tokens[child_id], "failed")
+    assert h.sup.children(pid)[0]["status"] == "failed"
+    assert parent._display_transcript[-1]["status"] == "failed"
+    # A row left "working" by a crash shows stopped in the list.
+    h.store.update_nest(child_id, status="working")
+    rows = [{"id": child_id, "nest": h.store.nest_of(child_id)}]
+    ns.set_supervisor(h.sup)
+    try:
+        assert ns.with_live_status(rows)[0]["nest"]["status"] == "stopped"
+    finally:
+        ns.set_supervisor(None)
+    assert h.store.nest_of(child_id)["status"] == "working"  # the list copy changed, not the store
+
+
+def test_turn_exit_after_a_normal_end_reports_nothing_more(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    token = h.tokens[child_id]
+    h.end_turn(child_id, reply="done")
+    notes = [r for r in parent._display_transcript if r["type"] == "session_note"]
+    h.sup.turn_exited(child_id, token, "done")
+    assert [r for r in parent._display_transcript if r["type"] == "session_note"] == notes
+    assert len(notes) == 1
+
+
+def test_an_old_turn_exit_does_not_touch_the_next_turn(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    pid = parent.harness_session_id
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    old = h.tokens[child_id]
+    h.end_turn(child_id, reply="one")
+    h.end_turn(pid, reply="wake answer")
+    h.sup.message(parent, child_id, "two")  # a new turn, new token
+    assert h.tokens[child_id] != old
+    h.status[child_id] = "missing"
+    h.sup.turn_exited(child_id, old, "done")  # the first thread ends late
+    assert h.sup.children(pid)[0]["status"] == "working"
+
+
+def test_message_to_a_child_that_is_starting_is_refused(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    h.status[child_id] = "missing"
+    res = h.sup.message(parent, "kid", "more")
+    assert not res["ok"] and "starting" in res["error"]
+    assert [t["sid"] for t in h.turns].count(child_id) == 1
+
+
+def test_a_report_arrives_once_when_the_save_fails(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    pid = parent.harness_session_id
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    calls = {"n": 0}
+
+    def flaky(sid, runner):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("disk full")
+        h.persisted.append(sid)
+
+    h.sup.svc.persist = flaky
+    h.end_turn(child_id, reply="the report")
+    # The save failed: the note stays in the inbox, the row is in memory once.
+    assert len(h.store.peek_nest_notes(pid)) == 1
+    assert sum(1 for r in parent._display_transcript if r["type"] == "session_note") == 1
+    h.sup.deliver(pid)
+    assert h.store.peek_nest_notes(pid) == []
+    assert sum(1 for r in parent._display_transcript if r["type"] == "session_note") == 1
+    assert parent._history[-1]["content"].count("<nested-session-event>") == 1
+
+
+def test_a_report_arrives_once_after_a_crash_before_the_inbox_drop(tmp_path):
+    h = Harness(tmp_path)
+    parent = h.parent()
+    pid = parent.harness_session_id
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    real_drop = h.store.drop_nest_notes
+    h.store.drop_nest_notes = lambda *a, **k: None  # the app dies after the save
+    h.end_turn(child_id, reply="the report")
+    assert len(h.store.peek_nest_notes(pid)) == 1
+    h.store.drop_nest_notes = real_drop
+    h.status[pid] = "idle"  # after the restart nothing runs
+    h.sup.deliver(pid)  # boot or switch delivers again
+    assert h.store.peek_nest_notes(pid) == []
+    assert sum(1 for r in parent._display_transcript if r["type"] == "session_note") == 1
+
+
+def test_a_busy_parent_gets_the_report_when_it_frees(tmp_path, monkeypatch):
+    monkeypatch.setattr(ns, "RETRY_SECONDS", 0.02)
+    h = Harness(tmp_path)
+    parent = h.parent()
+    pid = parent.harness_session_id
+    child_id = h.sup.start(parent, name="kid", brief="b")["session_id"]
+    parent._busy.acquire()  # the parent's turn is closing and still holds its lock
+    h.end_turn(child_id, reply="report")
+    assert not parent._display_transcript
+    parent._busy.release()
+    for _ in range(1000):  # up to 10 s on a loaded machine; ends at the first row
+        # The row lands first. The inbox drop follows on the same thread.
+        if parent._display_transcript and not h.store.peek_nest_notes(pid):
+            break
+        threading.Event().wait(0.01)
+    assert sum(1 for r in parent._display_transcript if r["type"] == "session_note") == 1
+    assert h.store.peek_nest_notes(pid) == []
+
+
+def test_a_child_worktree_starts_from_the_project_codegraph_index(tmp_path):
+    project = tmp_path / "proj"
+    (project / ".codegraph").mkdir(parents=True)
+    (project / ".codegraph" / "codegraph.db").write_bytes(b"index")
+    (project / ".codegraph" / "codegraph.lock").write_text("123")
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    assert ns.seed_codegraph(str(project), str(tree))
+    assert (tree / ".codegraph" / "codegraph.db").read_bytes() == b"index"
+    assert not (tree / ".codegraph" / "codegraph.lock").exists()
+    # The first staleness check sees the copy as old and runs one incremental pass.
+    assert os.path.getmtime(tree / ".codegraph") == 0
+    assert not ns.seed_codegraph(str(tmp_path / "no-index"), str(tree))

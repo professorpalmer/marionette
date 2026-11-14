@@ -112,6 +112,7 @@ def start_headless_turn(
     prepare: Callable[[str], Any],
     on_refused: Optional[Callable[[str, HeadlessHandler], None]] = None,
     on_error: Optional[Callable[[str, BaseException], None]] = None,
+    on_exit: Optional[Callable[[str, str], None]] = None,
     resume: bool = False,
 ) -> threading.Thread:
     """Start a daemon thread that prepares the runner and streams one turn.
@@ -120,22 +121,28 @@ def start_headless_turn(
     message, session_id=..., resume=...)`` is ``stream_chat`` with its
     services bound. ``on_refused`` runs when the stream answers with an HTTP
     error before the turn starts (no ``finalize_turn`` runs then).
+    ``on_exit(session_id, outcome)`` runs last, whatever happened.
     """
 
     def _run() -> None:
         handler = HeadlessHandler()
         _local.handler = handler
         try:
-            prepare(session_id)
-            stream(handler, message, session_id=session_id, resume=resume)
-        except BaseException as exc:  # never let a turn thread die silently
-            if on_error is not None:
-                on_error(session_id, exc)
-            return
+            try:
+                prepare(session_id)
+                stream(handler, message, session_id=session_id, resume=resume)
+            except BaseException as exc:  # never let a turn thread die silently
+                handler.wfile.error = handler.wfile.error or (str(exc) or type(exc).__name__)
+                if on_error is not None:
+                    on_error(session_id, exc)
+                return
+            finally:
+                _local.handler = None
+            if handler.status is not None and handler.status >= 400 and on_refused is not None:
+                on_refused(session_id, handler)
         finally:
-            _local.handler = None
-        if handler.status is not None and handler.status >= 400 and on_refused is not None:
-            on_refused(session_id, handler)
+            if on_exit is not None:
+                on_exit(session_id, handler.outcome)
 
     thread = threading.Thread(target=_run, name=f"headless-turn-{session_id}", daemon=True)
     thread.start()

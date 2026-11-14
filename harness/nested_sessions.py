@@ -15,16 +15,24 @@ the top so tests can check them without a server.
 
 import os
 import re
+import shutil
 import subprocess
+import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+
+from .display_rows import now_ms
 
 NEST_STATUSES = ("working", "done", "failed", "stopped")
 REPORT_CHARS = 400
 # Automatic parent turns since the last user message. Stops report loops.
 MAX_AUTO_WAKES = 8
+# Delivery retry while the parent is busy: every half second for one minute.
+RETRY_SECONDS = 0.5
+RETRY_TRIES = 120
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$")
 
 _rev_lock = threading.Lock()
@@ -83,10 +91,28 @@ def message_text(content: Any) -> str:
     return ""
 
 
+def _is_user_text(message: dict) -> bool:
+    """A user message the user or parent wrote, not a tool result in user role."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, list):
+        return not any(isinstance(p, dict) and p.get("type") == "tool_result" for p in content)
+    return True
+
+
 def report_from_history(history: List[dict], limit: int = REPORT_CHARS) -> str:
-    """The first ``limit`` characters of the last assistant reply with text."""
+    """The first ``limit`` characters of this turn's last assistant reply.
+
+    Only replies after the last user message count. A turn stopped before it
+    replied has no report, not the report of the turn before it.
+    """
     for message in reversed(history or []):
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        if not isinstance(message, dict):
+            continue
+        if _is_user_text(message):
+            return ""
+        if message.get("role") != "assistant":
             continue
         text = " ".join(message_text(message.get("content")).split())
         if text:
@@ -94,11 +120,23 @@ def report_from_history(history: List[dict], limit: int = REPORT_CHARS) -> str:
     return ""
 
 
-def live_status(stored: str, runner_status: str) -> str:
-    """A running runner is ``working``. Else the stored status counts."""
-    if runner_status in ("running", "attaching"):
+def live_status(stored: str, runner_status: str, in_flight: bool = False) -> str:
+    """The status to show. Only a turn that runs now is ``working``.
+
+    A running runner, or a turn the supervisor started that has not ended, is
+    ``working``. A stored ``working`` with neither lost its turn (a crash, a
+    restart before the boot pass), so it shows ``stopped``, never ``working``.
+    """
+    if in_flight or runner_status in ("running", "attaching"):
         return "working"
+    if stored == "working":
+        return "stopped"
     return stored if stored in NEST_STATUSES else "done"
+
+
+def note_id(note: dict) -> str:
+    """The key that makes one report arrive once."""
+    return str(note.get("id") or f"{note.get('child_id', '')}:{note.get('at', '')}")
 
 
 def note_text(note: dict) -> str:
@@ -121,14 +159,20 @@ def note_text(note: dict) -> str:
 
 
 def note_display_row(note: dict) -> dict:
+    """The parent transcript row for one report.
+
+    ``ts`` is the delivery time in milliseconds, as for every display row. A
+    wake turn starts at delivery, so a reload times that turn from this row.
+    """
     return {
         "type": "session_note",
+        "note_id": note_id(note),
         "child_id": note.get("child_id", ""),
         "name": note.get("name", ""),
         "status": note.get("status", "done"),
         "report": note.get("report", ""),
         "driver": note.get("driver", "parent"),
-        "ts": note.get("at") or time.time(),
+        "ts": now_ms(),
     }
 
 
@@ -148,13 +192,13 @@ def child_preamble(parent_title: str, name: str, branch: str, worktree: str) -> 
     )
 
 
-def child_payload(row: dict, runner_status: str) -> dict:
+def child_payload(row: dict, runner_status: str, in_flight: bool = False) -> dict:
     nest = row.get("nest") or {}
     return {
         "id": row.get("id", ""),
         "title": row.get("title", ""),
         "name": nest.get("name", ""),
-        "status": live_status(nest.get("status", ""), runner_status),
+        "status": live_status(nest.get("status", ""), runner_status, in_flight),
         "report": nest.get("report", ""),
         "todo": nest.get("todo", ""),
         "branch": nest.get("branch", ""),
@@ -178,7 +222,8 @@ class NestServices:
     sessions: Any
     get_runner: Callable[[str], Any]
     runner_status: Callable[[str], str]
-    # (session_id, message, *, resume, driver) -> None. Runs on a thread.
+    # (session_id, message, *, resume, driver, token) -> None. Runs on a
+    # thread. When the thread ends it calls ``turn_exited(sid, token, outcome)``.
     run_turn: Callable[..., None]
     persist: Callable[[str, Any], None]
     diag: Callable[..., None]
@@ -193,11 +238,16 @@ class NestedSupervisor:
         self._lock = threading.RLock()
         # Sessions whose current turn the parent (or a wake) started.
         self._parent_driven: Dict[str, bool] = {}
+        # session id -> token of the turn ``_begin`` started that has not ended.
+        self._in_flight: Dict[str, int] = {}
+        self._tokens = 0
+        # Parents with a delivery retry thread.
+        self._retrying: set = set()
 
     # -- tool actions --------------------------------------------------
 
     def start(self, parent: Any, *, name: str, brief: str, title: str = "",
-              todo: str = "", worktree: bool = True) -> dict:
+              todo: str = "") -> dict:
         sessions = self.svc.sessions
         parent_id = getattr(parent, "harness_session_id", "") or ""
         if not parent_id:
@@ -214,6 +264,8 @@ class NestedSupervisor:
         parent_row = next((r for r in sessions.rows() if r.get("id") == parent_id), {})
         root = (parent_row.get("workspace_root") or parent_row.get("repo")
                 or getattr(getattr(parent, "config", None), "repo", "") or "").strip()
+        if not root or self.svc.add_worktree is None:
+            return {"ok": False, "error": "Nested sessions need a project folder that is a git repository."}
         try:
             row = sessions.create_child(
                 parent_id, title=(title or "").strip() or slug,
@@ -224,14 +276,17 @@ class NestedSupervisor:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         sid = row["id"]
-        tree = {"path": "", "branch": ""}
-        tree_error = ""
-        if worktree and root and self.svc.add_worktree is not None:
-            try:
-                tree = self.svc.add_worktree(root, branch_name(slug, sid))
-            except Exception as exc:
-                tree_error = str(exc).strip() or type(exc).__name__
-        sessions.update_nest(sid, worktree=tree.get("path", ""), branch=tree.get("branch", ""))
+        # Each child writes only in its own worktree, so two children never
+        # write the same files. No worktree means no child.
+        try:
+            tree = self.svc.add_worktree(root, branch_name(slug, sid))
+            if not tree.get("path"):
+                raise ValueError("no worktree path")
+        except Exception as exc:
+            sessions.delete(sid)
+            reason = " ".join((str(exc).strip() or type(exc).__name__).split())[:300]
+            return {"ok": False, "error": f"Could not make a git worktree for the child: {reason}"}
+        sessions.update_nest(sid, worktree=tree["path"], branch=tree.get("branch", ""))
         linked = self._link_todo(parent, todo, sid, slug)
         message = child_preamble(parent_row.get("title") or "parent", slug,
                                  tree.get("branch", ""), tree.get("path", "")) + brief.strip()
@@ -239,10 +294,8 @@ class NestedSupervisor:
         bump_rev()
         result = {
             "ok": True, "session_id": sid, "name": slug,
-            "branch": tree.get("branch", ""), "worktree": tree.get("path", "") or root,
+            "branch": tree.get("branch", ""), "worktree": tree["path"],
         }
-        if tree_error:
-            result["worktree_error"] = tree_error
         if linked is not None:
             result["todos"] = linked
         return result
@@ -256,6 +309,10 @@ class NestedSupervisor:
         sid = row["id"]
         runner = self.svc.get_runner(sid)
         busy = self.svc.runner_status(sid) in ("running", "attaching")
+        with self._lock:
+            starting = sid in self._in_flight and not busy
+        if starting:
+            return {"ok": False, "error": "The child is starting a turn. Send the message again in a few seconds."}
         if busy and runner is not None and hasattr(runner, "enqueue_steer"):
             try:
                 runner.enqueue_steer(text.strip())
@@ -284,23 +341,50 @@ class NestedSupervisor:
     def children(self, parent_id: str) -> List[dict]:
         rows = self.svc.sessions.children_of(parent_id)
         rows.sort(key=lambda r: r.get("created") or 0)
-        return [child_payload(r, self.svc.runner_status(r.get("id", ""))) for r in rows]
+        with self._lock:
+            flying = set(self._in_flight)
+        return [child_payload(r, self.svc.runner_status(r.get("id", "")), r.get("id") in flying)
+                for r in rows]
+
+    def in_flight(self, sid: str) -> bool:
+        with self._lock:
+            return sid in self._in_flight
 
     # -- turn hooks ----------------------------------------------------
 
     def _begin(self, sid: str, message: str, *, driver: str, resume: bool = False) -> None:
         with self._lock:
+            self._tokens += 1
+            token = self._tokens
             self._parent_driven[sid] = True
+            self._in_flight[sid] = token
         if self.svc.sessions.nest_of(sid) is not None:
             self.svc.sessions.update_nest(sid, status="working", updated=time.time())
-        self.svc.run_turn(sid, message, resume=resume, driver=driver)
+        self.svc.run_turn(sid, message, resume=resume, driver=driver, token=token)
+
+    def _settle(self, sid: str) -> bool:
+        """End the bookkeeping of the current turn. Returns parent_driven."""
+        with self._lock:
+            self._in_flight.pop(sid, None)
+            return self._parent_driven.pop(sid, False)
+
+    def turn_exited(self, sid: str, token: int, outcome: str) -> None:
+        """The thread of a turn that ``_begin`` started ended.
+
+        Normally ``finalize_turn`` already called ``on_turn_end``. When it did
+        not (the turn thread ended some other way), end the turn here so the
+        status never stays ``working`` and the parent still gets a report.
+        """
+        with self._lock:
+            if self._in_flight.get(sid) != token:
+                return
+        self.on_turn_end(sid, self.svc.get_runner(sid), outcome=outcome or "failed")
 
     def on_turn_end(self, sid: str, runner: Any, *, outcome: str = "") -> None:
         """Called after every turn (``finalize_turn`` and the headless driver)."""
         if not sid:
             return
-        with self._lock:
-            parent_driven = self._parent_driven.pop(sid, False)
+        parent_driven = self._settle(sid)
         nest = self.svc.sessions.nest_of(sid)
         if nest is not None and nest.get("parent_id"):
             self._record_child_turn(sid, nest, runner, outcome=outcome, parent_driven=parent_driven)
@@ -313,8 +397,7 @@ class NestedSupervisor:
 
     def refused(self, sid: str, error: str) -> None:
         """A turn could not start (no free session slot, busy runner, build error)."""
-        with self._lock:
-            parent_driven = self._parent_driven.pop(sid, False)
+        parent_driven = self._settle(sid)
         nest = self.svc.sessions.nest_of(sid)
         if nest is None or not nest.get("parent_id"):
             return
@@ -322,7 +405,7 @@ class NestedSupervisor:
         now = time.time()
         self.svc.sessions.update_nest(sid, status="failed", report=text, updated=now)
         self.svc.sessions.push_nest_note(nest["parent_id"], {
-            "child_id": sid, "name": nest.get("name", ""), "status": "failed",
+            "id": uuid.uuid4().hex, "child_id": sid, "name": nest.get("name", ""), "status": "failed",
             "report": text, "driver": "parent" if parent_driven else "user", "at": now,
             "wake": parent_driven,
         })
@@ -333,13 +416,13 @@ class NestedSupervisor:
                            outcome: str, parent_driven: bool) -> None:
         stopped = bool(getattr(runner, "_stop_holds_idle", False)) or outcome == "stopped"
         status = "stopped" if stopped else ("failed" if outcome == "failed" else "done")
-        history = list(getattr(runner, "_history", None) or [])
+        history = list(getattr(runner, "_history", None) or []) if runner is not None else []
         report = report_from_history(history)
         now = time.time()
         self.svc.sessions.update_nest(sid, status=status, report=report, updated=now)
         driver = "parent" if parent_driven else "user"
         self.svc.sessions.push_nest_note(nest["parent_id"], {
-            "child_id": sid, "name": nest.get("name", ""), "status": status,
+            "id": uuid.uuid4().hex, "child_id": sid, "name": nest.get("name", ""), "status": status,
             "report": report, "driver": driver, "at": now,
             "wake": parent_driven and status in ("done", "failed"),
         })
@@ -349,6 +432,9 @@ class NestedSupervisor:
     def deliver(self, parent_id: str) -> bool:
         """Move inbox notes into an idle parent. Wake it when the rule allows.
 
+        Each note arrives once. Notes leave the inbox only after the parent
+        transcript that holds them is saved, and a note whose row is already
+        in the transcript is not added again. A busy parent gets a retry.
         Returns True when a wake turn started.
         """
         sessions = self.svc.sessions
@@ -359,18 +445,25 @@ class NestedSupervisor:
             except Exception as exc:
                 self.svc.diag("nested.wake_runner", exc)
                 return False
-        if (runner is None or not hasattr(runner, "_display_transcript")
-                or self.svc.runner_status(parent_id) in ("running", "attaching")):
+        if runner is None or not hasattr(runner, "_display_transcript"):
+            return False
+        if self.svc.runner_status(parent_id) in ("running", "attaching"):
+            self._retry_later(parent_id)
             return False
         busy = getattr(runner, "_busy", None)
         if busy is None or not busy.acquire(blocking=False):
+            self._retry_later(parent_id)
             return False
         appended = False
+        notes: List[dict] = []
         try:
-            notes = sessions.take_nest_notes(parent_id)
-            if notes:
+            notes = sessions.peek_nest_notes(parent_id)
+            seen = {row.get("note_id") for row in runner._display_transcript
+                    if isinstance(row, dict) and row.get("type") == "session_note"}
+            fresh = [n for n in notes if note_id(n) not in seen]
+            if fresh:
                 history = runner._history
-                text = "\n\n".join(note_text(n) for n in notes)
+                text = "\n\n".join(note_text(n) for n in fresh)
                 if history and history[-1].get("role") == "user" and isinstance(history[-1].get("content"), str):
                     history[-1]["content"] = history[-1]["content"].rstrip() + "\n\n" + text
                 else:
@@ -379,13 +472,13 @@ class NestedSupervisor:
                 if pending_events is None:
                     pending_events = []
                     runner._nest_note_events = pending_events
-                for note in notes:
+                for note in fresh:
                     row = note_display_row(note)
                     runner._display_transcript.append(row)
                     # The next turn streams the rows to a client that shows this session.
                     pending_events.append(dict(row))
                 appended = True
-                if any(n.get("wake") for n in notes):
+                if any(n.get("wake") for n in fresh):
                     sessions.nest_parent_state(parent_id, pending_wake=True)
         finally:
             busy.release()
@@ -393,8 +486,12 @@ class NestedSupervisor:
             try:
                 self.svc.persist(parent_id, runner)
             except Exception as exc:
+                # The notes stay in the inbox. The rows in memory stop a second copy.
                 self.svc.diag("nested.persist_parent", exc)
+                return False
             bump_rev()
+        if notes:
+            sessions.drop_nest_notes(parent_id, [note_id(n) for n in notes])
         state = sessions.nest_parent_state(parent_id)
         siblings_working = any(
             c["status"] == "working" for c in self.children(parent_id)
@@ -413,6 +510,43 @@ class NestedSupervisor:
         )
         self._begin(parent_id, "", driver="wake", resume=True)
         return True
+
+    def _retry_later(self, parent_id: str) -> None:
+        """Try ``deliver`` again while the parent is busy (one thread per parent).
+
+        The parent's own turn end delivers too. This covers a report that
+        lands while that turn is closing.
+        """
+        if not self._has_inbox(parent_id):
+            return
+        with self._lock:
+            if parent_id in self._retrying:
+                return
+            self._retrying.add(parent_id)
+
+        def _run() -> None:
+            try:
+                for _ in range(RETRY_TRIES):
+                    time.sleep(RETRY_SECONDS)
+                    if not self._has_inbox(parent_id):
+                        return
+                    if self.svc.runner_status(parent_id) in ("running", "attaching"):
+                        continue
+                    runner = self.svc.get_runner(parent_id)
+                    busy = getattr(runner, "_busy", None)
+                    if busy is not None and busy.locked():
+                        continue
+                    with self._lock:
+                        self._retrying.discard(parent_id)
+                    self.deliver(parent_id)
+                    return
+            except Exception as exc:
+                self.svc.diag("nested.deliver_retry", exc)
+            finally:
+                with self._lock:
+                    self._retrying.discard(parent_id)
+
+        threading.Thread(target=_run, name=f"nested-retry-{parent_id}", daemon=True).start()
 
     def reconcile_on_boot(self) -> List[str]:
         """A child still marked ``working`` lost its turn to a restart.
@@ -467,6 +601,28 @@ class NestedSupervisor:
             return None
 
 
+def with_live_status(rows: Any) -> Any:
+    """Put the live child status into session list rows (``nest.status``).
+
+    The stored status can say ``working`` after its turn died. The rail reads
+    this list, so it must get the same status as the plan chips.
+    """
+    sup = _supervisor
+    if sup is None or not isinstance(rows, list):
+        return rows
+    for row in rows:
+        nest = row.get("nest") if isinstance(row, dict) else None
+        if not isinstance(nest, dict) or not nest.get("parent_id"):
+            continue
+        sid = row.get("id", "")
+        try:
+            status = live_status(nest.get("status", ""), sup.svc.runner_status(sid), sup.in_flight(sid))
+        except Exception:
+            continue
+        row["nest"] = {**nest, "status": status}
+    return rows
+
+
 def deliver_when_ready(session_id: str, get_runner: Callable[[str], Any]) -> None:
     """After a view switch: deliver waiting notes once the runner is built."""
     sup = _supervisor
@@ -499,6 +655,40 @@ def lock_worktree(path: str, reason: str) -> None:
                        capture_output=True, text=True, timeout=10)
     except Exception:
         pass
+
+
+_CODEGRAPH_SEED = ("codegraph.db", "config.json", ".gitignore")
+
+
+def seed_codegraph(project: str, worktree: str) -> bool:
+    """Copy the project's CodeGraph index into a new child worktree.
+
+    Without it, the first CodeGraph read in the child (a switch to it, or its
+    first turn) runs a full ``codegraph init --index`` of the worktree. The
+    index keys files by path and content hash, so the copy needs only an
+    incremental pass for the files the child changes. The directory time is set
+    to 0 so the first staleness check runs that pass once. Clone copies on
+    APFS cost no disk space. Returns False when the project has no index.
+    """
+    src = os.path.join(project, ".codegraph")
+    if not os.path.isfile(os.path.join(src, "codegraph.db")):
+        return False
+    dst = os.path.join(worktree, ".codegraph")
+    try:
+        os.makedirs(dst, exist_ok=True)
+        for name in _CODEGRAPH_SEED:
+            path = os.path.join(src, name)
+            if not os.path.isfile(path):
+                continue
+            target = os.path.join(dst, name)
+            cloned = sys.platform == "darwin" and subprocess.run(
+                ["cp", "-c", path, target], capture_output=True, timeout=30).returncode == 0
+            if not cloned:
+                shutil.copy2(path, target)
+        os.utime(dst, (0, 0))
+        return True
+    except Exception:
+        return False
 
 
 _supervisor: Optional[NestedSupervisor] = None

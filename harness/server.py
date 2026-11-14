@@ -1489,7 +1489,8 @@ def _nested_persist(session_id: str, runner: Any) -> None:
                                 session_id, writer=save_transcript)
 
 
-def _nested_run_turn(session_id: str, message: str, *, resume: bool = False, driver: str = "") -> None:
+def _nested_run_turn(session_id: str, message: str, *, resume: bool = False, driver: str = "",
+                     token: int = 0) -> None:
     from .headless_turn import start_headless_turn
     from .nested_sessions import supervisor
     from .api.streams import stream_chat
@@ -1509,8 +1510,13 @@ def _nested_run_turn(session_id: str, message: str, *, resume: bool = False, dri
         if sup is not None:
             sup.refused(sid, _refusal_text(str(exc)) or type(exc).__name__)
 
+    def _exited(sid, outcome):
+        sup = supervisor()
+        if sup is not None:
+            sup.turn_exited(sid, token, outcome)
+
     start_headless_turn(session_id, message, stream=_stream, prepare=_ensure_background_runner,
-                        on_refused=_refused, on_error=_error, resume=resume)
+                        on_refused=_refused, on_error=_error, on_exit=_exited, resume=resume)
 
 
 def _refusal_text(body: str) -> str:
@@ -1528,9 +1534,10 @@ def _refusal_text(body: str) -> str:
 
 def _nested_add_worktree(repo: str, branch: str) -> dict:
     from .worktrees import add_worktree
-    from .nested_sessions import lock_worktree
+    from .nested_sessions import lock_worktree, seed_codegraph
     tree = add_worktree(repo, branch)
     lock_worktree(tree["path"], "Marionette nested session")
+    seed_codegraph(repo, tree["path"])
     return tree
 
 

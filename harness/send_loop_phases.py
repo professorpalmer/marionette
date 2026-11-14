@@ -3439,7 +3439,6 @@ def dispatch_local_action(
             res = sup.start(
                 session, name=str(args.get("name") or ""), brief=str(args.get("brief") or ""),
                 title=str(args.get("title") or ""), todo=str(args.get("todo") or ""),
-                worktree=args.get("worktree") is not False,
             )
         elif action == "message":
             res = sup.message(session, str(args.get("name") or args.get("session_id") or ""),
@@ -3469,8 +3468,6 @@ def dispatch_local_action(
                    f"{res['worktree']}" + (f" on branch {res['branch']}" if res.get("branch") else "")
                    + ". It runs now. Its report comes back as a <nested-session-event> note; "
                    "do not wait or poll for it.")
-            if res.get("worktree_error"):
-                val += f" No worktree: {res['worktree_error']}. It works in the project folder."
         else:
             val = json.dumps(res)
         result_event = {

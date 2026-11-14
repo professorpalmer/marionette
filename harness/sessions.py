@@ -758,14 +758,26 @@ class SessionStore:
             self._save()
             return True
 
-    def take_nest_notes(self, parent_id: str) -> List[dict]:
+    def peek_nest_notes(self, parent_id: str) -> List[dict]:
+        """The parent's undelivered notes. They stay until ``drop_nest_notes``."""
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            return [dict(n) for n in (row or {}).get("nest_inbox") or []]
+
+    def drop_nest_notes(self, parent_id: str, ids: List[str]) -> None:
+        """Remove delivered notes by id (``nested_sessions.note_id``)."""
+        from .nested_sessions import note_id
+        doomed = set(ids)
         with self._lock:
             row = next((r for r in self._sessions if r.get("id") == parent_id), None)
             if row is None or not row.get("nest_inbox"):
-                return []
-            notes = list(row.pop("nest_inbox"))
-            self._save()
-            return notes
+                return
+            kept = [n for n in row["nest_inbox"] if note_id(n) not in doomed]
+            if kept:
+                row["nest_inbox"] = kept
+            else:
+                row.pop("nest_inbox", None)
+            self._save(immediate=True)
 
     def nest_parent_state(self, parent_id: str, **fields: Any) -> dict:
         """Read, or merge into, the parent-side counters (``nest_parent``)."""

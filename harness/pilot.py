@@ -1105,7 +1105,6 @@ def build_tools_schema(
                     "brief": {"type": "string", "description": "start: the full task; the child sees nothing else"},
                     "todo": {"type": "string", "description": "start: text of the plan step this child owns"},
                     "message": {"type": "string", "description": "message: text for the child"},
-                    "worktree": {"type": "boolean", "description": "start: own git worktree and branch (default true)"},
                 },
                 "required": ["action"],
             },

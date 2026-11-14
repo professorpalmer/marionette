@@ -670,10 +670,11 @@ def get_sessions_list(qs: dict, svc: SessionServices) -> tuple[int, Any]:
                 root = svc.home_workspace_path()
             except Exception:
                 root = ""
-    return 200, svc.sessions.list(
+    from ..nested_sessions import with_live_status
+    return 200, with_live_status(svc.sessions.list(
         workspace_root=root,
         state_dir=svc.sessions_state_dir(),
-    )
+    ))
 
 
 def get_sessions_bank(qs: dict, svc: SessionServices) -> tuple[int, Any]:
