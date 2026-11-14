@@ -1637,7 +1637,6 @@ export default function LeftRail({
               <div className="space-y-0.5 pb-2">
                 {bankSessions.map((s) => {
                   const root = s.workspace_root || s.repo || "";
-                  const label = getWorkspaceBasename(root) || "Home";
                   const isActive = !!s.active;
                   if (renamingId === s.id) {
                     return (
@@ -1673,7 +1672,7 @@ export default function LeftRail({
                       className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
-                      title={`${displaySessionListTitle(s.title, s.title_user)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
+                      title={`${displaySessionListTitle(s.title, s.title_user)}\n${root}`}
                     >
                       <div className="relative flex items-center min-w-0">
                         {switchingSessionId === s.id
@@ -1683,9 +1682,6 @@ export default function LeftRail({
                           {displaySessionListTitle(s.title, s.title_user)}
                         </div>
                         <SessionAge updated={s.updated ?? s.created} />
-                      </div>
-                      <div className="text-ui-10 text-faint truncate">
-                        {s.preview || <span className="font-mono">{label}</span>}
                       </div>
                     </button>
                   );
@@ -1858,7 +1854,7 @@ export default function LeftRail({
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                                 aria-disabled={!!switchingSessionId || opening || undefined}
-                                title={s.preview ? `${displaySessionListTitle(s.title, s.title_user)}\n${s.preview}` : displaySessionListTitle(s.title, s.title_user)}
+                                title={displaySessionListTitle(s.title, s.title_user)}
                                 data-session-row="true"
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
@@ -1873,9 +1869,6 @@ export default function LeftRail({
                                   <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                                   <SessionAge updated={s.updated ?? s.created} />
                                 </span>
-                                {s.preview ? (
-                                  <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
-                                ) : null}
                               </button>
                               {nested.length > 0 ? (
                                 <NestToggle

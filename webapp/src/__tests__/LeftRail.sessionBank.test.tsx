@@ -59,3 +59,12 @@ it("a background refetch does not spin the Recent header", async () => {
 
   expect(container.querySelector(".animate-spin")).toBeNull();
 });
+
+it("a session row shows only its title, not a preview line", async () => {
+  vi.mocked(api.sessionsBank).mockResolvedValue([{ ...rows[1], preview: "Last reply text" }]);
+  render(<LeftRail jobsRefresh={0} />);
+  const row = await screen.findByRole("button", { name: /Older conversation/ });
+
+  expect(row.textContent).not.toContain("Last reply text");
+  expect(screen.queryByText("Last reply text")).toBeNull();
+});
