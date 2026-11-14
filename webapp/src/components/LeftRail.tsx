@@ -93,6 +93,8 @@ import {
   writeSessionListCache,
   actionAfterSessionRemove,
   remainingOpenAfterRemoveFromCache,
+  cachedSessionRow,
+  workspaceInfoCacheKey,
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
@@ -252,6 +254,8 @@ export default function LeftRail({
 
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
+  // Repo of a cross-project switch until the backend workspace read names it.
+  const [switchTargetRepo, setSwitchTargetRepo] = useState<string | null>(null);
   const switchingSessionIdRef = useRef<string | null>(null);
   const requestedSessionIdRef = useRef<string | null>(null);
   const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
@@ -406,6 +410,7 @@ export default function LeftRail({
         if (info.repo && info.codegraph_status) {
           codegraphByRepoRef.current[info.repo] = info.codegraph_status;
         }
+        if (info.repo) writeSWRCache(workspaceInfoCacheKey(info.repo), info);
       },
     },
   );
@@ -414,15 +419,24 @@ export default function LeftRail({
   if (currentRepoRef.current !== currentRepo) pruneEpoch.current += 1;
   currentRepoRef.current = currentRepo;
 
+  if (switchTargetRepo && repoPathsEqual(switchTargetRepo, currentRepo)) setSwitchTargetRepo(null);
+  // A cross-project switch shows the target's cached branches at click time,
+  // not the outgoing project's list until the backend workspace read lands.
+  const branchRepo = switchTargetRepo || currentRepo;
+  const branchRepoPending = branchRepo !== currentRepo;
+  const branchRepoInfo = branchRepoPending
+    ? readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(branchRepo))
+    : workspaceInfo;
+
   // Branches list: SWR keyed by repo so the first fetch stays warm across
   // session switches / config-changed events (no blank-then-refill lag).
   const {
     data: workspacesData,
     revalidate: revalidateWorkspaces,
   } = useStaleWhileRevalidate<Workspace[]>(
-    workspacesCacheKey(currentRepo),
-    () => api.workspaces(currentRepo || undefined),
-    { enabled: !!currentRepo && !!workspaceInfo?.is_git },
+    workspacesCacheKey(branchRepo),
+    () => api.workspaces(branchRepo || undefined),
+    { enabled: !!branchRepo && !!branchRepoInfo?.is_git },
   );
   const workspaces = workspacesData ?? [];
 
@@ -863,6 +877,12 @@ export default function LeftRail({
       : undefined;
     if (currentRows) mutateSessions(currentRows);
     setSessionsCacheEpoch((n) => n + 1);
+    const target = cachedSessionRow(id);
+    const targetRepo = target ? target.row.repo || target.row.workspace_root || target.root : "";
+    // Set or clear on every switch: a quick switch back to the open project
+    // must not keep the previous click's target.
+    setSwitchTargetRepo(targetRepo && !repoPathsEqual(targetRepo, repoBeforeSwitch)
+      && readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(targetRepo)) ? targetRepo : null);
     onSessionChange?.(id);
     try {
       const res: any = await api.switchSession(id);
@@ -870,22 +890,27 @@ export default function LeftRail({
         throw res;
       }
       sessionListGeneration.current += 1;
-      if (scope !== sessionScopeGeneration.current) return;
       const repo = (res?.repo || "").trim();
-      if (repo) {
-        setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
-        setSelectedProjectPath(repo);
-      }
       // A successful switch must refresh the session-scoped config even when
       // both sessions share a workspace. The optimistic state update above
       // can make the first request arrive before the backend attach finishes;
       // this post-attach event is the authoritative retry for every switch.
+      // Send it before the scope check: the previous switch's own workspace
+      // read can bump the scope, and a skipped event left the rail on the
+      // previous project's workspace and branches.
       dispatchConfigChanged({ repoChanged: !repo || !repoPathsEqual(repo, repoBeforeSwitch) });
+      if (scope !== sessionScopeGeneration.current) return;
+      if (repo && targetRepo && !repoPathsEqual(repo, targetRepo)) setSwitchTargetRepo(null);
+      if (repo) {
+        setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
+        setSelectedProjectPath(repo);
+      }
       if (railTab === "sessions") {
         void refreshBankSessions();
       }
     } catch (err) {
       if (scope !== sessionScopeGeneration.current) return;
+      setSwitchTargetRepo(null);
       if (previousActiveId && previousActiveId !== id) {
         patchActiveSessionInCaches(projectsRef.current.filter(Boolean), previousActiveId);
         const revertRows = currentRepoRef.current
@@ -1937,7 +1962,7 @@ export default function LeftRail({
       )}
 
       {/* BRANCH SWITCHING / WORKSPACES */}
-      {railTab === "projects" && workspaceInfo?.is_git && (
+      {railTab === "projects" && branchRepoInfo?.is_git && (
         <Section
           title="Branches"
           className="mt-2 border-t border-edge/25 pt-5"
@@ -1956,11 +1981,11 @@ export default function LeftRail({
         >
           {/* Before the first read the list is unknown, not empty. */}
           {workspacesData !== undefined && filterBranchWorkspaces(workspaces).length === 0 && (
-            <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
+            <Empty>{branchRepoInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
           <div
             data-slot="left-rail-branches-list"
-            className="space-y-0.5 overflow-y-auto"
+            className={`space-y-0.5 overflow-y-auto${branchRepoPending ? " pointer-events-none" : ""}`}
             style={branchesListBoxStyle(branchesHeight)}
           >
             {filterBranchWorkspaces(workspaces).map((w) => {

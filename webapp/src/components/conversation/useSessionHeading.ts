@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
-import { api } from "../../lib/api";
+import { api, type WorkspaceInfo } from "../../lib/api";
+import { repoPathsEqual } from "../../lib/pathNormalize";
 import { displaySessionListTitle, SESSIONS_CHANGED_EVENT } from "../../lib/sessionTitle";
+import { readSWRCache, writeSWRCache } from "../../lib/useStaleWhileRevalidate";
+import { cachedSessionRow, workspaceInfoCacheKey } from "../leftRailSessions";
 
 export type SessionHeading = { title: string; project: string; branch: string };
 
@@ -37,14 +40,41 @@ function lastHeadingTitle(sessionId: string | null): string {
   }
 }
 
+type HeadingSeed = { title: string; repo: string; branch: string } | null;
+
+/** What the rail already knows about the session, read at switch time. */
+function headingSeed(sessionId: string | null): HeadingSeed {
+  const hit = sessionId ? cachedSessionRow(sessionId) : null;
+  if (!hit) return null;
+  const { row, root } = hit;
+  const repo = row.repo || row.workspace_root || root;
+  // The row's own branch is the one the session started on; the repo may
+  // be on another branch now. Show only a branch read from that repo.
+  const workspace = readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(repo));
+  return {
+    title: displaySessionListTitle(row.title, row.title_user),
+    repo,
+    branch: workspace?.is_git ? workspace.branch || "" : "",
+  };
+}
+
 /**
- * Session title, project, and branch for the conversation header. Reads
- * again when the session or workspace changes, when the server names the
- * session, and after a config event (a branch checkout).
+ * Session title, project, and branch for the conversation header. A switch
+ * shows the rail's cached row for the target at once: the config and
+ * workspace reads answer for the outgoing session until the backend switch
+ * ends. Reads again when the session or workspace changes, when the server
+ * names the session, and after a config event (a branch checkout).
  */
 export function useSessionHeading(sessionId: string | null, repo: string): SessionHeading {
-  const [title, setTitle] = useState(() => lastHeadingTitle(sessionId));
-  const [branch, setBranch] = useState("");
+  const [seedFor, setSeedFor] = useState(sessionId);
+  const [seed, setSeed] = useState<HeadingSeed>(() => headingSeed(sessionId));
+  if (seedFor !== sessionId) {
+    setSeedFor(sessionId);
+    setSeed(headingSeed(sessionId));
+  }
+  const [loaded, setLoaded] = useState<{ sessionId: string; title: string } | null>(null);
+  const [workspace, setWorkspace] = useState<{ repo: string; branch: string } | null>(null);
+  const shownRepo = seed?.repo || repo;
 
   useEffect(() => {
     let gen = 0;
@@ -52,19 +82,17 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
     const load = () => {
       const mine = ++gen;
       if (sessionId) {
-        api.sessions(repo || undefined).then((rows) => {
+        api.sessions(shownRepo || undefined).then((rows) => {
           if (mine !== gen) return;
           const row = rows.find((r) => r.id === sessionId);
           const next = row ? displaySessionListTitle(row.title, row.title_user) : "";
-          setTitle(next);
+          setLoaded({ sessionId, title: next });
           if (next) rememberHeadingTitle(sessionId, next);
         }).catch(() => {});
-      } else {
-        // No id yet: the app is still reading its sessions after a reload.
-        setTitle(lastHeadingTitle(null));
       }
       api.getWorkspace().then((ws) => {
-        if (mine === gen) setBranch(ws?.is_git ? ws.branch || "" : "");
+        if (ws?.repo) writeSWRCache(workspaceInfoCacheKey(ws.repo), ws);
+        if (mine === gen) setWorkspace({ repo: ws?.repo || "", branch: ws?.is_git ? ws.branch || "" : "" });
       }).catch(() => {});
     };
     const later = () => {
@@ -80,7 +108,18 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
       window.removeEventListener(SESSIONS_CHANGED_EVENT, later);
       window.removeEventListener("harness-config-changed", later);
     };
-  }, [sessionId, repo]);
+  }, [sessionId, shownRepo]);
 
-  return { title, project: projectName(repo), branch };
+  const title = !sessionId
+    ? lastHeadingTitle(null)
+    : loaded?.sessionId === sessionId
+      ? loaded.title
+      : seed?.title || lastHeadingTitle(sessionId);
+  // The workspace read names the backend's open folder; mid-switch that is
+  // still the outgoing session's, so its branch counts only for this repo.
+  const workspaceBranch = workspace && (!shownRepo || repoPathsEqual(workspace.repo, shownRepo))
+    ? workspace.branch
+    : null;
+  const branch = workspaceBranch ?? seed?.branch ?? "";
+  return { title, project: projectName(shownRepo), branch };
 }

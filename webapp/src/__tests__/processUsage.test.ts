@@ -307,3 +307,77 @@ describe("processUsage across session switches", () => {
     off();
   });
 });
+
+describe("processUsage across a session switch", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    _resetProcessUsageForTests();
+  });
+
+  afterEach(() => {
+    _resetProcessUsageForTests();
+    vi.useRealTimers();
+  });
+
+  function owned(sessionId: string, estCostUsd: number) {
+    const data = session(estCostUsd);
+    return { ...data, session_total: { ...data.session_total, session_id: sessionId } };
+  }
+
+  function switchTo(sessionId: string) {
+    window.dispatchEvent(new CustomEvent("harness-session-changed", { detail: { sessionId } }));
+  }
+
+  // Rig 2026-11-14: a read sent before the backend switch ended named the
+  // outgoing session, and the footer showed its spend under the target.
+  it("never shows or keeps another session's usage under the target", async () => {
+    const off = subscribeProcessUsage(() => {});
+    mockGetUsage.mockResolvedValue(owned("a", 1));
+    switchTo("a");
+    await vi.runOnlyPendingTimersAsync();
+    expect(getProcessUsage().session?.est_cost_usd).toBe(1);
+
+    mockGetUsage.mockResolvedValueOnce(owned("a", 1));
+    mockGetUsage.mockResolvedValue(owned("b", 2));
+    switchTo("b");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getProcessUsage().session).toBeNull();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getProcessUsage().session?.est_cost_usd).toBe(2);
+    off();
+  });
+
+  it("keeps the target's known numbers through an unreadable mid-switch reply", async () => {
+    const off = subscribeProcessUsage(() => {});
+    mockGetUsage.mockResolvedValue(owned("a", 1));
+    switchTo("a");
+    await vi.runOnlyPendingTimersAsync();
+    mockGetUsage.mockResolvedValue(owned("b", 2));
+    switchTo("b");
+    await vi.runOnlyPendingTimersAsync();
+
+    const unreadable = { ...owned("a", 0), session_total: { read_status: "unavailable" as const } };
+    mockGetUsage.mockResolvedValueOnce(unreadable as never);
+    mockGetUsage.mockResolvedValue(owned("a", 3));
+    switchTo("a");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getProcessUsage().session?.est_cost_usd).toBe(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(getProcessUsage().session?.est_cost_usd).toBe(3);
+    off();
+  });
+
+  it("keeps the session's numbers when a project selection follows the switch", async () => {
+    const off = subscribeProcessUsage(() => {});
+    mockGetUsage.mockResolvedValue(owned("a", 1));
+    switchTo("a");
+    await vi.runOnlyPendingTimersAsync();
+    mockGetUsage.mockImplementation(() => new Promise(() => {}));
+    window.dispatchEvent(new CustomEvent("harness-project-selected", { detail: "/w/other" }));
+    expect(getProcessUsage().session?.est_cost_usd).toBe(1);
+    off();
+  });
+});

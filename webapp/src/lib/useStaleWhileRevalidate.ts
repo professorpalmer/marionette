@@ -170,6 +170,15 @@ export function readSWRCache<T>(key: string): T | undefined {
   return hit ? (hit.data as T) : undefined;
 }
 
+/** Cached entries whose key starts with `prefix`, without subscribing. */
+export function readSWRCacheEntries<T>(prefix: string): Array<[string, T]> {
+  const out: Array<[string, T]> = [];
+  for (const [key, hit] of cache) {
+    if (key.startsWith(prefix)) out.push([key, hit.data as T]);
+  }
+  return out;
+}
+
 /** Seed or overwrite the module cache (prefetch without a hook subscription). */
 export function writeSWRCache<T>(key: string, data: T): void {
   cache.set(key, { data, key });

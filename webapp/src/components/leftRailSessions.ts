@@ -1,6 +1,6 @@
 import { type Session, type Workspace } from "../lib/api";
 import { repoPathsEqual } from "../lib/pathNormalize";
-import { readSWRCache, writeSWRCache } from "../lib/useStaleWhileRevalidate";
+import { readSWRCache, readSWRCacheEntries, writeSWRCache } from "../lib/useStaleWhileRevalidate";
 
 /** User-facing copy when concurrent session runner leases are full. */
 export const SESSION_LEASE_EXHAUSTED_MESSAGE =
@@ -137,6 +137,18 @@ export function patchSessionTitleInCaches(
 }
 
 /** Exactly one `active` flag across every per-root sessions cache. */
+/** A session row the rail already holds, and the project root it is listed
+ *  under. Lets a switch show the target's title, project, and branch before
+ *  the backend answers. */
+export function cachedSessionRow(sessionId: string): { row: Session; root: string } | null {
+  if (!sessionId) return null;
+  for (const [key, rows] of readSWRCacheEntries<Session[]>("sessions:")) {
+    const row = Array.isArray(rows) ? rows.find((r) => r?.id === sessionId) : undefined;
+    if (row) return { row, root: key.slice("sessions:".length) };
+  }
+  return null;
+}
+
 export function patchActiveSessionInCaches(
   roots: string[],
   sessionId: string,
@@ -241,6 +253,12 @@ export function purgeSessionFromRootCaches(
  *  do not flash another project's branches, and revisits stay warm. */
 export function workspacesCacheKey(repo: string): string {
   return `workspaces:${repo || "__none__"}`;
+}
+
+/** Last workspace read per repo (branch, git state), for a switch to show
+ *  before the backend opens that repo. */
+export function workspaceInfoCacheKey(repo: string): string {
+  return `workspace:${repo}`;
 }
 
 /** Seed BRANCHES SWR so a first visit of another project is not a blank list. */
