@@ -2572,6 +2572,7 @@ def reset_fresh_turn_state(session: Any) -> None:
     session._stagnation_streak = 0
     session._invalid_only_streak = 0
     session._failed_objective_resume_counts = {}
+    session._requirement_checks = 0
 
 
 def drain_idle_turn(
@@ -2697,6 +2698,11 @@ def drain_idle_turn(
     # of draining it under the wrong driver -- idle drain + deferred
     # swap will pick it up next.
     if not (queued and queued.get("text")):
+        from .requirement_check import maybe_inject
+
+        if maybe_inject(session, user_message):
+            yield ConvEvent("notice", {"message": "Requirement check", "kind": "requirement_check"})
+            return ("continue", user_message)
         if session._next_queued_needs_driver_swap():
             return ("break", user_message)
         queued = session._pop_next_prompt()
