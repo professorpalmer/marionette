@@ -4,6 +4,7 @@ const getSessionState = vi.fn();
 vi.mock("../lib/api", () => ({ api: { getSessionState: (...a: unknown[]) => getSessionState(...a) } }));
 
 import {
+  SESSION_STATE_NEST_POLL_MS,
   SESSION_STATE_POLL_MS,
   refreshSessionStateFeed,
   setSessionStateFeedSession,
@@ -35,6 +36,23 @@ describe("session state feed", () => {
     offRail();
     await vi.advanceTimersByTimeAsync(SESSION_STATE_POLL_MS * 3);
     expect(getSessionState).toHaveBeenCalledTimes(4);
+  });
+
+  it("polls faster only while a nested session of the shown session works", async () => {
+    vi.useFakeTimers();
+    const working = { ...reply, nest: { rev: 1, children: [{ id: "c1", status: "working" }] } };
+    const done = { ...reply, nest: { rev: 2, children: [{ id: "c1", status: "done" }] } };
+    getSessionState.mockResolvedValue(working);
+    setSessionStateFeedSession("a");
+    const off = subscribeSessionState(() => {});
+    await vi.advanceTimersByTimeAsync(SESSION_STATE_NEST_POLL_MS * 3 + 10);
+    expect(getSessionState).toHaveBeenCalledTimes(4);
+    getSessionState.mockResolvedValue(done);
+    await vi.advanceTimersByTimeAsync(SESSION_STATE_NEST_POLL_MS + 10);
+    const calls = getSessionState.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(SESSION_STATE_POLL_MS - SESSION_STATE_NEST_POLL_MS);
+    expect(getSessionState.mock.calls.length).toBe(calls);
+    off();
   });
 
   it("does not hand a new session the reply requested for the old one", async () => {

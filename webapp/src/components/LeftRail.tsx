@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
 import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
@@ -93,9 +93,13 @@ import {
   writeSessionListCache,
   actionAfterSessionRemove,
   remainingOpenAfterRemoveFromCache,
+  cachedSessionRow,
+  workspaceInfoCacheKey,
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
+import NestedSessionRows, { NestToggle } from "./NestedSessionRows";
+import { buildSessionTree, storeNestExpanded, storedNestExpanded, useNestRev } from "../lib/nestedSessions";
 
 export default function LeftRail({
   jobsRefresh,
@@ -252,6 +256,8 @@ export default function LeftRail({
 
   const [opening, setOpening] = useState(false);
   const [switchingSessionId, setSwitchingSessionId] = useState<string | null>(null);
+  // Repo of a cross-project switch until the backend workspace read names it.
+  const [switchTargetRepo, setSwitchTargetRepo] = useState<string | null>(null);
   const switchingSessionIdRef = useRef<string | null>(null);
   const requestedSessionIdRef = useRef<string | null>(null);
   const [sessionActivationNotice, setSessionActivationNotice] = useState<string | null>(null);
@@ -406,6 +412,7 @@ export default function LeftRail({
         if (info.repo && info.codegraph_status) {
           codegraphByRepoRef.current[info.repo] = info.codegraph_status;
         }
+        if (info.repo) writeSWRCache(workspaceInfoCacheKey(info.repo), info);
       },
     },
   );
@@ -414,15 +421,24 @@ export default function LeftRail({
   if (currentRepoRef.current !== currentRepo) pruneEpoch.current += 1;
   currentRepoRef.current = currentRepo;
 
+  if (switchTargetRepo && repoPathsEqual(switchTargetRepo, currentRepo)) setSwitchTargetRepo(null);
+  // A cross-project switch shows the target's cached branches at click time,
+  // not the outgoing project's list until the backend workspace read lands.
+  const branchRepo = switchTargetRepo || currentRepo;
+  const branchRepoPending = branchRepo !== currentRepo;
+  const branchRepoInfo = branchRepoPending
+    ? readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(branchRepo))
+    : workspaceInfo;
+
   // Branches list: SWR keyed by repo so the first fetch stays warm across
   // session switches / config-changed events (no blank-then-refill lag).
   const {
     data: workspacesData,
     revalidate: revalidateWorkspaces,
   } = useStaleWhileRevalidate<Workspace[]>(
-    workspacesCacheKey(currentRepo),
-    () => api.workspaces(currentRepo || undefined),
-    { enabled: !!currentRepo && !!workspaceInfo?.is_git },
+    workspacesCacheKey(branchRepo),
+    () => api.workspaces(branchRepo || undefined),
+    { enabled: !!branchRepo && !!branchRepoInfo?.is_git },
   );
   const workspaces = workspacesData ?? [];
 
@@ -863,6 +879,15 @@ export default function LeftRail({
       : undefined;
     if (currentRows) mutateSessions(currentRows);
     setSessionsCacheEpoch((n) => n + 1);
+    const target = cachedSessionRow(id);
+    // A nested session's repo is its worktree; the rail stays on its project.
+    const targetRepo = !target ? ""
+      : target.row.nest?.parent_id ? target.row.workspace_root || target.root
+        : target.row.repo || target.row.workspace_root || target.root;
+    // Set or clear on every switch: a quick switch back to the open project
+    // must not keep the previous click's target.
+    setSwitchTargetRepo(targetRepo && !repoPathsEqual(targetRepo, repoBeforeSwitch)
+      && readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(targetRepo)) ? targetRepo : null);
     onSessionChange?.(id);
     try {
       const res: any = await api.switchSession(id);
@@ -870,22 +895,27 @@ export default function LeftRail({
         throw res;
       }
       sessionListGeneration.current += 1;
-      if (scope !== sessionScopeGeneration.current) return;
       const repo = (res?.repo || "").trim();
-      if (repo) {
-        setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
-        setSelectedProjectPath(repo);
-      }
       // A successful switch must refresh the session-scoped config even when
       // both sessions share a workspace. The optimistic state update above
       // can make the first request arrive before the backend attach finishes;
       // this post-attach event is the authoritative retry for every switch.
+      // Send it before the scope check: the previous switch's own workspace
+      // read can bump the scope, and a skipped event left the rail on the
+      // previous project's workspace and branches.
       dispatchConfigChanged({ repoChanged: !repo || !repoPathsEqual(repo, repoBeforeSwitch) });
+      if (scope !== sessionScopeGeneration.current) return;
+      if (repo && targetRepo && !repoPathsEqual(repo, targetRepo)) setSwitchTargetRepo(null);
+      if (repo) {
+        setExpandedProjects((prev) => ({ ...prev, [repo]: true }));
+        setSelectedProjectPath(repo);
+      }
       if (railTab === "sessions") {
         void refreshBankSessions();
       }
     } catch (err) {
       if (scope !== sessionScopeGeneration.current) return;
+      setSwitchTargetRepo(null);
       if (previousActiveId && previousActiveId !== id) {
         patchActiveSessionInCaches(projectsRef.current.filter(Boolean), previousActiveId);
         const revertRows = currentRepoRef.current
@@ -1231,6 +1261,21 @@ export default function LeftRail({
     ]);
   }, [revalidateSessions, fetchSessionRows]);
   refreshSessionsRef.current = refreshAllProjectSessions;
+
+  // Nested sessions: a child start or status change moves the counter. Reload
+  // the open project's rows so the tree shows it without a click.
+  const nestRev = useNestRev();
+  useEffect(() => {
+    if (nestRev && currentRepoRef.current) void fetchSessionRows(currentRepoRef.current).catch(() => {});
+  }, [nestRev, fetchSessionRows]);
+  const [nestExpanded, setNestExpanded] = useState<Record<string, boolean>>({});
+  const isNestExpanded = (parent: Session, children: readonly Session[]): boolean =>
+    nestExpanded[parent.id] ?? storedNestExpanded(parent.id)
+      ?? (!!parent.active || children.some((c) => c.active || runners[c.id] === "running"));
+  const toggleNest = (parentId: string, expanded: boolean) => {
+    storeNestExpanded(parentId, !expanded);
+    setNestExpanded((prev) => ({ ...prev, [parentId]: !expanded }));
+  };
 
   // Eager per-root lists: prefetch sessions for EVERY project in the rail so
   // non-active dirs show their rows without waiting for a click. Seeds the
@@ -1592,7 +1637,6 @@ export default function LeftRail({
               <div className="space-y-0.5 pb-2">
                 {bankSessions.map((s) => {
                   const root = s.workspace_root || s.repo || "";
-                  const label = getWorkspaceBasename(root) || "Home";
                   const isActive = !!s.active;
                   if (renamingId === s.id) {
                     return (
@@ -1628,7 +1672,7 @@ export default function LeftRail({
                       className={`w-full min-h-8 flex flex-col justify-center text-left pl-6 pr-2 rounded transition min-w-0 aria-disabled:opacity-60 ${
                         isActive ? "bg-panel2/60" : "hover:bg-panel2/30"
                       }`}
-                      title={`${displaySessionListTitle(s.title, s.title_user)}${s.preview ? `\n${s.preview}` : ""}\n${root}`}
+                      title={`${displaySessionListTitle(s.title, s.title_user)}\n${root}`}
                     >
                       <div className="relative flex items-center min-w-0">
                         {switchingSessionId === s.id
@@ -1638,9 +1682,6 @@ export default function LeftRail({
                           {displaySessionListTitle(s.title, s.title_user)}
                         </div>
                         <SessionAge updated={s.updated ?? s.created} />
-                      </div>
-                      <div className="text-ui-10 text-faint truncate">
-                        {s.preview || <span className="font-mono">{label}</span>}
                       </div>
                     </button>
                   );
@@ -1766,8 +1807,9 @@ export default function LeftRail({
                         </div>
                       ) : null
                     ) : (
-                      projectSessions.map((s) => (
-                        <div key={s.id} className="group relative">
+                      buildSessionTree(projectSessions).map(({ row: s, children: nested }) => (
+                        <Fragment key={s.id}>
+                        <div className="group relative">
                           {renamingId === s.id ? (
                             <input
                               type="text"
@@ -1812,7 +1854,7 @@ export default function LeftRail({
                                 onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
                                 onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
                                 aria-disabled={!!switchingSessionId || opening || undefined}
-                                title={s.preview ? `${displaySessionListTitle(s.title, s.title_user)}\n${s.preview}` : displaySessionListTitle(s.title, s.title_user)}
+                                title={displaySessionListTitle(s.title, s.title_user)}
                                 data-session-row="true"
                                 aria-current={s.active ? "true" : undefined}
                                 onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
@@ -1827,10 +1869,14 @@ export default function LeftRail({
                                   <span className="flex-1 min-w-0 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
                                   <SessionAge updated={s.updated ?? s.created} />
                                 </span>
-                                {s.preview ? (
-                                  <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
-                                ) : null}
                               </button>
+                              {nested.length > 0 ? (
+                                <NestToggle
+                                  count={nested.length}
+                                  expanded={isNestExpanded(s, nested)}
+                                  onToggle={() => toggleNest(s.id, isNestExpanded(s, nested))}
+                                />
+                              ) : null}
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
                                   <button
@@ -1866,6 +1912,18 @@ export default function LeftRail({
                             </div>
                           )}
                         </div>
+                        {nested.length > 0 ? (
+                          <NestedSessionRows
+                            sessions={nested}
+                            expanded={isNestExpanded(s, nested)}
+                            onToggle={() => toggleNest(s.id, isNestExpanded(s, nested))}
+                            runners={runners}
+                            switchingSessionId={switchingSessionId}
+                            onOpen={(id) => { void switchSession(id); }}
+                            onPrefetch={(id) => { void prefetchSessionTranscript(id); }}
+                          />
+                        ) : null}
+                        </Fragment>
                       ))
                     )}
                   </div>
@@ -1937,7 +1995,7 @@ export default function LeftRail({
       )}
 
       {/* BRANCH SWITCHING / WORKSPACES */}
-      {railTab === "projects" && workspaceInfo?.is_git && (
+      {railTab === "projects" && branchRepoInfo?.is_git && (
         <Section
           title="Branches"
           className="mt-2 border-t border-edge/25 pt-5"
@@ -1956,11 +2014,11 @@ export default function LeftRail({
         >
           {/* Before the first read the list is unknown, not empty. */}
           {workspacesData !== undefined && filterBranchWorkspaces(workspaces).length === 0 && (
-            <Empty>{workspaceInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
+            <Empty>{branchRepoInfo?.head_unborn ? "No commits yet" : "No branches"}</Empty>
           )}
           <div
             data-slot="left-rail-branches-list"
-            className="space-y-0.5 overflow-y-auto"
+            className={`space-y-0.5 overflow-y-auto${branchRepoPending ? " pointer-events-none" : ""}`}
             style={branchesListBoxStyle(branchesHeight)}
           >
             {filterBranchWorkspaces(workspaces).map((w) => {

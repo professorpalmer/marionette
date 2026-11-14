@@ -11,6 +11,7 @@ import { swarmPendingStatusOf } from "./conversation/swarmPendingIdentity";
 import { localSwarmJobId } from "../lib/localJobMetadata";
 import { TurnChangesFooter, type TurnChangedFile, type TurnChangesItem } from "./conversation/TurnChangesFooter";
 import { SystemEventRow, compactTokens } from "./conversation/SystemEventRow";
+import { SessionNoteRow, sessionNoteKey, type SessionNoteItem } from "./conversation/SessionNoteRow";
 import { commandRisk } from "../lib/commandRisk";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -366,6 +367,7 @@ export type Item =
   | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
+  | SessionNoteItem
   | CompactionItem
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
@@ -404,6 +406,7 @@ export type GroupedItem =
   | SwarmResultItem
   | { kind: "checkpoint"; id: string; label: string; trigger: string }
   | { kind: "pending_review"; id: string; summary: string }
+  | SessionNoteItem
   | CompactionItem
   | { kind: "codegraph_context"; symbols: number; query: string }
   | { kind: "vault_cite"; route: string; snippets: string[]; query?: string }
@@ -618,6 +621,7 @@ function isOperatorProgressBoundary(item: Item): boolean {
     || item.kind === "secret_request"
     || item.kind === "auth_failure"
     || item.kind === "pending_review"
+    || item.kind === "session_note"
     || item.kind === "steer"
     || item.kind === "turn_terminal"
   );
@@ -821,9 +825,9 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
       pushActivity(item);
     } else if (item.kind === "checkpoint") {
       pushActivity(item);
-    } else if (item.kind === "pending_review") {
-      // Operator receipt for DiffReview hold — keep top-level so it is not
-      // buried inside a collapsed investigation fold.
+    } else if (item.kind === "pending_review" || item.kind === "session_note") {
+      // Operator receipts (DiffReview hold, nested-session report) stay
+      // top-level so a collapsed investigation fold cannot bury them.
       flush();
       grouped.push(item);
     } else if (item.kind === "swarm_pending") {
@@ -878,8 +882,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   return grouped;
 }
 
-function isUserRow(row: GroupedItem): boolean {
-  return row.kind === "msg" && row.msg.role === "user";
+/** A row that starts a turn: a user message, or a nested-session report
+ *  (the parent's wake turn answers it). */
+function isTurnStartRow(row: GroupedItem): boolean {
+  return (row.kind === "msg" && row.msg.role === "user") || row.kind === "session_note";
 }
 
 /**
@@ -1022,13 +1028,13 @@ export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): 
   let lastChanges = -1;
   let i = 0;
   while (i < grouped.length) {
-    if (isUserRow(grouped[i])) {
+    if (isTurnStartRow(grouped[i])) {
       out.push(grouped[i]);
       i += 1;
       continue;
     }
     let j = i;
-    while (j < grouped.length && !isUserRow(grouped[j])) j += 1;
+    while (j < grouped.length && !isTurnStartRow(grouped[j])) j += 1;
     const span = grouped.slice(i, j);
     if (j === grouped.length && liveTurnOpen) out.push(...span);
     else {
@@ -1368,6 +1374,8 @@ export function stableItemKey(it: GroupedItem, i: number): string {
       return `ckpt-${it.id}`;
     case "pending_review":
       return `prev-${it.id}`;
+    case "session_note":
+      return sessionNoteKey(it);
     case "compaction":
       return `cmp-${it.aborted ? "abort" : "ok"}-${it.before_tokens}-${it.after_tokens}-${it.reason || it.mode || i}`;
     case "codegraph_context":
@@ -1837,7 +1845,7 @@ export const TranscriptList = memo(function TranscriptList({
     ? lastActivityGroupIdx
     : -1;
   const liveTurnStart = (() => {
-    for (let k = grouped.length - 1; k >= 0; k--) if (isUserRow(grouped[k])) return k + 1;
+    for (let k = grouped.length - 1; k >= 0; k--) if (isTurnStartRow(grouped[k])) return k + 1;
     return 0;
   })();
   // The current turn's busy clock is its Worked for (live, and sealed until
@@ -2121,6 +2129,8 @@ export const TranscriptList = memo(function TranscriptList({
           <span>restore point created: {it.label} ({it.id.slice(0, 8)})</span>
         </div>
       );
+    } else if (it.kind === "session_note") {
+      return <SessionNoteRow key={key} item={it} />;
     } else if (it.kind === "pending_review") {
       return (
         <button

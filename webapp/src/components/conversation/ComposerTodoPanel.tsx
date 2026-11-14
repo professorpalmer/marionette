@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Ban, CheckCircle2, ChevronDown, ChevronRight, Circle, ListTree, Loader2, MinusCircle, X } from "lucide-react";
-import { api, type Job, type SessionTodoItem, type SessionTodoSnapshot } from "../../lib/api";
+import { api, type Job, type NestedChild, type SessionTodoItem, type SessionTodoSnapshot } from "../../lib/api";
+import { hasWorkingLinkedChild, nestStatusDot, nestStatusLabel, useNestedChildren } from "../../lib/nestedSessions";
+import { requestSessionSwitch } from "../../lib/sessionNav";
 import {
   litTodoContentsFromGroups,
   liveJobTodoLabelGroups,
@@ -81,10 +83,13 @@ export function useTodoChecklistVisible(
     getSessionTodosVersion,
   );
   // Store version when the turn opened. -1: mounted mid-turn, show the list.
+  const children = useNestedChildren(sessionId);
   const [turn, setTurn] = useState({ active, startVersion: -1 });
   if (turn.active !== active) setTurn({ active, startVersion: active ? version : -1 });
   if (!todoHasWork(snapshot) || storedSid !== sessionId) return false;
   if (sessionHasLiveTodoOwner(jobs, sessionId)) return true;
+  // A step a nested session still works on keeps the plan on screen.
+  if (hasWorkingLinkedChild(snapshot, children)) return true;
   return active && version > turn.startVersion;
 }
 
@@ -117,6 +122,7 @@ export default function ComposerTodoPanel({
     [jobs, sessionId, snapshot],
   );
   const visible = useTodoChecklistVisible(jobs, sessionId, active);
+  const children = useNestedChildren(sessionId);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -177,6 +183,7 @@ export default function ComposerTodoPanel({
                 expanded={!collapsedPhaseKeys.has(key)}
                 litContents={lit}
                 liveStep={liveStep}
+                nestedChildren={children}
                 onToggle={() => setCollapsedPhaseKeys((current) => {
                   const next = new Set(current);
                   if (next.has(key)) next.delete(key);
@@ -198,6 +205,7 @@ function PhaseBlock({
   expanded,
   litContents,
   liveStep,
+  nestedChildren,
   onToggle,
 }: {
   index: number;
@@ -205,6 +213,7 @@ function PhaseBlock({
   expanded: boolean;
   litContents: ReadonlySet<string>;
   liveStep: { task: string | null; step: string } | null;
+  nestedChildren: readonly NestedChild[];
   onToggle: () => void;
 }) {
   const { done, total } = todoPhaseProgress(phase);
@@ -238,6 +247,13 @@ function PhaseBlock({
                   {task.content}
                   {task.blocker ? <span className="mt-0.5 block text-faint">{task.blocker}</span> : null}
                   {step ? <span className="block truncate font-mono text-faint">{step}</span> : null}
+                  {task.session ? (
+                    <SessionChip
+                      id={task.session}
+                      name={task.session_name || task.session}
+                      child={nestedChildren.find((c) => c.id === task.session)}
+                    />
+                  ) : null}
                 </span>
               </div>
             );
@@ -245,5 +261,23 @@ function PhaseBlock({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** A plan step's nested session: name and live status. A click opens it. */
+function SessionChip({ id, name, child }: { id: string; name: string; child: NestedChild | undefined }) {
+  const status = child?.status;
+  return (
+    <button
+      type="button"
+      onClick={() => requestSessionSwitch(id)}
+      title={child?.report ? `${child.title}\n${child.report}` : `Open ${name}`}
+      data-session-chip={id}
+      className="mt-0.5 flex max-w-full items-center gap-1.5 rounded-md bg-panel/45 px-1.5 py-0.5 text-ui-10.5 leading-4 text-txt hover:bg-panel/70"
+    >
+      <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${status ? nestStatusDot(status) : "bg-faint"}`} />
+      <span className="min-w-0 truncate">{name}</span>
+      {status ? <span className="shrink-0 text-faint">· {nestStatusLabel(status)}</span> : null}
+    </button>
   );
 }

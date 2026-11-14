@@ -1434,6 +1434,129 @@ def _attach_view(
             raise
 
 
+def _ensure_background_runner(session_id: str) -> Any:
+    """Runner for ``session_id`` with no change to the active view.
+
+    A nested child (or a parent woken by a child report) runs while the UI
+    shows another session. The runner works in the child's worktree.
+    """
+    from .deferred_attach import is_deferred_placeholder
+    from .nested_sessions import run_repo
+    from .local_models import resolve_driver_context_window
+
+    existing = _runners.get(session_id)
+    if existing is not None:
+        if is_deferred_placeholder(existing):
+            existing.ensure_ready(timeout=120.0)
+            return _runners.get(session_id)
+        return existing
+    row = next((r for r in _sessions.rows() if r.get("id") == session_id), None)
+    if row is None:
+        raise RuntimeError("unknown session")
+    repo = run_repo(row) or session_stored_root(row) or _cfg.repo or ""
+    driver = _sessions.pilot_preferences(session_id, seed_driver=_cfg.driver)["driver"]
+    config = _runner_config_snapshot()
+    config.repo = repo
+    config.driver = driver
+    if "HARNESS_MAX_CONTEXT_TOKENS" not in os.environ:
+        config.max_context_tokens = resolve_driver_context_window(driver, default=200000)
+        config.max_context_tokens_pinned = False
+    built = _build_conversational_pilot(config=config)
+    built.harness_session_id = session_id
+    built.bind_prompt_queue(_sessions_state_dir(), session_id)
+    history = load_transcript(_sessions_state_dir(), session_id)
+    if history:
+        built.load_history(history)
+    for hook in ("reload_session_goal", "reload_session_todos"):
+        fn = getattr(built, hook, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception as exc:
+                _diag("server.background_runner_" + hook, exc)
+    runner = _runners.get_or_create(session_id, lambda: built)
+    if runner is not built:
+        try:
+            built.release_warm_acp(reason="session_switch")
+        except Exception as exc:
+            _diag("server.background_runner_release", exc)
+    return runner
+
+
+def _nested_persist(session_id: str, runner: Any) -> None:
+    if _runners.get(session_id) is runner:
+        persist_live_transcript(runner, runner.config.state_dir or _sessions_state_dir(),
+                                session_id, writer=save_transcript)
+
+
+def _nested_run_turn(session_id: str, message: str, *, resume: bool = False, driver: str = "",
+                     token: int = 0) -> None:
+    from .headless_turn import start_headless_turn
+    from .nested_sessions import supervisor
+    from .api.streams import stream_chat
+
+    def _stream(handler, text, *, session_id, resume):
+        return stream_chat(handler, text, None, _stream_services(), resume=resume,
+                           session_id=session_id)
+
+    def _refused(sid, handler):
+        sup = supervisor()
+        if sup is not None:
+            sup.refused(sid, _refusal_text(handler.body))
+
+    def _error(sid, exc):
+        _diag("server.nested_turn", exc, msg=f"sid={sid}")
+        sup = supervisor()
+        if sup is not None:
+            sup.refused(sid, _refusal_text(str(exc)) or type(exc).__name__)
+
+    def _exited(sid, outcome):
+        sup = supervisor()
+        if sup is not None:
+            sup.turn_exited(sid, token, outcome)
+
+    start_headless_turn(session_id, message, stream=_stream, prepare=_ensure_background_runner,
+                        on_refused=_refused, on_error=_error, on_exit=_exited, resume=resume)
+
+
+def _refusal_text(body: str) -> str:
+    try:
+        data = json.loads(body)
+    except (TypeError, ValueError):
+        return str(body or "")
+    if isinstance(data, dict):
+        if data.get("code") == "lease_exhausted":
+            return ("No free session slot: every concurrent session is busy. Wait for a "
+                    "session to finish, or raise HARNESS_MAX_CONCURRENT_SESSIONS.")
+        return str(data.get("error") or body)
+    return str(body or "")
+
+
+def _nested_add_worktree(repo: str, branch: str) -> dict:
+    from .worktrees import add_worktree
+    from .nested_sessions import lock_worktree, seed_codegraph
+    tree = add_worktree(repo, branch)
+    lock_worktree(tree["path"], "Marionette nested session")
+    seed_codegraph(repo, tree["path"])
+    return tree
+
+
+def _install_nested_supervisor() -> Any:
+    from .nested_sessions import NestServices, NestedSupervisor, set_supervisor
+    sup = NestedSupervisor(NestServices(
+        sessions=_sessions,
+        get_runner=_runners.get,
+        runner_status=_runners.status,
+        run_turn=_nested_run_turn,
+        persist=_nested_persist,
+        diag=_diag,
+        add_worktree=_nested_add_worktree,
+        ensure_runner=_ensure_background_runner,
+    ))
+    set_supervisor(sup)
+    return sup
+
+
 def _ensure_active_pilot_ready(*, timeout: float = 120.0) -> Any:
     """Block until the active view's deferred cold build finishes (if any)."""
     from .api.attach import ensure_active_pilot_ready
@@ -2471,6 +2594,8 @@ if _sessions.active:
 else:
     _sync_pilot_session_id()
 
+_install_nested_supervisor()
+
 _skills = SkillStore()
 _rules = RuleStore()
 _commands = CommandStore()
@@ -2712,6 +2837,7 @@ _bind_codegraph_index_deps(_CodegraphIndexDeps(
     diag=lambda *a, **k: _diag(*a, **k),
     get_state_dir=lambda: (_cfg.state_dir if _cfg else "") or os.path.expanduser("~/.pmharness/state"),
     get_repo=lambda: _cfg.repo if _cfg else None,
+    is_home_workspace=lambda path: _is_home_workspace(path),
 ))
 
 _pilot._on_wiki_ingest = _clear_wiki_graph_cache
@@ -3395,6 +3521,15 @@ def _finalize_turn(ctx) -> None:
     except Exception as e:
         import sys
         print(f"[transcript persist error] {e!r}", file=sys.stderr)
+    try:
+        from .headless_turn import current_outcome
+        from .nested_sessions import supervisor
+        sup = supervisor()
+        sid = (ctx.get("session_id") or "") if isinstance(ctx, dict) else ""
+        if sup is not None and sid:
+            sup.on_turn_end(sid, pilot, outcome=current_outcome())
+    except Exception as e:
+        _diag("server.nested_turn_end", e)
 
 
 def _retry_on_locked(read, attempts: int = 3, delay: float = 0.15):
@@ -3934,6 +4069,19 @@ def serve(host: str = "127.0.0.1", port: int = 8799, force: bool = False,
             lifetime.publish(port, _endpoint_identity().describe(), Path(_TOKEN_FILE))
             atexit.register(lifetime.close)
         scheduler_runtime.start()
+        def _boot_nested():
+            from .nested_sessions import supervisor
+            time.sleep(2.0)
+            try:
+                sup = supervisor()
+                if sup is not None:
+                    sup.reconcile_on_boot()
+                    for row in _sessions.nested_rows():
+                        if row.get("nest_inbox"):
+                            sup.deliver(row["id"])
+            except Exception as e:
+                _diag("server.boot_nested", e)
+        threading.Thread(target=_boot_nested, name="nested-boot", daemon=True).start()
         srv.serve_forever()
     except SystemExit:
         raise

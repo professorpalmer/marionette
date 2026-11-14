@@ -112,11 +112,17 @@ class TodoItem:
     content: str
     status: str = "pending"
     blocker: Optional[str] = None
+    # Nested session that owns this step (child session id and short name).
+    session: Optional[str] = None
+    session_name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"content": self.content, "status": self.status}
         if self.blocker:
             out["blocker"] = self.blocker
+        if self.session:
+            out["session"] = self.session
+            out["session_name"] = self.session_name or ""
         return out
 
 
@@ -138,7 +144,8 @@ def phases_to_dicts(phases: Sequence[TodoPhase]) -> List[Dict[str, Any]]:
 
 
 def clone_item(task: TodoItem) -> TodoItem:
-    return TodoItem(content=task.content, status=task.status, blocker=task.blocker)
+    return TodoItem(content=task.content, status=task.status, blocker=task.blocker,
+                    session=task.session, session_name=task.session_name)
 
 
 def clone_phases(phases: Sequence[TodoPhase]) -> List[TodoPhase]:
@@ -173,6 +180,8 @@ def phases_from_raw(raw: Any) -> List[TodoPhase]:
                 content=str(task.get("content") or ""),
                 status=str(task.get("status") or "pending"),
                 blocker=(str(task["blocker"]).strip() or None) if task.get("blocker") else None,
+                session=str(task["session"]) if task.get("session") else None,
+                session_name=str(task.get("session_name") or "") or None,
             )
             for task in entry["tasks"]
         ]
@@ -195,6 +204,34 @@ def find_phase_by_name(phases: Sequence[TodoPhase], name: str) -> Optional[TodoP
         if phase.name == name:
             return phase
     return None
+
+
+def link_task_session(
+    phases: Sequence[TodoPhase], content: str, session_id: str, name: str,
+) -> Optional[TodoItem]:
+    """Link one step to a nested session: the named step, else the step in progress."""
+    target: Optional[TodoItem] = None
+    wanted = (content or "").strip()
+    if wanted:
+        hit = find_task_by_content(phases, wanted)
+        if hit is None:
+            needle = normalize_for_todo_match(wanted)
+            matches = [
+                task for phase in phases for task in phase.tasks
+                if needle and needle in normalize_for_todo_match(task.content)
+            ]
+            target = matches[0] if len(matches) == 1 else None
+        else:
+            target = hit[0]
+    if target is None and not wanted:
+        target = next(
+            (task for phase in phases for task in phase.tasks if task.status == "in_progress"),
+            None,
+        )
+    if target is not None:
+        target.session = session_id
+        target.session_name = name
+    return target
 
 
 def next_actionable_task(phases: Sequence[TodoPhase]) -> Optional[TodoItem]:
@@ -407,7 +444,15 @@ def remove_tasks(phases: List[TodoPhase], entry: Dict[str, Any], errors: List[st
 def apply_entry(phases: List[TodoPhase], entry: Dict[str, Any], errors: List[str]) -> List[TodoPhase]:
     op = str(entry.get("op") or "").strip().lower()
     if op == "init":
-        return init_phases(entry, errors)
+        fresh = init_phases(entry, errors)
+        # A new plan keeps each nested-session link on a step with the same text.
+        links = {t.content: t for p in phases for t in p.tasks if t.session}
+        for phase in fresh:
+            for task in phase.tasks:
+                old = links.get(task.content)
+                if old is not None:
+                    task.session, task.session_name = old.session, old.session_name
+        return fresh
     if op == "start":
         hit = _resolve_task(phases, str(entry.get("task") or "").strip(), errors)
         if not hit:
@@ -513,6 +558,8 @@ def format_todo_tree(phases: Sequence[TodoPhase], *, collapsed: bool = True) -> 
                 "blocked": "[!]",
             }.get(task.status, "[ ]")
             extra = " — %s" % task.blocker if task.status == "blocked" and task.blocker else ""
+            if task.session:
+                extra += " (session %s)" % (task.session_name or task.session)
             lines.append("  %s %s%s" % (mark, task.content, extra))
         if hidden:
             lines.append("  ... %d more todo%s" % (hidden, "s" if hidden != 1 else ""))

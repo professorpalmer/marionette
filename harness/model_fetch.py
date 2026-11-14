@@ -13,6 +13,7 @@ failure falls back to the cached list, then returns an empty live result. Never 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -26,6 +27,11 @@ _FETCH_TIMEOUT = 6
 _MEM: dict[str, list[str]] = {}
 _RECORD_MEM: dict[str, list[dict[str, Any]]] = {}
 _MEM_AT: dict[str, float] = {}
+# A failed fetch with no cached catalog to fall back on. /api/config lists the
+# picker models on every read, so without this each read paid the provider
+# round trip again (up to the fetch timeout) while a key stayed bad.
+_FAILED_RETRY_SECONDS = 300
+_FAILED_AT: dict[str, tuple[float, str]] = {}
 # Last failure reason per provider, so an empty picker can explain WHY (bad key
 # vs network vs schema change) instead of looking like the account has no models.
 _LAST_ERROR: dict[str, str] = {}
@@ -51,6 +57,7 @@ def invalidate_models_cache(provider_name: Optional[str] = None) -> None:
             _MEM.pop(provider_name, None)
             _RECORD_MEM.pop(provider_name, None)
             _MEM_AT.pop(provider_name, None)
+            _FAILED_AT.pop(provider_name, None)
             _LAST_ERROR.pop(provider_name, None)
             disk = _read_cache()
             if provider_name in disk:
@@ -60,6 +67,7 @@ def invalidate_models_cache(provider_name: Optional[str] = None) -> None:
         _MEM.clear()
         _RECORD_MEM.clear()
         _MEM_AT.clear()
+        _FAILED_AT.clear()
         _LAST_ERROR.clear()
         _write_cache({})
     except Exception as e:
@@ -430,6 +438,12 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
             _MEM[name] = [record["id"] for record in cached]
             _MEM_AT[name] = time.monotonic()
             return cached
+    key_mark = hashlib.sha256((key or "").encode("utf-8")).hexdigest()[:16]
+    failed = _FAILED_AT.get(name)
+    if not force and failed and failed[1] == key_mark and (
+        time.monotonic() - failed[0]
+    ) < _FAILED_RETRY_SECONDS:
+        return []
     if name in ("opencode-go", "opencode-zen") or getattr(
         provider, "api_mode", "",
     ) in ("opencode_go", "opencode_zen"):
@@ -462,6 +476,7 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
                     "id": item, "source": "live", "status": "available",
                 })
     if fresh:
+        _FAILED_AT.pop(name, None)
         disk[name] = {"fetched_at": now, "models": fresh}
         _write_cache(disk)
         _RECORD_MEM[name] = fresh
@@ -474,6 +489,7 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
         _MEM[name] = [record["id"] for record in stale]
         _MEM_AT[name] = time.monotonic()
         return stale
+    _FAILED_AT[name] = (time.monotonic(), key_mark)
     return []
 
 

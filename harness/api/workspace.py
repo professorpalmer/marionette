@@ -549,7 +549,7 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
         svc.prepare_home_workspace()
     except Exception as e:
         svc.diag("server.workspace_home_prepare", e)
-    return 200, {
+    payload = {
         "repo": repo,
         "branch": branch,
         "is_git": is_git,
@@ -558,6 +558,22 @@ def get_workspace(svc: WorkspaceServices) -> tuple[int, JsonPayload]:
         "recents": recents,
         "home": svc.home_workspace_path(),
     }
+    # A nested session works in its own worktree while the view stays on the
+    # parent project. The header reads the child's branch from here.
+    from ..nested_sessions import active_child_tree
+    tree = active_child_tree()
+    if tree:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", tree, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                payload["session_repo"] = tree
+                payload["session_branch"] = proc.stdout.strip()
+        except Exception as e:
+            svc.diag("server.workspace_session_branch", e)
+    return 200, payload
 
 
 def get_workspace_symbols(query: str, svc: WorkspaceServices) -> tuple[int, JsonPayload]:

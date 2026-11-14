@@ -577,6 +577,10 @@ export type WorkspaceInfo = {
   codegraph_status: string;
   recents?: string[];
   home?: string;
+  /** Set while a nested session is open: its worktree and that worktree's
+   *  branch. ``repo`` and ``branch`` stay on the parent project. */
+  session_repo?: string;
+  session_branch?: string;
 };
 
 export type Workspace = {
@@ -589,7 +593,12 @@ export type Workspace = {
 };
 export type SessionForkPreview = { revision: string; boundaries: { event_id: number; label: string; role: string }[] };
 
-export type Session = { forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; title_user?: boolean; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string; updated?: number; pilot_preferences?: { driver?: string; reasoning_effort?: ReasoningEffort; swarm_reasoning_effort?: ReasoningEffort } };
+/** Child link on a nested session row (see docs/design/nested-sessions.md). */
+export type NestStatus = "working" | "done" | "failed" | "stopped";
+export type SessionNest = { parent_id: string; name: string; todo?: string; status?: NestStatus; report?: string; branch?: string; worktree?: string; updated?: number };
+/** A child of the asked-about session, with live status. */
+export type NestedChild = { id: string; title: string; name: string; status: NestStatus; report: string; todo: string; branch: string; worktree: string; updated: number };
+export type Session = { nest?: SessionNest; forked_from?: { parent_id: string; at_event_id: number; revision?: string }; id: string; title: string; title_user?: boolean; created: number; active?: boolean; archived?: boolean; repo?: string; branch?: string; workspace_root?: string; input_tokens?: number; output_tokens?: number; cache_read_tokens?: number; estimated_cost_usd?: number; preview?: string; updated?: number; pilot_preferences?: { driver?: string; reasoning_effort?: ReasoningEffort; swarm_reasoning_effort?: ReasoningEffort } };
 
 export type AdviceReceipt = {
   session_id: string;
@@ -647,6 +656,9 @@ export type SessionState = {
   // Sticky session GOAL (chip-ready); distinct from Schedule.objective / Job.goal.
   goal?: SessionGoal;
   todos?: SessionTodoSnapshot;
+  // Nested sessions: change counter, children of the asked-about session,
+  // and its parent when it is a child.
+  nest?: { rev: number; children?: NestedChild[]; parent_id?: string };
 };
 
 export type SessionTodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
@@ -655,6 +667,9 @@ export type SessionTodoItem = {
   content: string;
   status: SessionTodoStatus;
   blocker?: string;
+  /** Nested session that owns this step. */
+  session?: string;
+  session_name?: string;
 };
 
 export type SessionTodoPhase = {

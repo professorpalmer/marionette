@@ -660,3 +660,14 @@ def owned_server(_isolate_provider_state, monkeypatch):
     store = server._sessions
     yield server
     store.flush()
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_fetch_backoff():
+    # A failed catalog fetch is not retried for a while in the same process.
+    # Tests block the network, so one test's failure must not hide a later
+    # test's mocked fetch for the same provider and key.
+    from harness import model_fetch
+    model_fetch._FAILED_AT.clear()
+    yield
+    model_fetch._FAILED_AT.clear()

@@ -274,7 +274,7 @@ export default function PilotPicker({
         data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
         onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}
-        className={`flex flex-col px-3 py-1.5 text-ui-11.5 cursor-pointer transition-colors select-none ${
+        className={`flex flex-col px-3 py-1.5 scroll-mt-7 text-ui-11.5 cursor-pointer transition-colors select-none ${
           isActive ? "bg-panel2" : ""
         } ${isSelected ? "text-accent font-medium" : "text-txt/90"}`}
         title={m}
@@ -371,8 +371,15 @@ export default function PilotPicker({
                       {organized.current && renderRow(organized.current)}
                       {organized.groups.map((g) => (
                         <div key={g.provider} role="group" aria-label={providerLabelOf(g.provider)}>
-                          <div aria-hidden="true" className="px-3 pt-1.5 pb-0.5 text-ui-10 text-faint font-medium select-none">
-                            {providerLabelOf(g.provider)}
+                          {/* Sticky section header: label weight and a rule set it apart from the
+                              row meta lines, which share the faint 10px style. */}
+                          <div
+                            aria-hidden="true"
+                            data-testid="pilot-provider-header"
+                            className="sticky top-0 z-10 flex items-center justify-between gap-2 px-3 py-1 bg-panel border-y border-edge text-ui-10 text-muted font-semibold uppercase tracking-wide select-none"
+                          >
+                            <span className="truncate">{providerLabelOf(g.provider)}</span>
+                            <span className="shrink-0 text-faint font-normal tabular-nums">{g.items.length}</span>
                           </div>
                           {g.items.map((m) => renderRow(m))}
                         </div>

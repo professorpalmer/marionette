@@ -1210,6 +1210,22 @@ class ToolDispatchMixin:
         except Exception:
             return None
 
+    def link_todo_session(self, task: str, session_id: str, name: str):
+        """Link a plan step to a nested session. Returns the new snapshot or None."""
+        from .todo import link_task_session, snapshot_payload
+
+        sid = self._todo_session_id()
+        store = self._get_todo_store()
+        current = getattr(self, "_todo_phases", None)
+        if current is None:
+            current = store.load(session_id=sid) if sid else []
+        if link_task_session(current, task, session_id, name) is None:
+            return None
+        self._todo_phases = current
+        if sid:
+            store.save(current, session_id=sid)
+        return snapshot_payload(current, "link")
+
     def apply_todo_verification(self, command: str, exit_code=0, status="ok"):
         """Best-effort: complete one open validate gate after a passing verify command."""
         from .todo import (

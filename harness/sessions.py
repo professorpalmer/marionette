@@ -684,6 +684,114 @@ class SessionStore:
                     return True
             return False
 
+    # -- Nested sessions (see harness/nested_sessions.py) --------------------
+
+    def create_child(
+        self,
+        parent_id: str,
+        *,
+        title: str,
+        nest: dict,
+        workspace_root: str,
+    ) -> dict:
+        """Add a child session row. The active session does not change."""
+        with self._lock:
+            parent = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            if parent is None:
+                raise ValueError("unknown parent session")
+            if parent.get("sealed") or seal.is_sealed(parent_id):
+                raise ValueError("nested sessions are off in encrypted sessions")
+            sid = uuid.uuid4().hex[:12]
+            meta = asdict(SessionMeta(
+                id=sid, title=title, created=time.time(),
+                repo=workspace_root, workspace_root=workspace_root,
+            ))
+            meta["nest"] = {**nest, "parent_id": parent_id}
+            if parent.get("pilot_preferences"):
+                meta["pilot_preferences"] = dict(parent["pilot_preferences"])
+            self._sessions.append(meta)
+            self._save(immediate=True)
+            return dict(meta)
+
+    def nest_of(self, sid: str) -> Optional[dict]:
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == sid), None)
+            nest = row.get("nest") if row else None
+            return dict(nest) if isinstance(nest, dict) else None
+
+    def update_nest(self, sid: str, **fields: Any) -> Optional[dict]:
+        """Merge fields into a child's ``nest`` link. A ``repo``/``branch`` key
+        also sets the row's repo and branch (the child works in its worktree)."""
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == sid), None)
+            if row is None or not isinstance(row.get("nest"), dict):
+                return None
+            row["nest"] = {**row["nest"], **fields}
+            if fields.get("worktree"):
+                row["repo"] = fields["worktree"]
+            if "branch" in fields:
+                row["branch"] = fields["branch"] or ""
+            self._save()
+            return dict(row["nest"])
+
+    def children_of(self, parent_id: str) -> List[dict]:
+        with self._lock:
+            return [
+                dict(r) for r in self._sessions
+                if isinstance(r.get("nest"), dict) and r["nest"].get("parent_id") == parent_id
+            ]
+
+    def nested_rows(self) -> List[dict]:
+        """Every child row and every row with undelivered notes."""
+        with self._lock:
+            return [
+                dict(r) for r in self._sessions
+                if isinstance(r.get("nest"), dict) or r.get("nest_inbox")
+            ]
+
+    def push_nest_note(self, parent_id: str, note: dict) -> bool:
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            if row is None:
+                return False
+            row.setdefault("nest_inbox", []).append(dict(note))
+            self._save()
+            return True
+
+    def peek_nest_notes(self, parent_id: str) -> List[dict]:
+        """The parent's undelivered notes. They stay until ``drop_nest_notes``."""
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            return [dict(n) for n in (row or {}).get("nest_inbox") or []]
+
+    def drop_nest_notes(self, parent_id: str, ids: List[str]) -> None:
+        """Remove delivered notes by id (``nested_sessions.note_id``)."""
+        from .nested_sessions import note_id
+        doomed = set(ids)
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            if row is None or not row.get("nest_inbox"):
+                return
+            kept = [n for n in row["nest_inbox"] if note_id(n) not in doomed]
+            if kept:
+                row["nest_inbox"] = kept
+            else:
+                row.pop("nest_inbox", None)
+            self._save(immediate=True)
+
+    def nest_parent_state(self, parent_id: str, **fields: Any) -> dict:
+        """Read, or merge into, the parent-side counters (``nest_parent``)."""
+        with self._lock:
+            row = next((r for r in self._sessions if r.get("id") == parent_id), None)
+            if row is None:
+                return {}
+            state = dict(row.get("nest_parent") or {})
+            if fields:
+                state.update(fields)
+                row["nest_parent"] = state
+                self._save()
+            return state
+
     def stamp_session(self, sid: str, repo: str, branch: str) -> None:
         with self._lock:
             for s in self._sessions:

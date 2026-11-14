@@ -74,6 +74,7 @@ _PILOT_EXTRAS: Set[str] = {
     "run_parallel",
     "run_flow",
     "flow_control",
+    "nested_session",
 }
 
 # Session plumbing a coding turn rarely calls. Their schemas were 9.4k chars

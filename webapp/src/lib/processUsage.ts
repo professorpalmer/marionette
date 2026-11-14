@@ -33,6 +33,9 @@ let scopeGeneration = 0;
 let pollTimer: number | undefined;
 let retryTimer: number | undefined;
 let retryAttempts = 0;
+let switchRetries = 0;
+const SWITCH_RETRIES = 8;
+const SWITCH_RETRY_MS = 150;
 let subscriberCount = 0;
 let busyCount = 0;
 let bridgesInstalled = false;
@@ -152,6 +155,23 @@ export function refreshProcessUsage(opts: { manual?: boolean } = {}): Promise<vo
       const data = await api.getUsage();
       if (owner !== scopeGeneration) return;
       if (!data?.session) throw new Error("Usage unavailable");
+      // /api/usage answers for the backend's open session. A read sent before
+      // the backend switch ends can name the outgoing session, or come back
+      // unavailable. Never show the outgoing numbers under the target, keep
+      // the target's known numbers, and read again soon.
+      const answered = data.session_total?.session_id;
+      const otherSession = Boolean(scopeSessionId && answered && answered !== scopeSessionId);
+      const known = scopeSessionId ? lastBySession.get(scopeSessionId) : undefined;
+      const hidesKnown = sessionUsageUnavailable(data.session, data.session_total)
+        && known?.status === "ready" && !known.readStatus;
+      if ((otherSession || hidesKnown) && switchRetries < SWITCH_RETRIES) {
+        switchRetries += 1;
+        window.setTimeout(() => {
+          if (owner === scopeGeneration) void refreshProcessUsage();
+        }, SWITCH_RETRY_MS);
+        return;
+      }
+      if (otherSession) return;
       acceptSession(data.session, data.session_total, data.ledger);
       if (sessionUsageUnavailable(data.session, data.session_total)) scheduleStartupRetry();
       else {
@@ -177,6 +197,7 @@ function resetForSessionChange(event?: Event): void {
   acceptZero = true;
   stopRetry();
   retryAttempts = 0;
+  switchRetries = 0;
   // Show the target session's own last numbers while its refresh is in
   // flight. Blanking here unmounted the footer cluster on every switch.
   const detail: unknown = event instanceof CustomEvent ? event.detail : null;
@@ -186,6 +207,20 @@ function resetForSessionChange(event?: Event): void {
   emit(known
     ? { ...known, generation: snapshot.generation + 1 }
     : { session: null, status: "loading", fetchedAt: Date.now(), generation: snapshot.generation + 1 });
+  void refreshProcessUsage();
+}
+
+/**
+ * A project selection keeps the session scope. A cross-project switch sends it
+ * beside `harness-session-changed`, and blanking here hid the target's known
+ * numbers until the next read. Still fence reads already in flight.
+ */
+function refreshForProjectSelected(): void {
+  scopeGeneration += 1;
+  inFlight = null;
+  stopRetry();
+  retryAttempts = 0;
+  switchRetries = 0;
   void refreshProcessUsage();
 }
 
@@ -222,7 +257,7 @@ function installBridges(): void {
   };
   window.addEventListener("harness-usage-refresh", refresh);
   window.addEventListener("harness-config-changed", refresh);
-  window.addEventListener("harness-project-selected", resetForSessionChange);
+  window.addEventListener("harness-project-selected", refreshForProjectSelected);
   window.addEventListener("harness-new-session", resetForSessionChange);
   window.addEventListener("harness-session-changed", resetForSessionChange);
   document.addEventListener("visibilitychange", () => {
@@ -273,6 +308,7 @@ export function _resetProcessUsageForTests(): void {
   inFlight = null;
   acceptZero = false;
   retryAttempts = 0;
+  switchRetries = 0;
   scopeGeneration += 1;
   lastBySession.clear();
   scopeSessionId = "";

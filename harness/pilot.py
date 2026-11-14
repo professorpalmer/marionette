@@ -90,6 +90,7 @@ ActionKind = Literal[
     "open_project",
     "relocate_session",
     "session_bank",
+    "nested_session",
     "lsp",
     "browser_navigate",
     "browser_snapshot",
@@ -1076,6 +1077,36 @@ def build_tools_schema(
                     },
                 },
                 "required": [],
+            },
+        },
+    })
+
+    # nested_session -- child sessions that run beside this one and report back
+    schema.append({
+        "type": "function",
+        "function": {
+            "name": "nested_session",
+            "description": (
+                "Start or talk to a child session for one independent part of the task. "
+                "A child is a full session with its own transcript, model and git worktree; "
+                "the user can open and steer it. When a child you started ends a turn, its "
+                "report comes back here as a <nested-session-event> note, and you continue "
+                "when no child is still working. start: name, brief (complete task text) and "
+                "optional todo (the plan step it owns). message: send text to a child (a busy "
+                "child gets a steer). stop: stop its turn. list: status and last reports. "
+                "Quick work stays in this session."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["start", "message", "stop", "list"]},
+                    "name": {"type": "string", "description": "start: short slug such as vehicle-return; message/stop: child name or id"},
+                    "title": {"type": "string", "description": "start: optional sidebar title"},
+                    "brief": {"type": "string", "description": "start: the full task; the child sees nothing else"},
+                    "todo": {"type": "string", "description": "start: text of the plan step this child owns"},
+                    "message": {"type": "string", "description": "message: text for the child"},
+                },
+                "required": ["action"],
             },
         },
     })
