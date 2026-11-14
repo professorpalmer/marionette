@@ -367,3 +367,32 @@ def test_http_error_excerpt_scrubs_account_ids():
     assert "user_2ZZ" not in out
     assert '"user_id":"REDACTED"' in out
     assert "no chat endpoint" in out
+
+
+def test_failed_fetch_without_cache_is_not_retried_on_every_read(monkeypatch, tmp_path):
+    # /api/config lists picker models on every read. A bad key with no cached
+    # catalog made each read pay the provider round trip again.
+    p = prov.get_provider("openrouter")
+    monkeypatch.setattr(mf, "_cache_path", lambda: str(tmp_path / "provider_models_cache.json"))
+    for table in (mf._RECORD_MEM, mf._MEM, mf._MEM_AT, mf._FAILED_AT, mf._LAST_ERROR):
+        table.clear()
+    calls = []
+
+    def _fail(url, headers):
+        calls.append(url)
+        raise RuntimeError("simulated 401 unauthorized")
+
+    monkeypatch.setattr(mf, "_get", _fail)
+    assert mf.fetch_model_records(p, "bad-key") == []
+    assert mf.fetch_model_records(p, "bad-key") == []
+    assert len(calls) == 1
+    assert "simulated 401" in (mf.last_fetch_error("openrouter") or "")
+
+    # A new key, a forced refresh, and an expired backoff each fetch again.
+    assert mf.fetch_model_records(p, "new-key") == []
+    assert len(calls) == 2
+    assert mf.fetch_model_records(p, "new-key", force=True) == []
+    assert len(calls) == 3
+    monkeypatch.setattr(mf, "_FAILED_RETRY_SECONDS", 0)
+    assert mf.fetch_model_records(p, "new-key") == []
+    assert len(calls) == 4
