@@ -109,7 +109,6 @@ body {
   /* Window frame: body tint and left rail. Glass thins these only. */
   --shell-frame: #0f1113;
   --shell-sidebar: #13161a;
-  --shell-frame-border: rgba(255, 255, 255, 0.05);
   /* Content surfaces: always opaque, with or without glass. */
   --shell-chat: #0f1113;
   --shell-panel: #13161a;
@@ -139,15 +138,13 @@ body {
   --shell-chrome: transparent;
   --shell-frame: color-mix(in srgb, #0f1113 var(--translucency-frame-keep, 60%), transparent);
   --shell-sidebar: transparent;
-  --shell-frame-border: transparent;
   --shell-panel-border: rgba(255, 255, 255, 0.08);
 }
 
 
-/* The left rail is part of the window frame. */
+/* The left rail is part of the window frame. The rail, the chat card and
+   the right board share edges. The column Resizer is the one divider line. */
 .shell-sidebar {
-  border-radius: var(--shell-panel-radius);
-  border: 1px solid var(--shell-frame-border);
   background: var(--shell-sidebar);
   overflow: hidden;
 }
@@ -163,22 +160,14 @@ body {
   color: #ecbe84;
 }
 
-/* The chat column is one opaque card on the frame. A top strip (update,
-   key notices) follows the card's rounded top. */
+/* The chat column is one opaque surface, flush with its neighbors. */
 .shell-chat-card {
-  border: 1px solid var(--shell-panel-border);
-  border-radius: var(--shell-panel-radius);
   background-color: var(--shell-chat);
   background-image: radial-gradient(120% 80% at 50% -10%, rgba(139, 150, 196, 0.06), rgba(139, 150, 196, 0) 60%);
 }
 
-.shell-chat-card > [data-top-strip]:first-child {
-  border-top-left-radius: calc(var(--shell-panel-radius) - 1px);
-  border-top-right-radius: calc(var(--shell-panel-radius) - 1px);
-}
-
-/* Side rails + footer sit "within" the window: rounded, lightly bordered,
-   with gutter from the window edge instead of flush hard dividers. */
+/* The footer and floating pills sit "within" the window: rounded, lightly
+   bordered, with gutter from the window edge. */
 /* Shared fill with the left rail. Callers keep their own radius (the floating
    pill is a capsule; inset panels are 12px). */
 .shell-inset-glass {
@@ -411,8 +400,10 @@ body {
   gap: 0;
 }
 
+/* Board cards are flush. A card draws a line only on a side it shares with
+   another card. Groups are indexed right to left. */
 .right-pane-card-stack-join-end {
-  margin-right: -1px;
+  border-right: 1px solid var(--shell-panel-border);
 }
 
 .right-pane-card {
@@ -422,14 +413,12 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid var(--shell-panel-border);
-  border-radius: var(--shell-panel-radius);
   background: var(--shell-panel);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .right-pane-card-join-top {
-  margin-top: -1px;
+  border-top: 1px solid var(--shell-panel-border);
 }
 
 .right-pane-card-header {
@@ -865,8 +854,8 @@ body.is-row-resizing iframe {
   }
 
   .right-pane-card-stack-join-end {
-    margin-right: 0;
-    margin-bottom: -1px;
+    border-right: 0;
+    border-bottom: 1px solid var(--shell-panel-border);
   }
 }
 .titlebar-traffic-pad {

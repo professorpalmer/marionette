@@ -463,9 +463,10 @@ export default function App() {
         }}
       />
       {/* Window frame (glass when on) holds the left rail; the chat column is
-          one opaque card on it. Top strips live in the chat card, so the
-          traffic lights stay in the rail title band. */}
-      <div className="flex-1 min-h-0 min-w-0 flex px-px pt-px">
+          one opaque surface flush with the rail and the right board. Top
+          strips live in the chat surface, so the traffic lights stay in the
+          rail title band. */}
+      <div className="flex-1 min-h-0 min-w-0 flex">
         <div className="relative flex-1 min-w-0 h-full flex overflow-hidden">
           <div style={{ width: displayed.leftW }} className={`shell-sidebar shrink-0 h-full ${leftOpen ? "" : "hidden"}`}>
             <LeftRail
