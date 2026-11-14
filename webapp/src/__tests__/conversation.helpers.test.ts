@@ -330,6 +330,22 @@ describe("transcriptItems module", () => {
     }
   });
 
+  it("deduplicateAssistantNarration matches the pairwise score across text sizes", () => {
+    // The size bound only skips pairs that cannot pass 0.85; a pass or a
+    // fail from getSimilarity must still decide every other pair.
+    const near = "the config read waits on the provider model list for each switch";
+    const nearer = `${near} today`;
+    const far = "a short note on the branch list";
+    expect(getSimilarity(near, nearer)).toBeGreaterThan(0.85);
+    expect(getSimilarity(near, far)).toBeLessThanOrEqual(0.85);
+    const kept = deduplicateAssistantNarration([msg("user", "go"), msg("assistant", far), msg("assistant", near)]);
+    expect(kept.filter((i) => i.kind === "msg" && i.msg.role === "assistant")).toHaveLength(2);
+    const merged = deduplicateAssistantNarration([msg("user", "go"), msg("assistant", `x ${near}`), msg("assistant", `y ${near} ok`)]);
+    const texts = merged.flatMap((i) => (i.kind === "msg" && i.msg.role === "assistant" ? [i.msg.text] : []));
+    expect(getSimilarity(`x ${near}`, `y ${near} ok`)).toBeGreaterThan(0.85);
+    expect(texts).toEqual([`y ${near} ok`]);
+  });
+
   it("deduplicateAssistantNarration never collapses two open streaming bubbles", () => {
     const items: Item[] = [
       msg("user", "go"),

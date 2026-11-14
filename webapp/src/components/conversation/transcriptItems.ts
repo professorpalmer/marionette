@@ -115,46 +115,55 @@ export function deduplicateParagraphs(text: string): string {
   return deduped.join("\n\n");
 }
 
-export function getSimilarity(s1: string, s2: string): number {
-  const norm1 = s1.toLowerCase().replace(/[^a-z0-9]/g, "");
-  const norm2 = s2.toLowerCase().replace(/[^a-z0-9]/g, "");
+type SimilaritySig = { norm: string; words: Set<string>; bigrams: Set<string> };
 
-  if (!norm1 || !norm2) return 0;
-  if (norm1 === norm2) return 1.0;
-
-  if (norm1.startsWith(norm2) || norm2.startsWith(norm1)) {
-    return 1.0;
+function similaritySig(text: string): SimilaritySig {
+  const norm = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const words = new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean));
+  const bigrams = new Set<string>();
+  for (let i = 0; i < norm.length - 1; i++) {
+    bigrams.add(norm.substring(i, i + 2));
   }
+  return { norm, words, bigrams };
+}
 
-  const w1 = s1.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-  const w2 = s2.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
-  const set1 = new Set(w1);
-  const set2 = new Set(w2);
+function jaccard(a: Set<string>, b: Set<string>): number {
   let intersect = 0;
-  set1.forEach(w => {
-    if (set2.has(w)) intersect++;
+  a.forEach(x => {
+    if (b.has(x)) intersect++;
   });
-  const wordJaccard = intersect / (set1.size + set2.size - intersect);
+  return intersect / (a.size + b.size - intersect);
+}
 
-  const getBigrams = (s: string) => {
-    const bigrams = new Set<string>();
-    for (let i = 0; i < s.length - 1; i++) {
-      bigrams.add(s.substring(i, i + 2));
-    }
-    return bigrams;
-  };
-  const b1 = getBigrams(norm1);
-  const b2 = getBigrams(norm2);
-  if (b1.size > 0 && b2.size > 0) {
-    let bIntersect = 0;
-    b1.forEach(b => {
-      if (b2.has(b)) bIntersect++;
-    });
-    const charJaccard = bIntersect / (b1.size + b2.size - bIntersect);
-    return Math.max(wordJaccard, charJaccard);
+function sigSimilarity(a: SimilaritySig, b: SimilaritySig): number {
+  if (!a.norm || !b.norm) return 0;
+  if (a.norm === b.norm) return 1.0;
+  if (a.norm.startsWith(b.norm) || b.norm.startsWith(a.norm)) return 1.0;
+  const wordJaccard = jaccard(a.words, b.words);
+  if (a.bigrams.size > 0 && b.bigrams.size > 0) {
+    return Math.max(wordJaccard, jaccard(a.bigrams, b.bigrams));
   }
-
   return wordJaccard;
+}
+
+/** Jaccard of two sets is at most min size / max size. */
+function sizeBound(a: Set<string>, b: Set<string>): number {
+  return Math.min(a.size, b.size) / Math.max(a.size, b.size);
+}
+
+/** Same verdict as `sigSimilarity(a, b) > threshold`. Skips the set walks
+ *  when the set sizes alone keep both scores at or below the threshold. */
+function sigSimilarAbove(a: SimilaritySig, b: SimilaritySig, threshold: number): boolean {
+  if (a.norm && b.norm && a.norm !== b.norm && !a.norm.startsWith(b.norm) && !b.norm.startsWith(a.norm)
+      && a.words.size > 0 && b.words.size > 0 && a.bigrams.size > 0 && b.bigrams.size > 0
+      && sizeBound(a.words, b.words) <= threshold && sizeBound(a.bigrams, b.bigrams) <= threshold) {
+    return false;
+  }
+  return sigSimilarity(a, b) > threshold;
+}
+
+export function getSimilarity(s1: string, s2: string): number {
+  return sigSimilarity(similaritySig(s1), similaritySig(s2));
 }
 
 /**
@@ -168,6 +177,18 @@ export function getSimilarity(s1: string, s2: string): number {
  */
 export function deduplicateAssistantNarration(items: Item[]): Item[] {
   const result: Item[] = [];
+  // Each text's signature once: a long turn compares every bubble with each
+  // earlier one, and rebuilding both bigram sets per pair cost about 60 ms on
+  // a 2,000-row session switch.
+  const sigs = new Map<string, SimilaritySig>();
+  const sigOf = (text: string): SimilaritySig => {
+    let sig = sigs.get(text);
+    if (!sig) {
+      sig = similaritySig(text);
+      sigs.set(text, sig);
+    }
+    return sig;
+  };
   // Indices into `result` of assistant msgs since the last user msg.
   let turnAssistantIdx: number[] = [];
 
@@ -198,7 +219,7 @@ export function deduplicateAssistantNarration(items: Item[]): Item[] {
         // A sealed finale MUST absorb a still-open prior with the same
         // (or near-same) text. Skipping streaming priors left both rows
         // visible until reload hydrated them as sealed and this pass merged.
-        if (getSimilarity(prev.msg.text || "", newText) > 0.85) {
+        if (sigSimilarAbove(sigOf(prev.msg.text || ""), sigOf(newText), 0.85)) {
           dupIdx = turnAssistantIdx[i];
           break;
         }
