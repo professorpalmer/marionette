@@ -2712,6 +2712,7 @@ _bind_codegraph_index_deps(_CodegraphIndexDeps(
     diag=lambda *a, **k: _diag(*a, **k),
     get_state_dir=lambda: (_cfg.state_dir if _cfg else "") or os.path.expanduser("~/.pmharness/state"),
     get_repo=lambda: _cfg.repo if _cfg else None,
+    is_home_workspace=lambda path: _is_home_workspace(path),
 ))
 
 _pilot._on_wiki_ingest = _clear_wiki_graph_cache

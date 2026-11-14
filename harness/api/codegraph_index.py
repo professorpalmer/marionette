@@ -67,6 +67,7 @@ class CodegraphIndexDeps:
     diag: Callable[..., Any]
     get_state_dir: Callable[[], str]
     get_repo: Callable[[], Optional[str]]
+    is_home_workspace: Callable[[str], bool] = lambda _path: False
 
 
 _deps: Optional[CodegraphIndexDeps] = None
@@ -97,6 +98,44 @@ def codegraph_indexed(repo_path: str) -> bool:
         return os.path.isfile(os.path.join(repo_path, ".codegraph", "codegraph.db"))
     except Exception:
         return False
+
+
+def auto_index_refused(repo_path: str) -> Optional[str]:
+    """Why CodeGraph must not index ``repo_path``, or None.
+
+    Marionette Home holds chats with no project folder. The user's home folder
+    and its parents are not one project, and a walk of them is very large.
+    """
+    if not repo_path:
+        return None
+    try:
+        if _require_deps().is_home_workspace(repo_path):
+            return "Marionette Home is not a code project. CodeGraph does not index it."
+    except Exception:
+        pass
+    try:
+        path = os.path.normcase(os.path.realpath(repo_path))
+        home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+        if path == home or home.startswith(path.rstrip(os.sep) + os.sep):
+            return "CodeGraph does not index your home folder. Open a project folder."
+    except Exception:
+        pass
+    return None
+
+
+def _mark_index_fresh(repo_path: str, started: float) -> None:
+    """Stamp ``.codegraph`` with the index start time.
+
+    ``codegraph_is_stale`` compares tree mtimes with this directory. The
+    indexer writes ``codegraph.db`` in place, so the directory kept the time of
+    its first creation: after the first later edit, each check found the tree
+    stale and started a full index again (568 starts for one repo in one log).
+    The start time, not the end time, keeps edits made during the run stale.
+    """
+    try:
+        os.utime(os.path.join(repo_path, ".codegraph"), (started, started))
+    except Exception as e:
+        _require_deps().diag("server.codegraph_mark_fresh", e)
 
 
 def codegraph_index_alive() -> bool:
@@ -237,6 +276,13 @@ def index_codegraph_bg(repo_path: str):
         codegraph_status_reason = "puppetmaster not found -- codegraph/swarm unavailable"
         return
 
+    refused = auto_index_refused(repo_path)
+    if refused:
+        codegraph_status = "none"
+        codegraph_status_reason = refused
+        codegraph_status_cache.pop(repo_path, None)
+        return
+
     # Missing/moved workspace: fail once with a clear reason. Spawning with a
     # bad cwd on Windows surfaces as WinError 2/267 and the GET self-heal loop
     # used to re-kick forever, stuffing codegraph-index.log into the panel.
@@ -289,6 +335,7 @@ def index_codegraph_bg(repo_path: str):
             log_f = open(log_path, "a", encoding="utf-8", errors="replace")
             log_f.write(f"\n--- codegraph init --index @ {repo_path} ---\n")
             log_f.flush()
+            index_started = time.time()
             popen_kwargs: dict = {
                 "cwd": repo_path,
                 "stdout": log_f,
@@ -333,6 +380,7 @@ def index_codegraph_bg(repo_path: str):
         try:
             proc.wait(timeout=index_timeout)
             if proc.returncode == 0 and codegraph_indexed(repo_path):
+                _mark_index_fresh(repo_path, index_started)
                 codegraph_status = "ready"
                 prewarm_codegraph_context(repo_path)
                 codegraph_status_reason = None
@@ -419,6 +467,8 @@ def get_codegraph_status(repo_path: str) -> str:
     global codegraph_status, codegraph_status_reason
     deps = _require_deps()
     if not repo_path:
+        return "none"
+    if auto_index_refused(repo_path):
         return "none"
     if not deps.puppetmaster_available():
         codegraph_status = "unsupported"
@@ -515,7 +565,7 @@ def maybe_refresh_codegraph(repo_path: str, *, force: bool = False) -> None:
     and on session switch -- the debounce + the indexing-guard ensure it never
     thrashes. force=True bypasses the debounce and fail-until backoff (e.g. an
     explicit user action)."""
-    if not repo_path:
+    if not repo_path or auto_index_refused(repo_path):
         return
     import time as _time
     now = _time.monotonic()

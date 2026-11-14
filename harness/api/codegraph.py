@@ -29,6 +29,7 @@ from .codegraph_index import (  # noqa: F401
     codegraph_is_stale,
     codegraph_status_cache,
     codegraph_stale_check_at,
+    auto_index_refused,
     codegraph_tail_log,
     get_codegraph_status,
     index_codegraph_bg,
@@ -132,6 +133,10 @@ def get_codegraph(svc: CodegraphServices) -> tuple[int, JsonPayload]:
     repo = svc.cfg.repo
     if not repo or not os.path.isdir(repo):
         return 200, _empty_panel(repo="", status="none")
+
+    refused = auto_index_refused(repo)
+    if refused:
+        return 200, _empty_panel(repo=repo, status="none", include_reason=True, reason=refused)
 
     if not svc.puppetmaster_available():
         return 200, _empty_panel(
