@@ -1,4 +1,4 @@
-/** Composer context meter: a ring for window fill, a tick at the auto-compaction point. */
+/** Composer context meter: a ring for window fill. The tooltip names the auto-compaction point. */
 import type { ContextUsageResponse } from "../../lib/api";
 
 export type ContextRingTone = "normal" | "warn" | "risk";
@@ -6,8 +6,6 @@ export type ContextRingTone = "normal" | "warn" | "risk";
 export type ContextRingFacts = {
   /** Fill of the context window, 0..1. */
   fraction: number;
-  /** Where automatic compaction starts, 0..1, or null when the server did not say. */
-  triggerFraction: number | null;
   /** Short text beside the ring, for example "12%" or "<1%". */
   label: string;
   tone: ContextRingTone;
@@ -34,7 +32,6 @@ export function contextRingFacts(usage: ContextUsageResponse | null): ContextRin
   const trigger = finite(usage.compaction_trigger_tokens) && usage.compaction_trigger_tokens > 0
     ? usage.compaction_trigger_tokens
     : null;
-  const triggerFraction = trigger === null ? null : Math.min(1, trigger / usage.limit);
   const advice = usage.compaction_advice;
   const pressured = Boolean(advice && !advice.acked_manual_compact && (advice.needs_intervention || advice.level === "now"));
   const nearTrigger = trigger !== null && total >= trigger * 0.9;
@@ -46,9 +43,9 @@ export function contextRingFacts(usage: ContextUsageResponse | null): ContextRin
   const lines = [`Context: ${formatTokenCount(total)} of ${formatTokenCount(usage.limit)} tokens (${label})`];
   lines.push(trigger === null
     ? "Auto-compaction point: unknown"
-    : `Auto-compaction starts near ${formatTokenCount(trigger)} tokens (${Math.round((triggerFraction ?? 0) * 100)}%)`);
+    : `Auto-compaction starts near ${formatTokenCount(trigger)} tokens (${Math.round(Math.min(1, trigger / usage.limit) * 100)}%)`);
   lines.push("Click for the breakdown");
-  return { fraction, triggerFraction, label, tone, tooltip: lines.join("\n") };
+  return { fraction, label, tone, tooltip: lines.join("\n") };
 }
 
 const TONE_CLASS: Record<ContextRingTone, string> = {
@@ -57,15 +54,49 @@ const TONE_CLASS: Record<ContextRingTone, string> = {
   risk: "text-risk",
 };
 
+const CENTER = 7;
 const RADIUS = 5;
-const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
-/** 14px ring. Track uses the edge token; the arc and tick take the tone color. */
+/**
+ * Part of the full turn that the arc covers for a window fill.
+ *
+ * At 20% and above the arc is the fill. Below 20% the arc is longer than the
+ * fill, so that 1%, 4% and 5% stay visible and different on a 14px ring
+ * (1% = 0.044, 4% = 0.086, 5% = 0.1, 20% = 0.2). The label shows the exact
+ * number. The curve is continuous and always increases.
+ */
+export function ringSweep(fraction: number): number {
+  if (!finite(fraction) || fraction <= 0) return 0;
+  if (fraction >= 1) return 1;
+  if (fraction <= 0.05) return 0.03 + 1.4 * fraction;
+  if (fraction < 0.2) return 0.1 + (fraction - 0.05) * (0.1 / 0.15);
+  return fraction;
+}
+
+const round3 = (value: number) => Math.round(value * 1000) / 1000;
+
+/** Point on the ring at a part of the full turn: 0 is 12 o'clock, clockwise. */
+export function ringPoint(sweep: number, center = CENTER, radius = RADIUS): { x: number; y: number } {
+  const angle = sweep * 2 * Math.PI;
+  return { x: round3(center + radius * Math.sin(angle)), y: round3(center - radius * Math.cos(angle)) };
+}
+
+/**
+ * SVG path for an arc from 12 o'clock, clockwise, over `sweep` of the turn.
+ * Null for an empty arc. A full turn is a circle, which one arc command cannot draw.
+ */
+export function ringArcPath(sweep: number, center = CENTER, radius = RADIUS): string | null {
+  if (!(sweep > 0) || sweep >= 1) return null;
+  const start = ringPoint(0, center, radius);
+  const end = ringPoint(sweep, center, radius);
+  const largeArc = sweep > 0.5 ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArc} 1 ${end.x} ${end.y}`;
+}
+
+/** 14px ring. The track and arc take the tone color; the track is dimmed. */
 export function ContextRing({ facts }: { facts: ContextRingFacts | null }) {
-  const fraction = facts?.fraction ?? 0;
-  const tick = facts?.triggerFraction;
-  // Angle 0 is 12 o'clock; the arc runs clockwise.
-  const tickAngle = tick == null ? null : tick * 2 * Math.PI - Math.PI / 2;
+  const sweep = ringSweep(facts?.fraction ?? 0);
+  const arc = ringArcPath(sweep);
   return (
     <svg
       width="14"
@@ -75,33 +106,20 @@ export function ContextRing({ facts }: { facts: ContextRingFacts | null }) {
       data-testid="context-ring"
       className={`shrink-0 ${facts ? TONE_CLASS[facts.tone] : "text-faint"}`}
     >
-      <circle cx="7" cy="7" r={RADIUS} fill="none" className="stroke-edge2" strokeWidth="2" />
-      {fraction > 0 && (
+      <circle cx={CENTER} cy={CENTER} r={RADIUS} fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
+      {sweep >= 1 ? (
         <circle
-          cx="7"
-          cy="7"
+          cx={CENTER}
+          cy={CENTER}
           r={RADIUS}
           fill="none"
           stroke="currentColor"
           strokeWidth="2"
-          strokeLinecap="round"
-          strokeDasharray={`${Math.max(0.6, fraction * CIRCUMFERENCE)} ${CIRCUMFERENCE}`}
-          transform="rotate(-90 7 7)"
           data-testid="context-ring-arc"
         />
-      )}
-      {tickAngle !== null && (
-        <line
-          x1={7 + (RADIUS - 2) * Math.cos(tickAngle)}
-          y1={7 + (RADIUS - 2) * Math.sin(tickAngle)}
-          x2={7 + (RADIUS + 2) * Math.cos(tickAngle)}
-          y2={7 + (RADIUS + 2) * Math.sin(tickAngle)}
-          stroke="currentColor"
-          strokeWidth="1"
-          opacity="0.7"
-          data-testid="context-ring-tick"
-        />
-      )}
+      ) : arc ? (
+        <path d={arc} fill="none" stroke="currentColor" strokeWidth="2" data-testid="context-ring-arc" />
+      ) : null}
     </svg>
   );
 }

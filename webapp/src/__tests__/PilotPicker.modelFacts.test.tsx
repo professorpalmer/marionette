@@ -58,4 +58,11 @@ describe("PilotPicker model facts", () => {
     const facts = screen.getAllByTestId("pilot-model-facts").map((el) => el.textContent);
     expect(facts).toEqual(["Details unknown", "Details unknown", "Details unknown"]);
   });
+
+  it("heads each provider group with its name and model count", async () => {
+    modelCatalog.mockResolvedValue({ catalog: [], enabled: [], all: [] });
+    await openPicker();
+    const headers = screen.getAllByTestId("pilot-provider-header").map((el) => el.textContent);
+    expect(headers).toEqual(["OpenRouter1", "Cursor1"]);
+  });
 });
