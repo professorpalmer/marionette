@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
 import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
@@ -98,6 +98,8 @@ import {
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
+import NestedSessionRows, { NestToggle } from "./NestedSessionRows";
+import { buildSessionTree, storeNestExpanded, storedNestExpanded, useNestRev } from "../lib/nestedSessions";
 
 export default function LeftRail({
   jobsRefresh,
@@ -1257,6 +1259,21 @@ export default function LeftRail({
   }, [revalidateSessions, fetchSessionRows]);
   refreshSessionsRef.current = refreshAllProjectSessions;
 
+  // Nested sessions: a child start or status change moves the counter. Reload
+  // the open project's rows so the tree shows it without a click.
+  const nestRev = useNestRev();
+  useEffect(() => {
+    if (nestRev && currentRepoRef.current) void fetchSessionRows(currentRepoRef.current).catch(() => {});
+  }, [nestRev, fetchSessionRows]);
+  const [nestExpanded, setNestExpanded] = useState<Record<string, boolean>>({});
+  const isNestExpanded = (parent: Session, children: readonly Session[]): boolean =>
+    nestExpanded[parent.id] ?? storedNestExpanded(parent.id)
+      ?? (!!parent.active || children.some((c) => c.active || runners[c.id] === "running"));
+  const toggleNest = (parentId: string, expanded: boolean) => {
+    storeNestExpanded(parentId, !expanded);
+    setNestExpanded((prev) => ({ ...prev, [parentId]: !expanded }));
+  };
+
   // Eager per-root lists: prefetch sessions for EVERY project in the rail so
   // non-active dirs show their rows without waiting for a click. Seeds the
   // SWR cache under sessions:${path}; projectSessionsFor always reads that.
@@ -1791,8 +1808,9 @@ export default function LeftRail({
                         </div>
                       ) : null
                     ) : (
-                      projectSessions.map((s) => (
-                        <div key={s.id} className="group relative">
+                      buildSessionTree(projectSessions).map(({ row: s, children: nested }) => (
+                        <Fragment key={s.id}>
+                        <div className="group relative">
                           {renamingId === s.id ? (
                             <input
                               type="text"
@@ -1856,6 +1874,13 @@ export default function LeftRail({
                                   <span className="block min-w-0 truncate text-ui-10 font-normal text-faint" data-testid="session-row-preview">{s.preview}</span>
                                 ) : null}
                               </button>
+                              {nested.length > 0 ? (
+                                <NestToggle
+                                  count={nested.length}
+                                  expanded={isNestExpanded(s, nested)}
+                                  onToggle={() => toggleNest(s.id, isNestExpanded(s, nested))}
+                                />
+                              ) : null}
                               {confirmDeleteId === s.id ? (
                                 <div className="flex items-center gap-1 shrink-0 pr-0.5">
                                   <button
@@ -1891,6 +1916,18 @@ export default function LeftRail({
                             </div>
                           )}
                         </div>
+                        {nested.length > 0 ? (
+                          <NestedSessionRows
+                            sessions={nested}
+                            expanded={isNestExpanded(s, nested)}
+                            onToggle={() => toggleNest(s.id, isNestExpanded(s, nested))}
+                            runners={runners}
+                            switchingSessionId={switchingSessionId}
+                            onOpen={(id) => { void switchSession(id); }}
+                            onPrefetch={(id) => { void prefetchSessionTranscript(id); }}
+                          />
+                        ) : null}
+                        </Fragment>
                       ))
                     )}
                   </div>

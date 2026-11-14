@@ -1,5 +1,6 @@
 import type { Item, Msg } from "../TranscriptList";
 import { stampTranscriptMessageIds } from "./transcriptRowIdentity";
+import { parseSessionNote } from "./SessionNoteRow";
 import {
   isSwarmPendingTerminal,
   isSwarmPendingTerminalStatus,
@@ -596,6 +597,9 @@ export function transcriptResponseToItems(res: {
               : [],
           ),
         }];
+      } else if (m.type === "session_note") {
+        const note = parseSessionNote(m);
+        return note ? [note] : [];
       } else if (m.type === "checkpoint") {
         return [{ kind: "checkpoint", id: String(m.id || ""),
           label: String(m.label || ""), trigger: String(m.trigger || "") }];
@@ -1070,6 +1074,8 @@ export function transcriptFingerprint(items: Item[]): string {
       fp += `|s:${it.job_id}:${it.applied ? 1 : 0}:${it.held_for_review ? 1 : 0}:${it.analysis_ok ? 1 : 0}:${it.reuse_status || ""}:${it.source_job_id || ""}:${it.reuse_reason || ""}:${it.validation_fingerprint || ""}:${it.environment_fingerprint || ""}:${it.error || ""}:${files}:${paths}:${criteria}`;
     } else if (it.kind === "pending_review") {
       fp += `|pr:${it.id}:${(it.summary || "").length}`;
+    } else if (it.kind === "session_note") {
+      fp += `|sn:${it.child_id}:${it.ts}:${it.status}`;
     } else if (it.kind === "swarm_pending") {
       // Remote running→terminal (and terminal_job_ids union) must change the
       // fingerprint so prefer-local merge paints the settled pill.

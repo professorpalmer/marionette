@@ -31,6 +31,7 @@ import {
   appendVaultCite,
   appendNonStreamingThinking,
   appendPendingReview,
+  appendSessionNote,
   appendQualityGate,
   appendQueuedPromptUserBubble,
   appendTurnTerminal,
@@ -76,6 +77,8 @@ import {
   swarmPendingWireStatus,
   waitHintForAssistantDone,
 } from "./swarmPoll";
+import { refreshSessionStateFeed } from "../../lib/sessionStateFeed";
+import { parseSessionNote } from "./SessionNoteRow";
 import { publishSessionTodos } from "../../lib/sessionTodos";
 import {
   hasPartialAssistantAnswer,
@@ -521,6 +524,8 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
         const todoSid = String(d.session_id || "").trim();
         if (todoSid) publishSessionTodos(d.todos, todoSid);
       }
+      // A nested session started or changed: show its chip and rail row now.
+      if (d.kind === "nested_session") void refreshSessionStateFeed(true);
       clearWaitHintOnProgress();
       setCompactingStatus(null);
       // Late command/batch terminal receipts after assistant_done must update
@@ -643,6 +648,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
       );
     } else if (ev.kind === "swarm_result") {
       handleSwarmResult(d);
+    } else if (ev.kind === "session_note") {
+      const note = parseSessionNote(d);
+      if (note) setItems((p) => appendSessionNote(p, note));
     } else if (ev.kind === "pending_review") {
       // DiffReview hold: transcript receipt + pop Review tab (R1 parity).
       setItems((p) => appendPendingReview(p, d));

@@ -42,6 +42,7 @@ import {
   normalizeNestedActionStatus,
 } from "./nestedActionBounds";
 import { normalizeToolKind } from "../../lib/turnProgress";
+import { sessionNoteKey, type SessionNoteItem } from "./SessionNoteRow";
 import { suppressUnspecifiedDirtyFinish } from "../../lib/turnTerminal";
 
 export {
@@ -1650,6 +1651,13 @@ export function appendCheckpoint(
       trigger: d.trigger as string,
     },
   ];
+}
+
+/** Live nested-session report: one row per child report, keyed by child and time. */
+export function appendSessionNote(items: Item[], note: SessionNoteItem): Item[] {
+  const key = sessionNoteKey(note);
+  if (items.some((it) => it.kind === "session_note" && sessionNoteKey(it) === key)) return items;
+  return [...items, note];
 }
 
 /** Live DiffReview hold receipt — idempotent by review id. */

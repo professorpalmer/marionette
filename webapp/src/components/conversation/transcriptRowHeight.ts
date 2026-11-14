@@ -47,6 +47,7 @@ const FIXED_ROW_HEIGHT_PX: Partial<Record<GroupedItem["kind"], number>> = {
   turn_terminal: 36,
   checkpoint: 32,
   pending_review: 40,
+  session_note: 72,
   compaction: 36,
   turn_changes: 28,
 };

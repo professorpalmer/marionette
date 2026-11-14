@@ -593,6 +593,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           })) {
             continue;
           }
+          openBackendTurn(ringGeneration);
           recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, {
             cursor: ringCursor,
             generation: ringGeneration,
@@ -642,6 +643,22 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
       return !userStoppedRef.current;
     }
   };
+
+  /**
+   * A frame from a newer ring generation than the turn this view settled is
+   * a turn the backend started (a nested-session wake, a bridge message).
+   * Reopen the turn, or the stream handler reads its frames and its terminal
+   * as late frames of the settled turn and the view stays on Stop.
+   */
+  function openBackendTurn(generation: number | undefined) {
+    if (generation == null || !turnSettledRef?.current) return;
+    const last = ringGenerationRef.current;
+    if (last != null && generation <= last) return;
+    turnSettledRef.current = false;
+    detachedBusyRef.current = true;
+    setTurnOpen(true);
+    setStatus((prev: SessionStatus) => preserveOrThinking(prev));
+  }
 
   const releasePollInFlight = () => {
     if (chatEventsPollTimerRef.current === CHAT_EVENTS_POLL_IN_FLIGHT) {
@@ -837,6 +854,7 @@ export function createChatEventsReattach(deps: ChatEventsReattachDeps) {
           void fallBackAfterRingMissHydrate();
           return;
         }
+        openBackendTurn(positiveGeneration(ev.generation));
         applyStreamEventRef.current(chatFrameToStreamEvent(ev));
         recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, ev);
         if (isTerminalStreamKind(kind)) {
