@@ -428,6 +428,23 @@ def _qs_session_id(qs: dict) -> str:
     return (qs.get("session_id", [""])[0] or "").strip()
 
 
+def _nest_state(session_id: str) -> dict:
+    """Children of ``session_id`` with live status, plus the change counter."""
+    from ..nested_sessions import current_rev, supervisor
+    payload: dict = {"rev": current_rev()}
+    sup = supervisor()
+    if sup is None or not session_id:
+        return payload
+    try:
+        payload["children"] = sup.children(session_id)
+        link = sup.svc.sessions.nest_of(session_id)
+        if link and link.get("parent_id"):
+            payload["parent_id"] = link["parent_id"]
+    except Exception:
+        pass
+    return payload
+
+
 def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonPayload]:
     """GET /api/session/state.
 
@@ -485,6 +502,7 @@ def get_session_state(qs: dict, svc: SessionControlServices) -> tuple[int, JsonP
     except Exception:
         todos = {}
     return 200, {
+        "nest": _nest_state(session_id or getattr(pilot, "harness_session_id", "") or ""),
         "state": state,
         "pending_swarms": pilot.has_pending_swarms(),
         "resume_pending": resume_pending,

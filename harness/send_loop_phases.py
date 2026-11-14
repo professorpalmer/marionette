@@ -173,7 +173,7 @@ def iter_stream_fault_retry(session: Any, exc: BaseException, attempt: int, max_
     return True
 
 LOCAL_ACTION_KINDS: frozenset[str] = frozenset({
-    "open_project", "relocate_session", "session_bank",
+    "open_project", "relocate_session", "session_bank", "nested_session",
     "write_file", "edit_file", "hash_edit", "run_command",
     "run_command_batch", "run_ipython", "wait", "todo",
     "search_tools", "search_state", "search_archive", "read_archived_chat",
@@ -1455,6 +1455,9 @@ def action_display_goal(act: PilotAction) -> Any:
         act_goal = act.path or (act.arguments or {}).get("chat_id") or ""
     elif act.kind == "session_bank":
         act_goal = (act.arguments or {}).get("session_id") or act.query or "list"
+    elif act.kind == "nested_session":
+        _n = act.arguments or {}
+        act_goal = " ".join(str(v) for v in (_n.get("action") or "list", _n.get("name") or "") if v)
     elif act.kind == "peek_artifact":
         _p = act.arguments or {}
         act_goal = (
@@ -3420,6 +3423,67 @@ def dispatch_local_action(
             f"{headline}\nsession={payload.get('active')} workspace_root={target_repo}",
             is_native,
         )
+        return
+
+    # ---- nested_session branch -----------------------------------
+    if act.kind == "nested_session":
+        import json
+        from .nested_sessions import supervisor as _nest_supervisor
+
+        args = act.arguments or {}
+        action = str(args.get("action") or "list").strip().lower()
+        sup = _nest_supervisor()
+        if sup is None:
+            res = {"ok": False, "error": "Nested sessions need the Marionette app server."}
+        elif action == "start":
+            res = sup.start(
+                session, name=str(args.get("name") or ""), brief=str(args.get("brief") or ""),
+                title=str(args.get("title") or ""), todo=str(args.get("todo") or ""),
+                worktree=args.get("worktree") is not False,
+            )
+        elif action == "message":
+            res = sup.message(session, str(args.get("name") or args.get("session_id") or ""),
+                              str(args.get("message") or ""))
+        elif action == "stop":
+            res = sup.stop(session, str(args.get("name") or args.get("session_id") or ""))
+        elif action == "list":
+            kids = sup.children(getattr(session, "harness_session_id", "") or "")
+            res = {"ok": True, "children": kids}
+        else:
+            res = {"ok": False, "error": "action must be start, message, stop, or list"}
+        if not res.get("ok"):
+            err_msg = f"nested_session {action} failed: {res.get('error')}"
+            yield ConvEvent("action_result", {"id": aid, "error": err_msg})
+            session._append_action_result(act, aid, err_msg, is_native, ok=False)
+            return
+        todos = res.pop("todos", None)
+        if action == "list":
+            lines = [f"{len(res['children'])} nested session(s):"]
+            for kid in res["children"]:
+                lines.append(f"- {kid['name']} ({kid['id']}): {kid['status']}"
+                             + (f" | {kid['branch']}" if kid.get("branch") else "")
+                             + (f" | report: {kid['report']}" if kid.get("report") else ""))
+            val = "\n".join(lines)
+        elif action == "start":
+            val = (f"Started nested session {res['name']} (id {res['session_id']}) in "
+                   f"{res['worktree']}" + (f" on branch {res['branch']}" if res.get("branch") else "")
+                   + ". It runs now. Its report comes back as a <nested-session-event> note; "
+                   "do not wait or poll for it.")
+            if res.get("worktree_error"):
+                val += f" No worktree: {res['worktree_error']}. It works in the project folder."
+        else:
+            val = json.dumps(res)
+        result_event = {
+            "id": aid, "num": 1, "kind": "nested_session", "goal": act_goal,
+            "types": ["nested_session"], "adapter": "local", "mode": "tool",
+            "nested": {k: v for k, v in res.items() if k != "ok"},
+            "artifacts": [{"type": "nested_session", "headline": f"nested_session: {act_goal}"}],
+        }
+        if todos:
+            result_event["todos"] = todos
+            result_event["session_id"] = getattr(session, "harness_session_id", "") or ""
+        yield ConvEvent("action_result", result_event)
+        session._append_action_result(act, aid, val, is_native)
         return
 
     # ---- session_bank branch --------------------------------------

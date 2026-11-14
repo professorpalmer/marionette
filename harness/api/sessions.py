@@ -505,7 +505,9 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
                     svc.set_codegraph_status("unsupported")
 
         try:
-            svc.attach_view(target_id, defer_cold_build=True, view_repo=view_repo)
+            from ..nested_sessions import run_repo
+            svc.attach_view(target_id, defer_cold_build=True,
+                            view_repo=run_repo(target_sess) or view_repo)
         except LeaseExhaustedError as e:
             if prev_active:
                 try:
@@ -532,6 +534,9 @@ def post_sessions_switch(body: dict, svc: SessionServices) -> tuple[int, dict]:
         # (rail spinner) and the UI never read the payload.
         active_id = svc.sessions.active or ""
         res["state"] = svc.runners.status(active_id) if active_id else "missing"
+        if active_id:
+            from ..nested_sessions import deliver_when_ready
+            deliver_when_ready(active_id, svc.runners.get)
 
     if not res.get("ok"):
         svc.runners.metadata_view.restore(metadata_transition)
@@ -918,7 +923,8 @@ def post_sessions_attach(body: dict, svc: SessionServices) -> tuple[int, dict]:
     if not target_id:
         return 400, {"ok": False, "error": "session id required"}
     target = next((row for row in svc.sessions.rows() if row.get("id") == target_id), {})
-    view_repo = session_stored_root(target) or svc.cfg.repo or ""
+    from ..nested_sessions import run_repo
+    view_repo = run_repo(target) or session_stored_root(target) or svc.cfg.repo or ""
     svc.save_active_transcript()
     previous_active = svc.sessions.active
     with svc.pilot_swap_lock or nullcontext():

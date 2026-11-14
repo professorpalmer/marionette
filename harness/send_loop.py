@@ -609,6 +609,10 @@ class SendLoopMixin:
         # Stream any Stop-boundary honesty notices recorded by interrupt or
         # post-Stop late-steer cleanup.
         yield from self._yield_stop_boundary_notices()
+        # Nested-session reports that landed while this session was idle.
+        notes = getattr(self, "_nest_note_events", None)
+        while notes:
+            yield ConvEvent("session_note", notes.pop(0))
         # Time-travel journal (round 6): snapshot the active check specs and
         # behavior toggles for this turn. Observability only; never raises.
         try:
