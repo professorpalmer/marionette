@@ -882,8 +882,10 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
   return grouped;
 }
 
-function isUserRow(row: GroupedItem): boolean {
-  return row.kind === "msg" && row.msg.role === "user";
+/** A row that starts a turn: a user message, or a nested-session report
+ *  (the parent's wake turn answers it). */
+function isTurnStartRow(row: GroupedItem): boolean {
+  return (row.kind === "msg" && row.msg.role === "user") || row.kind === "session_note";
 }
 
 /**
@@ -1026,13 +1028,13 @@ export function wrapSealedTurns(grouped: GroupedItem[], liveTurnOpen: boolean): 
   let lastChanges = -1;
   let i = 0;
   while (i < grouped.length) {
-    if (isUserRow(grouped[i])) {
+    if (isTurnStartRow(grouped[i])) {
       out.push(grouped[i]);
       i += 1;
       continue;
     }
     let j = i;
-    while (j < grouped.length && !isUserRow(grouped[j])) j += 1;
+    while (j < grouped.length && !isTurnStartRow(grouped[j])) j += 1;
     const span = grouped.slice(i, j);
     if (j === grouped.length && liveTurnOpen) out.push(...span);
     else {
@@ -1843,7 +1845,7 @@ export const TranscriptList = memo(function TranscriptList({
     ? lastActivityGroupIdx
     : -1;
   const liveTurnStart = (() => {
-    for (let k = grouped.length - 1; k >= 0; k--) if (isUserRow(grouped[k])) return k + 1;
+    for (let k = grouped.length - 1; k >= 0; k--) if (isTurnStartRow(grouped[k])) return k + 1;
     return 0;
   })();
   // The current turn's busy clock is its Worked for (live, and sealed until

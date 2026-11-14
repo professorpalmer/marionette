@@ -40,7 +40,9 @@ function lastHeadingTitle(sessionId: string | null): string {
   }
 }
 
-type HeadingSeed = { title: string; repo: string; branch: string } | null;
+/** ``root`` is the project the rail lists the session under. It differs from
+ *  ``repo`` only for a nested session, whose repo is its own worktree. */
+type HeadingSeed = { title: string; repo: string; root: string; branch: string } | null;
 
 /** What the rail already knows about the session, read at switch time. */
 function headingSeed(sessionId: string | null): HeadingSeed {
@@ -48,12 +50,24 @@ function headingSeed(sessionId: string | null): HeadingSeed {
   if (!hit) return null;
   const { row, root } = hit;
   const repo = row.repo || row.workspace_root || root;
+  if (row.nest?.parent_id) {
+    // A nested session works in its own worktree, which is locked to the
+    // child's branch. The view stays on the parent project, so no workspace
+    // read names that branch: the row does.
+    return {
+      title: displaySessionListTitle(row.title, row.title_user),
+      repo,
+      root: row.workspace_root || root || repo,
+      branch: row.branch || "",
+    };
+  }
   // The row's own branch is the one the session started on; the repo may
   // be on another branch now. Show only a branch read from that repo.
   const workspace = readSWRCache<WorkspaceInfo>(workspaceInfoCacheKey(repo));
   return {
     title: displaySessionListTitle(row.title, row.title_user),
     repo,
+    root: repo,
     branch: workspace?.is_git ? workspace.branch || "" : "",
   };
 }
@@ -75,6 +89,7 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
   const [loaded, setLoaded] = useState<{ sessionId: string; title: string } | null>(null);
   const [workspace, setWorkspace] = useState<{ repo: string; branch: string } | null>(null);
   const shownRepo = seed?.repo || repo;
+  const projectRoot = seed?.root || shownRepo;
 
   useEffect(() => {
     let gen = 0;
@@ -82,7 +97,7 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
     const load = () => {
       const mine = ++gen;
       if (sessionId) {
-        api.sessions(shownRepo || undefined).then((rows) => {
+        api.sessions(projectRoot || undefined).then((rows) => {
           if (mine !== gen) return;
           const row = rows.find((r) => r.id === sessionId);
           const next = row ? displaySessionListTitle(row.title, row.title_user) : "";
@@ -108,7 +123,7 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
       window.removeEventListener(SESSIONS_CHANGED_EVENT, later);
       window.removeEventListener("harness-config-changed", later);
     };
-  }, [sessionId, shownRepo]);
+  }, [sessionId, shownRepo, projectRoot]);
 
   const title = !sessionId
     ? lastHeadingTitle(null)
@@ -120,6 +135,6 @@ export function useSessionHeading(sessionId: string | null, repo: string): Sessi
   const workspaceBranch = workspace && (!shownRepo || repoPathsEqual(workspace.repo, shownRepo))
     ? workspace.branch
     : null;
-  const branch = workspaceBranch ?? seed?.branch ?? "";
-  return { title, project: projectName(shownRepo), branch };
+  const branch = (seed && seed.root !== seed.repo ? seed.branch : null) ?? workspaceBranch ?? seed?.branch ?? "";
+  return { title, project: projectName(projectRoot), branch };
 }

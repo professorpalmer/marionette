@@ -41,7 +41,8 @@ function TreeLine({ last }: { last: boolean }) {
 
 /**
  * Children under a parent session in the rail. Open: one row per child with a
- * tree line and a status dot. Closed: one "N nested sessions" row that opens it.
+ * tree line, and a dot while it works or after it failed. Closed: one
+ * "N nested sessions" row that opens it.
  */
 export default function NestedSessionRows({
   sessions,
@@ -96,7 +97,7 @@ export default function NestedSessionRows({
               <span className="flex-1 min-w-0 truncate">{title}</span>
               {switching
                 ? <Loader2 size={10} className="shrink-0 animate-spin text-accent" />
-                : status !== "done"
+                : status === "working" || status === "failed"
                   ? <span
                       aria-label={nestStatusLabel(status)}
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${nestStatusDot(status)}`}

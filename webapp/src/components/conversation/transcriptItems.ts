@@ -409,6 +409,8 @@ export function transcriptResponseToItems(res: {
       // A steer is a user message inside the turn: the turn still started
       // at the message that opened it.
       if ((m.type ?? "message") === "message" && m.role === "user" && m.steer !== true) turnTs = ts;
+      // A nested-session report starts the parent's wake turn.
+      if (m.type === "session_note") turnTs = ts;
       if (m.type === "card") {
         if (m.kind === "run_swarm") return [];
         // result == null means still in flight (persisted at action_start).

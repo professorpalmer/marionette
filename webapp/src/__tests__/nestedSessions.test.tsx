@@ -13,6 +13,15 @@ import NestedSessionRows from "../components/NestedSessionRows";
 import { parseSessionNote, plainReport, SessionNoteRow } from "../components/conversation/SessionNoteRow";
 import { appendSessionNote } from "../components/conversation/streamApply";
 import { SWITCH_SESSION_EVENT } from "../lib/sessionNav";
+import {
+  collectIntermediateAssistantItems,
+  groupAgentActivity,
+  wrapSealedTurns,
+  type GroupedItem,
+  type Item,
+} from "../components/TranscriptList";
+import { transcriptResponseToItems } from "../components/conversation/transcriptItems";
+import { turnSpanMs } from "../lib/turnProgress";
 
 afterEach(() => localStorage.clear());
 
@@ -96,6 +105,7 @@ describe("NestedSessionRows", () => {
     );
     expect(screen.getByText("Wrong vehicle return place")).toBeTruthy();
     expect(screen.getAllByLabelText("Working")).toHaveLength(1);
+    expect(screen.queryByLabelText("Done")).toBeNull();
     fireEvent.click(screen.getByText("Robot change"));
     expect(onOpen).toHaveBeenCalledWith("c2");
   });
@@ -136,5 +146,48 @@ describe("session notes", () => {
     fireEvent.click(screen.getByText("robot-change"));
     window.removeEventListener(SWITCH_SESSION_EVENT, listener);
     expect(seen).toEqual(["c9"]);
+  });
+});
+
+describe("the parent's wake turn", () => {
+  const label = (g: GroupedItem): string =>
+    g.kind === "activity_group" ? `fold[${g.items.length}]`
+      : g.kind === "msg" ? `${g.msg.role}:${g.msg.text}`
+        : g.kind;
+
+  it("a report row starts the wake turn, so the turns do not merge", () => {
+    const note = parseSessionNote({ child_id: "c1", name: "kid", ts: 5 });
+    if (!note) throw new Error("note");
+    const card = (id: string): Item => ({
+      kind: "card",
+      card: { id, goal: id, cwd: null, kind: "read_file", running: false, open: false, result: { status: "ok" } },
+    });
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "start two children" } },
+      card("a"),
+      { kind: "msg", msg: { role: "assistant", text: "Both started." } },
+      note,
+      card("b"),
+      { kind: "msg", msg: { role: "assistant", text: "Checked the branch." } },
+    ];
+    const grouped = groupAgentActivity(items, collectIntermediateAssistantItems(items, false));
+    expect(wrapSealedTurns(grouped, false).map(label)).toEqual([
+      "user:start two children", "activity_group", "assistant:Both started.",
+      "session_note", "activity_group", "assistant:Checked the branch.",
+    ].map((x) => (x === "activity_group" ? "fold[1]" : x)));
+  });
+
+  // Live 2026-11-14: a 1 s wake turn read "Worked for 2m 29s" after a reload.
+  it("a reload times the wake turn from its report, not the last user message", () => {
+    const items = transcriptResponseToItems({
+      display: [
+        { type: "message", role: "user", text: "start two children", ts: 1_000 },
+        { type: "message", role: "assistant", text: "Both started.", ts: 3_000 },
+        { type: "session_note", child_id: "c1", name: "kid", status: "done", report: "ok", ts: 150_000 },
+        { type: "card", id: "k1", kind: "run_command", goal: "git log", ts: 150_200, result: { status: "ok", duration_ms: 300 } },
+      ],
+    });
+    const cards = items.filter((it) => it.kind === "card");
+    expect(turnSpanMs(cards)).toBe(500);
   });
 });

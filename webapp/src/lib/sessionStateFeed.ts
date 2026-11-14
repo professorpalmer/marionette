@@ -14,6 +14,9 @@ import { setActivity } from "./appActivity";
 type Listener = (state: SessionState, requestedFor: string, seq: number) => void;
 
 export const SESSION_STATE_POLL_MS = 4000;
+/** While a nested session of the shown session works, its chips and rail dot
+ *  follow it at this pace. One poll for the app, not one per child. */
+export const SESSION_STATE_NEST_POLL_MS = 1000;
 
 type RunnerState = NonNullable<SessionState["runners"]>[string];
 
@@ -23,6 +26,11 @@ let sessionId = "";
 let timer: number | undefined;
 let inFlight: { promise: Promise<void>; requestedFor: string } | null = null;
 let issued = 0;
+let nestWorking = false;
+
+function nextPollMs(): number {
+  return nestWorking ? SESSION_STATE_NEST_POLL_MS : SESSION_STATE_POLL_MS;
+}
 
 function schedule(ms: number) {
   window.clearTimeout(timer);
@@ -31,7 +39,7 @@ function schedule(ms: number) {
 
 function tick() {
   if (document.hidden) { schedule(SESSION_STATE_POLL_MS); return; }
-  void refreshSessionStateFeed().finally(() => schedule(SESSION_STATE_POLL_MS));
+  void refreshSessionStateFeed().finally(() => schedule(nextPollMs()));
 }
 
 /**
@@ -46,6 +54,9 @@ export function refreshSessionStateFeed(fresh = false): Promise<void> {
     .then(() => api.getSessionState(requestedFor ? { sessionId: requestedFor } : undefined))
     .then((state) => {
       if (!state) return;
+      if (requestedFor === sessionId) {
+        nestWorking = (state.nest?.children ?? []).some((child) => child.status === "working");
+      }
       if (state.runners) {
         runners = state.runners;
         setActivity("runners", Object.values(runners).some((r) => r === "running" || r === "attaching"));

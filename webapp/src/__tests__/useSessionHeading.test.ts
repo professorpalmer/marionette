@@ -63,4 +63,17 @@ describe("useSessionHeading on a switch", () => {
     ]);
     expect(renderHook(() => useSessionHeading("sess-2", "/w/proj")).result.current.branch).toBe("");
   });
+
+  // A nested session works in its own worktree, but it belongs to the parent
+  // project. The header read "Marionette nest_kid-abc123" before.
+  it("names a nested session's project from its parent project, not its worktree", () => {
+    writeSWRCache("sessions:/w/proj", [
+      { id: "kid", title: "kid", created: 1, repo: "/w/.pmharness-worktrees/nest_kid-abc123",
+        workspace_root: "/w/proj", branch: "nest/kid-abc123", nest: { parent_id: "p1", name: "kid" } },
+    ]);
+    // The view stays on the project, so the workspace read names its branch.
+    writeSWRCache("workspace:/w/proj", { repo: "/w/proj", branch: "main", is_git: true });
+    expect(renderHook(() => useSessionHeading("kid", "/w/proj")).result.current)
+      .toEqual({ title: "kid", project: "proj", branch: "nest/kid-abc123" });
+  });
 });
