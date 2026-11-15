@@ -4,7 +4,6 @@ import {
   api,
   type Settings,
   type Config,
-  type UsageData,
   type PlatformAdapter,
   type GitStatus,
   type ProviderInfo,
@@ -24,10 +23,8 @@ import {
 } from "./settingsSnapshot";
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
-import WindowGlassSettings from "./WindowGlassSettings";
 import ProviderConfigModal from "./ProviderConfigModal";
 import AccountsList from "./AccountsList";
-import SettingsOptIns from "./SettingsOptIns";
 import type { ProviderConfigValues } from "../lib/providerConfig";
 import { REASONING_LEVELS } from "../lib/reasoningSupport";
 
@@ -52,7 +49,7 @@ const FLOW_ROW: Record<OAuthFlowOwner, string> = {
   "cursor-cli": "cursor-cli",
 };
 
-export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
+export default function SettingsPane({ section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
   // Settings search/filter: when a query is active we search ACROSS all sections
   // (ignore the current-section gate) and hide individual settings whose label +
@@ -82,7 +79,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const errorNotice = usePanelNotice(error || null);
-  const [usage, setUsage] = useState<UsageData | null>(null);
   const [wikiCfg, setWikiCfg] = useState<{ api_base: string; has_token: boolean } | null>(null);
   const [wikiBase, setWikiBase] = useState("");
   const [wikiToken, setWikiToken] = useState("");
@@ -182,26 +178,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  const [notify, setNotify] = useState(() => {
-    const val = localStorage.getItem("pmharness.notify");
-    return val !== null ? val === "true" : true;
-  });
-  const [sound, setSound] = useState(() => {
-    const val = localStorage.getItem("pmharness.sound");
-    return val !== null ? val === "true" : false;
-  });
-
-  const toggleNotify = () => {
-    const newVal = !notify;
-    setNotify(newVal);
-    localStorage.setItem("pmharness.notify", String(newVal));
-  };
-  const toggleSound = () => {
-    const newVal = !sound;
-    setSound(newVal);
-    localStorage.setItem("pmharness.sound", String(newVal));
-  };
-
   // Live UI (Vite HMR): the backend always runs from the source checkout, so this
   // toggle only governs whether the React UI is served from a Vite dev server
   // (instant hot-reload) instead of the prebuilt dist/. Desktop-only (needs
@@ -293,15 +269,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // only onFirstOpen of the collapse (that left a misleading 0/0).
   const searchActive = filter.trim().length > 0;
   useEffect(() => {
-    const wantNotify = section === "notifications" || searchActive;
     const wantAdvanced = section === "advanced" || searchActive;
     const wantProviders = section === "providers" || searchActive;
-
-    if (wantNotify) {
-      api.getUsage()
-        .then(setUsage)
-        .catch((err) => console.error("Failed to load usage statistics", err));
-    }
 
     if (wantAdvanced) {
       api.getWikiConfig()
@@ -970,131 +939,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       </div>
 
       <div className="space-y-4">
-        {gate("general", "provider model setup wizard api keys routing") && settings && (<>
-        {/* Wizard Button */}
-        <div className="space-y-1.5 border-b border-edge/65 pb-3">
-          <button
-            onClick={onOpenWizard}
-            className="w-full bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded py-2 font-bold transition-colors text-ui-11"
-          >
-            Connect a provider
-          </button>
-          <p className="text-ui-10 text-muted">
-            Pick a provider, paste a key, start chatting. One API key runs chat and swarms.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "transparent background glass vibrancy acrylic mica frost window") && (
-          <WindowGlassSettings />
-        )}
-        {gate("general", "budget steps per run") && settings && (<>
-        {/* Budget Stepper / Number */}
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-            Budget (Steps)
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={settings.budget}
-              onChange={(e) => {
-                const val = parseInt(e.target.value);
-                if (!isNaN(val)) {
-                  update({ budget: val });
-                }
-              }}
-              disabled={saving}
-              className="w-20 bg-panel2 border border-edge rounded px-2.5 py-1 text-txt focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
-            />
-            <span className="text-ui-10 text-muted">steps per run (1-50)</span>
-          </div>
-          <p className="text-ui-10 text-muted">
-            Maximum Orchestration steps/budget allocated per task execution.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "opt-ins optin auto-distill distillation toggle hash edit hash-anchored experimental review edits diff review toggle auto-verify edits typecheck syntax check self-correct diagnostics jev typesafe decisions skill retrieve openrouter") && settings && (
-          <SettingsOptIns settings={settings} onUpdate={(partial) => { void update(partial); }} saving={saving} />
-        )}
-        {gate("general", "compaction residual hybrid summary catalog vault compact handle index") && settings && (<>
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-            Compact Residual
-          </label>
-          <button
-            onClick={() => {
-              const cur = settings.compactionResidual || "catalog";
-              const next = cur === "catalog"
-                ? "hybrid"
-                : cur === "hybrid"
-                  ? "summary"
-                  : "catalog";
-              update({ compactionResidual: next });
-            }}
-            disabled={saving}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              settings.compactionResidual && settings.compactionResidual !== "catalog"
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-ui-11">
-              {settings.compactionResidual === "hybrid"
-                ? "Pin handle index after compact"
-                : settings.compactionResidual === "summary"
-                  ? "LLM snapshot after compact"
-                  : "Handle catalog; vault retrieve"}
-            </span>
-            <span className="text-ui-10 uppercase font-bold tracking-wider">
-              {settings.compactionResidual === "hybrid"
-                ? "hybrid"
-                : settings.compactionResidual === "summary"
-                  ? "summary"
-                  : "catalog"}
-            </span>
-          </button>
-          <p className="text-ui-10 text-muted">
-            Default is catalog: keep files, decisions, and the last-wins
-            story after compact, then retrieve matching slices later.
-            The live pilot never writes the residual, including a local
-            hosted model. Hybrid and summary use a cheaper summarizer only
-            when one is configured; otherwise they stay extractive.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "output style ste simplified technical english asd-ste100 controlled language prose") && settings && (
-        <div className="space-y-1.5">
-          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-            Output Style
-          </label>
-          <button
-            onClick={() => update({ outputStyle: settings.outputStyle === "ste" ? "off" : "ste" })}
-            disabled={saving}
-            aria-pressed={settings.outputStyle === "ste"}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-              settings.outputStyle === "ste"
-                ? "bg-accent/10 border-accent/30 text-accent"
-                : "bg-panel2 border-edge text-muted"
-            } disabled:opacity-50`}
-          >
-            <span className="font-medium text-ui-11">Simplified Technical English (ASD-STE100)</span>
-            <span className="text-ui-10 uppercase font-bold tracking-wider">
-              {settings.outputStyle === "ste" ? "on" : "off"}
-            </span>
-          </button>
-          <p className="text-ui-10 text-muted">
-            The pilot and new workers write short, controlled sentences: one
-            thought per sentence, active voice, and only can, must, or will as
-            helping verbs. Code, paths, and quoted text stay exact. The change
-            applies from the next turn.
-          </p>
-        </div>
-        )}
         {gate("safety", "browser chrome cookies real profile login") && settings && (
         <div className="space-y-1.5">
           <button
@@ -1711,47 +1555,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         </SettingsCollapse>
 
         </>)}
-        {gate("notifications", "observability queue notifications sound desktop messages") && (<>
-        {/* Observability & Queue Prefs */}
-        <div className="space-y-3 border-t border-edge pt-3">
-          <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-            Observability & Queue
-          </label>
-          
-          <div className="space-y-2">
-            {/* Desktop Notifications Toggle */}
-            <button
-              onClick={toggleNotify}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-                notify
-                  ? "bg-accent/10 border-accent/30 text-accent"
-                  : "bg-panel2 border-edge text-muted"
-              }`}
-            >
-              <span className="font-medium text-ui-11">Desktop notifications</span>
-              <span className="text-ui-10 uppercase font-bold tracking-wider">
-                {notify ? "on" : "off"}
-              </span>
-            </button>
-            
-            {/* Completion Sound Toggle */}
-            <button
-              onClick={toggleSound}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-                sound
-                  ? "bg-accent/10 border-accent/30 text-accent"
-                  : "bg-panel2 border-edge text-muted"
-              }`}
-            >
-              <span className="font-medium text-ui-11">Completion sound</span>
-              <span className="text-ui-10 uppercase font-bold tracking-wider">
-                {sound ? "on" : "off"}
-              </span>
-            </button>
-          </div>
-        </div>
-
-        </>)}
         {gate("advanced", "live ui vite hmr hot reload self dev restart relaunch") && _selfDevIpc && (<>
         {/* Live UI Section (Vite HMR). The backend always runs from source. */}
         <div className="border-t border-edge pt-3 space-y-2">
@@ -2076,120 +1879,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               <SkillsPane embedded />
             </div>
           )}
-        </div>
-
-        </>)}
-        {gate("general", "usage cost token dashboard spend statistics") && (<>
-        {/* Usage / Cost Dashboard Section */}
-        <div className="border-t border-edge pt-3 space-y-2.5">
-          <div className="flex items-center justify-between">
-            <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-              Token & Cost Usage
-            </label>
-            <button
-              onClick={() => {
-                api.getUsage()
-                  .then(setUsage)
-                  .catch((err) => console.error("Failed to refresh usage", err));
-              }}
-              className="text-ui-9 uppercase font-bold tracking-wider text-accent hover:underline bg-transparent border-0 p-0"
-            >
-              Refresh
-            </button>
-          </div>
-
-          {usage ? (
-            <div className="space-y-2.5 bg-panel2 border border-edge/50 rounded p-2.5">
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-ui-11">
-                  <span className="text-faint">This app run tokens:</span>
-                  <span className="text-txt font-mono font-medium">{usage.session.tokens_used.toLocaleString()}</span>
-                </div>
-                <div className="flex items-center justify-between text-ui-11">
-                  <span className="text-faint">
-                    {usage.session.cost_source === "provider" && usage.session.estimated !== true
-                      ? "This app run (provider-billed):"
-                      : usage.session.cost_source === "mixed"
-                        ? "This app run (mixed):"
-                        : usage.session.cost_source === "plan_estimated"
-                          ? "This app run (plan):"
-                          : "This app run (estimated):"}
-                  </span>
-                  <span className="text-good font-mono font-medium">${usage.session.est_cost_usd.toFixed(6)}</span>
-                </div>
-                <div className="flex flex-wrap items-center justify-between gap-1 text-ui-11 border-t border-edge/30 pt-1 mt-1">
-                  <span className="text-faint">Active Driver:</span>
-                  <span className="text-txt font-mono font-medium truncate max-w-full" title={usage.session.driver}>{usage.session.driver}</span>
-                </div>
-                <div className="flex items-center justify-between text-ui-11">
-                  <span className="text-faint">Price in/out (per Mtok):</span>
-                  <span className="text-muted font-mono font-medium">${usage.session.price_in}/${usage.session.price_out}</span>
-                </div>
-              </div>
-
-              {usage.jobs && usage.jobs.length > 0 && (
-                <div className="space-y-1 border-t border-edge/40 pt-1.5 mt-1.5">
-                  <div className="text-ui-9 uppercase tracking-wider text-faint font-semibold mb-1">
-                    PM Job Costs (estimated)
-                  </div>
-                  <div className="max-h-24 overflow-y-auto space-y-1 pr-1">
-                    {usage.jobs.map((job: any) => (
-                      <div key={job.job_id} className="flex items-center justify-between gap-x-1.5 text-ui-10 font-mono">
-                        <span className="text-muted truncate flex-1 min-w-0" title={job.job_id}>{job.job_id}</span>
-                        <span className="text-faint text-ui-9 flex-shrink-0">{job.tokens.toLocaleString()} tok</span>
-                        <span className="text-txt font-medium flex-shrink-0">${job.est_cost_usd.toFixed(6)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <p className="text-ui-10 text-muted">Loading usage statistics...</p>
-          )}
-          <p className="text-ui-9 text-muted font-mono">
-            This app run resets on full quit — not Swarm pane repo-session spend or conversation lifetime.
-            Spend basis may be provider-billed, mixed, estimated from catalog rates, or a plan-credit estimate.
-          </p>
-        </div>
-
-        </>)}
-        {gate("general", "system info version read-only") && settings && (<>
-        {/* Read-Only Info */}
-        <div className="border-t border-edge pt-3 space-y-2.5">
-          <div className="uppercase tracking-wider text-ui-10 text-faint font-semibold">
-            System Info
-          </div>
-
-          <div className="grid grid-cols-3 gap-1">
-            <span className="text-faint">Reach:</span>
-            <span className="col-span-2 text-muted font-mono select-all break-all bg-panel2 px-1 py-0.5 rounded border border-edge/30 inline-block w-fit">
-              {settings.reach}
-            </span>
-          </div>
-
-          {settings.wiki_auto !== undefined && (
-            <div className="grid grid-cols-3 gap-1">
-              <span className="text-faint">Wiki Auto:</span>
-              <span className="col-span-2 text-muted font-mono inline-block w-fit">
-                {settings.wiki_auto ? "yes" : "no"}
-              </span>
-            </div>
-          )}
-
-          <div className="space-y-0.5">
-            <div className="text-faint">State Directory:</div>
-            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-ui-11">
-              {settings.state_dir || "Temporary (per-session)"}
-            </div>
-          </div>
-
-          <div className="space-y-0.5">
-            <div className="text-faint">Repository:</div>
-            <div className="text-muted font-mono select-all break-all bg-panel2 p-1.5 rounded border border-edge/30 text-ui-11">
-              {settings.repo || "None"}
-            </div>
-          </div>
         </div>
 
         </>)}
