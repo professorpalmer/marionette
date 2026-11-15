@@ -1212,6 +1212,21 @@ def persist_live_transcript(
         write(state_dir, session_id, export())
 
 
+def load_runner_transcript(state_dir: str, session_id: str) -> Any:
+    """Load the transcript a runner attaches with.
+
+    An archived session keeps only a stub after its move into the vault. A
+    runner built over the stub holds an empty history, and its next save
+    replaces the stub, so the full native bundle is restored first.
+    """
+    try:
+        from .chat_archive import restore_if_pruned
+        restore_if_pruned(state_dir, session_id)
+    except Exception:
+        pass
+    return load_transcript(state_dir, session_id)
+
+
 def load_transcript(state_dir: str, session_id: str) -> Any:
     if not session_id:
         return []
