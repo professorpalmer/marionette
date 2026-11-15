@@ -1107,6 +1107,7 @@ def build_tools_schema(
                     "todo": {"type": "string", "description": "start: text of the plan step this child owns"},
                     "model": {"type": "string", "description": "start: a model-picker id; default is your model"},
                     "reasoning_effort": {"type": "string", "enum": ["none", "low", "medium", "high", "xhigh", "max"]},
+                    "context": {"type": "string", "enum": ["fresh", "fork"], "description": "start: fork gives the child this conversation"},
                     "message": {"type": "string", "description": "message: text for the child"},
                 },
                 "required": ["action"],

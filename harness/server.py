@@ -1577,6 +1577,7 @@ def _install_nested_supervisor() -> Any:
         drop_runner=_nested_drop_runner,
         resolve_model=_nested_resolve_model,
         picker_models=_nested_picker_models,
+        state_dir=_sessions_state_dir,
     ))
     set_supervisor(sup)
     return sup

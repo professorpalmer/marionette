@@ -182,11 +182,28 @@ def should_wake(*, pending_wake: bool, siblings_working: bool, parent_idle: bool
             and not stop_held and auto_wakes < MAX_AUTO_WAKES)
 
 
-def child_preamble(parent_title: str, name: str, branch: str, worktree: str) -> str:
+def fork_prefix(history: Any) -> List[dict]:
+    """A deep copy of ``history`` up to its last tool-complete boundary.
+
+    The same cut as ``/api/session/fork``: the parent's turn that calls
+    ``start`` has an open tool call, so the copy ends before that turn's
+    tool work and never holds a call with no result.
+    """
+    import copy
+    from .sessions import _fork_boundaries, rematerialize_driver_messages
+    messages = rematerialize_driver_messages(list(history or []))
+    bounds = _fork_boundaries(messages)
+    return copy.deepcopy(messages[:bounds[-1]["event_id"]]) if bounds else []
+
+
+def child_preamble(parent_title: str, name: str, branch: str, worktree: str,
+                   forked: bool = False) -> str:
     where = f"Your git worktree is {worktree} on branch {branch}. " if branch else ""
+    context = ("The messages above are copied from the parent session for context. "
+               "They are not your task, and their paths are not your worktree. ") if forked else ""
     return (
         f'You are the nested session "{name}", started by the session "{parent_title}". '
-        f"{where}Do only the task below. The first {REPORT_CHARS} characters of your final "
+        f"{context}{where}Do only the task below. The first {REPORT_CHARS} characters of your final "
         "reply go back to the parent session, so put the result first: what you did, "
         "the commit or files, and what is not done or not verified. Do not push.\n\nTask:\n"
     )
@@ -240,6 +257,9 @@ class NestServices:
     # The picker spec a model name means, or None when the picker does not list it.
     resolve_model: Optional[Callable[[str], Optional[str]]] = None
     picker_models: Optional[Callable[[], List[str]]] = None
+    # The sessions state dir (transcripts). A fork start writes the child
+    # transcript there; ``read`` loads a child with no runner from there.
+    state_dir: Optional[Callable[[], str]] = None
 
 
 class NestedSupervisor:
@@ -257,7 +277,8 @@ class NestedSupervisor:
     # -- tool actions --------------------------------------------------
 
     def start(self, parent: Any, *, name: str, brief: str, title: str = "",
-              todo: str = "", model: str = "", reasoning_effort: str = "") -> dict:
+              todo: str = "", model: str = "", reasoning_effort: str = "",
+              context: str = "") -> dict:
         sessions = self.svc.sessions
         parent_id = getattr(parent, "harness_session_id", "") or ""
         if not parent_id:
@@ -272,6 +293,14 @@ class NestedSupervisor:
         prefs = self._pilot_choice(model, reasoning_effort)
         if "error" in prefs:
             return {"ok": False, "error": prefs["error"]}
+        context = (context or "").strip().lower()
+        if context not in ("", "fresh", "fork"):
+            return {"ok": False, "error": 'context must be "fork" (the child gets this conversation) or "fresh".'}
+        history: Optional[List[dict]] = None
+        if context == "fork":
+            if self.svc.state_dir is None:
+                return {"ok": False, "error": "A fork start needs the Marionette app server."}
+            history = fork_prefix(getattr(parent, "_history", None))
         taken = [(row.get("nest") or {}).get("name", "") for row in sessions.children_of(parent_id)]
         slug = unique_name(slug, taken)
         parent_row = next((r for r in sessions.rows() if r.get("id") == parent_id), {})
@@ -279,14 +308,17 @@ class NestedSupervisor:
                 or getattr(getattr(parent, "config", None), "repo", "") or "").strip()
         if not root or self.svc.add_worktree is None:
             return {"ok": False, "error": "Nested sessions need a project folder that is a git repository."}
+        nest = {"name": slug, "todo": (todo or "").strip(), "status": "working",
+                "report": "", "updated": time.time(), "worktree": "", "branch": ""}
+        if history is not None:
+            nest.update(context="fork", forked_messages=len(history))
         try:
             row = sessions.create_child(
-                parent_id, title=(title or "").strip() or slug,
-                nest={"name": slug, "todo": (todo or "").strip(), "status": "working",
-                      "report": "", "updated": time.time(), "worktree": "", "branch": ""},
+                parent_id, title=(title or "").strip() or slug, nest=nest,
                 workspace_root=root, pilot_preferences=prefs,
+                history=history, state_dir=self.svc.state_dir() if history is not None else "",
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         sid = row["id"]
         # Each child writes only in its own worktree, so two children never
@@ -302,13 +334,16 @@ class NestedSupervisor:
         sessions.update_nest(sid, worktree=tree["path"], branch=tree.get("branch", ""))
         linked = self._link_todo(parent, todo, sid, slug)
         message = child_preamble(parent_row.get("title") or "parent", slug,
-                                 tree.get("branch", ""), tree.get("path", "")) + brief.strip()
+                                 tree.get("branch", ""), tree.get("path", ""),
+                                 forked=history is not None) + brief.strip()
         self._begin(sid, message, driver="parent")
         bump_rev()
         result = {
             "ok": True, "session_id": sid, "name": slug,
             "branch": tree.get("branch", ""), "worktree": tree["path"],
         }
+        if history is not None:
+            result["forked_messages"] = len(history)
         chosen = sessions.pilot_preferences(sid)
         for key, field in (("driver", "model"), ("reasoning_effort", "reasoning_effort")):
             if chosen.get(key):

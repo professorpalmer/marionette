@@ -3441,6 +3441,7 @@ def dispatch_local_action(
                 title=str(args.get("title") or ""), todo=str(args.get("todo") or ""),
                 model=str(args.get("model") or ""),
                 reasoning_effort=str(args.get("reasoning_effort") or ""),
+                context=str(args.get("context") or ""),
             )
         elif action == "message":
             res = sup.message(session, str(args.get("name") or args.get("session_id") or ""),
@@ -3475,6 +3476,8 @@ def dispatch_local_action(
                    f"{res['worktree']}" + (f" on branch {res['branch']}" if res.get("branch") else "")
                    + (f", model {res['model']}" if res.get("model") else "")
                    + (f", effort {res['reasoning_effort']}" if res.get("reasoning_effort") else "")
+                   + (f", with {res['forked_messages']} messages of this conversation"
+                      if "forked_messages" in res else "")
                    + ". It runs now. Its report comes back as a <nested-session-event> note; "
                    "do not wait or poll for it.")
         else:

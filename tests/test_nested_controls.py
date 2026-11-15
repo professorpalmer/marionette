@@ -246,3 +246,61 @@ def test_the_server_checks_a_child_model_against_the_picker_list(monkeypatch):
     assert server._nested_resolve_model("deepseek/deepseek-v4.1-flash") == PICKER[0]
     assert server._nested_resolve_model("gpt-9-imaginary") is None
     assert server._nested_picker_models() == PICKER
+
+
+# -- unit 3: fork context -----------------------------------------------------
+
+
+def _parent_with_history(h):
+    parent = h.parent()
+    parent._history = [
+        {"role": "user", "content": "Fix the vehicle return place."},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "r1", "type": "function",
+                                                             "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "r1", "content": "warp table at 0x40"},
+        {"role": "assistant", "content": "The warp table is at 0x40."},
+        {"role": "user", "content": "Split the map work into a child."},
+        # The turn that calls nested_session start: its tool call has no result yet.
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "n1", "type": "function",
+                                                             "function": {"name": "nested_session", "arguments": "{}"}}]},
+    ]
+    return parent
+
+
+def test_fork_context_starts_the_child_with_the_parent_conversation(tmp_path):
+    import copy
+    from harness.sessions import load_transcript
+    h = Harness(tmp_path)
+    h.sup.svc.state_dir = lambda: str(tmp_path)
+    parent = _parent_with_history(h)
+    before = copy.deepcopy(parent._history)
+    res = h.sup.start(parent, name="maps", brief="Map the warps.", context="fork")
+    assert res["ok"], res
+    sid = res["session_id"]
+    saved = load_transcript(str(tmp_path), sid)
+    history = saved["history"] if isinstance(saved, dict) else saved
+    # Cut at the last tool-complete boundary, as /api/session/fork does.
+    assert history == before[:5]
+    assert res["forked_messages"] == 5
+    nest = h.store.nest_of(sid)
+    assert nest["context"] == "fork" and nest["forked_messages"] == 5
+    # The parent history does not change, and the copy is not shared.
+    assert parent._history == before
+    history[0]["content"] = "changed"
+    assert parent._history[0]["content"] == "Fix the vehicle return place."
+    turn = h.turns[-1]
+    assert "copied from the parent session" in turn["message"]
+    assert turn["message"].endswith("Task:\nMap the warps.")
+
+
+def test_fresh_context_copies_nothing_and_a_bad_context_is_refused(tmp_path):
+    from harness.sessions import load_transcript
+    h = Harness(tmp_path)
+    h.sup.svc.state_dir = lambda: str(tmp_path)
+    parent = _parent_with_history(h)
+    res = h.sup.start(parent, name="fresh", brief="b")
+    assert load_transcript(str(tmp_path), res["session_id"]) == []
+    assert "copied from the parent" not in h.turns[-1]["message"]
+    bad = h.sup.start(parent, name="bad", brief="b", context="clone")
+    assert not bad["ok"] and "fork" in bad["error"]
+    assert len(h.store.children_of(parent.harness_session_id)) == 1
