@@ -27,7 +27,6 @@ def git_project(tmp_path):
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.invalid")
     _git(repo, "config", "user.name", "T")
-    (repo / ".gitignore").write_text(".codegraph/\n")
     (repo / "a.txt").write_text("a\n")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "init")
@@ -90,10 +89,14 @@ def test_archive_refuses_a_working_child(tmp_path):
 def test_archive_releases_a_clean_worktree_and_unarchive_adds_it_back(tmp_path):
     h = GitHarness(tmp_path)
     parent, sid, tree, branch = h.child()
-    # Ignored files (the CodeGraph seed) do not keep the worktree.
+    # The CodeGraph index (seeded into each child) does not keep the worktree.
+    # Its own .gitignore ignores all but itself, so git lists that one file.
     os.makedirs(os.path.join(tree, ".codegraph"), exist_ok=True)
     with open(os.path.join(tree, ".codegraph", "codegraph.db"), "w") as fh:
         fh.write("index")
+    with open(os.path.join(tree, ".codegraph", ".gitignore"), "w") as fh:
+        fh.write("*\n!.gitignore\n")
+    assert _git(tree, "status", "--porcelain") == "?? .codegraph/"
     res = h.sup.archive(parent, "kid")
     assert res["ok"], res
     assert res["worktree"] == "released"

@@ -932,7 +932,9 @@ def branch_state(root: str, worktree: str, branch: str) -> dict:
 
     ``ahead`` counts commits on ``branch`` that the project HEAD lacks.
     ``dirty`` is True for tracked changes or untracked files (not ignored
-    files). ``error`` is set when git cannot answer.
+    files, not the CodeGraph index: its ``.codegraph/.gitignore`` ignores all
+    but itself, so git lists that one file in every child). ``error`` is set
+    when git cannot answer.
     """
     state: dict = {"ahead": 0, "dirty": False, "error": ""}
     if branch:
@@ -941,7 +943,7 @@ def branch_state(root: str, worktree: str, branch: str) -> dict:
             state["error"] = err or "git rev-list failed"
             return state
         state["ahead"] = int(out or 0)
-    rc, out, err = _git_out(worktree, "status", "--porcelain")
+    rc, out, err = _git_out(worktree, "status", "--porcelain", "--", ".", ":(exclude).codegraph")
     if rc != 0:
         state["error"] = err or "git status failed"
         return state
