@@ -74,7 +74,16 @@ describe("buildPaletteSections", () => {
     const found = sections.find((s) => s.id === "sessions");
     expect(found?.items.map((item) => item.kind === "session" && [item.sessionId, item.detail])).toEqual([
       ["s-glass", "...the eviction policy drops..."],
+      ["s-old", "Archived \u00b7 archived"],
     ]);
+  });
+
+  it("leaves archived chats out of recents and finds them by a typed query", () => {
+    const ids = (query: string) => (buildPaletteSections(query, sources()).find((s) => s.id === "sessions")?.items ?? [])
+      .map((item) => item.kind === "session" ? item.sessionId : "");
+    expect(ids("")).not.toContain("s-old");
+    const found = buildPaletteSections("idea", sources()).find((s) => s.id === "sessions")?.items[0];
+    expect(found?.kind === "session" && [found.sessionId, found.detail.startsWith("Archived \u00b7 marionette")]).toEqual(["s-old", true]);
   });
 
   it("never offers models while a swap runs, and marks the current one", () => {

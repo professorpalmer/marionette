@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, FolderOpen, Puzzle, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
-import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
+import { SESSION_UNARCHIVED_EVENT, SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
 import { api, type Workspace, type WorkspaceInfo, type Session } from "../lib/api";
 import { seedSessionPilots } from "../lib/sessionConfig";
 import { dispatchConfigChanged } from "../lib/configChangedEvent";
@@ -146,7 +146,6 @@ export default function LeftRail({
     archived: boolean;
     running: boolean;
   } | null>(null);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const bankAllRef = useRef<Session[]>([]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [projectContextMenu, setProjectContextMenu] = useState<{
@@ -1050,6 +1049,16 @@ export default function LeftRail({
     return () => window.removeEventListener("harness-session-relocated", onRelocated);
   }, [revalidateWorkspace, revalidateWorkspaces, onSessionChange]);
 
+  // Settings > Archived chats unarchives outside the rail.
+  useEffect(() => {
+    const onChanged = () => {
+      sessionListGeneration.current += 1;
+      void refreshSessionsRef.current();
+    };
+    window.addEventListener(SESSION_UNARCHIVED_EVENT, onChanged);
+    return () => window.removeEventListener(SESSION_UNARCHIVED_EVENT, onChanged);
+  }, []);
+
   const newSession = async (inProjectPath?: string) => {
     const target = (inProjectPath || selectedProjectPath || currentRepo).trim();
     if (pendingSessionRoots.current.has(target)) return;
@@ -1208,8 +1217,6 @@ export default function LeftRail({
       console.error("Failed to interrupt background session:", err);
     }
   };
-
-  const archivedSessions = sessions.filter((s) => s.archived);
 
   const [removingSessionRoot, setRemovingSessionRoot] = useState<string | null>(null);
   const archiveSession = async (sid: string, archived: boolean) => {
@@ -1419,7 +1426,7 @@ export default function LeftRail({
     clampToViewport();
     window.addEventListener("resize", clampToViewport);
     return () => window.removeEventListener("resize", clampToViewport);
-  }, [archivedExpanded, archivedSessions.length, workspaceInfo?.is_git, projects.length, workspaces.length]);
+  }, [workspaceInfo?.is_git, projects.length, workspaces.length]);
 
   const handleProjectContextMenu = (e: React.MouseEvent, path: string) => {
     // Home is a UI pin, not a forgettable recent — skip remove chrome.
@@ -1964,63 +1971,6 @@ export default function LeftRail({
       </div>
       )}
 
-      {/* ARCHIVED SESSIONS — deeper shelf than Settled; independent of settle. */}
-      {railTab === "projects" && archivedSessions.length > 0 && (
-        <Section title="Archived" className="mt-2 border-t border-edge/25 pt-5">
-          <button
-            type="button"
-            onClick={() => setArchivedExpanded(!archivedExpanded)}
-            className="w-full text-left px-2 py-1 text-ui-10 uppercase tracking-wider text-faint font-medium hover:text-muted flex items-center justify-between focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent rounded"
-          >
-            <span>Sessions ({archivedSessions.length})</span>
-            {archivedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          </button>
-          {archivedExpanded && (
-            <div className="mt-1 pl-1 border-l border-edge space-y-0.5">
-              {archivedSessions.map((s) => (
-                <div key={s.id} className="group relative">
-                  {renamingId === s.id ? (
-                    <input
-                      type="text"
-                      value={renamingTitle}
-                      onChange={(e) => setRenamingTitle(e.target.value)}
-                      onBlur={() => handleRenameSubmit(s.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          handleRenameSubmit(s.id);
-                        } else if (e.key === "Escape") {
-                          setRenamingId(null);
-                        }
-                      }}
-                      autoFocus
-                      className="w-full bg-bg border border-accent rounded px-2 py-1 text-ui-12 text-txt focus:outline-none"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => { if (!switchingSessionId) void switchSession(s.id); }}
-                                onPointerEnter={() => { void prefetchSessionTranscript(s.id); }}
-                      aria-disabled={!!switchingSessionId || opening || undefined}
-                      data-session-row="true"
-                      aria-current={s.active ? "true" : undefined}
-                      onDoubleClick={() => beginSessionRename(s.id, displaySessionListTitle(s.title, s.title_user))}
-                      onContextMenu={(e) => handleContextMenu(e, s)}
-                      className={`relative w-full h-7 text-left rounded pl-6 pr-2 flex items-center text-ui-12.5 transition opacity-60 hover:opacity-100 disabled:opacity-40
-                        ${s.active ? "bg-accent/10 text-accent font-semibold" : "hover:bg-panel2/60 text-muted"}
-                        ${switchingSessionId === s.id ? "opacity-70" : ""}`}
-                    >
-                      {switchingSessionId === s.id
-                        ? <Loader2 size={11} data-testid="session-switching-spinner" className="absolute left-2 animate-spin text-accent" />
-                        : null}
-                      <span className="flex-1 truncate">{displaySessionListTitle(s.title, s.title_user)}</span>
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </Section>
-      )}
 
       {/* BRANCH SWITCHING / WORKSPACES */}
       {railTab === "projects" && branchRepoInfo?.is_git && (

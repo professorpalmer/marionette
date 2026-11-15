@@ -205,3 +205,53 @@ def test_archive_http_peel(tmp_path):
     assert code == 200
     assert pruned["pruned"] == 1
     assert load_transcript(state, "sess1") == []
+
+
+def _set_mtime(path: Path, when: float) -> None:
+    import os
+    os.utime(path, (when, when))
+
+
+def test_archive_and_restore_keep_last_activity_time(tmp_path):
+    """The session list reads the transcript mtime as last activity."""
+    state = str(tmp_path)
+    (tmp_path / "transcripts").mkdir()
+    save_transcript(state, "cold", [{"role": "user", "content": "old idea about quasar maps"}])
+    transcript = tmp_path / "transcripts" / "cold.json"
+    last_active = 1_700_000_000.0
+    _set_mtime(transcript, last_active)
+    report = ingest_all(state, sessions=[{"id": "cold", "archived": True, "title": "Cold"}], prune=True)
+    assert report["pruned"] == 1
+    assert load_transcript(state, "cold") == []
+    assert transcript.stat().st_mtime == last_active
+    assert restore_pruned_transcript(state, "cold") is True
+    assert "quasar" in str(load_transcript(state, "cold"))
+    assert transcript.stat().st_mtime == last_active
+
+
+def test_boot_repairs_a_stub_that_took_the_write_time(tmp_path):
+    """v0.9.670 stubs got the boot time. The older backup holds the real time."""
+    import json
+    import time
+    from harness.chat_archive import backup_dir
+
+    state = str(tmp_path)
+    (tmp_path / "transcripts").mkdir()
+    save_transcript(state, "cold", [{"role": "user", "content": "old idea about quasar maps"}])
+    sessions = [{"id": "cold", "archived": True, "title": "Cold"}]
+    ingest_all(state, sessions=sessions)
+    backups = list((backup_dir(state) / "marionette").glob("cold-*.md"))
+    assert backups
+    ingested_at = 1_700_000_000.0
+    for backup in backups:
+        _set_mtime(backup, ingested_at)
+    transcript = tmp_path / "transcripts" / "cold.json"
+    transcript.write_text(json.dumps({"pruned": True, "chat_id": "marionette:cold"}), encoding="utf-8")
+    assert transcript.stat().st_mtime > time.time() - 60
+
+    first = ingest_all(state, sessions=sessions, prune=True)
+    assert first["mtime_repaired"] == 1
+    assert transcript.stat().st_mtime == ingested_at
+    again = ingest_all(state, sessions=sessions, prune=True)
+    assert again["mtime_repaired"] == 0
+    assert transcript.stat().st_mtime == ingested_at

@@ -4,6 +4,7 @@ import LeftRail from '../components/LeftRail';
 import { api, type Session } from '../lib/api';
 import { clearSWRCache, writeSWRCache, readSWRCache } from '../lib/useStaleWhileRevalidate';
 import { clearTranscriptCache, peekTranscriptCacheEntry } from '../components/conversation/transcriptCache';
+import { SESSION_UNARCHIVED_EVENT } from '../lib/sessionNav';
 vi.mock('../lib/api', () => ({ api: {
   getWorkspace: vi.fn().mockResolvedValue({ repo: '/workspace', recents: [], is_git: false }),
   openWorkspace: vi.fn(), sessions: vi.fn(), createSession: vi.fn(), archiveSession: vi.fn(), renameSession: vi.fn(), deleteSession: vi.fn(), switchSession: vi.fn(),
@@ -430,4 +431,14 @@ it('publishes an automatically created workspace session without waiting for wor
   expect(changed).toHaveBeenLastCalledWith('workspace-server-id');
   expect(readSWRCache<Session[]>('sessions:/other')).toEqual([expect.objectContaining({ id: 'workspace-server-id', active: true })]);
   expect(api.createSession).not.toHaveBeenCalled();
+});
+it('keeps archived chats out of the rail and shows one again after an unarchive elsewhere', async () => {
+  vi.mocked(api.sessions).mockResolvedValue([{ ...old, archived: true, active: false }, { ...created, active: true }]);
+  render(<LeftRail jobsRefresh={0} />);
+  await screen.findByRole('button', { name: 'Server title', exact: true });
+  expect(screen.queryByRole('button', { name: 'Current', exact: true })).toBeNull();
+  expect(screen.queryByText('Archived', { exact: true })).toBeNull();
+  vi.mocked(api.sessions).mockResolvedValue([{ ...old, active: false }, { ...created, active: true }]);
+  await act(async () => { window.dispatchEvent(new Event(SESSION_UNARCHIVED_EVENT)); });
+  expect(await screen.findByRole('button', { name: 'Current', exact: true })).toBeInTheDocument();
 });

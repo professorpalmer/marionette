@@ -8,6 +8,8 @@ export const SWITCH_SESSION_EVENT = "harness-switch-session";
 export const COMPOSER_PREFILL_EVENT = "harness-composer-prefill";
 export const OPEN_ONBOARDING_EVENT = "harness-open-onboarding";
 export const FOCUS_COMPOSER_EVENT = "harness-focus-input";
+/** Settings > Archived chats unarchived a session: every project list can change. */
+export const SESSION_UNARCHIVED_EVENT = "harness-session-unarchived";
 
 /** Moves keyboard focus to the message box of the active session. */
 export function focusComposer(): void {

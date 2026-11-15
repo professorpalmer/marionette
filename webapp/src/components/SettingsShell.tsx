@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { X, Cpu, HardDrive, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle } from "lucide-react";
+import { X, Cpu, HardDrive, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle, Archive } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import LocalModelsSettingsPage from "./LocalModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
+import ArchivedChatsPane from "./ArchivedChatsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 import { Modal } from "./ui/overlay";
 
-type PageId = "models" | "local-models" | SettingsSection | "about";
+type PageId = "models" | "local-models" | SettingsSection | "archived" | "about";
 
 const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "models", label: "Models", icon: Cpu },
@@ -17,6 +18,7 @@ const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "providers", label: "Accounts & Keys", icon: Zap },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "plugins", label: "Plugins", icon: Puzzle },
+  { id: "archived", label: "Archived chats", icon: Archive },
   { id: "advanced", label: "Advanced", icon: Wrench },
   { id: "about", label: "About", icon: Info },
 ];
@@ -123,13 +125,19 @@ export default function SettingsShell({
               <PluginsPane />
             </div>
           )}
+          {page === "archived" && (
+            <div className="max-w-2xl">
+              <h2 className="text-ui-15 font-semibold text-txt mb-3">Archived chats</h2>
+              <ArchivedChatsPane onOpenSession={onClose} />
+            </div>
+          )}
           {page === "about" && (
             <div className="max-w-2xl text-ui-12 text-muted">
               <h2 className="text-ui-15 font-semibold text-txt mb-2">About</h2>
               <p>Marionette -- a desktop AI coding harness over Puppetmaster durable state.</p>
             </div>
           )}
-          {page !== "models" && page !== "local-models" && page !== "about" && page !== "plugins" && (
+          {page !== "models" && page !== "local-models" && page !== "about" && page !== "plugins" && page !== "archived" && (
             <SettingsPane onOpenWizard={onOpenWizard} section={page as SettingsSection} />
           )}
         </div>
