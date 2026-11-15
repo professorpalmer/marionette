@@ -10,6 +10,10 @@ vi.mock("../components/LocalModelsSettingsPage", () => ({
   default: () => <div data-testid="local-models-page" />,
 }));
 
+vi.mock("../components/AccountsSettingsPage", () => ({
+  default: () => <div data-testid="accounts-page" />,
+}));
+
 vi.mock("../components/SettingsPane", () => ({
   default: ({ section }: { section: string }) => (
     <div data-testid={`settings-section-${section}`} />
@@ -30,8 +34,10 @@ describe("SettingsShell Accounts focus", () => {
         initialPage="providers"
       />,
     );
-    expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
+    expect(screen.getByTestId("accounts-page")).toBeTruthy();
     expect(screen.queryByTestId("models-page")).toBeNull();
+    // Accounts is its own page now: SettingsPane does not render under it.
+    expect(screen.queryByTestId("settings-section-providers")).toBeNull();
   });
 
   it("switches to Accounts on harness-settings-page / focusSettingsPage", () => {
@@ -40,19 +46,19 @@ describe("SettingsShell Accounts focus", () => {
     act(() => {
       focusSettingsPage("providers");
     });
-    expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
+    expect(screen.getByTestId("accounts-page")).toBeTruthy();
   });
 
   it("latches pending page before mount so Add key works with a closed pane", () => {
     focusSettingsPage("providers");
     render(<SettingsShell onClose={vi.fn()} onOpenWizard={vi.fn()} />);
-    expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
+    expect(screen.getByTestId("accounts-page")).toBeTruthy();
   });
 
-  it("sidebar Accounts nav selects the providers section", () => {
+  it("sidebar Accounts nav opens the Accounts page", () => {
     render(<SettingsShell onClose={vi.fn()} onOpenWizard={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Accounts" }));
-    expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
+    expect(screen.getByTestId("accounts-page")).toBeTruthy();
   });
 
   it("Escape still closes Settings when no provider modal is stacked", () => {

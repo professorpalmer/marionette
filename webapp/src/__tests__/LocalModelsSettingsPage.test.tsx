@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LocalModelsSettingsPage from "../components/LocalModelsSettingsPage";
 import { api, type LocalModelsSnapshot } from "../lib/api";
@@ -62,7 +62,7 @@ function snapshot(overrides: Partial<LocalModelsSnapshot> = {}): LocalModelsSnap
   };
 }
 
-/** Saved-server cards render collapsed; expand one to reach its controls. */
+/** Open the context and sampling editor of one saved server. */
 async function openCard(endpointId: string) {
   const toggle = await screen.findByTestId(`local-external-toggle-${endpointId}`);
   if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
@@ -757,15 +757,10 @@ describe("LocalModelsSettingsPage", () => {
     render(<LocalModelsSettingsPage />);
     await waitFor(() => screen.getByTestId("local-external-ollama-127-0-0-1-11434"));
     await openCard("ollama-127-0-0-1-11434");
-    expect(screen.getByTestId("local-models-tool-calling-copy").textContent).toMatch(
-      /records whether the endpoint returned the requested tool call/i,
-    );
-    expect(screen.getByTestId("local-models-tool-calling-copy").textContent).toMatch(
-      /does not execute tools or enroll the model as a Puppetmaster swarm worker/i,
-    );
-    expect(screen.getByTestId("local-models-tool-calling-copy").textContent).not.toMatch(
-      /lets this pilot/i,
-    );
+    const copy = screen.getByTestId("local-models-external").textContent;
+    expect(copy).toMatch(/asks for a tool call and records the answer/i);
+    expect(copy).toMatch(/does not run tools or enroll the model as a Puppetmaster swarm worker/i);
+    expect(copy).not.toMatch(/lets this pilot/i);
     expect(screen.getByTestId("local-external-tool-calling-ollama-127-0-0-1-11434").textContent)
       .toMatch(/Unverified/);
     fireEvent.click(screen.getByRole("button", { name: /Test tool calling/i }));
@@ -932,7 +927,7 @@ function externalFixture(id: string, name: string, healthy: boolean) {
   };
 }
 
-describe("saved server cards collapse", () => {
+describe("saved server rows", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
@@ -944,22 +939,30 @@ describe("saved server cards collapse", () => {
     ] }));
   });
 
-  it("renders collapsed headers and expands one card at a time, remembering it", async () => {
-    const { unmount } = render(<LocalModelsSettingsPage />);
-    const toggleA = await screen.findByTestId("local-external-toggle-box-a");
-    expect(toggleA.textContent).toMatch(/Bonsai2 .* reachable/);
-    expect(toggleA.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.queryByRole("button", { name: /Test tool calling/i })).toBeNull();
-    expect(screen.queryByTestId("local-external-context-box-a")).toBeNull();
+  it("shows one row per server with its state, and opens one editor at a time", async () => {
+    render(<LocalModelsSettingsPage />);
+    const rowA = await screen.findByTestId("local-external-box-a");
+    expect(rowA.textContent).toMatch(/Bonsai2 · openai-compatible/);
+    expect(rowA.textContent).toMatch(/Reachable/);
+    expect(screen.getByTestId("local-external-box-b").textContent).toMatch(/Saved/);
+    // Context and tool calling are facts on the row, not behind a toggle.
+    expect(screen.getByTestId("local-external-context-box-a").textContent).toMatch(/262,?144/);
+    expect(screen.getAllByRole("button", { name: /Test tool calling/i })).toHaveLength(2);
+    expect(screen.queryByLabelText(/Context tokens for Bonsai2/i)).toBeNull();
 
+    const toggleA = screen.getByTestId("local-external-toggle-box-a");
+    expect(toggleA.getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(toggleA);
     expect(toggleA.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("local-external-context-box-a")).toBeTruthy();
-    expect(screen.queryByTestId("local-external-context-box-b")).toBeNull();
-    unmount();
+    expect(screen.getByLabelText(/Context tokens for Bonsai2/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/Context tokens for CyberKimi/i)).toBeNull();
+  });
 
+  it("deletes one server with a remove command", async () => {
+    localModelCommand.mockResolvedValue(snapshot());
     render(<LocalModelsSettingsPage />);
-    expect((await screen.findByTestId("local-external-toggle-box-a")).getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByTestId("local-external-toggle-box-b").getAttribute("aria-expanded")).toBe("false");
+    const rowB = await screen.findByTestId("local-external-box-b");
+    fireEvent.click(within(rowB).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(localModelCommand).toHaveBeenCalledWith({ type: "remove", target: "all", endpoint_id: "box-b" }));
   });
 });
