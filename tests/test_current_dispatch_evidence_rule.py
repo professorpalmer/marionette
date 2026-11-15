@@ -94,7 +94,7 @@ class TestPilotSystemPrompt:
             def list(self, state=None):
                 return []
 
-            def render_block(self):
+            def render_block(self, workspace=""):
                 return ""
 
         monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _EmptyHome())
@@ -137,7 +137,7 @@ class TestPilotSystemPrompt:
             def list(self, state=None):
                 return []
 
-            def render_block(self):
+            def render_block(self, workspace=""):
                 return ""
 
         monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _EmptyHome())
@@ -151,7 +151,7 @@ class TestPilotSystemPrompt:
         self, monkeypatch, tmp_path,
     ):
         class _Memory:
-            def render_block(self):
+            def render_block(self, workspace=""):
                 return "# Durable memory\nThe router used to drop alternatives."
 
         monkeypatch.setattr("harness.conversation.MemoryStore", _Memory)

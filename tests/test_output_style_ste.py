@@ -43,7 +43,7 @@ def _session(monkeypatch, tmp_path) -> ConversationalSession:
         def list(self, state=None):
             return []
 
-        def render_block(self):
+        def render_block(self, workspace=""):
             return ""
 
     monkeypatch.setattr("harness.conversation.SkillStore", lambda *_a, **_k: _Empty())

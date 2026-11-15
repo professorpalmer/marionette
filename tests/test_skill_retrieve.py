@@ -49,7 +49,7 @@ def _session_with_skills(monkeypatch, tmp_path, skills):
         def list(self, state=None):
             return []
 
-        def render_block(self):
+        def render_block(self, workspace=""):
             return ""
 
     monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _Empty())

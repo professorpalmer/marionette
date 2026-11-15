@@ -43,7 +43,7 @@ def session(tmp_path, monkeypatch):
         )
     monkeypatch.setattr(
         "harness.conversation.MemoryStore",
-        lambda *_a, **_k: SimpleNamespace(render_block=lambda: ""),
+        lambda *_a, **_k: SimpleNamespace(render_block=lambda *_a, **_k: ""),
     )
     monkeypatch.setattr(
         "harness.conversation.WikiClient",
