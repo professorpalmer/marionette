@@ -149,7 +149,7 @@ Plan-step link: a TODO item gets `session` (child id) and `session_name`.
 | A status dot shows while a child works | Yes. The dot comes from the live status. | None |
 | A collapsed parent shows "N nested sessions" | Yes. The open state is kept for each parent. | None |
 | Plan step chip "name · Status" opens the child | Yes | Chip status follows the shared poll (1 s while a child works), not a push. |
-| A child is a full session: transcript, model, worktree | Yes | No `model` choice for each child. A child takes the parent's pilot. |
+| A child is a full session: transcript, model, worktree | Yes. `start` takes `model` and `reasoning_effort` (picker allowlist). | None |
 | The user opens, talks to, steers, and stops a child | Yes, live proof | None |
 | The header names the project and the child branch | Yes (fixed: it showed "Marionette" and the worktree folder) | None |
 | A child turn end sends a short report to the parent | Yes, 400 characters, once | None |
@@ -157,6 +157,9 @@ Plan-step link: a TODO item gets `session` (child id) and `session_name`.
 | The parent messages a child | Yes. A busy child gets a steer. | A message to a child that is starting is refused. The parent sends it again. |
 | A cap on how many run | Runner lease cap (default 3) | Over the cap the child fails with a report. It is not queued. |
 | Deleting a parent | Children stay as top-level rows | Children and worktrees are not cleaned up with the parent. |
+| Archive a child | Tool action and rail menu. A clean worktree goes; a worktree with work stays. | No auto-archive after a merge. |
+| Start a child with the parent conversation | `context: "fork"` | None |
+| Read a child | `read`: full last reply and the last 12 messages | None |
 | Merge of child work | The parent merges the branch itself | Same as the reference: the parent asks the user. |
 | The rail Branches list while a child is open | It marks the project branch (`main`) as current | The child branch is not marked. The header shows it. |
 
@@ -260,3 +263,6 @@ path then need two copies of the archive rule. Rejected.
 - `read` gives the last reply up to 4000 characters and the last 12 messages
   up to 6000 characters. A child archived to the vault is read from the vault
   copy, with no restore.
+- The dirty check excludes `.codegraph`. Its `.gitignore` ignores all files
+  but itself, so git lists it as untracked in every child (found in the live
+  proof).
