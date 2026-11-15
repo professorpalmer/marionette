@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { Search, RefreshCw, ChevronRight, ChevronDown } from "lucide-react";
+import { Search } from "lucide-react";
 import { api, type ModelCatalogEntry } from "../lib/api";
+import { modelFactParts, parseModelFacts } from "../lib/pilotModelFacts";
 import { SwitchTrack } from "./ui/Switch";
+import { SETTINGS_QUIET_BUTTON, SettingsGroup, SettingsPage, SettingsRow } from "./SettingsLayout";
 
-const COLLAPSE_THRESHOLD = 12;
+/** A provider with more models than this shows only its enabled models until "Show all". */
+const SHORT_LIST = 12;
 const CATALOG_SNAPSHOT_KEY = "pmharness.models.catalogSnapshot";
-const COLLAPSED_PROVIDERS_KEY = "pmharness.models.collapsedProviders";
 let memoryCatalogSnapshot: ModelCatalogEntry[] | null = null;
 let didForceRefreshThisSession = false;
 
@@ -17,37 +19,13 @@ export function orderModelsEnabledFirst(items: ModelCatalogEntry[]): ModelCatalo
     || a.model.localeCompare(b.model));
 }
 
-function loadCollapsedProviders(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(COLLAPSED_PROVIDERS_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return Object.fromEntries(
-        Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
-      );
-    }
-  } catch {
-    /* stale/corrupt collapse map is disposable */
-  }
-  return {};
-}
-
-function persistCollapsedProviders(map: Record<string, boolean>) {
-  try {
-    localStorage.setItem(COLLAPSED_PROVIDERS_KEY, JSON.stringify(map));
-  } catch {
-    /* storage pressure must not break Settings */
-  }
-}
-
 export function clearCatalogSnapshot() {
   memoryCatalogSnapshot = null;
   didForceRefreshThisSession = false;
   try {
     localStorage.removeItem(CATALOG_SNAPSHOT_KEY);
-    localStorage.removeItem(COLLAPSED_PROVIDERS_KEY);
   } catch {
-    /* ignore */
+    /* storage can be unavailable */
   }
 }
 
@@ -61,7 +39,7 @@ export function readCatalogSnapshot(): ModelCatalogEntry[] {
       return parsed.catalog;
     }
   } catch {
-    /* stale/corrupt cache is disposable */
+    /* a corrupt snapshot is replaced by the next load */
   }
   return [];
 }
@@ -69,32 +47,31 @@ export function readCatalogSnapshot(): ModelCatalogEntry[] {
 function writeCatalogSnapshot(catalog: ModelCatalogEntry[]) {
   memoryCatalogSnapshot = catalog;
   try {
-    localStorage.setItem(CATALOG_SNAPSHOT_KEY, JSON.stringify({
-      catalog,
-      savedAt: Date.now(),
-    }));
+    localStorage.setItem(CATALOG_SNAPSHOT_KEY, JSON.stringify({ catalog, savedAt: Date.now() }));
   } catch {
-    /* storage pressure must not break Settings */
+    /* storage can be full */
   }
 }
 
-// Models settings page: toggle which provider models appear in the pilot picker
-// dropdown (Cursor/Hermes-style). Grouped by provider; only providers with a
-// present key are shown. The enabled set is persisted server-side and feeds
-// /api/pilot picker via model_visibility.enabled_pilots().
+function displayName(entry: ModelCatalogEntry): string {
+  return entry.name && entry.name !== entry.model ? entry.name : entry.model;
+}
+
+/**
+ * Settings > Models: one row per model with the facts the pilot picker shows.
+ * The switch decides if the model is in the picker (`/api/models/toggle`).
+ */
 export default function ModelsSettingsPage() {
   const [catalog, setCatalog] = useState<ModelCatalogEntry[]>(readCatalogSnapshot);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(() => catalog.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  // Explicit user toggles win; otherwise large catalogs (OpenRouter) start
-  // collapsed so Anthropic/OpenAI/xAI are reachable without endless scroll.
-  const [collapsedProviders, setCollapsedProviders] = useState<Record<string, boolean>>(loadCollapsedProviders);
+  const [showAll, setShowAll] = useState<Record<string, boolean>>({});
 
   const load = async (opts?: { refresh?: boolean }) => {
     const hadSnapshot = readCatalogSnapshot().length > 0;
-    // Keep a stale snapshot visible while a live refresh runs.
+    // A snapshot stays on screen while the live catalog loads.
     if (!hadSnapshot) setLoading(true);
     else if (opts?.refresh) setRefreshing(true);
     try {
@@ -103,9 +80,7 @@ export default function ModelsSettingsPage() {
       setCatalog(next);
       writeCatalogSnapshot(next);
     } catch {
-      // Stale-while-revalidate: keep the last truthful snapshot instead of
-      // flashing an empty page during a transient backend/provider delay.
-      setCatalog((prev) => (prev.length === 0 ? [] : prev));
+      // Keep the last snapshot: a slow provider must not empty the page.
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -122,39 +97,32 @@ export default function ModelsSettingsPage() {
     if (busy === entry.spec) return;
     const next = !entry.enabled;
     setBusy(entry.spec);
-    // optimistic
-    setCatalog((prev) => {
-      const updated = prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: next } : c));
+    const put = (enabled: boolean) => setCatalog((prev) => {
+      const updated = prev.map((c) => (c.spec === entry.spec ? { ...c, enabled } : c));
       writeCatalogSnapshot(updated);
       return updated;
     });
+    put(next);
     try {
       await api.toggleModel(entry.spec, next);
-      // tell the picker to refetch its list
       window.dispatchEvent(new Event("harness-config-changed"));
     } catch {
-      // revert on failure
-      setCatalog((prev) => {
-        const reverted = prev.map((c) => (c.spec === entry.spec ? { ...c, enabled: !next } : c));
-        writeCatalogSnapshot(reverted);
-        return reverted;
-      });
+      put(!next);
     } finally {
       setBusy(null);
     }
   };
 
+  const facts = useMemo(() => parseModelFacts({ all: catalog }), [catalog]);
+
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
     const filtered = q
-      ? catalog.filter((c) => {
-          const name = (c.name || "").toLowerCase();
-          return (
-            c.model.toLowerCase().includes(q) ||
-            name.includes(q) ||
-            c.provider_display.toLowerCase().includes(q)
-          );
-        })
+      ? catalog.filter((c) => (
+        c.model.toLowerCase().includes(q)
+        || (c.name || "").toLowerCase().includes(q)
+        || c.provider_display.toLowerCase().includes(q)
+      ))
       : catalog;
     const out: ProviderGroup[] = [];
     for (const c of filtered) {
@@ -169,130 +137,106 @@ export default function ModelsSettingsPage() {
   }, [catalog, q]);
 
   const enabledCount = catalog.filter((c) => c.enabled).length;
-
-  const defaultCollapsed = useMemo(() => {
-    const map: Record<string, boolean> = {};
-    for (const g of groups) {
-      // Search stays open. Huge catalogs collapse only when nothing in the
-      // group is enabled, so a pinned OpenRouter model stays reachable.
-      map[g.provider] = !q && g.items.length > COLLAPSE_THRESHOLD && g.items.every((item) => !item.enabled);
-    }
-    return map;
-  }, [groups, q]);
-
-  const isCollapsed = (provider: string) =>
-    collapsedProviders[provider] !== undefined
-      ? collapsedProviders[provider]
-      : !!defaultCollapsed[provider];
-
-  const toggleGroup = (provider: string) => {
-    setCollapsedProviders((prev) => {
-      const next = {
-        ...prev,
-        [provider]: !isCollapsed(provider),
-      };
-      persistCollapsedProviders(next);
-      return next;
-    });
-  };
+  const description = enabledCount > 0
+    ? `Choose the models the pilot picker shows. ${enabledCount} on.`
+    : "Choose the models the pilot picker shows. None is on, so the picker shows every available model.";
 
   return (
-    <div className="max-w-2xl">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-ui-15 font-semibold text-txt">Models</h2>
-          <p className="text-ui-11 text-muted mt-0.5">
-            Toggle which models appear in the pilot picker. {enabledCount > 0
-              ? `${enabledCount} enabled.`
-              : "None curated -- the picker shows every available model."}
-          </p>
+    <SettingsPage title="Models" description={description} testId="models-page">
+      <div className="flex items-center gap-2">
+        <div className="flex flex-1 items-center gap-2 px-2.5 py-1.5 rounded-md bg-panel2 border border-edge/50">
+          <Search size={13} className="text-faint shrink-0" aria-hidden="true" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search models or providers"
+            aria-label="Search models or providers"
+            className="bg-transparent text-ui-12 text-txt placeholder:text-faint outline-none w-full"
+          />
         </div>
         <button
-          onClick={() => load({ refresh: true })}
-          title="Refresh live model catalogs (Cursor Agent CLI, Codex, …)"
-          className="p-1.5 rounded-md border border-edge/40 text-muted hover:text-txt hover:bg-panel2 transition"
+          type="button"
+          onClick={() => { void load({ refresh: true }); }}
+          disabled={refreshing}
+          title="Read the live model lists from each provider again"
+          className={SETTINGS_QUIET_BUTTON}
         >
-          <RefreshCw size={13} className={loading || refreshing ? "animate-spin" : ""} />
+          {loading || refreshing ? "Refreshing..." : "Refresh"}
         </button>
       </div>
 
-      <div className="flex items-center gap-2 mb-3 px-2.5 py-1.5 rounded-lg bg-panel2 border border-edge/50">
-        <Search size={13} className="text-faint shrink-0" />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search models or providers"
-          className="bg-transparent text-ui-12 text-txt placeholder:text-faint outline-none w-full"
-        />
-      </div>
-
       {loading && catalog.length === 0 ? (
-        <div className="text-ui-12 text-faint py-8 text-center">Loading model catalog...</div>
+        <p className="text-ui-12 text-faint py-6 text-center">Loading model catalog...</p>
       ) : groups.length === 0 ? (
-        <div className="text-ui-12 text-faint py-8 text-center">
-          No models available. Add a provider key in Providers &amp; Keys first.
-        </div>
+        <p className="text-ui-12 text-faint py-6 text-center">
+          {q ? `No model matches "${query.trim()}".` : "No models are available. Connect a provider in Accounts first."}
+        </p>
       ) : (
-        <div className="flex flex-col gap-4">
-          {groups.map((g) => {
-            const collapsed = isCollapsed(g.provider);
-            const onCount = g.items.filter((i) => i.enabled).length;
-            return (
-              <div key={g.provider}>
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(g.provider)}
-                  aria-expanded={!collapsed}
-                  className="w-full flex items-center gap-1.5 text-ui-10 uppercase tracking-wider text-faint font-semibold mb-1.5 px-1 hover:text-txt transition"
-                >
-                  {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-                  <span className="truncate">{g.display}</span>
-                  <span className="normal-case tracking-normal font-normal text-faint/80">
-                    · {g.items.length}
-                    {onCount > 0 ? ` · ${onCount} on` : ""}
-                  </span>
-                </button>
-                {!collapsed && (
-                  <div className="flex flex-col rounded-lg border border-edge/40 overflow-hidden">
-                    {g.items.map((entry, i) => (
+        groups.map((g) => {
+          const onCount = g.items.filter((i) => i.enabled).length;
+          const short = !q && !showAll[g.provider] && g.items.length > SHORT_LIST;
+          const visible = short ? g.items.filter((i) => i.enabled) : g.items;
+          const hidden = g.items.length - visible.length;
+          return (
+            <SettingsGroup
+              key={g.provider}
+              title={g.display}
+              description={`${g.items.length} model${g.items.length === 1 ? "" : "s"}${onCount > 0 ? `, ${onCount} on` : ""}`}
+              testId={`models-group-${g.provider}`}
+            >
+              {visible.map((entry) => {
+                const name = displayName(entry);
+                const parts = facts.get(entry.spec);
+                const factLine = parts ? modelFactParts(parts).join(" · ") : "";
+                return (
+                  <SettingsRow
+                    key={entry.spec}
+                    testId="model-row"
+                    label={(
+                      <span className="flex items-baseline gap-2 min-w-0">
+                        <span className="truncate">{name}</span>
+                        {name !== entry.model ? (
+                          <span className="text-ui-10 text-faint font-mono truncate">{entry.model}</span>
+                        ) : null}
+                      </span>
+                    )}
+                    description={factLine || undefined}
+                    control={(
                       <button
                         type="button"
-                        key={entry.spec}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void toggle(entry);
-                        }}
                         role="switch"
                         aria-checked={entry.enabled}
-                        // aria-disabled, not disabled: a disabled button drops
-                        // keyboard focus to <body> while the toggle saves.
+                        aria-label={name}
+                        // aria-disabled, not disabled: a disabled button drops focus while the toggle saves.
                         aria-disabled={busy === entry.spec || undefined}
-                        className={`flex items-center justify-between px-3 py-2 text-left transition
-                          ${i > 0 ? "border-t border-edge/30" : ""}
-                          ${entry.enabled ? "bg-accent/5 hover:bg-accent/10" : "hover:bg-panel2/60"}
-                          aria-disabled:opacity-50`}
+                        onClick={() => { void toggle(entry); }}
+                        className="flex rounded-full aria-disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                       >
-                        <span className="min-w-0 flex-1">
-                          <span className="text-ui-12 text-txt truncate block">
-                            {entry.name && entry.name !== entry.model ? entry.name : entry.model}
-                          </span>
-                          {entry.name && entry.name !== entry.model ? (
-                            <span className="text-ui-10 text-faint font-mono truncate block">{entry.model}</span>
-                          ) : null}
-                        </span>
-                        <span className="ml-3 flex">
-                          <SwitchTrack on={entry.enabled} />
-                        </span>
+                        <SwitchTrack on={entry.enabled} />
                       </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                    )}
+                  />
+                );
+              })}
+              {short ? (
+                <SettingsRow
+                  label={`${hidden} more model${hidden === 1 ? "" : "s"}`}
+                  description={onCount > 0 ? "Only the models that are on show here." : "No model of this provider is on."}
+                  control={(
+                    <button
+                      type="button"
+                      className={SETTINGS_QUIET_BUTTON}
+                      onClick={() => setShowAll((prev) => ({ ...prev, [g.provider]: true }))}
+                    >
+                      Show all
+                    </button>
+                  )}
+                />
+              ) : null}
+            </SettingsGroup>
+          );
+        })
       )}
-    </div>
+    </SettingsPage>
   );
 }

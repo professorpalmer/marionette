@@ -535,7 +535,8 @@ def blocking_terminal_message(classified: TerminalClassification) -> str:
     if cause == TERMINAL_LENGTH:
         return "Provider stopped: output length limit (finish_reason=length)."
     if cause == TERMINAL_CONTENT_FILTER:
-        return "Provider refused the response (content filter)."
+        return ("The provider's safety filter refused this request. Saved memory, "
+                "rules, or workspace files in the prompt can cause this.")
     if cause == TERMINAL_PROVIDER_EOF:
         return "Provider stream ended before a clean finish."
     if cause == TERMINAL_TRANSPORT_ERROR:

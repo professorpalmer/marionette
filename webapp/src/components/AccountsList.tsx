@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AccountAction, type AccountRow, type AccountState } from "../lib/api";
+import { ACCOUNTS_CHANGED_EVENT } from "../lib/pilotModelFacts";
+import { SETTINGS_PRIMARY_BUTTON, SETTINGS_QUIET_BUTTON } from "./SettingsLayout";
 
-/** Device-code and CLI sign-ins that SettingsPane runs; Claude (Anthropic) runs here. */
+/** Device-code and CLI sign-ins that AccountsSettingsPage runs; Claude (Anthropic) runs here. */
 export type ExternalSignIn = (provider: string) => Promise<void>;
 
-/** A flow that SettingsPane runs, keyed by the row provider. */
+/** A flow that AccountsSettingsPage runs, keyed by the row provider. */
 export type AccountFlow = { provider: string; hint: string } | null;
 
 type Props = {
@@ -99,9 +101,8 @@ function checkText(row: AccountRow): string {
   return `Checked ${when}: failed (${c.status ? `HTTP ${c.status}, ` : ""}${why}).`;
 }
 
-const BUTTON = "rounded px-2.5 py-0.5 font-medium text-ui-10 border disabled:opacity-30 transition-colors";
-const PRIMARY = `${BUTTON} bg-accent/15 hover:bg-accent/25 text-accent border-accent/30`;
-const QUIET = "text-muted hover:text-txt text-ui-10 disabled:opacity-30";
+const PRIMARY = SETTINGS_PRIMARY_BUTTON;
+const QUIET = SETTINGS_QUIET_BUTTON;
 
 /**
  * Settings > Accounts: one row per provider, one state, one primary action.
@@ -154,7 +155,10 @@ export default function AccountsList({
   const announce = (provider: string, ok: boolean, text: string) =>
     setResult((prev) => ({ ...prev, [provider]: { ok, text } }));
 
-  const changed = () => window.dispatchEvent(new Event("harness-config-changed"));
+  const changed = () => {
+    window.dispatchEvent(new Event(ACCOUNTS_CHANGED_EVENT));
+    window.dispatchEvent(new Event("harness-config-changed"));
+  };
 
   /**
    * Probe after a sign-in or a saved key: the row shows what the provider said.

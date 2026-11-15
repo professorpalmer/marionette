@@ -96,10 +96,21 @@ def get_config(svc: SettingsServices) -> tuple[int, JsonPayload]:
         "swarm_reasoning_effort": swarm_reasoning_effort,
         "package_version": identity.get("package_version", ""),
         "checkout_sha": identity.get("checkout_sha", ""),
+        "puppetmaster_version": _puppetmaster_version(),
         "session_trace_export": _session_trace_export_enabled(),
         "app_root": identity.get("app_root", ""),
         "key_bootstrap_issues": key_bootstrap_issues,
     }
+
+
+def _puppetmaster_version() -> str:
+    """Installed ``puppetmaster-ai`` version for Settings > About, or "" when unknown."""
+    try:
+        import importlib.metadata
+
+        return importlib.metadata.version("puppetmaster-ai")
+    except Exception:
+        return ""
 
 
 def _backend_source_identity() -> dict:

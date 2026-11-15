@@ -261,23 +261,65 @@ describe("ModelsSettingsPage cached first paint", () => {
     expect(labels).toEqual(["On A", "On B", "Off A", "Off C"]);
   });
 
-  it("keeps a closed provider group closed after Settings remounts", async () => {
-    mockModelCatalog.mockResolvedValue({
-      catalog: sampleCatalog,
-      all: sampleCatalog,
-      enabled: sampleCatalog,
-    });
-    const first = render(<ModelsSettingsPage />);
-    await waitFor(() => {
-      expect(screen.getByText("claude-sonnet")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByRole("button", { name: /Anthropic/ }));
-    expect(screen.queryByText("claude-sonnet")).toBeNull();
-    first.unmount();
+  it("shows the picker facts on each model row", async () => {
+    const rows = [
+      { spec: "anthropic:claude-opus-5-5", model: "claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic", provider_display: "Anthropic", available: true, enabled: true, billing: "plan", context_window: 1_000_000, image_input: true },
+      { spec: "openrouter:deepseek/v4", model: "deepseek/v4", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: false, price_in: 0.435, price_out: 0.87, context_window: 262144, image_input: false },
+      { spec: "openrouter:bare", model: "bare", provider: "openrouter", provider_display: "OpenRouter", available: true, enabled: false },
+    ] as ModelCatalogEntry[];
+    mockModelCatalog.mockResolvedValue({ catalog: rows, all: rows, enabled: [] });
     render(<ModelsSettingsPage />);
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /Anthropic/ })).toBeInTheDocument();
-    });
-    expect(screen.queryByText("claude-sonnet")).toBeNull();
+    await waitFor(() => expect(screen.getByText("Claude Opus 5.5")).toBeInTheDocument());
+    expect(screen.getByText("Plan · 1M context · Vision")).toBeInTheDocument();
+    expect(screen.getByText("$0.44 / $0.87 per MTok · 262k context · Text only")).toBeInTheDocument();
+    // A row with no known fact shows no fact line.
+    const bare = screen.getAllByTestId("model-row").find((r) => r.textContent?.startsWith("bare"));
+    expect(bare?.textContent).toBe("bare");
+  });
+
+  it("toggles a model with toggleModel and the switch state", async () => {
+    vi.mocked(api.toggleModel).mockResolvedValue({ ok: true, enabled: [] });
+    mockModelCatalog.mockResolvedValue({ catalog: sampleCatalog, all: sampleCatalog, enabled: [] });
+    render(<ModelsSettingsPage />);
+    const toggle = await screen.findByRole("switch", { name: "claude-sonnet" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.toggleModel).toHaveBeenCalledWith("anthropic:claude-sonnet", false));
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("restores the switch when toggleModel fails", async () => {
+    vi.mocked(api.toggleModel).mockRejectedValue(new Error("down"));
+    mockModelCatalog.mockResolvedValue({ catalog: sampleCatalog, all: sampleCatalog, enabled: [] });
+    render(<ModelsSettingsPage />);
+    const toggle = await screen.findByRole("switch", { name: "claude-sonnet" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.toggleModel).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
+  });
+
+  it("shows only enabled models of a long provider list until Show all", async () => {
+    const many: ModelCatalogEntry[] = Array.from({ length: 20 }, (_, i) => ({
+      spec: `openrouter:m${i}`, model: `m${i}`, provider: "openrouter", provider_display: "OpenRouter",
+      available: true, enabled: i === 3,
+    }));
+    mockModelCatalog.mockResolvedValue({ catalog: many, all: many, enabled: [] });
+    render(<ModelsSettingsPage />);
+    await waitFor(() => expect(screen.getByText("m3")).toBeInTheDocument());
+    expect(screen.getAllByTestId("model-row")).toHaveLength(1);
+    expect(screen.getByText("19 more models")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show all" }));
+    expect(screen.getAllByTestId("model-row")).toHaveLength(20);
+    // A search always shows every match.
+    fireEvent.change(screen.getByPlaceholderText("Search models or providers"), { target: { value: "m1" } });
+    expect(screen.getAllByTestId("model-row").map((r) => r.textContent)).toContain("m19");
+  });
+
+  it("has no collapsible provider headers", async () => {
+    mockModelCatalog.mockResolvedValue({ catalog: sampleCatalog, all: sampleCatalog, enabled: sampleCatalog });
+    render(<ModelsSettingsPage />);
+    await waitFor(() => expect(screen.getByText("claude-sonnet")).toBeInTheDocument());
+    expect(document.querySelector("[aria-expanded]")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
   });
 });

@@ -17,7 +17,6 @@ vi.mock("../components/ModelsSettingsPage", () => ({ default: function NestedDia
   </>;
 } }));
 vi.mock("../components/LocalModelsSettingsPage", () => ({ default: () => null }));
-vi.mock("../components/SettingsPane", () => ({ default: () => null }));
 vi.mock("../components/PluginsPane", () => ({ default: () => null }));
 
 it.each([360, 640, 1024])("retains Settings side navigation and nested Escape/focus at %ipx", async width => {

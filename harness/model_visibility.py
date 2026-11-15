@@ -284,6 +284,29 @@ def provider_models(p, *, force: bool = False) -> list:
     return merged
 
 
+def _with_models_dev_facts(provider_name: str, model: str, metadata: dict) -> dict:
+    """*metadata* with context and price from the models.dev cache where the
+    provider's own record has none. Static facts do not need a credential, so
+    a provider that is not signed in still shows them. Price is USD per
+    million tokens."""
+    from .models_dev import lookup_cost, lookup_model
+
+    out = dict(metadata)
+    if not isinstance(out.get("context_length"), int):
+        context = (lookup_model(provider_name, model, allow_network=False) or {}).get("context_length")
+        if isinstance(context, int):
+            out["context_length"] = context
+    if not out.get("pricing"):
+        cost = lookup_cost(provider_name, model, allow_network=False)
+        if cost:
+            try:
+                out["pricing"] = {"prompt": float(cost[0]["input"]),
+                                  "completion": float(cost[0]["output"])}
+            except (KeyError, TypeError, ValueError):
+                pass
+    return out
+
+
 def catalog(available_only: bool = True, *, force: bool = False) -> list:
     """The selectable model catalog as a list of dicts:
         {provider, provider_display, model, spec, available, enabled, billing, ...}
@@ -329,11 +352,13 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
                     display_name = m
             elif isinstance(provider_metadata.get("name"), str) and provider_metadata["name"].strip():
                 display_name = provider_metadata["name"].strip()
+            provider_metadata = _with_models_dev_facts(p.name, m, provider_metadata)
             pricing = provider_metadata.get("pricing") or {}
             # Same rule the vision sidecar uses; None when no source knows.
+            # It reads caches only, so a provider with no key gets it too.
             try:
                 from .vision import model_image_input
-                image_input = model_image_input(p, m) if is_avail else None
+                image_input = model_image_input(p, m)
             except Exception:
                 image_input = None
             if p.name == "local":

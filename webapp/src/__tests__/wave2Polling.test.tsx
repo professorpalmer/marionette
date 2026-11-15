@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import StatePane from "../components/StatePane";
 import MemoryPane from "../components/MemoryPane";
 import SkillsPane from "../components/SkillsPane";
-import PluginsLibrary from "../components/PluginsLibrary";
+import PluginsPane from "../components/PluginsPane";
 import McpPane from "../components/McpPane";
 import { usePolling } from "../lib/usePolling";
 import { _resetActivityForTests, setActivity } from "../lib/appActivity";
@@ -74,7 +74,7 @@ it("reenabling a poll waits for its previous request", async () => {
 it.each([
   { Pane: MemoryPane, method: "memory", interval: 15000 },
   { Pane: SkillsPane, method: "rules", interval: 5000 },
-  { Pane: PluginsLibrary, method: "plugins", interval: 5000 },
+  { Pane: PluginsPane, method: "plugins", interval: 5000 },
 ] as const)("$method waits for the entire refresh", async ({ Pane, method, interval }) => {
   const read = vi.mocked(api[method]);
   read.mockImplementationOnce(() => new Promise(() => {}));

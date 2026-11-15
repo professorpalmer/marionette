@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PilotPicker from "../components/PilotPicker";
-import { resetModelFactsCacheForTests } from "../lib/pilotModelFacts";
+import { ACCOUNTS_CHANGED_EVENT, resetModelFactsCacheForTests } from "../lib/pilotModelFacts";
 
 const modelCatalog = vi.fn();
 
@@ -65,6 +65,21 @@ describe("PilotPicker model facts", () => {
     await openPicker();
     const facts = screen.getAllByTestId("pilot-model-facts").map((el) => el.textContent);
     expect(facts).toEqual(["Vision", "Plan · 1.05M context", "\u00a0"]);
+  });
+
+  it("reads the facts again after an account change", async () => {
+    const before = { spec: "openrouter:deepseek/deepseek-v4.1-flash", billing: "metered", context_window: null, image_input: null };
+    const after = { ...before, billing: "plan", context_window: 1048576, image_input: true };
+    modelCatalog
+      .mockResolvedValueOnce({ catalog: [], enabled: [], all: [before] })
+      .mockResolvedValueOnce({ catalog: [], enabled: [], all: [after] });
+    await openPicker();
+    expect(screen.getAllByTestId("pilot-model-facts")[0].textContent).toBe("\u00a0");
+    await act(async () => {
+      window.dispatchEvent(new Event(ACCOUNTS_CHANGED_EVENT));
+    });
+    expect(screen.getAllByTestId("pilot-model-facts")[0].textContent).toBe("Plan · 1.05M context · Vision");
+    expect(modelCatalog).toHaveBeenCalledTimes(2);
   });
 
   it("keeps the picker usable when the catalog read fails", async () => {

@@ -92,6 +92,32 @@ def test_get_config_and_settings(_offline_config):
     assert get_settings(svc)[1]["budget"] == 3
 
 
+def test_get_config_reports_installed_puppetmaster_version(monkeypatch, _offline_config):
+    import importlib.metadata
+
+    seen = []
+
+    def fake_version(name):
+        seen.append(name)
+        return "9.8.7"
+
+    monkeypatch.setattr(importlib.metadata, "version", fake_version)
+    svc, _, _, _ = _svc()
+    assert get_config(svc)[1]["puppetmaster_version"] == "9.8.7"
+    assert seen == ["puppetmaster-ai"]
+
+
+def test_get_config_puppetmaster_version_is_empty_when_not_installed(monkeypatch, _offline_config):
+    import importlib.metadata
+
+    def missing(_name):
+        raise importlib.metadata.PackageNotFoundError("puppetmaster-ai")
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    svc, _, _, _ = _svc()
+    assert get_config(svc)[1]["puppetmaster_version"] == ""
+
+
 def test_get_config_includes_dynamic_model_labels(monkeypatch, _offline_config):
     seen = {}
 

@@ -22,6 +22,14 @@ it("lists only archived chats, newest first", async () => {
   const rows = await screen.findAllByTestId("archived-chat-row");
   expect(rows.map((row) => row.textContent?.includes("Newer idea") ? "newer" : "older")).toEqual(["newer", "older"]);
   expect(screen.queryByText("Live chat")).toBeNull();
+  expect(screen.getByRole("heading", { name: "Archived chats" })).toBeInTheDocument();
+});
+
+it("says so when no chat is archived", async () => {
+  vi.mocked(api.sessionsBank).mockResolvedValue([live]);
+  render(<ArchivedChatsPane onOpenSession={() => {}} />);
+  expect(await screen.findByTestId("archived-chats-empty")).toHaveTextContent("No archived chats.");
+  expect(api.sessionsBank).toHaveBeenCalledWith({ limit: 500 });
 });
 
 it("opens a chat through the rail switch and closes Settings", async () => {
@@ -30,7 +38,7 @@ it("opens a chat through the rail switch and closes Settings", async () => {
   window.addEventListener(SWITCH_SESSION_EVENT, switched);
   render(<ArchivedChatsPane onOpenSession={onOpen} />);
   await screen.findAllByTestId("archived-chat-row");
-  fireEvent.click(screen.getAllByRole("button", { name: "Open" })[0]);
+  fireEvent.click(screen.getByRole("button", { name: "Newer idea" }));
   window.removeEventListener(SWITCH_SESSION_EVENT, switched);
   expect((switched.mock.calls[0][0] as CustomEvent<{ sessionId: string }>).detail.sessionId).toBe("newer");
   expect(onOpen).toHaveBeenCalledOnce();

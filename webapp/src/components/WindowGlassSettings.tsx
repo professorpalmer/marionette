@@ -7,11 +7,13 @@ import {
   loadTranslucencyCapabilities,
   resetTranslucencyPeek,
   setWindowGlass,
-  type GlassMaterial,
   type TranslucencyCapabilities,
   type TranslucencyState,
 } from "../lib/windowGlass";
+import { SettingsGroup, SettingsRow } from "./SettingsLayout";
+import SettingsSwitch from "./SettingsSwitch";
 
+/** General > Window. Shows only in the desktop app, where the window can be glass. */
 export default function WindowGlassSettings() {
   const [caps, setCaps] = useState<TranslucencyCapabilities | null>(null);
   const [state, setState] = useState<TranslucencyState>(() => defaultTranslucencyState());
@@ -25,92 +27,88 @@ export default function WindowGlassSettings() {
   if (!caps?.translucencySupported) return null;
 
   if (!caps.glassSupported) {
-    const build = caps.windowsBuild && caps.windowsBuild > 0 ? ` (build ${caps.windowsBuild})` : "";
+    const build = caps.windowsBuild && caps.windowsBuild > 0 ? ` This PC has build ${caps.windowsBuild}.` : "";
     return (
-      <div className="space-y-1.5" data-testid="window-glass-settings">
-        <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-          Transparent background
-        </label>
-        <p className="text-ui-10 text-muted">
-          Glass needs Windows 11 22H2 or later{build}. This PC is below that
-          floor, so frost is unavailable here.
-        </p>
-      </div>
+      <SettingsGroup title="Window" testId="window-glass-settings">
+        <SettingsRow
+          label="Glass window"
+          description={`Glass needs Windows 11 22H2 or later.${build}`}
+          state="Not available"
+        />
+      </SettingsGroup>
     );
   }
 
   const on = state.mode === "glass" && state.intensity > 0;
+  const selected = caps.isWindows && state.material === "header" ? "titlebar" : state.material;
 
   const commit = async (partial: Partial<TranslucencyState>) => {
-    const next = await setWindowGlass(partial);
-    setState(next);
+    setState(await setWindowGlass(partial));
   };
 
   return (
-    <div className="space-y-1.5" data-testid="window-glass-settings">
-      <label className="block uppercase tracking-wider text-ui-10 text-faint font-semibold">
-        Transparent background
-      </label>
-      <button
-        type="button"
-        onClick={() => {
-          void commit({
-            mode: "glass",
-            intensity: on ? 0 : Math.max(state.intensity, ENABLE_INTENSITY),
-          });
-        }}
-        className={`w-full flex items-center justify-between px-3 py-2 rounded border transition text-left ${
-          on ? "bg-accent/10 border-accent/30 text-accent" : "bg-panel2 border-edge text-muted"
-        }`}
-      >
-        <span className="font-medium text-ui-11">Glass window (Cursor-style frost)</span>
-        <span className="text-ui-10 uppercase font-bold tracking-wider">{on ? "on" : "off"}</span>
-      </button>
-      {on && (
+    <SettingsGroup title="Window" testId="window-glass-settings">
+      <SettingsRow
+        label="Glass window"
+        description="The desktop shows through a matte blur."
+        control={
+          <SettingsSwitch
+            on={on}
+            label="Glass window"
+            onChange={(next) => {
+              void commit({ mode: "glass", intensity: next ? Math.max(state.intensity, ENABLE_INTENSITY) : 0 });
+            }}
+          />
+        }
+      />
+      {on ? (
         <>
-          <div className="flex items-center gap-2 pt-1">
-            <span className="text-ui-10 text-muted w-10 shrink-0">Tint</span>
-            <input
-              type="range"
-              min={1}
-              max={100}
-              value={state.intensity}
-              aria-label="Glass tint"
-              onChange={(e) => {
-                void commit({ intensity: Number(e.target.value) });
-              }}
-              className="flex-1 accent-accent"
-            />
-            <span className="text-ui-10 font-mono text-faint w-8 text-right">{state.intensity}</span>
-          </div>
-          <div className="flex flex-wrap gap-1 pt-0.5">
-            {caps.materials.map((material) => {
-              const selected = caps.isWindows && state.material === "header" ? "titlebar" : state.material;
-              const active = selected === material;
-              return (
-                <button
-                  key={material}
-                  type="button"
-                  onClick={() => {
-                    void commit({ material: material as GlassMaterial });
-                  }}
-                  className={`px-2 py-1 rounded border text-ui-10 uppercase tracking-wider font-semibold transition ${
-                    active
-                      ? "bg-accent/15 border-accent/40 text-accent"
-                      : "bg-panel2 border-edge text-muted hover:text-txt"
-                  }`}
-                >
-                  {FROST_LABELS[material]}
-                </button>
-              );
-            })}
-          </div>
+          <SettingsRow
+            label="Tint"
+            description="Higher values show more of the desktop."
+            state={<span className="font-mono">{state.intensity}</span>}
+            control={
+              <input
+                type="range"
+                min={1}
+                max={100}
+                value={state.intensity}
+                aria-label="Glass tint"
+                onChange={(e) => {
+                  void commit({ intensity: Number(e.target.value) });
+                }}
+                className="w-32 accent-accent"
+              />
+            }
+          />
+          <SettingsRow
+            label="Frost"
+            description="The native material: macOS vibrancy, or Windows acrylic and mica."
+            control={
+              <div className="flex gap-1" role="radiogroup" aria-label="Frost">
+                {caps.materials.map((material) => (
+                  <button
+                    key={material}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected === material}
+                    onClick={() => {
+                      void commit({ material });
+                    }}
+                    className={`rounded px-2 py-0.5 text-ui-10 border transition-colors ${
+                      selected === material
+                        ? "bg-accent/15 border-accent/30 text-accent"
+                        : "border-edge text-muted hover:text-txt"
+                    }`}
+                  >
+                    {FROST_LABELS[material]}
+                  </button>
+                ))}
+              </div>
+            }
+          />
         </>
-      )}
-      <p className="text-ui-10 text-muted">
-        Lets the desktop show through a matte blur. Raise Tint toward bare glass;
-        Frost picks the native material (macOS vibrancy or Windows acrylic/mica).
-      </p>
-    </div>
+      ) : null}
+    </SettingsGroup>
   );
 }

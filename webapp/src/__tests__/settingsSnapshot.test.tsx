@@ -1,11 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import SettingsPane, {
+import { describe, expect, it, vi } from "vitest";
+import {
   clearSettingsSnapshot,
   toSafeSettingsSnapshot,
   writeSettingsSnapshot,
-} from "../components/SettingsPane";
-import { api, type Settings } from "../lib/api";
+} from "../components/settingsSnapshot";
+import type { Settings } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -28,8 +27,6 @@ vi.mock("../components/SkillsPane", () => ({ default: () => <div /> }));
 vi.mock("../components/MemoryPane", () => ({ default: () => <div /> }));
 vi.mock("../components/SchedulesPane", () => ({ default: () => <div /> }));
 
-const mockSettings = vi.mocked(api.settings);
-
 const SETTINGS_SNAPSHOT_KEY = "pmharness.settings.snapshot";
 
 const sampleSettings: Settings = {
@@ -43,60 +40,6 @@ const sampleSettings: Settings = {
   has_api_key: true,
   api_key_masked: "sk-…abcd",
 };
-
-describe("SettingsPane cached first paint", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    clearSettingsSnapshot();
-  });
-
-  afterEach(() => {
-    clearSettingsSnapshot();
-  });
-
-  it("renders cached settings immediately without a loading flash", async () => {
-    writeSettingsSnapshot(sampleSettings);
-    localStorage.setItem(
-      SETTINGS_SNAPSHOT_KEY,
-      JSON.stringify({ settings: sampleSettings, savedAt: Date.now() }),
-    );
-    mockSettings.mockImplementation(() => new Promise(() => {}));
-
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(screen.queryByText("Loading settings...")).toBeNull();
-    expect(screen.getByText("Budget (Steps)")).toBeInTheDocument();
-  });
-
-  it("shows loading gate only when no snapshot exists", async () => {
-    clearSettingsSnapshot();
-    mockSettings.mockImplementation(() => new Promise(() => {}));
-
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(screen.getByText("Loading settings...")).toBeInTheDocument();
-  });
-
-  it("retains stale snapshot on transient fetch failure", async () => {
-    writeSettingsSnapshot(sampleSettings);
-    localStorage.setItem(
-      SETTINGS_SNAPSHOT_KEY,
-      JSON.stringify({ settings: sampleSettings, savedAt: Date.now() }),
-    );
-    mockSettings.mockRejectedValue(new Error("offline"));
-
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(screen.queryByText("Loading settings...")).toBeNull();
-
-    await waitFor(() => {
-      expect(mockSettings).toHaveBeenCalled();
-    });
-
-    expect(screen.queryByText("Failed to load settings")).toBeNull();
-    expect(screen.getByText("Budget (Steps)")).toBeInTheDocument();
-  });
-});
 
 describe("toSafeSettingsSnapshot", () => {
   it("excludes raw secrets from persisted snapshot fields", () => {

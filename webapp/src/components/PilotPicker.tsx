@@ -7,7 +7,13 @@ import { modelLabelOf, modelNameOf, organizePilotModels, providerLabelOf } from 
 import { labelForEffort, showReasoningEffort } from "../lib/reasoningSupport";
 import ReasoningLevelOptions from "./ReasoningLevelOptions";
 import { MenuPanel, MenuRoot } from "./ui/overlay";
-import { loadModelFacts, modelFactParts, type ModelFactsState } from "../lib/pilotModelFacts";
+import {
+  ACCOUNTS_CHANGED_EVENT,
+  invalidateModelFacts,
+  loadModelFacts,
+  modelFactParts,
+  type ModelFactsState,
+} from "../lib/pilotModelFacts";
 import { getSessionCache, updateSessionCache } from "../lib/sessionCache";
 
 type PickerSeed = {
@@ -96,6 +102,17 @@ export default function PilotPicker({
     return () => window.removeEventListener("harness-open-model-picker", handleOpen);
   }, []);
 
+  // Bumped when an account changes, so an open picker reads the new facts.
+  const [accountsVersion, setAccountsVersion] = useState(0);
+  useEffect(() => {
+    const onAccountsChanged = () => {
+      invalidateModelFacts();
+      setAccountsVersion((v) => v + 1);
+    };
+    window.addEventListener(ACCOUNTS_CHANGED_EVENT, onAccountsChanged);
+    return () => window.removeEventListener(ACCOUNTS_CHANGED_EVENT, onAccountsChanged);
+  }, []);
+
   useEffect(() => {
     if (!modelOpen) return;
     let active = true;
@@ -104,7 +121,7 @@ export default function PilotPicker({
       () => { if (active) setFactsState({ kind: "unavailable" }); },
     );
     return () => { active = false; };
-  }, [modelOpen]);
+  }, [modelOpen, accountsVersion]);
 
   useEffect(() => {
     if (!modelOpen) setQuery("");

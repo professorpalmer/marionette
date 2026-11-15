@@ -43,7 +43,8 @@ describe("WindowGlassSettings", () => {
     expect(await screen.findByTestId("window-glass-settings")).toBeInTheDocument();
     expect(screen.getByText(/Windows 11 22H2/i)).toBeInTheDocument();
     expect(screen.getByText(/build 19045/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /glass window/i })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Glass window" })).toBeNull();
+    expect(screen.getByText("Not available")).toBeInTheDocument();
   });
 
   it("toggles glass on and paints the root attribute", async () => {
@@ -72,9 +73,9 @@ describe("WindowGlassSettings", () => {
       },
     };
     render(<WindowGlassSettings />);
-    const toggle = await screen.findByRole("button", { name: /glass window/i });
+    const toggle = await screen.findByRole("switch", { name: "Glass window" });
     await waitFor(() => {
-      expect(toggle).toHaveTextContent(/off/i);
+      expect(toggle).toHaveAttribute("aria-checked", "false");
     });
     fireEvent.click(toggle);
     await waitFor(() => {

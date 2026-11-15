@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { SETTINGS_PRIMARY_BUTTON, SETTINGS_QUIET_BUTTON, SettingsGroup, SettingsRow } from './SettingsLayout';
+import Switch from './SettingsSwitch';
 import { getHarnessIpc, getJSON } from '../lib/transport';
 
 type SealReply<T> = ({ ok: true } & T) | { ok: false; code: string; error: string };
@@ -11,8 +13,6 @@ type SealBridge = {
   recover: (code: string) => Promise<SealReply<Record<string, never>>>;
 };
 
-const button = 'min-h-11 px-3 py-2 rounded-md border border-edge text-txt hover:bg-panel2 disabled:opacity-50';
-const input = 'min-h-11 rounded-md border border-edge bg-bg text-txt px-3 py-2 w-full font-mono';
 
 function isSealBridge(value: unknown): value is SealBridge {
   if (typeof value !== 'object' || value === null) return false;
@@ -62,60 +62,65 @@ export default function EncryptedSessions() {
     }
   }
 
+  const group = (rows: ReactNode) => (
+    <SettingsGroup
+      title="Encrypted sessions"
+      description="New sessions are encrypted on disk with a key in your OS key store. Existing sessions do not change."
+      testId="encrypted-sessions"
+    >
+      {rows}
+    </SettingsGroup>
+  );
+
   if (!bridge) {
-    return <p className="text-ui-11 text-muted">Encrypted sessions need the desktop app.</p>;
+    return group(<SettingsRow label="Encrypt new sessions" description="Encrypted sessions need the desktop app." />);
   }
   if (!keys || !backend) {
-    return <p className="text-ui-11 text-muted">{error || 'Loading...'}</p>;
+    return group(<SettingsRow label="Encrypt new sessions" state={error || 'Loading...'} />);
   }
   const locked = keys.configured && !backend.unlocked;
+  const state = keys.protection === 'none' ? 'Not available' : locked ? 'Locked' : keys.enabled ? 'On' : 'Off';
 
-  return (
-    <div className="space-y-3">
-      <p className="text-ui-11 text-muted">
-        New sessions are encrypted on disk with a key in your OS key store. Existing sessions do not
-        change. The model still gets the full conversation.
-      </p>
-      {keys.protection === 'none' ? (
-        <p className="text-ui-11 text-warn">
-          This system has no OS key store (Keychain, Credential Manager, or Secret Service).
-          Encrypted sessions are not available.
-        </p>
-      ) : (
-        <label className="flex items-center gap-2 text-ui-12 text-txt">
-          <input
-            type="checkbox"
-            checked={keys.enabled}
-            disabled={busy || (locked && !keys.enabled)}
-            onChange={(e) => {
-              if (e.target.checked) {
-                void run(() => bridge.enable(), (r) => { if (r.recoveryCode) setRecoveryCode(r.recoveryCode); });
-              } else {
-                void run(() => bridge.disable());
-              }
-            }}
-          />
-          Encrypt new sessions
-        </label>
+  return group(<>
+    <SettingsRow
+      label="Encrypt new sessions"
+      description={keys.protection === 'none'
+        ? 'This system has no OS key store (Keychain, Credential Manager, or Secret Service).'
+        : 'The model still gets the full conversation.'}
+      state={state}
+      control={keys.protection === 'none' ? undefined : (
+        <Switch
+          on={keys.enabled}
+          label="Encrypt new sessions"
+          disabled={busy || (locked && !keys.enabled)}
+          onChange={(on) => {
+            if (on) {
+              void run(() => bridge.enable(), (r) => { if (r.recoveryCode) setRecoveryCode(r.recoveryCode); });
+            } else {
+              void run(() => bridge.disable());
+            }
+          }}
+        />
       )}
+    >
       {recoveryCode && (
-        <div className="space-y-2 rounded-md border border-warn/60 p-3">
+        <div className="space-y-2 rounded-md border border-warn/60 p-2.5">
           <p className="text-ui-11 text-txt">
             Save this recovery code now. It shows one time only. Without it, a lost OS key store
             makes encrypted sessions unreadable.
           </p>
           <code className="block select-all text-ui-13 font-mono text-txt">{recoveryCode}</code>
-          <div className="flex gap-2">
+          <div className="flex gap-3">
             <button
               type="button"
-              className={button}
+              className={SETTINGS_PRIMARY_BUTTON}
               onClick={() => {
                 navigator.clipboard.writeText(recoveryCode).then(() => setCopied(true), () => setCopied(false));
               }}
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
-            <button type="button" className={button} onClick={() => { setRecoveryCode(''); setCopied(false); }}>
+            <button type="button" className={SETTINGS_QUIET_BUTTON} onClick={() => { setRecoveryCode(''); setCopied(false); }}>
               I saved the code
             </button>
           </div>
@@ -123,35 +128,39 @@ export default function EncryptedSessions() {
       )}
       {locked && (
         <form
-          className="space-y-2"
+          className="space-y-1.5"
           onSubmit={(e) => {
             e.preventDefault();
             void run(() => bridge.recover(code), () => setCode(''));
           }}
         >
-          <p className="text-ui-11 text-warn">
+          <p className="text-ui-10 text-warn">
             Encrypted sessions are locked: the OS key store did not give the key. Enter your
             recovery code to unlock them.
           </p>
-          <input
-            className={input}
-            aria-label="Recovery code"
-            autoComplete="off"
-            spellCheck={false}
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-          <button type="submit" className={button} disabled={busy || !code.trim()}>Unlock</button>
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-ui-11 font-mono text-txt focus:outline-none focus:border-accent"
+              aria-label="Recovery code"
+              autoComplete="off"
+              spellCheck={false}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+            <button type="submit" className={SETTINGS_PRIMARY_BUTTON} disabled={busy || !code.trim()}>Unlock</button>
+          </div>
         </form>
       )}
-      {error && <p className="text-ui-11 text-risk" role="alert">{error}</p>}
-      <ul className="list-disc pl-4 text-ui-10 text-muted space-y-1">
+      {error && <p className="text-ui-10 text-risk" role="alert">{error}</p>}
+    </SettingsRow>
+    <SettingsRow label="What is encrypted">
+      <ul className="list-disc pl-4 text-ui-10 text-faint space-y-0.5">
         <li>Encrypted: transcripts, titles, attachments, tool output, search index, todos, goal, scratch, and memory that encrypted sessions save.</li>
         <li>Not encrypted: your workspace files, and what providers and MCP servers receive.</li>
         <li>Workers run only on the agentic adapter. A job's files are plain text on disk while the job runs. Then Marionette deletes them.</li>
         <li>Flows, the browser tool, and CLI pilots are off in encrypted sessions.</li>
         <li>Deleting an encrypted session destroys its key.</li>
       </ul>
-    </div>
-  );
+    </SettingsRow>
+  </>);
 }
