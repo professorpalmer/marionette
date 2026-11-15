@@ -1,29 +1,14 @@
-import { useEffect, useState } from "react";
-import { X, Cpu, HardDrive, SlidersHorizontal, ShieldCheck, Zap, Bell, Wrench, Info, Puzzle, Archive } from "lucide-react";
+import { useEffect, useState, type KeyboardEvent } from "react";
+import { Search, X } from "lucide-react";
 import ModelsSettingsPage from "./ModelsSettingsPage";
 import LocalModelsSettingsPage from "./LocalModelsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
 import ArchivedChatsPane from "./ArchivedChatsPane";
+import AboutSettingsPage from "./AboutSettingsPage";
+import { PAGE_IDS, matchSettingsPages, type PageId } from "./settingsNav";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 import { Modal } from "./ui/overlay";
-
-type PageId = "models" | "local-models" | SettingsSection | "archived" | "about";
-
-const NAV: { id: PageId; label: string; icon: any }[] = [
-  { id: "models", label: "Models", icon: Cpu },
-  { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "local-models", label: "Local Models", icon: HardDrive },
-  { id: "safety", label: "Safety", icon: ShieldCheck },
-  { id: "providers", label: "Accounts", icon: Zap },
-  { id: "notifications", label: "Notifications", icon: Bell },
-  { id: "plugins", label: "Plugins", icon: Puzzle },
-  { id: "archived", label: "Archived chats", icon: Archive },
-  { id: "advanced", label: "Advanced", icon: Wrench },
-  { id: "about", label: "About", icon: Info },
-];
-
-const PAGE_IDS = new Set<string>(NAV.map((n) => n.id));
 
 // Latched when Add key (or similar) asks for a settings page before SettingsShell
 // has mounted. Consumed on mount so a closed right pane still lands correctly.
@@ -56,12 +41,26 @@ export default function SettingsShell({
   const [page, setPage] = useState<PageId>(
     () => initialPage || takePendingSettingsPage() || "models",
   );
+  const [query, setQuery] = useState("");
+  const shown = matchSettingsPages(query);
+  const search = (next: string) => {
+    setQuery(next);
+    const first = matchSettingsPages(next)[0];
+    if (next.trim() && first) setPage(first.id);
+  };
+  const onSearchKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Escape" || !query) return;
+    // Escape clears the search first. The next Escape closes Settings.
+    e.stopPropagation();
+    search("");
+  };
   // Add key / hotkeys can request Accounts while Settings is already open.
   useEffect(() => {
     const onPage = (e: Event) => {
       const next = (e as CustomEvent).detail;
       if (typeof next === "string" && PAGE_IDS.has(next)) {
         pendingSettingsPage = null;
+        setQuery("");
         setPage(next as PageId);
       }
     };
@@ -96,14 +95,29 @@ export default function SettingsShell({
       </div>
 
       <div className="flex flex-1 min-h-0">
-        {/* sidebar -- compact width, tight row spacing */}
-        <div className="w-44 shrink-0 border-r border-edge/40 py-2 px-1.5 flex flex-col gap-0.5 overflow-y-auto">
-          {NAV.map((item) => {
+        {/* sidebar -- search, then the pages that match it */}
+        <nav aria-label="Settings pages" className="w-44 shrink-0 border-r border-edge/40 py-2 px-1.5 flex flex-col gap-0.5 overflow-y-auto">
+          <div className="relative mb-1.5">
+            <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-faint pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => search(e.target.value)}
+              onKeyDown={onSearchKey}
+              placeholder="Search settings"
+              aria-label="Search settings"
+              data-testid="settings-search"
+              className="w-full bg-panel2/60 border border-edge/40 rounded-md text-ui-11 text-txt pl-6 pr-2 py-1 outline-none focus:border-accent placeholder:text-faint"
+            />
+          </div>
+          {shown.map((item) => {
             const Icon = item.icon;
             const active = page === item.id;
             return (
               <button
                 key={item.id}
+                type="button"
+                aria-current={active ? "page" : undefined}
                 onClick={() => setPage(item.id)}
                 className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-ui-12 text-left transition
                   ${active ? "bg-panel2 text-txt font-medium" : "text-muted hover:text-txt hover:bg-panel2/50"}`}
@@ -113,30 +127,18 @@ export default function SettingsShell({
               </button>
             );
           })}
-        </div>
+          {shown.length === 0 ? (
+            <p className="px-2 py-1.5 text-ui-11 text-faint" data-testid="settings-search-empty">No page matches.</p>
+          ) : null}
+        </nav>
 
         {/* content */}
         <div className="flex-1 min-w-0 overflow-y-auto px-8 py-6">
           {page === "models" && <ModelsSettingsPage />}
           {page === "local-models" && <LocalModelsSettingsPage />}
-          {page === "plugins" && (
-            <div className="max-w-2xl">
-              <h2 className="text-ui-15 font-semibold text-txt mb-3">Plugins</h2>
-              <PluginsPane />
-            </div>
-          )}
-          {page === "archived" && (
-            <div className="max-w-2xl">
-              <h2 className="text-ui-15 font-semibold text-txt mb-3">Archived chats</h2>
-              <ArchivedChatsPane onOpenSession={onClose} />
-            </div>
-          )}
-          {page === "about" && (
-            <div className="max-w-2xl text-ui-12 text-muted">
-              <h2 className="text-ui-15 font-semibold text-txt mb-2">About</h2>
-              <p>Marionette -- a desktop AI coding harness over Puppetmaster durable state.</p>
-            </div>
-          )}
+          {page === "plugins" && <PluginsPane />}
+          {page === "archived" && <ArchivedChatsPane onOpenSession={onClose} />}
+          {page === "about" && <AboutSettingsPage />}
           {page !== "models" && page !== "local-models" && page !== "about" && page !== "plugins" && page !== "archived" && (
             <SettingsPane onOpenWizard={onOpenWizard} section={page as SettingsSection} />
           )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink, Search, X } from "lucide-react";
+import { ChevronRight, ChevronDown, Plus, Trash2, ExternalLink } from "lucide-react";
 import {
   api,
   type Settings,
@@ -54,29 +54,10 @@ const FLOW_ROW: Record<OAuthFlowOwner, string> = {
 
 export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
-  // Settings search/filter: when a query is active we search ACROSS all sections
-  // (ignore the current-section gate) and hide individual settings whose label +
-  // help text do not contain the query. Empty query = today's behavior exactly.
-  const [filter, setFilter] = useState("");
-  const q = filter.trim().toLowerCase();
-  const matches = (text: string) => !q || text.toLowerCase().includes(q);
-  // Section gate: normally only the active section shows; while searching, all
-  // sections are eligible so cross-section matches surface.
-  const active = (s: SettingsSection) => (q ? true : show(s));
-  // Track whether any setting rendered, to show a "no matches" hint.
-  let anyShown = false;
-  // gate() combines the section visibility with the keyword filter and records
-  // whether anything survived so we can render a "no matches" line.
-  const gate = (s: SettingsSection, keywords: string) => {
-    const needsSettings = s !== "providers";
-    const ok = active(s) && matches(keywords) && (!needsSettings || settings !== null);
-    if (ok) anyShown = true;
-    return ok;
-  };
-  // Note: search granularity is PER-SETTING already -- every gate() call below
-  // carries its own keyword string (label + synonyms) for one logical setting,
-  // so typing e.g. "timeout" or "distill" filters to just that control across
-  // all sections. No separate per-item wrapper is needed.
+  // gate() shows a block on its own section. Providers can render before
+  // settings load. Search lives in the Settings shell (settingsNav.ts).
+  const gate = (s: SettingsSection, _keywords: string) =>
+    show(s) && (s === "providers" || settings !== null);
   const [settings, setSettings] = useState<Settings | null>(() => readSettingsSnapshot());
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
@@ -291,11 +272,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // Section-scoped loads. API keys summary ("N/M connected") is visible while
   // the accordion is collapsed, so providers must load on section entry — not
   // only onFirstOpen of the collapse (that left a misleading 0/0).
-  const searchActive = filter.trim().length > 0;
   useEffect(() => {
-    const wantNotify = section === "notifications" || searchActive;
-    const wantAdvanced = section === "advanced" || searchActive;
-    const wantProviders = section === "providers" || searchActive;
+    const wantNotify = section === "notifications";
+    const wantAdvanced = section === "advanced";
+    const wantProviders = section === "providers";
 
     if (wantNotify) {
       api.getUsage()
@@ -318,7 +298,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           .catch((err) => console.error("Failed to load key bootstrap issues", err));
       }
     }
-  }, [section, searchActive]);
+  }, [section]);
 
   useEffect(() => {
     let timer: any = null;
@@ -915,7 +895,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  const canRenderWithoutSettings = section === "providers" || searchActive;
+  const canRenderWithoutSettings = section === "providers";
   if (!settings && !canRenderWithoutSettings) {
     return (
       <div className="flex flex-col h-full text-ui-12 p-4 text-faint">
@@ -938,36 +918,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           {errorNotice && <span className="text-risk text-ui-11 font-medium">{errorNotice}</span>}
         </div>
       )}
-
-      {/* Settings search: sticky at the top so it stays reachable while the
-          dense settings list scrolls. Uses a FULLY OPAQUE background (bg-panel)
-          and a high z-index so scrolled settings pass BEHIND it instead of
-          bleeding through the bar. -mx-8 pt-6 -mt-6 offsets the shell's px-8/py-6
-          scroll-container padding so the bar spans edge-to-edge and covers the
-          gap above it (no sliver of content shows over the top). */}
-      <div className="sticky -top-6 z-30 -mx-8 px-8 pt-6 pb-2 mb-2 bg-panel border-b border-edge">
-        <div className="relative">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-faint" size={13} />
-          <input
-            type="text"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="Search settings..."
-            className="w-full bg-panel border border-edge rounded text-ui-11 text-txt
-                       pl-7 pr-7 py-1.5 outline-none focus:border-accent placeholder:text-faint"
-          />
-          {filter && (
-            <button
-              type="button"
-              onClick={() => setFilter("")}
-              aria-label="Clear search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-faint hover:text-txt"
-            >
-              <X size={13} />
-            </button>
-          )}
-        </div>
-      </div>
 
       <div className="space-y-4">
         {gate("general", "provider model setup wizard api keys routing") && settings && (<>
@@ -1321,7 +1271,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           id="accounts"
           title="Accounts"
           defaultOpen={true}
-          forceOpen={!!q}
           onFirstOpen={() => { loadProvidersList(); loadSignInData(); }}
           className="space-y-2"
         >
@@ -1383,7 +1332,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           id="credential-pools"
           title="Credential pools"
           defaultOpen={false}
-          forceOpen={!!q}
           onFirstOpen={loadAuthPoolsIfNeeded}
           summary={(() => {
             const pools = authPools?.pools || [];
@@ -1548,7 +1496,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           id="bedrock"
           title="AWS Bedrock"
           defaultOpen={false}
-          forceOpen={!!q}
           onFirstOpen={loadBedrockData}
           summary={
             bedrock?.configured
@@ -1649,7 +1596,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           id="external-platforms"
           title="External Worker Platforms"
           defaultOpen={false}
-          forceOpen={!!q}
           onFirstOpen={loadPlatformData}
           summary={(() => {
             const on = platformAdapters.filter((a) => a.enabled).length;
@@ -2199,7 +2145,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           id="github-wiki"
           title="GitHub / Wiki Repo"
           defaultOpen={false}
-          forceOpen={!!q}
           onFirstOpen={loadGitData}
           summary={gitStatus?.connected ? "connected" : "not connected"}
         >
@@ -2392,9 +2337,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           </a>
         </div>
         </>)}
-        {q && !anyShown && (
-          <p className="text-ui-11 text-muted">No settings match "{filter.trim()}".</p>
-        )}
       </div>
     </div>
   );

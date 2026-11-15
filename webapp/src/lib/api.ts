@@ -84,6 +84,12 @@ export type Config = {
   reasoning_support?: Record<string, boolean>;
   /** Silent key-bootstrap failures from startup (server kept running). */
   key_bootstrap_issues?: { step: string; message: string }[];
+  /** Marionette version of the checkout the backend runs from. */
+  package_version?: string;
+  /** Full git commit of that checkout, or "" when unknown. */
+  checkout_sha?: string;
+  /** Installed puppetmaster-ai version, or "" when unknown. */
+  puppetmaster_version?: string;
 };
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Settings = {

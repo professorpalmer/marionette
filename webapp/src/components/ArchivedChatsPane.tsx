@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Archive } from "lucide-react";
 import { api, type Session } from "../lib/api";
 import { SESSION_UNARCHIVED_EVENT, requestSessionSwitch, sessionAge, workspaceName } from "../lib/sessionNav";
 import { displaySessionListTitle } from "../lib/sessionTitle";
+import { SETTINGS_PRIMARY_BUTTON, SettingsGroup, SettingsPage, SettingsRow } from "./SettingsLayout";
 
 // The bank endpoint caps a listing at 500 rows.
 const BANK_LIMIT = 500;
@@ -23,7 +23,7 @@ function errorText(err: unknown): string {
   return String(err || "unknown error");
 }
 
-/** Settings Archived chats page. An archived chat lives in the vault; open or unarchive restores it. */
+/** Settings Archived chats page. An archived chat lives in the vault. Open or unarchive restores it. */
 export default function ArchivedChatsPane({ onOpenSession }: { onOpenSession: () => void }) {
   const [listing, setListing] = useState<Listing>({ kind: "loading" });
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -67,49 +67,53 @@ export default function ArchivedChatsPane({ onOpenSession }: { onOpenSession: ()
   };
 
   return (
-    <div className="space-y-3" data-testid="archived-chats-pane">
-      <div className="flex items-center gap-2 text-ui-12 text-muted">
-        <Archive size={14} className="text-accent" />
-        <span>Archived chats are kept in the vault, not in the session list. Open or unarchive one to restore it.</span>
-      </div>
-      {rowError && <div className="text-ui-11 text-risk">{rowError}</div>}
-      {listing.kind === "loading" && <div className="text-ui-12 text-faint">Loading archived chats...</div>}
-      {listing.kind === "error" && (
-        <div className="text-ui-12 text-risk">Could not read sessions: {listing.message}</div>
-      )}
-      {listing.kind === "ready" && listing.rows.length === 0 && (
-        <div className="text-ui-12 text-faint" data-testid="archived-chats-empty">No archived chats.</div>
-      )}
-      {listing.kind === "ready" && listing.rows.length > 0 && (
-        <ul className="divide-y divide-edge/30 border border-edge/40 rounded-md">
-          {listing.rows.map((row) => (
-            <li key={row.id} className="flex items-center gap-3 px-3 py-2" data-testid="archived-chat-row">
-              <div className="min-w-0 flex-1">
-                <div className="text-ui-12.5 text-txt truncate">{displaySessionListTitle(row.title, row.title_user)}</div>
-                <div className="text-ui-11 text-faint truncate">
-                  {[workspaceName(row.workspace_root), sessionAge(row.updated ?? row.created)].filter(Boolean).join(" · ")}
-                </div>
-              </div>
+    <SettingsPage
+      title="Archived chats"
+      description="An archived chat stays in the vault and not in the session list. Click a chat to open it, or unarchive it to put it back in the list."
+      testId="archived-chats-pane"
+    >
+      {rowError ? <p className="text-ui-11 text-risk" role="alert">{rowError}</p> : null}
+      <SettingsGroup>
+        {listing.kind === "loading" ? <SettingsRow label="Reading archived chats..." /> : null}
+        {listing.kind === "error" ? (
+          <SettingsRow label={<span className="text-risk">Could not read sessions: {listing.message}</span>} />
+        ) : null}
+        {listing.kind === "ready" && listing.rows.length === 0 ? (
+          <SettingsRow label="No archived chats." testId="archived-chats-empty" />
+        ) : null}
+        {listing.kind === "ready" ? listing.rows.map((row) => (
+          <SettingsRow
+            key={row.id}
+            testId="archived-chat-row"
+            label={(
               <button
                 type="button"
                 onClick={() => open(row.id)}
                 disabled={busyId === row.id}
-                className="shrink-0 px-2 py-1 rounded-md text-ui-11 border border-edge/50 text-txt hover:bg-panel2 disabled:opacity-50"
+                title="Open this chat"
+                className="block max-w-full truncate text-left hover:text-accent disabled:opacity-50"
               >
-                Open
+                {displaySessionListTitle(row.title, row.title_user)}
               </button>
+            )}
+            description={(
+              <span className="block truncate">
+                {[workspaceName(row.workspace_root), sessionAge(row.updated ?? row.created)].filter(Boolean).join(" · ")}
+              </span>
+            )}
+            control={(
               <button
                 type="button"
+                className={SETTINGS_PRIMARY_BUTTON}
                 onClick={() => { void unarchive(row.id); }}
                 disabled={busyId === row.id}
-                className="shrink-0 px-2 py-1 rounded-md text-ui-11 border border-edge/50 text-txt hover:bg-panel2 disabled:opacity-50"
               >
                 {busyId === row.id ? "Restoring..." : "Unarchive"}
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+            )}
+          />
+        )) : null}
+      </SettingsGroup>
+    </SettingsPage>
   );
 }

@@ -17,16 +17,16 @@ vi.mock("../components/SettingsPane", () => ({
 }));
 
 describe("SettingsShell Local Models nav", () => {
-  it("lists Models, General, then Local Models in the sidebar", () => {
+  it("lists Accounts, Models, then Local Models in the sidebar", () => {
     render(<SettingsShell onClose={vi.fn()} onOpenWizard={vi.fn()} />);
     const labels = screen
       .getAllByRole("button")
       .map((el) => el.textContent?.trim() ?? "")
       .filter((label) => label.length > 0);
-    const modelsAt = labels.indexOf("Models");
-    expect(labels.slice(modelsAt, modelsAt + 3)).toEqual([
+    const accountsAt = labels.indexOf("Accounts");
+    expect(labels.slice(accountsAt, accountsAt + 3)).toEqual([
+      "Accounts",
       "Models",
-      "General",
       "Local Models",
     ]);
   });
