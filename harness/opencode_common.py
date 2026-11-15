@@ -38,16 +38,6 @@ def informative_display_name(label: object, model: Optional[str]) -> str:
     return text
 
 
-def needs_catalog_overlay(metadata: Optional[dict], model: Optional[str]) -> bool:
-    """True when native metadata has no informative name (absent or id-echo)."""
-    if not isinstance(metadata, dict):
-        return True
-    return not (
-        informative_display_name(metadata.get("name"), model)
-        or informative_display_name(metadata.get("display_name"), model)
-    )
-
-
 def merge_catalog_overlay(
     native: Optional[dict],
     overlay: Optional[dict],

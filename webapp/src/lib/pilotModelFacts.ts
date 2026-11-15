@@ -1,15 +1,18 @@
 /**
- * Per-model facts for the pilot picker rows: list price, context window,
- * image input, and routing tier. Every fact comes from /api/models/catalog;
- * a fact the catalog does not carry stays null and the row says "unknown".
+ * Per-model facts for the pilot picker rows: price, context window, image
+ * input, and routing tier. Every fact comes from /api/models/catalog; a fact
+ * the catalog does not carry stays unknown and the row leaves it out.
  */
 import { api } from "./api";
 
+/** What a call costs on this account. A plan (subscription) has no per-token price. */
+export type ModelPrice =
+  | { kind: "plan" }
+  | { kind: "rate"; /** USD per million input tokens. */ input: number; /** USD per million output tokens. */ output: number }
+  | { kind: "unknown" };
+
 export type ModelFacts = {
-  /** USD per million input tokens. */
-  priceIn: number | null;
-  /** USD per million output tokens. */
-  priceOut: number | null;
+  price: ModelPrice;
   contextWindow: number | null;
   /** true: takes images; false: text only; null: no source knows. */
   imageInput: boolean | null;
@@ -47,6 +50,15 @@ export function tierForSpec(spec: string): string | null {
   return OPENROUTER_VARIANT_TIER[variant] ?? null;
 }
 
+/** The row's billing (the provider's, from the catalog) wins over any listed price. */
+function priceOf(r: Record<string, unknown>): ModelPrice {
+  if (r.billing === "plan") return { kind: "plan" };
+  const pricing = r.pricing && typeof r.pricing === "object" ? (r.pricing as Record<string, unknown>) : {};
+  const input = finiteOrNull(r.price_in ?? pricing.prompt);
+  const output = finiteOrNull(r.price_out ?? pricing.completion);
+  return input !== null && output !== null ? { kind: "rate", input, output } : { kind: "unknown" };
+}
+
 /** Parse the catalog payload at the boundary; rows without a spec are dropped. */
 export function parseModelFacts(raw: unknown): Map<string, ModelFacts> {
   const out = new Map<string, ModelFacts>();
@@ -57,10 +69,8 @@ export function parseModelFacts(raw: unknown): Map<string, ModelFacts> {
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
     if (typeof r.spec !== "string" || !r.spec) continue;
-    const pricing = r.pricing && typeof r.pricing === "object" ? (r.pricing as Record<string, unknown>) : {};
     out.set(r.spec, {
-      priceIn: finiteOrNull(r.price_in ?? pricing.prompt),
-      priceOut: finiteOrNull(r.price_out ?? pricing.completion),
+      price: priceOf(r),
       contextWindow: finiteOrNull(r.context_window),
       imageInput: typeof r.image_input === "boolean" ? r.image_input : null,
       tier: tierForSpec(r.spec),
@@ -106,12 +116,28 @@ export function formatContextWindow(tokens: number): string {
   return String(Math.round(tokens));
 }
 
-/** The row's metadata parts, in display order. Unknown facts say "unknown". */
+function priceText(price: ModelPrice): string | null {
+  switch (price.kind) {
+    case "plan":
+      return "Plan";
+    case "rate":
+      return `${formatPrice(price.input)} / ${formatPrice(price.output)} per MTok`;
+    case "unknown":
+      return null;
+    default: {
+      const _exhaustive: never = price;
+      return _exhaustive;
+    }
+  }
+}
+
+/** The row's known facts, in display order. An unknown fact is left out. */
 export function modelFactParts(facts: ModelFacts): string[] {
-  const price = facts.priceIn !== null && facts.priceOut !== null
-    ? `${formatPrice(facts.priceIn)} / ${formatPrice(facts.priceOut)} per MTok`
-    : "Price unknown";
-  const context = facts.contextWindow !== null ? `${formatContextWindow(facts.contextWindow)} context` : "Context unknown";
-  const vision = facts.imageInput === null ? "Vision unknown" : facts.imageInput ? "Vision" : "Text only";
-  return [price, context, vision, ...(facts.tier ? [facts.tier] : [])];
+  const parts = [
+    priceText(facts.price),
+    facts.contextWindow !== null ? `${formatContextWindow(facts.contextWindow)} context` : null,
+    facts.imageInput === null ? null : facts.imageInput ? "Vision" : "Text only",
+    facts.tier,
+  ];
+  return parts.filter((part): part is string => part !== null);
 }

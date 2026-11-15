@@ -272,7 +272,7 @@ def test_catalog_keeps_informative_native_name(
 
     def fake_overlay(model, *, allow_network=False):
         seen.append(model)
-        return {"name": "Overlay Must Not Win"}
+        return {"name": "Overlay Must Not Win", "context_length": 262144}
 
     monkeypatch.setattr(module, "overlay_metadata", fake_overlay)
     ox = _ox_catalog_row(
@@ -280,7 +280,9 @@ def test_catalog_keeps_informative_native_name(
         lambda p, slug: {"id": slug, "name": "Native Ox Label"},
     )
     assert ox["name"] == "Native Ox Label"
-    assert seen == []
+    # The overlay still fills facts the live listing lacks.
+    assert seen == [wire]
+    assert ox["context_window"] == 262144
 
 
 def test_preview_filter_keeps_ox_alpha_drops_dated_snapshots():

@@ -35,7 +35,7 @@ async function openPicker() {
 }
 
 describe("PilotPicker model facts", () => {
-  it("shows price, context and vision per row and marks gaps unknown", async () => {
+  it("shows price, context and vision per row", async () => {
     modelCatalog.mockResolvedValue({
       catalog: [],
       enabled: [],
@@ -50,6 +50,21 @@ describe("PilotPicker model facts", () => {
     expect(option(/GLM 5.3 Flash/)).toHaveTextContent("$0.10 / $0.40 per MTok · 203k context · Text only");
     expect(option(/Composer 2.5/)).toHaveTextContent("Details unknown");
     expect(modelCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it("says Plan for a plan-billed row and leaves out unknown facts", async () => {
+    modelCatalog.mockResolvedValue({
+      catalog: [],
+      enabled: [],
+      all: [
+        { spec: "openrouter:deepseek/deepseek-v4.1-flash", billing: "metered", price_in: null, price_out: null, context_window: null, image_input: true },
+        { spec: "openrouter:z-ai/glm-5.3-flash", billing: "plan", context_window: 1048576, image_input: null },
+        { spec: "cursor:composer-2.5", billing: "metered", context_window: null, image_input: null },
+      ],
+    });
+    await openPicker();
+    const facts = screen.getAllByTestId("pilot-model-facts").map((el) => el.textContent);
+    expect(facts).toEqual(["Vision", "Plan · 1.05M context", "\u00a0"]);
   });
 
   it("keeps the picker usable when the catalog read fails", async () => {

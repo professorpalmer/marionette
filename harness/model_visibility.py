@@ -286,7 +286,7 @@ def provider_models(p, *, force: bool = False) -> list:
 
 def catalog(available_only: bool = True, *, force: bool = False) -> list:
     """The selectable model catalog as a list of dicts:
-        {provider, provider_display, model, spec, available, enabled}
+        {provider, provider_display, model, spec, available, enabled, billing, ...}
 
     spec is the 'provider:model' string the picker uses. When available_only is
     True, only providers with a present key are included. Keyed providers are
@@ -314,21 +314,15 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
             display_name = m
             if p.name in ("opencode-go", "opencode-zen"):
                 try:
-                    from .opencode_common import (
-                        merge_catalog_overlay,
-                        needs_catalog_overlay,
-                    )
+                    from .opencode_common import merge_catalog_overlay
                     if p.name == "opencode-go":
                         from .opencode_go import display_name_for, overlay_metadata
                     else:
                         from .opencode_zen import display_name_for, overlay_metadata
-                    overlay = (
-                        overlay_metadata(m, allow_network=force)
-                        if needs_catalog_overlay(provider_metadata, m)
-                        else {}
-                    )
+                    # The live listing carries names and modalities only;
+                    # models.dev fills context and any id-echo name.
                     provider_metadata = merge_catalog_overlay(
-                        provider_metadata, overlay, m,
+                        provider_metadata, overlay_metadata(m, allow_network=force), m,
                     )
                     display_name = display_name_for(m, provider_metadata)
                 except Exception:
@@ -358,6 +352,7 @@ def catalog(available_only: bool = True, *, force: bool = False) -> list:
                 "price_in": pricing.get("prompt"),
                 "price_out": pricing.get("completion"),
                 "image_input": image_input,
+                "billing": p.billing,
                 "source": provider_metadata.get("source", status.get("source")),
                 "status": status.get("status"),
                 "provider_metadata": provider_metadata,

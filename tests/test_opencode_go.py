@@ -561,10 +561,7 @@ def test_go_display_name_treats_wire_echo_as_uninformative():
     assert go.display_name_for("ox-alpha-free", {"name": "Custom Ox"}) == "Custom Ox"
 
 
-def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
-    assert oc.needs_catalog_overlay({"name": "ox-alpha-free"}, "ox-alpha-free")
-    assert oc.needs_catalog_overlay({"name": ""}, "ox-alpha-free")
-    assert not oc.needs_catalog_overlay({"name": "Ox Alpha Free"}, "ox-alpha-free")
+def test_catalog_overlay_replaces_only_an_id_echo_name():
     merged = oc.merge_catalog_overlay(
         {"name": "ox-alpha-free", "id": "ox-alpha-free"},
         {"name": "Ox Alpha Free", "source": "models.dev"},
@@ -577,7 +574,6 @@ def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
         "ox-alpha-free",
     )
     assert kept["name"] == "Native Ox Label"
-    assert oc.needs_catalog_overlay({"name": "x-preview-f-free"}, "x-preview-f-free")
     assert oc.merge_catalog_overlay(
         {"name": "x-preview-f-free"},
         {"name": "Ox Alpha Free"},
