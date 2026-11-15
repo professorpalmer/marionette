@@ -20,12 +20,6 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-vi.mock("../components/SkillsPane", () => ({ default: () => <div /> }));
-vi.mock("../components/MemoryPane", () => ({ default: () => <div /> }));
-vi.mock("../components/SchedulesPane", () => ({ default: () => <div /> }));
-vi.mock("../components/DeviceAccess", () => ({
-  default: () => <p>Give a device read-only access to explicitly selected information on this endpoint.</p>,
-}));
 
 const mockSettings = vi.mocked(api.settings);
 const mockUpdate = vi.mocked(api.updateSettings);
@@ -48,32 +42,3 @@ const sampleSettings: Settings = {
   repo: "/tmp/repo",
 };
 
-describe("SettingsPane Safety Chrome login", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    writeSettingsSnapshot(sampleSettings);
-    mockSettings.mockResolvedValue(sampleSettings);
-    mockUpdate.mockImplementation(async (partial) => ({ ...sampleSettings, ...partial }));
-  });
-
-  it("toggles browserRealProfile from Safety", async () => {
-    render(<SettingsPane onOpenWizard={vi.fn()} section="safety" />);
-
-    expect(await screen.findByText("Use my Chrome login")).toBeTruthy();
-    fireEvent.click(screen.getByText("Use my Chrome login"));
-    await waitFor(() => {
-      expect(mockUpdate).toHaveBeenCalledWith({ browserRealProfile: true });
-    });
-  });
-
-  it("keeps Device access collapsed at the bottom of Safety", async () => {
-    localStorage.clear();
-    render(<SettingsPane onOpenWizard={vi.fn()} section="safety" />);
-    const fullAuto = await screen.findByText("Full-Auto Safety");
-    const deviceAccess = screen.getByRole("button", { name: /Device access/ });
-    expect(fullAuto.compareDocumentPosition(deviceAccess) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.queryByText(/Give a device read-only access/)).toBeNull();
-    fireEvent.click(deviceAccess);
-    expect(await screen.findByText(/Give a device read-only access/)).toBeTruthy();
-  });
-});

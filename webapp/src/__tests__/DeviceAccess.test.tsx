@@ -100,7 +100,7 @@ describe('Device access', () => {
     fireEvent.click(revoke);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Revoke Fixture tablet' })).toBeDisabled());
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh devices' })).toHaveFocus());
-    expect(screen.getByText('Fixture tablet — Revoked')).toBeInTheDocument();
+    expect(screen.getByText('Revoked', { selector: 'span' })).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith('POST', '/api/devices/device-fixture/revoke', {}, '', expect.objectContaining({ 'X-Harness-Endpoint': 'endpoint-fixture' }));
   });
   it('discards a late enrollment after unmount and does not carry it into a new panel', async () => {

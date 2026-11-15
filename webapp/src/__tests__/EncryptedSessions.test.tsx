@@ -45,15 +45,15 @@ describe('Encrypted sessions', () => {
     keys = { ...keys, protection: 'none' };
     await mount();
     expect(screen.getByText(/no OS key store/)).toBeInTheDocument();
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
   });
 
   it('shows the recovery code once after the first enable', async () => {
     await mount();
-    await act(async () => { fireEvent.click(screen.getByRole('checkbox', { name: 'Encrypt new sessions' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('switch', { name: 'Encrypt new sessions' })); });
     expect(seal.enable).toHaveBeenCalledTimes(1);
     expect(screen.getByText(fixtureCode)).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Encrypt new sessions' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Encrypt new sessions' })).toHaveAttribute('aria-checked', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'I saved the code' }));
     expect(screen.queryByText(fixtureCode)).not.toBeInTheDocument();
   });
