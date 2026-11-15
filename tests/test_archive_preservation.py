@@ -309,3 +309,72 @@ def test_saved_empty_transcript_roundtrip(tmp_path, raw):
     assert a.prune_ingested_transcripts(str(tmp_path), rows)['pruned'] == 1
     assert a.restore_pruned_transcript(str(tmp_path), 'cold')
     assert load_transcript(str(tmp_path), 'cold') == raw
+
+
+def test_session_load_does_not_wait_behind_archive_verify(tmp_path, monkeypatch):
+    # A user session switch saves and loads transcripts under the native
+    # publication lock. The boot ingest must not hold that lock while it
+    # verifies the vault copy of an archived session.
+    import threading
+    raw, rows = seed(tmp_path)
+    a.ingest_all(str(tmp_path), sessions=rows)
+    save_transcript(str(tmp_path), 'live', [{'role': 'user', 'content': 'live session'}])
+    entered, release = threading.Event(), threading.Event()
+    original = a._content_fp
+    def pause(*args):
+        if threading.current_thread().name == 'boot-ingest' and not entered.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original(*args)
+    monkeypatch.setattr(a, '_content_fp', pause)
+    ingest = threading.Thread(target=a.ingest_all, args=(str(tmp_path),),
+                              kwargs={'sessions': rows}, name='boot-ingest')
+    ingest.start()
+    try:
+        assert entered.wait(5)
+        loaded = []
+        switch = threading.Thread(target=lambda: loaded.append(load_transcript(str(tmp_path), 'live')))
+        switch.start()
+        switch.join(2)
+        assert loaded == [[{'role': 'user', 'content': 'live session'}]]
+    finally:
+        release.set()
+        ingest.join(5)
+    assert load_transcript(str(tmp_path), 'cold') == raw
+
+
+def test_boot_moves_archived_into_vault_then_skips_stubs(tmp_path, monkeypatch):
+    raw, rows = seed(tmp_path)
+    monkeypatch.delenv('PYTEST_CURRENT_TEST', raising=False)
+    a.maybe_boot_ingest(str(tmp_path), rows)
+    path = tmp_path / 'transcripts/cold.json'
+    assert json.loads(path.read_text())['pruned'] is True
+    assert a.search_archive(str(tmp_path), 'quasar')
+    def no_full_read(*args):
+        raise AssertionError('a stub needs no bundle read')
+    with monkeypatch.context() as m:
+        m.setattr(a, '_bundle', no_full_read)
+        report = a.ingest_all(str(tmp_path), sessions=rows, prune=True)
+    assert (report['skipped_unchanged'], report['pruned'], report['errors']) == (1, 0, 0)
+    # The hover prefetch reads the vault copy and leaves the stub in place.
+    assert a.pruned_transcript_view(str(tmp_path), 'cold') == raw
+    assert json.loads(path.read_text())['pruned'] is True
+    # A runner never attaches over a stub: it gets the full session back.
+    from harness.sessions import load_runner_transcript
+    assert load_runner_transcript(str(tmp_path), 'cold') == raw
+    assert load_transcript(str(tmp_path), 'cold') == raw
+
+
+def test_boot_keeps_hot_copy_that_differs_from_vault(tmp_path, monkeypatch):
+    raw, rows = seed(tmp_path)
+    a.ingest_all(str(tmp_path), sessions=rows)
+    raw['history'].append({'role': 'user', 'content': 'newer hot fact'})
+    save_transcript(str(tmp_path), 'cold', raw)
+    real_digest = a._vault_digest
+    def stale_digest(*args):
+        # The vault changes between verification and the stub write.
+        return 'changed-' + str(real_digest(*args))
+    monkeypatch.setattr(a, '_vault_digest', stale_digest)
+    report = a.ingest_all(str(tmp_path), sessions=rows, prune=True)
+    assert report['ingested'] == 1 and report['pruned'] == 0
+    assert load_transcript(str(tmp_path), 'cold') == raw

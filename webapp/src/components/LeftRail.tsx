@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
+import { GitBranch, Plus, Check, Loader2, ChevronDown, ChevronRight, SquarePen, Folder, FolderGit2, FolderOpen, Puzzle, Circle, Trash2, Brush, Search, X, PanelLeftClose } from "lucide-react";
 import { MACOS_TITLEBAR_BAND_PX } from "../lib/titlebarSafe";
 import { SWITCH_SESSION_EVENT, eventDetailString } from "../lib/sessionNav";
 import { api, type Workspace, type WorkspaceInfo, type Session } from "../lib/api";
@@ -98,6 +98,17 @@ import {
   type RunnerStatus,
 } from "./leftRailSessions";
 import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRailPrimitives";
+import { focusSettingsPage } from "./SettingsShell";
+import { isMacNavigator } from "../lib/terminalSelection";
+
+function openCommandPalette(): void {
+  window.dispatchEvent(new Event("harness-open-command-palette"));
+}
+
+function openPluginsPage(): void {
+  focusSettingsPage("plugins");
+  window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+}
 import NestedSessionRows, { NestToggle } from "./NestedSessionRows";
 import { buildSessionTree, storeNestExpanded, storedNestExpanded, useNestRev } from "../lib/nestedSessions";
 
@@ -1478,10 +1489,27 @@ export default function LeftRail({
           type="button"
           onClick={handleOpenFolder}
           disabled={opening}
-          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 text-left text-accent text-ui-11 font-medium hover:bg-accent/10 rounded transition disabled:opacity-50"
+          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition disabled:opacity-50"
         >
-          <span aria-hidden="true" />
-          <span>{opening ? "Opening…" : "Open Folder..."}</span>
+          <FolderOpen size={14} className="text-muted" />
+          <span>{opening ? "Opening…" : "Open folder"}</span>
+        </button>
+        <button
+          type="button"
+          onClick={openCommandPalette}
+          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition"
+        >
+          <Search size={14} className="text-muted" />
+          <span>Search</span>
+          <kbd className="text-ui-10.5 font-sans text-faint">{isMacNavigator() ? "⌘K" : "Ctrl K"}</kbd>
+        </button>
+        <button
+          type="button"
+          onClick={openPluginsPage}
+          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition"
+        >
+          <Puzzle size={14} className="text-muted" />
+          <span>Plugins</span>
         </button>
         {sessionActivationNotice && (
           <div

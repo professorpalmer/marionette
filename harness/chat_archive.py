@@ -2,12 +2,13 @@ from __future__ import annotations
 
 """Marionette chat archive: Buddy's method, Marionette-owned stores.
 
-Hide (session ``archived``) is not ingest and not prune. Ingest copies an
-archived session into ``{state_dir}/chat-archive/archive.sqlite`` plus a
-markdown projection and a verified raw JSON backup. Search and read query
-that vault. Prune removes the hot
-transcript only after a vault copy and backup exist. Unarchive restores
-from the vault into the live transcript store — the only write-back.
+Archive moves a session into the vault. Ingest copies it into
+``{state_dir}/chat-archive/archive.sqlite`` plus a markdown projection and a
+verified raw JSON backup. Prune then replaces the hot transcript with a stub,
+only after the vault copy and the backup verify. Boot does the same for
+archived sessions that still have a hot transcript. Search and read query the
+vault. Unarchive, or an open of the archived session, restores the full native
+bundle into the live transcript store. That is the only write-back.
 """
 
 import hashlib
@@ -88,6 +89,7 @@ class IngestReport:
     skipped_unchanged: int = 0
     skipped_missing: int = 0
     errors: int = 0
+    pruned: int = 0
     vault_present: bool = False
     backup_dir: str = ""
 
@@ -97,6 +99,7 @@ class IngestReport:
             "skipped_unchanged": self.skipped_unchanged,
             "skipped_missing": self.skipped_missing,
             "errors": self.errors,
+            "pruned": self.pruned,
             "vault_present": self.vault_present,
             "backup_dir": self.backup_dir,
         }
@@ -242,11 +245,6 @@ def _upsert_chat(
             pass
 
 
-def _existing_fp(con: sqlite3.Connection, chat_id: str) -> str:
-    row = con.execute("SELECT content_fp FROM chats WHERE chat_id = ?", (chat_id,)).fetchone()
-    return str(row[0]) if row else ""
-
-
 def _is_pruned_stub(payload: Any) -> bool:
     return isinstance(payload, dict) and payload.get("pruned") is True
 
@@ -345,6 +343,12 @@ def _bundle(state_dir: str, sid: str, raw: Any) -> Dict[str, Any]:
 
 
 def _verified_raw(state_dir: str, chat_id: str):
+    saved = _verified_vault(state_dir, chat_id)
+    return None if saved is None else saved[0]
+
+
+def _verified_vault(state_dir: str, chat_id: str) -> Optional[Tuple[Any, str, str]]:
+    """Return (raw bundle, digest, name) after every vault copy verifies."""
     from .compaction_archive import json_digest
     db = archive_db_path(state_dir)
     if not db.is_file():
@@ -368,39 +372,48 @@ def _verified_raw(state_dir: str, chat_id: str):
         projection = con.execute("SELECT role, text FROM messages WHERE chat_id=? ORDER BY seq", (chat_id,)).fetchall()
         if _content_fp(md[1], projection) != md[2]:
             raise OSError("Archive projection fingerprint mismatch")
-        return data
+        return data, row[1], md[1]
     finally:
         con.close()
 
 
-@_serialized_operation
-def ingest_marionette_session(
-    state_dir: str,
-    session_id: str,
-    *,
-    title: str = "",
-    workspace: str = "",
-    updated_at: int = 0,
-) -> IngestReport:
-    """Copy one session transcript into the archive vault + markdown backup."""
-    sid = (session_id or "").strip()
-    backups = str(backup_dir(state_dir))
-    if not sid:
-        return IngestReport(errors=1, backup_dir=backups)
-    from .seal import is_sealed
-    if is_sealed(sid):
-        # The archive vault, its markdown and its raw backup are plaintext.
-        return IngestReport(skipped_unchanged=1, backup_dir=backups)
+def _raw_payload_lookup(state_dir: str, chat_id: str, column: str) -> Optional[str]:
+    db = archive_db_path(state_dir)
+    if not db.is_file():
+        return None
+    con = sqlite3.connect(str(db))
     try:
-        raw = _raw_transcript(state_dir, sid)
-        if _is_pruned_stub(raw):
-            present = _verified_raw(state_dir, "marionette:%s" % sid) is not None
-            return IngestReport(skipped_unchanged=int(present), errors=int(not present), vault_present=present, backup_dir=backups)
-        bundle = _bundle(state_dir, sid, raw)
-    except (OSError, ValueError, sqlite3.Error):
-        return IngestReport(errors=1, backup_dir=backups)
-    messages = _transcript_messages(raw)
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='raw_payloads'").fetchone():
+            return None
+        row = con.execute("SELECT %s FROM raw_payloads WHERE chat_id=?" % column, (chat_id,)).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+    finally:
+        con.close()
+
+
+def _vault_digest(state_dir: str, chat_id: str) -> Optional[str]:
+    """Read the stored raw digest without the full verification.
+
+    SQLite reads past the large payload column to reach the digest.
+    """
+    return _raw_payload_lookup(state_dir, chat_id, "digest")
+
+
+def _vault_present(state_dir: str, chat_id: str) -> bool:
+    """Presence check from the primary key index only. Never reads the payload."""
+    return _raw_payload_lookup(state_dir, chat_id, "1") is not None
+
+
+def _vault_has_inputs(state_dir: str, chat_id: str) -> bool:
+    """Tell if the stored raw bundle holds input originals, without a full verify."""
+    return _raw_payload_lookup(state_dir, chat_id, "json_type(payload, '$.inputs')") not in (None, "null")
+
+
+def _write_vault(state_dir: str, sid: str, raw: Any, bundle: Dict[str, Any], *,
+                 name: str, workspace: str, updated_at: int) -> None:
+    """Write one vault copy. The caller holds the native publication lock."""
     from .compaction_archive import _atomic_write_json, json_digest, load_compaction_archive_page
+    messages = _transcript_messages(raw)
     offset = 0
     while bundle["compaction_files"]:
         page, total = load_compaction_archive_page(state_dir, sid, offset=offset, limit=400)
@@ -408,13 +421,9 @@ def ingest_marionette_session(
         offset += len(page)
         if offset >= total:
             break
-    name = (title or "").strip() or sid
     chat_id = "marionette:%s" % sid
-    fp = _content_fp(name, messages)
     dst = _connect_archive(archive_db_path(state_dir))
     try:
-        if fp and fp == _existing_fp(dst, chat_id) and _verified_raw(state_dir, chat_id) == bundle:
-            return IngestReport(skipped_unchanged=1, vault_present=True, backup_dir=backups)
         backup = _write_backup(state_dir, "marionette", sid, name, messages)
         _upsert_chat(
             dst,
@@ -424,7 +433,7 @@ def ingest_marionette_session(
             workspace=workspace or "",
             name=name,
             updated_at=int(updated_at or time.time()),
-            content_fp=fp,
+            content_fp=_content_fp(name, messages),
             backup_path=backup,
             messages=messages,
         )
@@ -438,18 +447,120 @@ def ingest_marionette_session(
         dst.commit()
     finally:
         dst.close()
-    return IngestReport(ingested=1, vault_present=True, backup_dir=backups)
+
+
+def _sync_session(state_dir: str, sid: str, *, name: str, workspace: str,
+                  updated_at: int, write: bool, prune: bool) -> IngestReport:
+    """Make the vault copy current, then optionally replace the hot transcript with a stub.
+
+    A user session switch takes the same native publication lock. Each lock
+    hold here only reads a snapshot, or publishes after a check that the
+    snapshot is still current. The slow vault verification runs outside the
+    lock. The stub is written only when the hot bundle and the verified vault
+    digest are both unchanged since that verification.
+    """
+    from .native_publication import native_publication
+    from .compaction_archive import _atomic_write_json
+    backups = str(backup_dir(state_dir))
+    chat_id = "marionette:%s" % sid
+    ingested = 0
+    while True:
+        try:
+            with native_publication(state_dir):
+                raw = _raw_transcript(state_dir, sid)
+                bundle = None if _is_pruned_stub(raw) else _bundle(state_dir, sid, raw)
+            if bundle is None:
+                present = _vault_present(state_dir, chat_id)
+                return IngestReport(ingested=ingested, skipped_unchanged=int(present and not ingested),
+                                    errors=int(not present), vault_present=present, backup_dir=backups)
+        except (OSError, ValueError, sqlite3.Error):
+            return IngestReport(ingested=ingested, errors=1, backup_dir=backups)
+        try:
+            saved = _verified_vault(state_dir, chat_id)
+        except (OSError, ValueError, sqlite3.Error):
+            saved = None
+        current = saved is not None and saved[0] == bundle and (not write or saved[2] == name)
+        if not current:
+            if not write or ingested:
+                return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
+                                    vault_present=saved is not None, backup_dir=backups)
+            # The write reads its own snapshot in the same lock hold, so the
+            # vault never gets an older bundle than the hot transcript.
+            with native_publication(state_dir):
+                try:
+                    raw = _raw_transcript(state_dir, sid)
+                    bundle = None if _is_pruned_stub(raw) else _bundle(state_dir, sid, raw)
+                except (OSError, ValueError, sqlite3.Error):
+                    return IngestReport(errors=1, backup_dir=backups)
+                if bundle is not None:
+                    _write_vault(state_dir, sid, raw, bundle, name=name,
+                                 workspace=workspace, updated_at=updated_at)
+            if bundle is None:
+                continue
+            ingested = 1
+            if not prune:
+                return IngestReport(ingested=1, vault_present=True, backup_dir=backups)
+            continue
+        if not prune:
+            return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
+                                vault_present=True, backup_dir=backups)
+        try:
+            with native_publication(state_dir):
+                fresh = _raw_transcript(state_dir, sid)
+                if (_is_pruned_stub(fresh) or _bundle(state_dir, sid, fresh) != bundle
+                        or _vault_digest(state_dir, chat_id) != saved[1]):
+                    return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
+                                        vault_present=True, backup_dir=backups)
+                _atomic_write_json(str(_session_transcript_path(state_dir, sid)),
+                                   {"pruned": True, "chat_id": chat_id})
+        except (OSError, ValueError, sqlite3.Error):
+            return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
+                                vault_present=True, backup_dir=backups)
+        return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested), pruned=1,
+                            vault_present=True, backup_dir=backups)
+
+
+def ingest_marionette_session(
+    state_dir: str,
+    session_id: str,
+    *,
+    title: str = "",
+    workspace: str = "",
+    updated_at: int = 0,
+    prune: bool = False,
+) -> IngestReport:
+    """Copy one session transcript into the archive vault + markdown backup.
+
+    With ``prune``, the hot transcript becomes a stub after the vault copy
+    and the raw backup verify. Unarchive restores the full native bundle.
+    """
+    sid = (session_id or "").strip()
+    backups = str(backup_dir(state_dir))
+    if not sid:
+        return IngestReport(errors=1, backup_dir=backups)
+    from .seal import is_sealed
+    if is_sealed(sid):
+        # The archive vault, its markdown and its raw backup are plaintext.
+        return IngestReport(skipped_unchanged=1, backup_dir=backups)
+    return _sync_session(state_dir, sid, name=(title or "").strip() or sid,
+                         workspace=workspace or "", updated_at=updated_at,
+                         write=True, prune=prune)
 
 
 def ingest_all(
     state_dir: str,
     *,
     sessions: Optional[Iterable[Dict[str, Any]]] = None,
+    prune: bool = False,
 ) -> Dict[str, Any]:
-    """Ingest currently archived sessions. Skip unchanged. Leave hot transcripts."""
+    """Ingest currently archived sessions. Skip unchanged.
+
+    With ``prune``, each verified session gets a stub in place of its hot transcript.
+    """
     ingested = 0
     skipped = 0
     errors = 0
+    pruned = 0
     for row in sessions or ():
         if not row.get("archived"):
             continue
@@ -462,47 +573,38 @@ def ingest_all(
             title=str(row.get("title") or ""),
             workspace=str(row.get("workspace_root") or row.get("repo") or ""),
             updated_at=int(row.get("created") or 0),
+            prune=prune,
         )
         ingested += report.ingested
         skipped += report.skipped_unchanged
         errors += report.errors
+        pruned += report.pruned
     return {
         "ok": True,
         "ingested": ingested,
         "skipped_unchanged": skipped,
         "errors": errors,
+        "pruned": pruned,
         "backup_dir": str(backup_dir(state_dir)),
         "archive_db": str(archive_db_path(state_dir)),
     }
 
 
-@_serialized_operation
 def prune_ingested_transcripts(state_dir: str, sessions=None) -> Dict[str, Any]:
     """Prune archived transcripts only after verifying both complete copies."""
-    from .compaction_archive import _atomic_write_json
+    from .seal import is_sealed
     pruned = skipped = 0
     for row in sessions or ():
         sid = str(row.get("id") or "")
         if not row.get("archived") or not sid:
             continue
-        from .seal import is_sealed
         if is_sealed(sid):
             skipped += 1
             continue
-        try:
-            raw = _raw_transcript(state_dir, sid)
-            if _is_pruned_stub(raw):
-                skipped += 1
-                continue
-            saved = _verified_raw(state_dir, "marionette:" + sid)
-            if saved is None or saved != _bundle(state_dir, sid, raw):
-                skipped += 1
-                continue
-            _atomic_write_json(str(_session_transcript_path(state_dir, sid)),
-                               {"pruned": True, "chat_id": "marionette:" + sid})
-            pruned += 1
-        except (OSError, ValueError, sqlite3.Error):
-            skipped += 1
+        report = _sync_session(state_dir, sid, name=sid, workspace="", updated_at=0,
+                               write=False, prune=True)
+        pruned += report.pruned
+        skipped += 1 - report.pruned
     return {"ok": True, "pruned": pruned, "skipped": skipped,
             "archive_db": str(archive_db_path(state_dir))}
 
@@ -553,6 +655,38 @@ def restore_pruned_transcript(state_dir: str, session_id: str) -> bool:
         return True
     except (OSError, ValueError, sqlite3.Error):
         return False
+
+
+_STUB_MAX_BYTES = 4096
+
+
+def _stub_on_disk(state_dir: str, sid: str) -> bool:
+    """Cheap check for a pruned stub. A full transcript is never parsed."""
+    path = _session_transcript_path(state_dir, sid)
+    try:
+        if path.stat().st_size > _STUB_MAX_BYTES:
+            return False
+        return _is_pruned_stub(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return False
+
+
+def restore_if_pruned(state_dir: str, session_id: str) -> bool:
+    """Restore a pruned session before it opens. A hot transcript is left alone."""
+    sid = (session_id or "").strip()
+    return bool(sid) and _stub_on_disk(state_dir, sid) and restore_pruned_transcript(state_dir, sid)
+
+
+def pruned_transcript_view(state_dir: str, session_id: str) -> Any:
+    """Return the verified vault transcript of a pruned session, else None. Read only."""
+    sid = (session_id or "").strip()
+    if not sid or not _stub_on_disk(state_dir, sid):
+        return None
+    try:
+        saved = _verified_raw(state_dir, "marionette:" + sid)
+    except (OSError, ValueError, sqlite3.Error):
+        return None
+    return None if saved is None else saved.get("transcript")
 
 
 def archive_status(state_dir: str) -> Dict[str, Any]:
@@ -772,12 +906,17 @@ def format_archived_chat(payload: Optional[Dict[str, Any]]) -> str:
 
 
 def maybe_boot_ingest(state_dir: str, sessions: Optional[Iterable[Dict[str, Any]]] = None) -> None:
-    """Best-effort ingest of archived sessions on harness start. Skipped under pytest."""
+    """Best-effort move of archived sessions into the vault on harness start.
+
+    A session with a verified vault copy gets a stub in place of its hot
+    transcript. Stubs stay as they are, so a warm boot reads almost nothing.
+    Skipped under pytest.
+    """
     if "PYTEST_CURRENT_TEST" in os.environ:
         return
     if not (state_dir or "").strip():
         return
     try:
-        ingest_all(state_dir, sessions=sessions)
+        ingest_all(state_dir, sessions=sessions, prune=True)
     except Exception:
         pass

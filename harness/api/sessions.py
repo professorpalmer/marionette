@@ -617,6 +617,7 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
                 title=str(row.get("title") or ""),
                 workspace=str(row.get("workspace_root") or row.get("repo") or ""),
                 updated_at=int(row.get("created") or 0),
+                prune=True,
             )
         except Exception:
             pass
@@ -727,6 +728,11 @@ def get_sessions_transcript(qs: dict, svc: SessionServices) -> tuple[int, dict]:
     if data is None:
         ring = None
         data = load_transcript(svc.cfg.state_dir or tempfile.gettempdir(), sid)
+        if not data and sid:
+            # A pruned archived session shows its vault copy. A hover
+            # prefetch must not restore files, so this read stays read only.
+            from ..chat_archive import pruned_transcript_view
+            data = pruned_transcript_view(svc.cfg.state_dir or tempfile.gettempdir(), sid) or data
     if isinstance(data, dict):
         history_list = data.get("history", [])
         display_list = data.get("display", [])

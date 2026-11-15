@@ -329,7 +329,11 @@ def test_archive_admission_barrier_blocks_stale_prune(session, monkeypatch):
         release.set()
         assert archive.result(timeout=3)['ingested'] == 1
         assert admission.result(timeout=3)['id']
-    assert chat_archive.prune_ingested_transcripts(session.state_dir, catalog)['pruned'] == 0
+    # The admission can land before or after the vault write. A prune is
+    # safe only when the verified vault copy holds the admitted input.
+    vault = chat_archive._verified_raw(session.state_dir, 'marionette:' + session.harness_session_id)
+    holds_input = 'during archive' in json.dumps(vault['inputs'])
+    assert chat_archive.prune_ingested_transcripts(session.state_dir, catalog)['pruned'] == int(holds_input)
     assert [r['original_text'] for r in session.input_receipts()] == ['before archive', 'during archive']
 
 
@@ -555,3 +559,40 @@ def test_unchanged_inputs_file_is_not_revalidated_per_poll(tmp_path, monkeypatch
     path.write_text(text, encoding='utf-8')
     assert len(store.list()) == 5
     assert calls
+
+
+def test_archive_moves_session_into_vault_and_unarchive_restores_it(session):
+    from harness import chat_archive
+    from harness.api import sessions as api
+    from harness.history_compaction_journal import commit_compacted_transcript
+    from harness.compaction_archive import load_compaction_archive_page
+    state, sid = session.state_dir, session.harness_session_id
+    original_history = seed_history(session)
+    session.enqueue_prompt('archived input')
+    source = load_transcript(state, sid)
+    target = {**source, 'history': [{'role': 'user', 'content': 'compacted context'}]}
+    commit_compacted_transcript(state, sid, source, target, original_history)
+    transcript = load_transcript(state, sid)
+    pages = load_compaction_archive_page(state, sid, limit=100)
+    inputs = InputReceiptStore(state, sid).snapshot()
+    assert pages[1] and inputs is not None
+    changes = []
+    svc = SimpleNamespace(parse_bool=bool, sessions_state_dir=lambda: state,
+                          sessions=SimpleNamespace(archive=lambda _sid, flag: changes.append(flag),
+                                                   rows=lambda: [{'id': sid, 'title': 'Archived'}]))
+    assert api.post_sessions_archive({'id': sid, 'archived': True}, svc)[0] == 200
+    hot = Path(state) / 'transcripts' / (sid + '.json')
+    assert json.loads(hot.read_text()) == {'pruned': True, 'chat_id': 'marionette:' + sid}
+    # Only disposable fixture sidecars are removed to prove recovery from the vault.
+    for path in (Path(state) / 'transcripts').glob(sid + '.archive.json*'):
+        if path.is_dir():
+            for child in path.iterdir():
+                child.unlink()
+            path.rmdir()
+        else:
+            path.unlink()
+    assert api.post_sessions_archive({'id': sid, 'archived': False}, svc)[0] == 200
+    assert changes == [True, False]
+    assert load_transcript(state, sid) == transcript
+    assert load_compaction_archive_page(state, sid, limit=100) == pages
+    assert InputReceiptStore(state, sid).snapshot() == inputs

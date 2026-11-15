@@ -40,6 +40,7 @@ from .sessions import (
     SessionStore,
     save_transcript,
     persist_live_transcript,
+    load_runner_transcript,
     load_transcript,
     session_stored_root,
     session_visible_for_workspace,
@@ -1464,7 +1465,7 @@ def _ensure_background_runner(session_id: str) -> Any:
     built = _build_conversational_pilot(config=config)
     built.harness_session_id = session_id
     built.bind_prompt_queue(_sessions_state_dir(), session_id)
-    history = load_transcript(_sessions_state_dir(), session_id)
+    history = load_runner_transcript(_sessions_state_dir(), session_id)
     if history:
         built.load_history(history)
     for hook in ("reload_session_goal", "reload_session_todos"):
@@ -2578,7 +2579,7 @@ _migrate_orphan_sessions_to_home()
 # and register it as the active view in the runner registry.
 if _sessions.active:
     try:
-        _startup_history = load_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
+        _startup_history = load_runner_transcript(_cfg.state_dir or _tf.gettempdir(), _sessions.active)
     except SealLocked:
         # A locked encrypted session must not attach with an empty history: a
         # later save would replace its real transcript. Start blank instead.
