@@ -70,15 +70,16 @@ CURATED_MODELS = (
     "hy3",
 )
 
-# Live Go /models currently lists ``deepseek-flash``. Curated/OpenRouter and
-# older Settings pins still say ``deepseek-v4-flash``. Same model.
+# One Go DeepSeek flash row under every name it had. Go /models lists
+# ``deepseek-v4.1-flash``; older pins say ``deepseek-flash`` or
+# ``deepseek-v4-flash``. Go refuses ``deepseek-flash`` (HTTP 400, 2026-11-15).
 FLASH_MODEL_ALIASES = frozenset({
     "deepseek-flash",
     "deepseek-v4-flash",
     "deepseek-v4.1-flash",
     "deepseek-v4-1-flash",
 })
-WIRE_FLASH_MODEL = "deepseek-flash"
+WIRE_FLASH_MODEL = "deepseek-v4.1-flash"
 
 # Image transcription for text-only pilots when Go is the only key: a
 # chat/completions model with image input (models.dev), cheap and fast.

@@ -357,6 +357,8 @@ def _model_id_candidates(provider, model_id: str) -> list:
 
 def _record_image_input(record) -> Optional[bool]:
     """Image input from a live provider catalog record, or None if it does not say."""
+    from .models_dev import inputs_take_image
+
     if not isinstance(record, dict):
         return None
     arch = record.get("architecture")
@@ -365,8 +367,9 @@ def _record_image_input(record) -> Optional[bool]:
         arch.get("input_modalities") if isinstance(arch, dict) else None,
         modalities.get("input") if isinstance(modalities, dict) else modalities,
     ):
-        if isinstance(inputs, list):
-            return "image" in inputs
+        known = inputs_take_image(inputs)
+        if known is not None:
+            return known
     return None
 
 

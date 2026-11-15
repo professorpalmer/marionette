@@ -11,7 +11,7 @@ describe("parseModelFacts", () => {
   it("reads price, context and image input from catalog rows", () => {
     const facts = parseModelFacts({
       all: [
-        { spec: "openrouter:deepseek/deepseek-v4.1-flash", price_in: 0.3, price_out: 1.2, context_window: 1048576, image_input: true },
+        { spec: "openrouter:deepseek/deepseek-v4.1-flash", price_in: 0.3, price_out: 1.2, context_window: 1048576, image_input: true, billing: "metered" },
         { spec: "openrouter:z-ai/glm-5.3-flash", pricing: { prompt: 0.1, completion: 0.4 }, context_window: null, image_input: false },
         { spec: "cursor:composer-2.5", pricing: {}, image_input: null },
         { model: "no-spec" },
@@ -20,10 +20,23 @@ describe("parseModelFacts", () => {
     });
     expect(facts.size).toBe(3);
     expect(facts.get("openrouter:deepseek/deepseek-v4.1-flash")).toEqual({
-      priceIn: 0.3, priceOut: 1.2, contextWindow: 1048576, imageInput: true, tier: null,
+      price: { kind: "rate", input: 0.3, output: 1.2 }, contextWindow: 1048576, imageInput: true, tier: null,
     });
-    expect(facts.get("openrouter:z-ai/glm-5.3-flash")).toMatchObject({ priceIn: 0.1, priceOut: 0.4, contextWindow: null, imageInput: false });
-    expect(facts.get("cursor:composer-2.5")).toMatchObject({ priceIn: null, priceOut: null, imageInput: null });
+    expect(facts.get("openrouter:z-ai/glm-5.3-flash")).toMatchObject({
+      price: { kind: "rate", input: 0.1, output: 0.4 }, contextWindow: null, imageInput: false,
+    });
+    expect(facts.get("cursor:composer-2.5")).toMatchObject({ price: { kind: "unknown" }, imageInput: null });
+  });
+
+  it("names a plan-billed row Plan, whatever price the row carries", () => {
+    const facts = parseModelFacts({
+      all: [
+        { spec: "opencode-go:mimo-v2.6-flash", billing: "plan", context_window: 1048576, image_input: true },
+        { spec: "openai-codex:gpt-6-luna", billing: "plan", price_in: 0.1, price_out: 0.5 },
+      ],
+    });
+    expect(facts.get("opencode-go:mimo-v2.6-flash")?.price).toEqual({ kind: "plan" });
+    expect(facts.get("openai-codex:gpt-6-luna")?.price).toEqual({ kind: "plan" });
   });
 
   it("returns an empty map for a malformed payload", () => {
@@ -44,15 +57,19 @@ describe("tierForSpec", () => {
 });
 
 describe("modelFactParts", () => {
-  it("says unknown for each missing fact, never a guess", () => {
-    expect(modelFactParts({ priceIn: null, priceOut: 1, contextWindow: null, imageInput: null, tier: null })).toEqual([
-      "Price unknown", "Context unknown", "Vision unknown",
-    ]);
+  it("leaves out each unknown fact, never a guess", () => {
+    expect(modelFactParts({ price: { kind: "unknown" }, contextWindow: null, imageInput: null, tier: null })).toEqual([]);
   });
 
   it("formats known facts", () => {
-    expect(modelFactParts({ priceIn: 0.038, priceOut: 0.5, contextWindow: 1048576, imageInput: false, tier: "Batch" })).toEqual([
+    expect(modelFactParts({ price: { kind: "rate", input: 0.038, output: 0.5 }, contextWindow: 1048576, imageInput: false, tier: "Batch" })).toEqual([
       "$0.038 / $0.50 per MTok", "1.05M context", "Text only", "Batch",
+    ]);
+  });
+
+  it("says Plan for a plan-billed model", () => {
+    expect(modelFactParts({ price: { kind: "plan" }, contextWindow: 1048576, imageInput: true, tier: null })).toEqual([
+      "Plan", "1.05M context", "Vision",
     ]);
   });
 

@@ -216,3 +216,35 @@ def test_catalog_reports_image_input_from_the_vision_rule(mv, monkeypatch):
     for model in models[2:]:
         if model in rows:
             assert rows[model]["image_input"] is False
+
+
+def test_go_catalog_row_reads_context_and_billing_whatever_the_live_name(mv, monkeypatch):
+    """models.dev fills a Go row's missing context also when the live name is informative.
+
+    Before, the overlay ran only for an id-echo name, so "DeepSeek V4.1 Flash 1017"
+    had no context while "MiMo-V2.6-Flash" had one. Billing is the provider's.
+    """
+    import harness.providers as prov
+    from harness import model_fetch, models_dev
+
+    go = prov.get_provider("opencode-go")
+    monkeypatch.setattr(prov, "available_providers", lambda: [go])
+    monkeypatch.setattr(mv, "provider_models", lambda provider, **_kw: ["deepseek-v4.1-flash", "mimo-v2.6-flash"])
+    live = {
+        "deepseek-v4.1-flash": {"id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash 1017",
+                                "modalities": {"input": ["text", "image/png"]}},
+        "mimo-v2.6-flash": {"id": "mimo-v2.6-flash", "name": "MiMo-V2.6-Flash",
+                            "modalities": {"input": ["text", "image/jpeg"]}},
+    }
+    monkeypatch.setattr(model_fetch, "model_metadata", lambda provider, slug: live.get(slug))
+    registry = {"opencode-go": {"models": {
+        "deepseek-v4.1-flash": {"name": "DeepSeek V4.1 Flash", "limit": {"context": 1000000}},
+        "mimo-v2.6-flash": {"name": "MiMo V2.6 Flash", "limit": {"context": 1048576}},
+    }}}
+    monkeypatch.setattr(models_dev, "_registry", lambda *, allow_network: registry)
+    rows = {row["model"]: row for row in mv.catalog(available_only=True)}
+    assert rows["deepseek-v4.1-flash"]["name"] == "DeepSeek V4.1 Flash 1017"
+    assert rows["deepseek-v4.1-flash"]["context_window"] == 1000000
+    assert rows["mimo-v2.6-flash"]["context_window"] == 1048576
+    assert rows["deepseek-v4.1-flash"]["image_input"] is True
+    assert rows["mimo-v2.6-flash"]["billing"] == "plan"

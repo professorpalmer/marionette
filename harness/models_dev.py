@@ -185,6 +185,17 @@ def lookup_model(
         return None
 
 
+def inputs_take_image(inputs: Any) -> Optional[bool]:
+    """True/False for an input-modality list, None when *inputs* is not a list.
+
+    Catalogs name image input as ``"image"`` (models.dev, OpenRouter) or as MIME
+    types such as ``"image/png"`` (the OpenCode Go live catalog).
+    """
+    if not isinstance(inputs, list):
+        return None
+    return any(isinstance(kind, str) and (kind == "image" or kind.startswith("image/")) for kind in inputs)
+
+
 def image_input(
     provider_name: str,
     model_id: str,
@@ -203,10 +214,7 @@ def image_input(
         raw = _raw_model(key, mid, allow_network=allow_network,
                          models_dev_id=_CAPABILITY_PROVIDER_IDS.get(key, key))
         modalities = raw.get("modalities") if raw else None
-        inputs = modalities.get("input") if isinstance(modalities, dict) else None
-        if not isinstance(inputs, list):
-            return None
-        return "image" in inputs
+        return inputs_take_image(modalities.get("input") if isinstance(modalities, dict) else None)
     except Exception as e:
         _diag("models_dev.image_input", e)
         return None
