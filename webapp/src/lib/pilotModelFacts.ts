@@ -95,8 +95,17 @@ export function loadModelFacts(now: number = Date.now()): Promise<Map<string, Mo
   return request;
 }
 
-export function resetModelFactsCacheForTests(): void {
+/** Settings fires this after a sign-in, sign-out, or key change: billing and
+ * the live model lists can change with the account. */
+export const ACCOUNTS_CHANGED_EVENT = "harness-accounts-changed";
+
+/** Drop the shared catalog read so the next open reads the new account facts. */
+export function invalidateModelFacts(): void {
   cached = null;
+}
+
+export function resetModelFactsCacheForTests(): void {
+  invalidateModelFacts();
 }
 
 /** "$0", "$0.038", "$0.30", "$12.5", "$150". Catalog floats such as

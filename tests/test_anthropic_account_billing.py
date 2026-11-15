@@ -81,7 +81,7 @@ def test_anthropic_live_list_carries_context_and_price(state, monkeypatch):
     assert opus["id"] == "claude-opus-5-5"
     assert opus["name"] == "Claude Opus 5.5"
     assert opus["context_length"] == 1_000_000
-    assert opus["pricing"] == {"prompt": 5e-06, "completion": 2.5e-05}
+    assert opus["pricing"] == {"prompt": 5.0, "completion": 25.0}
     assert sonnet["context_length"] == 400000
     assert "pricing" not in sonnet
 
@@ -108,5 +108,53 @@ def test_a_new_state_loads_models_dev_for_context_and_price(state, monkeypatch):
     (opus,) = model_fetch._fetch_provider_models(get_provider("anthropic"), "sk-ant-oat01-x")
 
     assert opus["context_length"] == 1_000_000
-    assert opus["pricing"] == {"prompt": 4e-06, "completion": 2e-05}
+    assert opus["pricing"] == {"prompt": 4.0, "completion": 20.0}
     models_dev.clear_cache_for_tests()
+
+
+def _models_dev_registry(monkeypatch):
+    import io
+    import json
+
+    from harness import models_dev
+
+    models_dev.clear_cache_for_tests()
+    registry = {"anthropic": {"models": {"claude-opus-5-5": {
+        "name": "Claude Opus 5.5", "limit": {"context": 1_000_000},
+        "cost": {"input": 4, "output": 20},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+    }}}}
+    monkeypatch.setattr(models_dev.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(registry).encode()))
+    models_dev.lookup_model("anthropic", "claude-opus-5-5", allow_network=True)
+
+
+def test_rows_with_no_credential_still_show_context_price_and_vision(state, monkeypatch):
+    """Before a sign-in the provider has no usable credential. Its rows came
+    back with no facts at all, so the picker showed blank lines."""
+    from harness import model_visibility
+
+    _models_dev_registry(monkeypatch)
+    monkeypatch.setattr(model_fetch, "_read_cache", lambda: {})
+    assert not get_provider("anthropic").available
+
+    (opus,) = [r for r in model_visibility.catalog(available_only=False)
+               if r["spec"] == "anthropic:claude-opus-5-5"]
+
+    assert opus["context_window"] == 1_000_000
+    assert (opus["price_in"], opus["price_out"]) == (4.0, 20.0)
+    assert opus["image_input"] is True
+
+
+def test_an_old_anthropic_cache_entry_does_not_show_per_token_prices(state):
+    old = {"fetched_at": 0, "models": [{
+        "id": "claude-opus-5-5", "source": "live", "status": "available",
+        "pricing": {"prompt": 4e-06, "completion": 2e-05}}]}
+    new = dict(old, price_unit="usd_per_mtok")
+    new["models"] = [dict(old["models"][0], pricing={"prompt": 4.0, "completion": 20.0})]
+
+    (stale,) = model_fetch._cached_records(old, "anthropic")
+    (fresh,) = model_fetch._cached_records(new, "anthropic")
+
+    assert "pricing" not in stale
+    assert fresh["pricing"] == {"prompt": 4.0, "completion": 20.0}

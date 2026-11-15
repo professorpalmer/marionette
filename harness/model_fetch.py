@@ -212,9 +212,16 @@ def _normalize_openrouter_record(
     return record
 
 
-def _cached_records(entry: Any) -> list[dict[str, Any]]:
+# Cache entries written since Anthropic records store USD per million tokens.
+# An older Anthropic entry stored USD per token, so its prices are dropped and
+# the catalog takes them from models.dev until the next fetch writes them again.
+_PRICE_UNIT = "usd_per_mtok"
+
+
+def _cached_records(entry: Any, provider_name: str = "") -> list[dict[str, Any]]:
     if not isinstance(entry, dict) or not isinstance(entry.get("models"), list):
         return []
+    old_anthropic_units = provider_name == "anthropic" and entry.get("price_unit") != _PRICE_UNIT
     records = []
     for item in entry["models"]:
         if isinstance(item, str):
@@ -226,6 +233,8 @@ def _cached_records(entry: Any) -> list[dict[str, Any]]:
                 pricing_per_mtok=bool(item.get("source") or item.get("status")),
             )
             if record:
+                if old_anthropic_units:
+                    record.pop("pricing", None)
                 records.append(record)
     return records
 
@@ -313,8 +322,9 @@ def _anthropic_record(item: dict[str, Any]) -> dict[str, Any]:
     """One Anthropic model with name, context and price.
 
     The live list names the model. Context comes from the live record when
-    it has one, else models.dev. Price (per token, as OpenRouter records it)
-    comes from models.dev. A plan sign-in shows Plan, not this price.
+    it has one, else models.dev. Price (USD per million tokens, as every
+    other record stores it) comes from models.dev. A plan sign-in shows Plan,
+    not this price.
     It reads the models.dev cache only. The fetch loads that cache first.
     """
     from .models_dev import lookup_cost, lookup_model
@@ -333,8 +343,8 @@ def _anthropic_record(item: dict[str, Any]) -> dict[str, Any]:
     if cost:
         rates = cost[0]
         record["pricing"] = {
-            "prompt": float(rates["input"]) / 1_000_000,
-            "completion": float(rates["output"]) / 1_000_000,
+            "prompt": float(rates["input"]),
+            "completion": float(rates["output"]),
         }
     return record
 
@@ -467,7 +477,7 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
     disk = _read_cache()
     entry = disk.get(name)
     if not force:
-        cached = _cached_records(entry)
+        cached = _cached_records(entry, name)
         if cached and (now - entry.get("fetched_at", 0)) < _CACHE_TTL:
             _RECORD_MEM[name] = cached
             _MEM[name] = [record["id"] for record in cached]
@@ -512,13 +522,13 @@ def fetch_model_records(provider, key: str, *, force: bool = False) -> list[dict
                 })
     if fresh:
         _FAILED_AT.pop(name, None)
-        disk[name] = {"fetched_at": now, "models": fresh}
+        disk[name] = {"fetched_at": now, "models": fresh, "price_unit": _PRICE_UNIT}
         _write_cache(disk)
         _RECORD_MEM[name] = fresh
         _MEM[name] = [record["id"] for record in fresh]
         _MEM_AT[name] = time.monotonic()
         return fresh
-    stale = _cached_records(entry)
+    stale = _cached_records(entry, name)
     if stale:
         _RECORD_MEM[name] = stale
         _MEM[name] = [record["id"] for record in stale]
@@ -534,7 +544,7 @@ def model_metadata(provider_name: str, slug: str) -> dict[str, Any] | None:
     for record in _RECORD_MEM.get(provider_name, []):
         if record.get("id") == target or record.get("canonical_slug") == target:
             return record
-    for record in _cached_records(_read_cache().get(provider_name)):
+    for record in _cached_records(_read_cache().get(provider_name), provider_name):
         if record.get("id") == target or record.get("canonical_slug") == target:
             return record
     return None

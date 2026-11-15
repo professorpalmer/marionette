@@ -157,7 +157,7 @@ export function terminalCauseCopy(cause: TerminalCause): string {
     case CAUSE_CANCELLED:
       return "Stopped.";
     case CAUSE_CONTENT_FILTER:
-      return "Provider refused the response.";
+      return "The provider's safety filter refused this request. Saved memory, rules, or workspace files in the prompt can cause this.";
     case CAUSE_EMPTY_LOOP:
       return "No productive reply this turn.";
     case CAUSE_DRIVER_SWAP:
