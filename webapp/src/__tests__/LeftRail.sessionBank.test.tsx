@@ -60,6 +60,22 @@ it("a background refetch does not spin the Recent header", async () => {
   expect(container.querySelector(".animate-spin")).toBeNull();
 });
 
+it("top rows open search and the plugins page", async () => {
+  vi.mocked(api.sessionsBank).mockResolvedValue([]);
+  const palette = vi.fn();
+  const page = vi.fn();
+  window.addEventListener("harness-open-command-palette", palette);
+  window.addEventListener("harness-settings-page", page);
+  render(<LeftRail jobsRefresh={0} />);
+  fireEvent.click(screen.getByRole("button", { name: /^Search/ }));
+  expect(palette).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole("button", { name: "Plugins" }));
+  expect((page.mock.calls[0][0] as CustomEvent).detail).toBe("plugins");
+  expect(screen.getByRole("button", { name: "Open folder" })).toBeTruthy();
+  window.removeEventListener("harness-open-command-palette", palette);
+  window.removeEventListener("harness-settings-page", page);
+});
+
 it("a session row shows only its title, not a preview line", async () => {
   vi.mocked(api.sessionsBank).mockResolvedValue([{ ...rows[1], preview: "Last reply text" }]);
   render(<LeftRail jobsRefresh={0} />);
