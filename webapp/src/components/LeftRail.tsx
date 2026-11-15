@@ -101,6 +101,9 @@ import { Section, IconBtn, Empty, RunnerStatusDot, SessionAge } from "./leftRail
 import { focusSettingsPage } from "./SettingsShell";
 import { isMacNavigator } from "../lib/terminalSelection";
 
+// The top actions sit below the session list in visual weight: muted text, brighter on hover.
+const RAIL_TOP_ROW = "group w-full h-8 grid items-center gap-x-2 px-2 rounded text-left text-ui-12.5 text-muted hover:text-txt hover:bg-panel2/60 transition";
+
 function openCommandPalette(): void {
   window.dispatchEvent(new Event("harness-open-command-palette"));
 }
@@ -1488,34 +1491,34 @@ export default function LeftRail({
         <button
           type="button"
           onClick={() => { void newSession(); }}
-          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition">
-          <SquarePen size={14} className="text-muted" />
+          className={`${RAIL_TOP_ROW} grid-cols-[14px_minmax(0,1fr)]`}>
+          <SquarePen size={14} className="text-faint group-hover:text-muted transition" />
           <span>New session</span>
         </button>
         <button
           type="button"
           onClick={handleOpenFolder}
           disabled={opening}
-          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition disabled:opacity-50"
+          className={`${RAIL_TOP_ROW} grid-cols-[14px_minmax(0,1fr)] disabled:opacity-50`}
         >
-          <FolderOpen size={14} className="text-muted" />
+          <FolderOpen size={14} className="text-faint group-hover:text-muted transition" />
           <span>{opening ? "Opening…" : "Open folder"}</span>
         </button>
         <button
           type="button"
           onClick={openCommandPalette}
-          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)_auto] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition"
+          className={`${RAIL_TOP_ROW} grid-cols-[14px_minmax(0,1fr)_auto]`}
         >
-          <Search size={14} className="text-muted" />
+          <Search size={14} className="text-faint group-hover:text-muted transition" />
           <span>Search</span>
           <kbd className="text-ui-10.5 font-sans text-faint">{isMacNavigator() ? "⌘K" : "Ctrl K"}</kbd>
         </button>
         <button
           type="button"
           onClick={openPluginsPage}
-          className="w-full h-8 grid grid-cols-[14px_minmax(0,1fr)] items-center gap-x-2 px-2 rounded text-left text-ui-12.5 font-medium text-txt hover:bg-panel2/60 transition"
+          className={`${RAIL_TOP_ROW} grid-cols-[14px_minmax(0,1fr)]`}
         >
-          <Puzzle size={14} className="text-muted" />
+          <Puzzle size={14} className="text-faint group-hover:text-muted transition" />
           <span>Plugins</span>
         </button>
         {sessionActivationNotice && (
