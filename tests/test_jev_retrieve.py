@@ -93,7 +93,7 @@ def test_trailer_jev_named_skill_not_overlap(monkeypatch, tmp_path):
         def list(self, state=None):
             return []
 
-        def render_block(self):
+        def render_block(self, workspace=""):
             return ""
 
     monkeypatch.setattr("harness.conversation.RuleStore", lambda *_a, **_k: _Empty())

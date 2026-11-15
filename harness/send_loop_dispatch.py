@@ -2625,7 +2625,7 @@ Yields the same ConvEvent stream. Generator return value is ``None``
             else:
                 res_str = f'Error: memory entry with ID {act.memory_id} not found.'
         elif op == 'list':
-            entries = session._memory.list()
+            entries = session._memory.visible_to(getattr(session.config, 'repo', '') or '')
             if entries:
                 items = '\n'.join((f'- [{e.id}] ({e.category}): {e.text}' for e in entries))
                 res_str = f'Durable memory entries:\n{items}'

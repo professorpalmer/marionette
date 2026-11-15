@@ -156,8 +156,28 @@ class MemoryStore:
     def over_budget(self) -> bool:
         return self.total_chars() > MEMORY_CHAR_LIMIT
 
-    def render_block(self) -> str:
-        entries = self.list()
+    @staticmethod
+    def _workspace_matches(entry_workspace: str, workspace: str) -> bool:
+        """True when an entry may appear in the given workspace's prompt.
+
+        An empty entry workspace is global (shows everywhere). A scoped entry
+        shows only in its own workspace or a subdirectory of it.
+        """
+        if not (entry_workspace or "").strip():
+            return True
+        if not (workspace or "").strip():
+            return False
+        entry_path = os.path.normpath(os.path.expanduser(entry_workspace.strip()))
+        ws_path = os.path.normpath(os.path.expanduser(workspace.strip()))
+        return ws_path == entry_path or ws_path.startswith(entry_path + os.sep)
+
+    def visible_to(self, workspace: str = "") -> List[MemoryEntry]:
+        """The entries a model in *workspace* may see: global entries, plus
+        entries scoped to *workspace* or to a folder that holds it."""
+        return [entry for entry in self.list() if self._workspace_matches(entry.workspace, workspace)]
+
+    def render_block(self, workspace: str = "") -> str:
+        entries = self.visible_to(workspace)
         if not entries:
             return ""
         header = "# Durable memory (persistent across sessions -- user facts and preferences)"
@@ -279,14 +299,14 @@ class SessionMemory(MemoryStore):
     def _save(self, entries: List[dict]) -> None:
         self._plain._save(entries)
 
-    def render_block(self) -> str:
+    def render_block(self, workspace: str = "") -> str:
         # The system prompt block is plain memory. Sealed memory gets its own
         # section (ConversationalSession._bind_sealed_memory_block).
-        return self._plain.render_block()
+        return self._plain.render_block(workspace=workspace)
 
-    def sealed_block(self) -> str:
+    def sealed_block(self, workspace: str = "") -> str:
         sealed = self._sealed()
-        return sealed.render_block() if sealed is not None else ""
+        return sealed.render_block(workspace=workspace) if sealed is not None else ""
 
     def list(self) -> List[MemoryEntry]:
         sealed = self._sealed()

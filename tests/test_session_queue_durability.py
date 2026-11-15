@@ -23,7 +23,7 @@ def factory(tmp_path, monkeypatch):
     monkeypatch.setattr('harness.conversation.prov.build_pilot', lambda *_: SimpleNamespace())
     for name in ('SkillStore', 'RuleStore'):
         monkeypatch.setattr('harness.conversation.' + name, lambda *_a, **_k: SimpleNamespace(list=lambda *_: []))
-    monkeypatch.setattr('harness.conversation.MemoryStore', lambda *_a, **_k: SimpleNamespace(render_block=lambda: ''))
+    monkeypatch.setattr('harness.conversation.MemoryStore', lambda *_a, **_k: SimpleNamespace(render_block=lambda *_a, **_k: ''))
     monkeypatch.setattr('harness.conversation.WikiClient', lambda *_a, **_k: None)
     monkeypatch.setattr('harness.plugin_registry.list_enabled_plugin_skills', lambda *_a, **_k: [])
     monkeypatch.setattr('harness.browser_auth.ensure_shared_browser_env', lambda: {})

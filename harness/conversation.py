@@ -896,7 +896,7 @@ class ConversationalSession(
         self._memory = SessionMemory(
             MemoryStore(), lambda: getattr(self, "harness_session_id", "") or ""
         )
-        mem_block = self._memory.render_block()
+        mem_block = self._memory.render_block(getattr(config, "repo", "") or "")
         if mem_block:
             system = (
                 system
@@ -3033,7 +3033,7 @@ class ConversationalSession(
         system = self._history[0].get("content")
         if not isinstance(system, str) or SEALED_MEMORY_HEADER in system:
             return
-        block = self._memory.sealed_block()
+        block = self._memory.sealed_block(getattr(self.config, "repo", "") or "")
         if block:
             self._history[0]["content"] = system + "\n\n" + SEALED_MEMORY_HEADER + "\n" + block
 

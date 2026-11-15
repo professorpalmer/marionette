@@ -50,9 +50,9 @@
     linux: 'AppImage for x86_64. Also for <a href="' + RELEASES + '">macOS and Windows</a>.'
   };
   var hrefs = {
-    mac: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.672-universal.dmg"),
-    win: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.672-Setup.exe"),
-    linux: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.672.AppImage")
+    mac: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.673-universal.dmg"),
+    win: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.673-Setup.exe"),
+    linux: RELEASES.replace("/latest", "/latest/download/Marionette-0.9.673.AppImage")
   };
   function paintDownloads() {
     ["dl1", "dl2"].forEach(function (id) {

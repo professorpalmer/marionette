@@ -554,3 +554,46 @@ def test_memory_propose_accept_is_idempotent(memory_cfg):
     assert first["ok"] is True
     assert second["ok"] is True
     assert len(session._memory.list()) == 1
+
+
+def test_visible_to_keeps_scoped_entries_in_their_own_folder(tmp_path):
+    store = MemoryStore(path=str(tmp_path / "memory.json"))
+    store.add("global note")
+    store.add("kit note", workspace="/work/kit")
+
+    def texts(workspace):
+        return [e.text for e in store.visible_to(workspace)]
+
+    assert texts("/work/kit") == ["global note", "kit note"]
+    assert texts("/work/kit/sub") == ["global note", "kit note"]
+    assert texts("/work/kit2") == ["global note"]
+    assert texts("/work/other") == ["global note"]
+    assert texts("") == ["global note"]
+    assert "kit note" not in store.render_block("/work/other")
+    assert "kit note" in store.render_block("/work/kit")
+
+
+def test_session_prompt_and_memory_list_leave_out_other_workspace_entries(memory_cfg, tmp_path):
+    cfg, mem_path = memory_cfg
+    kit = tmp_path / "kit"
+    other = tmp_path / "other"
+    kit.mkdir()
+    other.mkdir()
+    store = MemoryStore(path=str(mem_path))
+    store.add("Global preference G")
+    store.add("Kit-only note K", workspace=str(kit))
+
+    cfg.repo = str(other)
+    session = ConversationalSession(cfg)
+    content = session._history[0]["content"]
+    assert "- Global preference G" in content
+    assert "Kit-only note K" not in content
+
+    session.pilot = _MemoryToolPilot({"kind": "memory", "action": "list"})
+    list(session.send("List memory"))
+    listed = [m.get("content") or "" for m in session._history if "Durable memory entries" in str(m.get("content") or "")]
+    assert listed and "Global preference G" in listed[-1]
+    assert "Kit-only note K" not in listed[-1]
+
+    cfg.repo = str(kit)
+    assert "Kit-only note K" in ConversationalSession(cfg)._history[0]["content"]
