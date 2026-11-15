@@ -693,8 +693,17 @@ class SessionStore:
         title: str,
         nest: dict,
         workspace_root: str,
+        pilot_preferences: Optional[dict] = None,
+        history: Optional[list] = None,
+        state_dir: str = "",
     ) -> dict:
-        """Add a child session row. The active session does not change."""
+        """Add a child session row. The active session does not change.
+
+        The child takes the parent's pilot preferences, with
+        ``pilot_preferences`` (its own model or effort) on top. With
+        ``history`` (a fork start), the child transcript is written and read
+        back before the row exists, as ``fork_at`` does.
+        """
         with self._lock:
             parent = next((r for r in self._sessions if r.get("id") == parent_id), None)
             if parent is None:
@@ -707,8 +716,14 @@ class SessionStore:
                 repo=workspace_root, workspace_root=workspace_root,
             ))
             meta["nest"] = {**nest, "parent_id": parent_id}
-            if parent.get("pilot_preferences"):
-                meta["pilot_preferences"] = dict(parent["pilot_preferences"])
+            prefs = {**(parent.get("pilot_preferences") or {}), **(pilot_preferences or {})}
+            if prefs:
+                meta["pilot_preferences"] = prefs
+            if history is not None:
+                payload = {"history": history}
+                save_transcript(state_dir, sid, payload)
+                if load_transcript(state_dir, sid) != payload:
+                    raise OSError("Could not save the forked transcript of the child")
             self._sessions.append(meta)
             self._save(immediate=True)
             return dict(meta)

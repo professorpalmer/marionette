@@ -591,6 +591,18 @@ def post_sessions_archive(body: dict, svc: SessionServices) -> tuple[int, dict]:
     if not sid:
         return 400, {"error": "missing session id"}
     archived = svc.parse_bool(body.get("archived"))
+    from ..nested_sessions import supervisor
+    sup = supervisor()
+    if sup is not None and sup.svc.sessions is svc.sessions and sup.is_child(sid):
+        # A child keeps the nested rules: no archive while it works, and its
+        # worktree goes or comes back with it.
+        result = sup.set_archived(sid, archived)
+        return (200 if result.get("ok") else 409), result
+    return archive_session_row(sid, archived, svc)
+
+
+def archive_session_row(sid: str, archived: bool, svc: SessionServices) -> tuple[int, dict]:
+    """Archive (vault ingest and prune) or unarchive (restore) one session row."""
     if not archived:
         try:
             from ..chat_archive import restore_pruned_transcript, _raw_transcript, _is_pruned_stub, _has_archived_transcript

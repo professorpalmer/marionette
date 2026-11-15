@@ -1959,6 +1959,7 @@ export default function LeftRail({
                             switchingSessionId={switchingSessionId}
                             onOpen={(id) => { void switchSession(id); }}
                             onPrefetch={(id) => { void prefetchSessionTranscript(id); }}
+                            onContextMenu={handleContextMenu}
                           />
                         ) : null}
                         </Fragment>
