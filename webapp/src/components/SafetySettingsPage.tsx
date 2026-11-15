@@ -3,7 +3,7 @@ import { api, type Settings } from "../lib/api";
 import { REASONING_LEVELS } from "../lib/reasoningSupport";
 import { readSettingsSnapshot, writeSettingsSnapshot } from "./settingsSnapshot";
 import { SettingsGroup, SettingsPage, SettingsRow } from "./SettingsLayout";
-import { Switch } from "./ui/Switch";
+import Switch from "./SettingsSwitch";
 import EncryptedSessions from "./EncryptedSessions";
 import DeviceAccess from "./DeviceAccess";
 

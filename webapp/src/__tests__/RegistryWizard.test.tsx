@@ -17,9 +17,6 @@ vi.mock("../components/ModelsSettingsPage", () => ({
   default: () => <div data-testid="models-page" />,
 }));
 
-vi.mock("../components/SettingsPane", () => ({
-  default: () => <div data-testid="settings-section" />,
-}));
 
 const providers = [
   {

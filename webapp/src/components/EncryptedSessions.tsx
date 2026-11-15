@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { SETTINGS_PRIMARY_BUTTON, SETTINGS_QUIET_BUTTON, SettingsGroup, SettingsRow } from './SettingsLayout';
-import { Switch } from './ui/Switch';
+import Switch from './SettingsSwitch';
 import { getHarnessIpc, getJSON } from '../lib/transport';
 
 type SealReply<T> = ({ ok: true } & T) | { ok: false; code: string; error: string };

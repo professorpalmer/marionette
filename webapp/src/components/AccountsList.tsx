@@ -3,10 +3,10 @@ import { api, type AccountAction, type AccountRow, type AccountState } from "../
 import { ACCOUNTS_CHANGED_EVENT } from "../lib/pilotModelFacts";
 import { SETTINGS_PRIMARY_BUTTON, SETTINGS_QUIET_BUTTON } from "./SettingsLayout";
 
-/** Device-code and CLI sign-ins that SettingsPane runs; Claude (Anthropic) runs here. */
+/** Device-code and CLI sign-ins that AccountsSettingsPage runs; Claude (Anthropic) runs here. */
 export type ExternalSignIn = (provider: string) => Promise<void>;
 
-/** A flow that SettingsPane runs, keyed by the row provider. */
+/** A flow that AccountsSettingsPage runs, keyed by the row provider. */
 export type AccountFlow = { provider: string; hint: string } | null;
 
 type Props = {

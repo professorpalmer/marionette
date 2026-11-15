@@ -9,7 +9,7 @@ import {
   SettingsPage,
   SettingsRow,
 } from "./SettingsLayout";
-import { Switch } from "./ui/Switch";
+import Switch from "./SettingsSwitch";
 import MemoryPane from "./MemoryPane";
 import SkillsPane from "./SkillsPane";
 import SchedulesPane from "./SchedulesPane";

@@ -15,33 +15,3 @@ export function SwitchTrack({ on }: { on: boolean }) {
     </span>
   );
 }
-
-/** A track that is its own button, for a Settings row. `label` names the setting. */
-export function Switch({
-  on,
-  onChange,
-  label,
-  disabled,
-  testId,
-}: {
-  on: boolean;
-  onChange: (next: boolean) => void;
-  label: string;
-  disabled?: boolean;
-  testId?: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={label}
-      disabled={disabled}
-      data-testid={testId}
-      onClick={() => onChange(!on)}
-      className="inline-flex rounded-full disabled:opacity-30"
-    >
-      <SwitchTrack on={on} />
-    </button>
-  );
-}

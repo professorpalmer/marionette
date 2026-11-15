@@ -19,7 +19,6 @@ vi.mock("../lib/api", () => ({
 }));
 vi.mock("../components/ModelsSettingsPage", () => ({ default: () => null }));
 vi.mock("../components/LocalModelsSettingsPage", () => ({ default: () => null }));
-vi.mock("../components/SettingsPane", () => ({ default: () => null }));
 vi.mock("../components/PluginsPane", () => ({ default: () => null }));
 
 /** Focus each focus guard in turn. Base UI sends focus back into the popup. */

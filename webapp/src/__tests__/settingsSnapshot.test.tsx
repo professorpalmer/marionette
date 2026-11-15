@@ -3,7 +3,7 @@ import {
   clearSettingsSnapshot,
   toSafeSettingsSnapshot,
   writeSettingsSnapshot,
-} from "../components/SettingsPane";
+} from "../components/settingsSnapshot";
 import type { Settings } from "../lib/api";
 
 vi.mock("../lib/api", () => ({

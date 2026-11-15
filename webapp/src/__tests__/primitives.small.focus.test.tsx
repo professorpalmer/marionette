@@ -1,7 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import PluginInstallModal from "../components/PluginInstallModal";
 import ProviderConfigModal from "../components/ProviderConfigModal";
 import RegistryWizard from "../components/RegistryWizard";
 import SpillPreviewModal, { type SpillPreviewState } from "../components/conversation/SpillPreviewModal";
@@ -48,12 +47,6 @@ async function expectTabStaysInside(dialog: HTMLElement) {
 }
 
 const cases: { name: string; label: string; surface: Surface; first: () => HTMLElement }[] = [
-  {
-    name: "PluginInstallModal",
-    label: "Install plugin",
-    surface: (open, onClose) => <PluginInstallModal open={open} onClose={onClose} />,
-    first: () => screen.getByTestId("plugin-install-source"),
-  },
   {
     name: "ProviderConfigModal",
     label: "Add provider",

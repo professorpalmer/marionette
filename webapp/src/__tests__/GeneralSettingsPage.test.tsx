@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import GeneralSettingsPage, { switchOn } from "../components/GeneralSettingsPage";
 import { clearSettingsSnapshot, writeSettingsSnapshot } from "../components/settingsSnapshot";
 import src from "../components/GeneralSettingsPage.tsx?raw";
-import paneSrc from "../components/SettingsPane.tsx?raw";
 import { api, type Settings } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
@@ -138,8 +137,8 @@ describe("GeneralSettingsPage", () => {
     expect(switchOn(thin, "outputStyle")).toBe(false);
   });
 
-  it("has no removed controls, here or in SettingsPane", () => {
-    for (const text of [src, paneSrc]) {
+  it("has no removed controls", () => {
+    for (const text of [src]) {
       expect(text).not.toMatch(/update\(\{ budget/);
       expect(text).not.toMatch(/Token & Cost Usage/);
       expect(text).not.toMatch(/Connect a provider/);

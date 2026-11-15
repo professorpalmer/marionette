@@ -14,11 +14,6 @@ vi.mock("../components/AccountsSettingsPage", () => ({
   default: () => <div data-testid="accounts-page" />,
 }));
 
-vi.mock("../components/SettingsPane", () => ({
-  default: ({ section }: { section: string }) => (
-    <div data-testid={`settings-section-${section}`} />
-  ),
-}));
 
 describe("SettingsShell Accounts focus", () => {
   beforeEach(() => {
@@ -36,8 +31,6 @@ describe("SettingsShell Accounts focus", () => {
     );
     expect(screen.getByTestId("accounts-page")).toBeTruthy();
     expect(screen.queryByTestId("models-page")).toBeNull();
-    // Accounts is its own page now: SettingsPane does not render under it.
-    expect(screen.queryByTestId("settings-section-providers")).toBeNull();
   });
 
   it("switches to Accounts on harness-settings-page / focusSettingsPage", () => {
