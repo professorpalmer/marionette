@@ -1542,6 +1542,16 @@ def _nested_add_worktree(repo: str, branch: str) -> dict:
     return tree
 
 
+def _nested_archive_row(session_id: str, archived: bool) -> tuple:
+    from .api.sessions import archive_session_row
+    return archive_session_row(session_id, archived, _session_services())
+
+
+def _nested_drop_runner(session_id: str) -> None:
+    from .api.sessions import _drop_runner
+    _drop_runner(session_id, _session_services(), "server.nested_archive_drop_runner")
+
+
 def _install_nested_supervisor() -> Any:
     from .nested_sessions import NestServices, NestedSupervisor, set_supervisor
     sup = NestedSupervisor(NestServices(
@@ -1553,6 +1563,8 @@ def _install_nested_supervisor() -> Any:
         diag=_diag,
         add_worktree=_nested_add_worktree,
         ensure_runner=_ensure_background_runner,
+        archive_row=_nested_archive_row,
+        drop_runner=_nested_drop_runner,
     ))
     set_supervisor(sup)
     return sup

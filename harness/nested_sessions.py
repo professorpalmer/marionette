@@ -203,6 +203,7 @@ def child_payload(row: dict, runner_status: str, in_flight: bool = False) -> dic
         "todo": nest.get("todo", ""),
         "branch": nest.get("branch", ""),
         "worktree": nest.get("worktree", ""),
+        "archived": bool(row.get("archived")),
         "updated": nest.get("updated") or row.get("created") or 0,
     }
 
@@ -230,6 +231,11 @@ class NestServices:
     add_worktree: Optional[Callable[[str, str], dict]] = None
     # Build a runner for a session with no view change (a wake needs one).
     ensure_runner: Optional[Callable[[str], Any]] = None
+    # (session_id, archived) -> (http status, body). The session archive path:
+    # vault ingest and prune, or restore.
+    archive_row: Optional[Callable[[str, bool], Any]] = None
+    # Remove a session's runner from the registry.
+    drop_runner: Optional[Callable[[str], None]] = None
 
 
 class NestedSupervisor:
@@ -306,6 +312,8 @@ class NestedSupervisor:
             return {"ok": False, "error": f"No child session {child!r} of this session."}
         if not (text or "").strip():
             return {"ok": False, "error": "message is required."}
+        if row.get("archived"):
+            return {"ok": False, "error": f"The child {child!r} is archived. Use action unarchive first."}
         sid = row["id"]
         runner = self.svc.get_runner(sid)
         busy = self.svc.runner_status(sid) in ("running", "attaching")
@@ -337,6 +345,92 @@ class NestedSupervisor:
         self.svc.sessions.update_nest(row["id"], status="stopped", updated=time.time())
         bump_rev()
         return {"ok": True, "session_id": row["id"], "status": "stopped"}
+
+    def archive(self, parent: Any, child: str) -> dict:
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        return self.set_archived(row["id"], True)
+
+    def unarchive(self, parent: Any, child: str) -> dict:
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        return self.set_archived(row["id"], False)
+
+    def is_child(self, sid: str) -> bool:
+        return bool((self.svc.sessions.nest_of(sid) or {}).get("parent_id"))
+
+    def set_archived(self, sid: str, archived: bool) -> dict:
+        """Archive or unarchive a child. The tool and the rail both come here.
+
+        Archive refuses a working child. It drops the runner, moves the
+        transcript to the vault, and removes the worktree only when the branch
+        holds no commit that the project HEAD lacks and no uncommitted file.
+        Unarchive adds a removed worktree again on the same branch, then
+        restores the transcript.
+        """
+        sessions = self.svc.sessions
+        row = next((r for r in sessions.rows() if r.get("id") == sid), None)
+        nest = (row or {}).get("nest") or {}
+        if not nest.get("parent_id"):
+            return {"ok": False, "error": "Not a nested session."}
+        if self.svc.archive_row is None:
+            return {"ok": False, "error": "Archive needs the Marionette app server."}
+        name = nest.get("name") or sid
+        result = {"ok": True, "session_id": sid, "name": name, "archived": archived}
+        if bool(row.get("archived")) == archived:
+            return result
+        root = (row.get("workspace_root") or "").strip()
+        tree = (nest.get("worktree") or "").strip()
+        branch = (nest.get("branch") or "").strip()
+        if not archived:
+            if nest.get("released") and tree and not os.path.isdir(tree):
+                if self.svc.add_worktree is None or not root or not branch:
+                    return {"ok": False, "error": "Cannot add the child worktree again."}
+                try:
+                    added = self.svc.add_worktree(root, branch)
+                except Exception as exc:
+                    reason = " ".join((str(exc).strip() or type(exc).__name__).split())[:300]
+                    return {"ok": False, "error": f"Could not add the child worktree again: {reason}"}
+                sessions.update_nest(sid, worktree=added["path"], released=False)
+                result["worktree"] = added["path"]
+            elif nest.get("released"):
+                sessions.update_nest(sid, released=False)
+            status, body = self.svc.archive_row(sid, False)
+            if status != 200:
+                return {"ok": False, "error": str((body or {}).get("error") or "Unarchive failed.")}
+            bump_rev()
+            return result
+        if self._live_status(sid, nest) == "working":
+            return {"ok": False, "error": f"The child {name!r} is working. Stop it or wait for its report."}
+        if self.svc.drop_runner is not None and sessions.active != sid:
+            try:
+                self.svc.drop_runner(sid)
+            except Exception as exc:
+                self.svc.diag("nested.archive_drop_runner", exc)
+        status, body = self.svc.archive_row(sid, True)
+        if status != 200:
+            return {"ok": False, "error": str((body or {}).get("error") or "Archive failed.")}
+        if tree and os.path.isdir(tree) and root:
+            state = branch_state(root, tree, branch)
+            reason = state_reason(state)
+            if reason:
+                result.update(worktree="kept", reason=reason)
+            else:
+                error = release_worktree(root, tree)
+                if error:
+                    result.update(worktree="kept", reason=f"git could not remove it: {error}")
+                else:
+                    sessions.update_nest(sid, released=True)
+                    result["worktree"] = "released"
+        bump_rev()
+        return result
+
+    def _live_status(self, sid: str, nest: dict) -> str:
+        with self._lock:
+            flying = sid in self._in_flight
+        return live_status(nest.get("status", ""), self.svc.runner_status(sid), flying)
 
     def children(self, parent_id: str) -> List[dict]:
         rows = self.svc.sessions.children_of(parent_id)
@@ -673,6 +767,68 @@ def lock_worktree(path: str, reason: str) -> None:
                        capture_output=True, text=True, timeout=10)
     except Exception:
         pass
+
+
+def _git_out(cwd: str, *args: str) -> tuple:
+    try:
+        proc = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        return 1, "", str(exc)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def branch_state(root: str, worktree: str, branch: str) -> dict:
+    """What a child worktree holds that the project HEAD does not.
+
+    ``ahead`` counts commits on ``branch`` that the project HEAD lacks.
+    ``dirty`` is True for tracked changes or untracked files (not ignored
+    files). ``error`` is set when git cannot answer.
+    """
+    state: dict = {"ahead": 0, "dirty": False, "error": ""}
+    if branch:
+        rc, out, err = _git_out(root, "rev-list", "--count", f"HEAD..refs/heads/{branch}")
+        if rc != 0:
+            state["error"] = err or "git rev-list failed"
+            return state
+        state["ahead"] = int(out or 0)
+    rc, out, err = _git_out(worktree, "status", "--porcelain")
+    if rc != 0:
+        state["error"] = err or "git status failed"
+        return state
+    state["dirty"] = bool(out)
+    return state
+
+
+def state_reason(state: dict) -> str:
+    """Why a worktree stays after archive, or "" when it can go."""
+    if state.get("error"):
+        return f"git could not check the branch: {state['error'][:200]}"
+    parts = []
+    ahead = int(state.get("ahead") or 0)
+    if ahead:
+        parts.append(f"{ahead} commit{'s' if ahead != 1 else ''} that the parent branch does not have")
+    if state.get("dirty"):
+        parts.append("uncommitted changes")
+    return ("The worktree has " + " and ".join(parts) + ".") if parts else ""
+
+
+def release_worktree(root: str, path: str) -> str:
+    """Unlock and remove a child worktree. Returns "" or the git error.
+
+    The caller checked that no commit or change is lost. Ignored files (the
+    CodeGraph seed, caches) go with the worktree.
+    """
+    _git_out(root, "worktree", "unlock", path)
+    try:
+        from .worktrees import reap_worktree_processes
+        reap_worktree_processes(path)
+    except Exception:
+        pass
+    rc, out, err = _git_out(root, "worktree", "remove", "--force", path)
+    if rc != 0:
+        lock_worktree(path, "Marionette nested session")
+        return (err or out or "git worktree remove failed")[:300]
+    return ""
 
 
 _CODEGRAPH_SEED = ("codegraph.db", "config.json", ".gitignore")

@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+"""Parent controls over nested sessions: archive, model, fork, read.
+
+Design: ``docs/design/nested-sessions.md``, section "Parent controls".
+"""
+
+import os
+import subprocess
+from types import SimpleNamespace
+
+import pytest
+
+from harness import nested_sessions as ns
+from test_nested_sessions import FakeRunner, Harness
+
+
+def _git(cwd, *args) -> str:
+    out = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def git_project(tmp_path):
+    """A real repository with one commit on main."""
+    repo = tmp_path / "proj"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.invalid")
+    _git(repo, "config", "user.name", "T")
+    (repo / ".gitignore").write_text(".codegraph/\n")
+    (repo / "a.txt").write_text("a\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    return repo
+
+
+class GitHarness(Harness):
+    """The supervisor over real git worktrees and a fake archive path."""
+
+    def __init__(self, tmp_path) -> None:
+        super().__init__(tmp_path)
+        self.repo = git_project(tmp_path)
+        self.archived: list = []
+        self.dropped: list = []
+        self.sup.svc.add_worktree = self._real_worktree
+        self.sup.svc.archive_row = self._archive_row
+        self.sup.svc.drop_runner = self.dropped.append
+
+    def _real_worktree(self, repo, branch):
+        path = os.path.join(str(self.repo.parent), "trees", branch.replace("/", "_"))
+        if _git(repo, "branch", "--list", branch):
+            _git(repo, "worktree", "add", "-q", path, branch)
+        else:
+            _git(repo, "worktree", "add", "-q", "-b", branch, path, "HEAD")
+        _git(repo, "worktree", "lock", "--reason", "test", path)
+        self.trees.append((repo, branch))
+        return {"path": path, "branch": branch}
+
+    def _archive_row(self, sid, archived):
+        self.archived.append((sid, archived))
+        self.store.archive(sid, archived)
+        return 200, {"ok": True}
+
+    def child(self, name="kid"):
+        parent = self.parent(root=str(self.repo))
+        res = self.sup.start(parent, name=name, brief="b")
+        assert res["ok"], res
+        sid = res["session_id"]
+        self.end_turn(sid, reply="Done.")
+        return parent, sid, res["worktree"], res["branch"]
+
+
+def _row(h, sid):
+    return next(r for r in h.store.rows() if r["id"] == sid)
+
+
+# -- unit 1: archive and unarchive ------------------------------------------
+
+
+def test_archive_refuses_a_working_child(tmp_path):
+    h = GitHarness(tmp_path)
+    parent = h.parent(root=str(h.repo))
+    sid = h.sup.start(parent, name="busy", brief="b")["session_id"]
+    res = h.sup.archive(parent, "busy")
+    assert not res["ok"] and "working" in res["error"]
+    assert h.archived == [] and h.dropped == []
+    assert not _row(h, sid).get("archived")
+
+
+def test_archive_releases_a_clean_worktree_and_unarchive_adds_it_back(tmp_path):
+    h = GitHarness(tmp_path)
+    parent, sid, tree, branch = h.child()
+    # Ignored files (the CodeGraph seed) do not keep the worktree.
+    os.makedirs(os.path.join(tree, ".codegraph"), exist_ok=True)
+    with open(os.path.join(tree, ".codegraph", "codegraph.db"), "w") as fh:
+        fh.write("index")
+    res = h.sup.archive(parent, "kid")
+    assert res["ok"], res
+    assert res["worktree"] == "released"
+    assert not os.path.isdir(tree)
+    assert tree not in _git(h.repo, "worktree", "list")
+    # The branch stays. It has no commit that main lacks.
+    assert _git(h.repo, "branch", "--list", branch)
+    assert h.archived == [(sid, True)] and h.dropped == [sid]
+    row = _row(h, sid)
+    assert row["archived"] and row["nest"]["released"] is True
+    assert [c["archived"] for c in h.sup.children(parent.harness_session_id)] == [True]
+    # A message to an archived child is refused.
+    msg = h.sup.message(parent, "kid", "more")
+    assert not msg["ok"] and "unarchive" in msg["error"]
+
+    back = h.sup.unarchive(parent, "kid")
+    assert back["ok"], back
+    assert os.path.isdir(tree)
+    assert _git(tree, "rev-parse", "--abbrev-ref", "HEAD") == branch
+    assert h.archived[-1] == (sid, False)
+    row = _row(h, sid)
+    assert not row["archived"] and row["nest"]["released"] is False
+    assert ns.run_repo(row) == tree
+
+
+def test_archive_keeps_a_worktree_with_commits_the_parent_lacks(tmp_path):
+    h = GitHarness(tmp_path)
+    parent, sid, tree, branch = h.child()
+    with open(os.path.join(tree, "b.txt"), "w") as fh:
+        fh.write("b\n")
+    _git(tree, "add", "b.txt")
+    _git(tree, "commit", "-q", "-m", "child work")
+    res = h.sup.archive(parent, "kid")
+    assert res["ok"], res
+    assert res["worktree"] == "kept"
+    assert "1 commit" in res["reason"]
+    assert os.path.isdir(tree)
+    row = _row(h, sid)
+    assert row["archived"] and not row["nest"].get("released")
+    # Unarchive of a kept worktree adds nothing.
+    trees = list(h.trees)
+    assert h.sup.unarchive(parent, "kid")["ok"]
+    assert h.trees == trees
+
+
+def test_archive_keeps_a_worktree_with_uncommitted_files(tmp_path):
+    h = GitHarness(tmp_path)
+    parent, sid, tree, _ = h.child()
+    with open(os.path.join(tree, "draft.txt"), "w") as fh:
+        fh.write("x\n")
+    res = h.sup.archive(parent, "kid")
+    assert res["ok"] and res["worktree"] == "kept"
+    assert "uncommitted" in res["reason"]
+    assert os.path.isfile(os.path.join(tree, "draft.txt"))
+
+
+def test_archive_is_idempotent_and_unarchive_of_a_live_child_is_a_no_op(tmp_path):
+    h = GitHarness(tmp_path)
+    parent, sid, _, _ = h.child()
+    assert h.sup.unarchive(parent, "kid")["ok"]
+    assert h.archived == []
+    assert h.sup.archive(parent, "kid")["ok"]
+    assert h.sup.archive(parent, "kid")["ok"]
+    assert h.archived == [(sid, True)]
+
+
+def test_archive_keeps_the_runner_of_the_child_the_user_views(tmp_path):
+    h = GitHarness(tmp_path)
+    parent, sid, _, _ = h.child()
+    h.store.switch(sid)
+    assert h.sup.archive(parent, "kid")["ok"]
+    assert h.dropped == []
+
+
+def test_http_archive_of_a_child_uses_the_supervisor_rules(tmp_path):
+    from harness.api import sessions as api
+    h = GitHarness(tmp_path)
+    parent = h.parent(root=str(h.repo))
+    sid = h.sup.start(parent, name="busy", brief="b")["session_id"]
+    svc = SimpleNamespace(parse_bool=bool, sessions=h.store, sessions_state_dir=lambda: str(tmp_path))
+    ns.set_supervisor(h.sup)
+    try:
+        code, body = api.post_sessions_archive({"session": sid, "archived": True}, svc)
+        assert code == 409 and "working" in body["error"]
+        h.end_turn(sid, reply="ok")
+        code, body = api.post_sessions_archive({"session": sid, "archived": True}, svc)
+        assert code == 200 and body["worktree"] == "released"
+        code, body = api.post_sessions_archive({"session": sid, "archived": False}, svc)
+        assert code == 200 and not _row(h, sid)["archived"]
+    finally:
+        ns.set_supervisor(None)

@@ -195,3 +195,68 @@ one. No wrong value shows between them.
 - A parent-to-child pointer list. The children are found by `nest.parent_id`,
   so one fact has one owner.
 - A wake on each child report. The parent wakes once, when no sibling works.
+
+## Parent controls: archive, model, fork, read (2026-11-15)
+
+Four controls close the gap with the reference. A parent can archive a
+child, pick its model and effort, start it with the parent conversation, and
+read its full last reply.
+
+### Caller usage
+
+```text
+nested_session {action: "start", name: "api-tests", brief: "...",
+                model: "openrouter:deepseek/deepseek-v4.1-flash",
+                reasoning_effort: "low", context: "fork"}
+nested_session {action: "read", name: "api-tests"}
+nested_session {action: "archive", name: "api-tests"}
+nested_session {action: "unarchive", name: "api-tests"}
+```
+
+The rail menu of a child row has Archive. The Archive page in Settings has
+Unarchive. Both go through `POST /api/sessions/archive`, which sends a child
+to the supervisor. Thus the tool and the UI use the same rules.
+
+### Sketch A: the supervisor owns each rule (chosen)
+
+`NestedSupervisor` gets `set_archived(sid, archived)` and `read(parent,
+child)`. `start` gets `model`, `reasoning_effort`, and `context`. The server
+gives small services: `archive_row` (the existing archive path: vault ingest
+and prune, or restore), `drop_runner`, `resolve_model` (the picker
+allowlist), `picker_models`, and `load_history`. The git checks
+(`branch_state`, `release_worktree`) are module functions beside
+`lock_worktree`.
+
+### Sketch B: each layer adds its own rule
+
+The archive HTTP handler checks for a child and removes the worktree. The
+tool dispatch checks the model. `SessionStore.create_child` copies the fork
+history. This puts one feature in three layers. The tool path and the UI
+path then need two copies of the archive rule. Rejected.
+
+### Data
+
+- `nest.released: bool`. True when archive removed the worktree. Unarchive
+  adds the worktree again on the same branch.
+- The model and the effort go into the child `pilot_preferences` (`driver`,
+  `reasoning_effort`). The background runner and the picker read them there.
+  An unknown model fails closed. There is no silent substitute.
+- `nest.context: "fork"` and `nest.forked_messages: int` record a fork start.
+  The child transcript starts with a copy of the parent history, cut at the
+  last tool-complete boundary (`_fork_boundaries`, as `/api/session/fork`).
+  The child does not get `forked_from`: that key gives the UI attach a
+  separate `fork_runtimes` state dir, and the background runner does not use
+  it.
+
+### Rules
+
+- Archive refuses a working child. It drops the child runner (not when the
+  user views the child), archives the row through the vault path, and then
+  checks the branch.
+- Archive removes the worktree only when the branch has no commit that the
+  project HEAD lacks and `git status --porcelain` is empty. Ignored files go
+  with the worktree. The branch stays: it has no unique commit.
+- A message to an archived child is refused. Unarchive first.
+- `read` gives the last reply up to 4000 characters and the last 12 messages
+  up to 6000 characters. A child archived to the vault is read from the vault
+  copy, with no restore.

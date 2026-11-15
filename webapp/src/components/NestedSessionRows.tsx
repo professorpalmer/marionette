@@ -52,6 +52,7 @@ export default function NestedSessionRows({
   switchingSessionId,
   onOpen,
   onPrefetch,
+  onContextMenu,
 }: {
   sessions: readonly Session[];
   expanded: boolean;
@@ -60,6 +61,8 @@ export default function NestedSessionRows({
   switchingSessionId: string | null;
   onOpen: (id: string) => void;
   onPrefetch: (id: string) => void;
+  /** The same session menu as a top-level row: Archive, Rename, Delete. */
+  onContextMenu: (e: React.MouseEvent, child: Session) => void;
 }) {
   if (!expanded) {
     return (
@@ -88,6 +91,7 @@ export default function NestedSessionRows({
               type="button"
               onClick={() => { if (!switchingSessionId) onOpen(child.id); }}
               onPointerEnter={() => onPrefetch(child.id)}
+              onContextMenu={(e) => onContextMenu(e, child)}
               aria-current={child.active ? "true" : undefined}
               aria-disabled={!!switchingSessionId || undefined}
               title={child.nest?.report ? `${title}\n${nestStatusLabel(status)}: ${child.nest.report}` : `${title}\n${nestStatusLabel(status)}`}

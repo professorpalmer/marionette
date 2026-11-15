@@ -1094,13 +1094,14 @@ def build_tools_schema(
                 "when no child is still working. start: name, brief (complete task text) and "
                 "optional todo (the plan step it owns). message: send text to a child (a busy "
                 "child gets a steer). stop: stop its turn. list: status and last reports. "
-                "Quick work stays in this session."
+                "archive: a child that is not working; frees its worktree when no work is lost. "
+                "unarchive: bring it back. Quick work stays in this session."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["start", "message", "stop", "list"]},
-                    "name": {"type": "string", "description": "start: short slug such as vehicle-return; message/stop: child name or id"},
+                    "action": {"type": "string", "enum": ["start", "message", "stop", "list", "archive", "unarchive"]},
+                    "name": {"type": "string", "description": "start: short slug such as vehicle-return; other actions: child name or id"},
                     "title": {"type": "string", "description": "start: optional sidebar title"},
                     "brief": {"type": "string", "description": "start: the full task; the child sees nothing else"},
                     "todo": {"type": "string", "description": "start: text of the plan step this child owns"},

@@ -91,7 +91,7 @@ describe("NestedSessionRows", () => {
     const onToggle = vi.fn();
     render(
       <NestedSessionRows sessions={kids} expanded={false} onToggle={onToggle} runners={{}}
-        switchingSessionId={null} onOpen={vi.fn()} onPrefetch={vi.fn()} />,
+        switchingSessionId={null} onOpen={vi.fn()} onPrefetch={vi.fn()} onContextMenu={vi.fn()} />,
     );
     fireEvent.click(screen.getByText("2 nested sessions"));
     expect(onToggle).toHaveBeenCalled();
@@ -101,13 +101,24 @@ describe("NestedSessionRows", () => {
     const onOpen = vi.fn();
     render(
       <NestedSessionRows sessions={kids} expanded onToggle={vi.fn()} runners={{ c2: "running" }}
-        switchingSessionId={null} onOpen={onOpen} onPrefetch={vi.fn()} />,
+        switchingSessionId={null} onOpen={onOpen} onPrefetch={vi.fn()} onContextMenu={vi.fn()} />,
     );
     expect(screen.getByText("Wrong vehicle return place")).toBeTruthy();
     expect(screen.getAllByLabelText("Working")).toHaveLength(1);
     expect(screen.queryByLabelText("Done")).toBeNull();
     fireEvent.click(screen.getByText("Robot change"));
     expect(onOpen).toHaveBeenCalledWith("c2");
+  });
+
+  it("a right click on a child opens the session menu for that child", () => {
+    const onContextMenu = vi.fn();
+    render(
+      <NestedSessionRows sessions={kids} expanded onToggle={vi.fn()} runners={{}}
+        switchingSessionId={null} onOpen={vi.fn()} onPrefetch={vi.fn()} onContextMenu={onContextMenu} />,
+    );
+    fireEvent.contextMenu(screen.getByText("Robot change"));
+    expect(onContextMenu).toHaveBeenCalledTimes(1);
+    expect(onContextMenu.mock.calls[0][1].id).toBe("c2");
   });
 });
 

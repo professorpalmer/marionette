@@ -3445,11 +3445,15 @@ def dispatch_local_action(
                               str(args.get("message") or ""))
         elif action == "stop":
             res = sup.stop(session, str(args.get("name") or args.get("session_id") or ""))
+        elif action == "archive":
+            res = sup.archive(session, str(args.get("name") or args.get("session_id") or ""))
+        elif action == "unarchive":
+            res = sup.unarchive(session, str(args.get("name") or args.get("session_id") or ""))
         elif action == "list":
             kids = sup.children(getattr(session, "harness_session_id", "") or "")
             res = {"ok": True, "children": kids}
         else:
-            res = {"ok": False, "error": "action must be start, message, stop, or list"}
+            res = {"ok": False, "error": "action must be start, message, stop, list, archive, or unarchive"}
         if not res.get("ok"):
             err_msg = f"nested_session {action} failed: {res.get('error')}"
             yield ConvEvent("action_result", {"id": aid, "error": err_msg})
@@ -3460,6 +3464,7 @@ def dispatch_local_action(
             lines = [f"{len(res['children'])} nested session(s):"]
             for kid in res["children"]:
                 lines.append(f"- {kid['name']} ({kid['id']}): {kid['status']}"
+                             + (" | archived" if kid.get("archived") else "")
                              + (f" | {kid['branch']}" if kid.get("branch") else "")
                              + (f" | report: {kid['report']}" if kid.get("report") else ""))
             val = "\n".join(lines)
