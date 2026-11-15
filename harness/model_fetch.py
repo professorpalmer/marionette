@@ -309,6 +309,36 @@ def _fetch_opencode_records(provider, key: str) -> list[dict[str, Any]]:
     return records
 
 
+def _anthropic_record(item: dict[str, Any]) -> dict[str, Any]:
+    """One Anthropic model with name, context and price.
+
+    The live list names the model. Context comes from the live record when
+    it has one, else models.dev. Price (per token, as OpenRouter records it)
+    comes from models.dev. A plan sign-in shows Plan, not this price.
+    It reads the models.dev cache only. The fetch loads that cache first.
+    """
+    from .models_dev import lookup_cost, lookup_model
+
+    mid = str(item["id"])
+    record: dict[str, Any] = {"id": mid, "source": "live", "status": "available"}
+    name = item.get("display_name")
+    if isinstance(name, str) and name.strip():
+        record["name"] = name.strip()
+    context = item.get("max_input_tokens") or item.get("context_window")
+    if not isinstance(context, int):
+        context = (lookup_model("anthropic", mid, allow_network=False) or {}).get("context_length")
+    if isinstance(context, int):
+        record["context_length"] = context
+    cost = lookup_cost("anthropic", mid, allow_network=False)
+    if cost:
+        rates = cost[0]
+        record["pricing"] = {
+            "prompt": float(rates["input"]) / 1_000_000,
+            "completion": float(rates["output"]) / 1_000_000,
+        }
+    return record
+
+
 def _fetch_provider_models(provider, key: str) -> list[Any]:
     """Hit the provider's native model-listing endpoint. Returns bare model ids
     (no provider prefix). Empty list on any failure, with the failure REASON
@@ -327,7 +357,12 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
             else:
                 headers["x-api-key"] = key
             data = _get("https://api.anthropic.com/v1/models?limit=100", headers)
-            return [m["id"] for m in data.get("data", []) if m.get("id")]
+            items = [m for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            if items:
+                # A new state has no models.dev cache: load it once, online.
+                from .models_dev import lookup_model
+                lookup_model("anthropic", str(items[0]["id"]), allow_network=True)
+            return [_anthropic_record(m) for m in items]
         if name == "openrouter":
             data = _get(
                 "https://openrouter.ai/api/v1/models",

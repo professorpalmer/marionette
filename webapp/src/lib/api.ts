@@ -196,6 +196,43 @@ export type AuthPoolPublic = {
   entries: PoolEntryPublic[];
 };
 
+/** One state per account row (harness/accounts.py STATES). */
+export type AccountState =
+  | "signed_in"
+  | "api_key"
+  | "expired"
+  | "rejected"
+  | "limited"
+  | "off"
+  | "not_set"
+  | "not_installed";
+
+export type AccountMethod = "sign_in" | "api_key" | "cli_login";
+
+/** The one primary action of a row; "" when the row works. */
+export type AccountAction = "" | "sign_in" | "add_key" | "cli_login" | "turn_on" | "install";
+
+/** Latest live probe of a row. */
+export type AccountCheck = {
+  ok: boolean;
+  status: number | null;
+  message: string;
+  at: number;
+};
+
+export type AccountRow = {
+  provider: string;
+  name: string;
+  state: AccountState;
+  account: string;
+  detail: string;
+  action: AccountAction;
+  methods: AccountMethod[];
+  check: AccountCheck | null;
+};
+
+export type AccountReply = { row?: AccountRow; error?: string };
+
 export type AuthPoolsResponse = {
   pools: AuthPoolPublic[];
   strategies?: string[];
@@ -1556,6 +1593,9 @@ export const api = {
     postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", creds),
   clearBedrockCredentials: () =>
     postJSON<BedrockStatus & { ok?: boolean }>("/api/bedrock", { clear: true }),
+  getAccounts: () => getJSON<{ accounts: AccountRow[] }>("/api/accounts"),
+  probeAccount: (provider: string) => postJSON<AccountReply>("/api/accounts/probe", { provider }),
+  signOutAccount: (provider: string) => postJSON<AccountReply>("/api/accounts/sign-out", { provider }),
   getAuthPools: () => getJSON<AuthPoolsResponse>("/api/auth/pools"),
   getAuthPool: (provider: string) =>
     getJSON<AuthPoolPublic>(`/api/auth/pools?provider=${encodeURIComponent(provider)}`),
@@ -1612,6 +1652,7 @@ export const api = {
       label?: string;
       error?: string;
       entries?: PoolEntryPublic[];
+      row?: AccountRow;
     }>("/api/auth/oauth/complete", { session_id, code, provider }),
   cancelAuthOAuth: (session_id: string, provider?: string) =>
     postJSON<{ ok?: boolean; status?: string; cleared?: boolean; error?: string }>(

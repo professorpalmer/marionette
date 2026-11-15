@@ -35,7 +35,7 @@ def test_fetch_failure_records_reason_instead_of_swallowing(monkeypatch):
 def test_fetch_success_clears_prior_error(monkeypatch):
     monkeypatch.setattr(mf, "_get", lambda url, headers: {"data": [{"id": "claude-opus-4-8"}]})
     out = mf._fetch_provider_models(prov.get_provider("anthropic"), "good-key")
-    assert out == ["claude-opus-4-8"]
+    assert [r["id"] for r in out] == ["claude-opus-4-8"]
     assert mf.last_fetch_error("anthropic") is None
 
 
@@ -50,7 +50,7 @@ def test_anthropic_oauth_token_lists_with_bearer(monkeypatch):
 
     monkeypatch.setattr(mf, "_get", _fake_get)
     out = mf._fetch_provider_models(prov.get_provider("anthropic"), "sk-ant-oat01-test")
-    assert out == ["claude-opus-5-5"]
+    assert [r["id"] for r in out] == ["claude-opus-5-5"]
     assert seen["Authorization"] == "Bearer sk-ant-oat01-test"
     assert "oauth-2025-04-20" in seen["anthropic-beta"]
     assert "x-api-key" not in seen

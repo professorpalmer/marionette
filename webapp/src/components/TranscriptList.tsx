@@ -1684,8 +1684,8 @@ function AuthFailureBanner({
       <span className="min-w-0 flex-1">
         <span className="font-semibold text-risk">Provider auth failure.</span>{" "}
         <span className="text-risk/90">
-          The API key was rejected -- this is a dead, revoked, or wrong key, not a weak model or bad prompt.
-          Fix the named credential (e.g. OPENAI_API_KEY), then re-run.
+          The provider rejected the credential. The model and the prompt are not the cause.
+          Fix the account in Settings &gt; Accounts, then run it again.
         </span>
         {message ? (
           <code className="block mt-1 text-ui-10.5 text-risk/80 font-mono break-all whitespace-pre-wrap">
@@ -1703,7 +1703,7 @@ function AuthFailureBanner({
             onClick={handleRetry}
             className="rounded-md border border-risk/40 bg-risk/10 px-2.5 py-1 text-ui-11 font-medium text-risk hover:bg-risk/20 transition"
           >
-            Fix key and retry
+            Open Settings &gt; Accounts
           </button>
         </div>
       </span>
@@ -4196,6 +4196,11 @@ function MessageAttachments({
   );
 }
 
+/** A pilot error whose fix is in Settings > Accounts gets a button to go there. */
+export function accountsErrorLink(text: string): boolean {
+  return text.startsWith("[error]") && text.includes("Settings > Accounts");
+}
+
 function Bubble({
   msg,
   showLabel,
@@ -4337,6 +4342,22 @@ function Bubble({
             {copied ? <Check size={13} className="text-good" /> : <Copy size={13} />}
           </button>
         </div>
+
+        {accountsErrorLink(displayedText) && (
+          <div className="mt-1.5">
+            <button
+              type="button"
+              data-testid="open-accounts"
+              onClick={() => {
+                focusSettingsPage("providers");
+                window.dispatchEvent(new CustomEvent("harness-focus-tab", { detail: "settings" }));
+              }}
+              className="rounded-md border border-risk/40 bg-risk/10 px-2.5 py-1 text-ui-11 font-medium text-risk hover:bg-risk/20 transition-colors"
+            >
+              Open Settings &gt; Accounts
+            </button>
+          </div>
+        )}
 
         {showExecuteButton && (
           <div className="mt-2 flex items-center gap-2">

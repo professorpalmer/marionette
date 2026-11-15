@@ -87,9 +87,18 @@ class Provider:
     # means this provider has no first-class vision model wired in this rig.
     vision_model: str = ""
     # How this account is billed: "metered" (pay per token), "plan" (a
-    # subscription: usage is included, marginal cash $0) or "local". The one
-    # source of truth for spend classification (harness.usage_ledger).
-    billing: str = "metered"
+    # subscription: usage is included, marginal cash $0) or "local". Read it
+    # through ``billing``: one provider can hold either kind of credential.
+    declared_billing: str = "metered"
+
+    @property
+    def billing(self) -> str:
+        """Billing of the credential the pilot uses: the one source of truth
+        for spend classification (harness.usage_ledger) and the picker."""
+        if self.name == "anthropic":
+            from .accounts import credential_billing
+            return credential_billing(self, self.declared_billing)
+        return self.declared_billing
 
     def _is_disconnected(self) -> bool:
         """True if the user explicitly disconnected this provider. Authoritative
@@ -263,7 +272,7 @@ PROVIDERS = (
             "o4-mini",
         ),
         vision_model="gpt-5.4",
-        billing="plan",
+        declared_billing="plan",
     ),
     # Claude Code CLI plan pilot. Distinct from the Anthropic Messages API
     # key provider. Availability = `claude` binary + oauthAccount login.
@@ -284,7 +293,7 @@ PROVIDERS = (
             "claude-opus-4-6",
         ),
         vision_model="claude-sonnet-5-5",
-        billing="plan",
+        declared_billing="plan",
     ),
     # Cursor Agent CLI plan pilot. Distinct from platform which('cursor') and
     # from CURSOR_API_KEY credential pools. Availability = agent binary + login.
@@ -320,7 +329,7 @@ PROVIDERS = (
             "gpt-5",
             "composer-1",
         ),
-        billing="plan",
+        declared_billing="plan",
     ),
     Provider(
         name="nous", aliases=("nousresearch",),
@@ -328,7 +337,7 @@ PROVIDERS = (
         base_url="https://inference-api.nousresearch.com/v1",
         api_mode="chat_completions", display_name="Nous Portal (OAuth)",
         pilot_models=("Hermes-3-Llama-3.1-70B", "Hermes-4-70B"),
-        billing="plan",
+        declared_billing="plan",
     ),
     Provider(
         name="gemini", aliases=("google", "google-gemini"),
@@ -387,7 +396,7 @@ PROVIDERS = (
         base_url=_opencode_go.BASE_URL,
         api_mode="opencode_go", display_name="OpenCode Go",
         pilot_models=_opencode_go.CURATED_MODELS,
-        billing="plan",
+        declared_billing="plan",
     ),
     # OpenCode Zen: same account key can list both catalogs, but Settings
     # identity and the live /models host stay separate from Go.
@@ -407,7 +416,7 @@ PROVIDERS = (
         base_url="",
         api_mode="chat_completions", display_name="Local",
         pilot_models=(),
-        billing="local",
+        declared_billing="local",
     ),
     Provider(
         name="bedrock", aliases=("aws-bedrock", "aws"),
