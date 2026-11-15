@@ -111,7 +111,7 @@ export default function RegistryWizard({ onClose }: RegistryWizardProps) {
           <p className="text-center text-muted text-ui-13 py-10">Loading providers…</p>
         ) : tiles.length === 0 ? (
           <p className="text-center text-muted text-ui-13 py-8">
-            No Full stack providers available. You can add a key later from Settings.
+            No provider can run workers yet. Add a key later in Settings {">"} Accounts.
           </p>
         ) : (
           <>

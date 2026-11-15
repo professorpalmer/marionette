@@ -15,7 +15,7 @@ const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "general", label: "General", icon: SlidersHorizontal },
   { id: "local-models", label: "Local Models", icon: HardDrive },
   { id: "safety", label: "Safety", icon: ShieldCheck },
-  { id: "providers", label: "Accounts & Keys", icon: Zap },
+  { id: "providers", label: "Accounts", icon: Zap },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "archived", label: "Archived chats", icon: Archive },
@@ -56,7 +56,7 @@ export default function SettingsShell({
   const [page, setPage] = useState<PageId>(
     () => initialPage || takePendingSettingsPage() || "models",
   );
-  // Add key / hotkeys can request Accounts & Keys while Settings is already open.
+  // Add key / hotkeys can request Accounts while Settings is already open.
   useEffect(() => {
     const onPage = (e: Event) => {
       const next = (e as CustomEvent).detail;

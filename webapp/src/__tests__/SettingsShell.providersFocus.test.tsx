@@ -16,13 +16,13 @@ vi.mock("../components/SettingsPane", () => ({
   ),
 }));
 
-describe("SettingsShell Accounts & Keys focus", () => {
+describe("SettingsShell Accounts focus", () => {
   beforeEach(() => {
     // Clear any latched pending page between tests.
     window.dispatchEvent(new CustomEvent("harness-settings-page", { detail: "models" }));
   });
 
-  it("starts on Accounts & Keys when initialPage is providers", () => {
+  it("starts on Accounts when initialPage is providers", () => {
     render(
       <SettingsShell
         onClose={vi.fn()}
@@ -34,7 +34,7 @@ describe("SettingsShell Accounts & Keys focus", () => {
     expect(screen.queryByTestId("models-page")).toBeNull();
   });
 
-  it("switches to Accounts & Keys on harness-settings-page / focusSettingsPage", () => {
+  it("switches to Accounts on harness-settings-page / focusSettingsPage", () => {
     render(<SettingsShell onClose={vi.fn()} onOpenWizard={vi.fn()} />);
     expect(screen.getByTestId("models-page")).toBeTruthy();
     act(() => {
@@ -49,9 +49,9 @@ describe("SettingsShell Accounts & Keys focus", () => {
     expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
   });
 
-  it("sidebar Accounts & Keys nav selects the providers section", () => {
+  it("sidebar Accounts nav selects the providers section", () => {
     render(<SettingsShell onClose={vi.fn()} onOpenWizard={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: /Accounts & Keys/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Accounts" }));
     expect(screen.getByTestId("settings-section-providers")).toBeTruthy();
   });
 

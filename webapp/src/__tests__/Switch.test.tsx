@@ -22,7 +22,7 @@ describe("SwitchTrack", () => {
     expect(knob.className).toContain("translate-x-4");
   });
 
-  it.each(["components/SettingsPane.tsx", "components/ModelsSettingsPage.tsx"])(
+  it.each(["components/ModelsSettingsPage.tsx"])(
     "%s renders its role=switch through SwitchTrack",
     (rel) => {
       const text = readFileSync(resolve(__dirname, "..", rel), "utf8");

@@ -21,6 +21,12 @@ vi.mock("../lib/api", () => ({
     getHooks: vi.fn().mockResolvedValue({ hooks: [], events: [] }),
     archiveStatus: vi.fn().mockResolvedValue({ chats: 0, vault_present: false, backup_dir: "", archive_db: "" }),
     providers: vi.fn(),
+    getAccounts: vi.fn().mockResolvedValue({
+      accounts: [{
+        provider: "openrouter", name: "OpenRouter", state: "api_key", account: "....abcd",
+        detail: "API key set.", action: "", methods: ["api_key"], check: null,
+      }],
+    }),
     authPools: vi.fn().mockResolvedValue({ pools: [] }),
     getAuthPools: vi.fn().mockResolvedValue({ pools: [] }),
     bedrockStatus: vi.fn().mockResolvedValue(null),
