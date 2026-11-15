@@ -304,3 +304,64 @@ def test_fresh_context_copies_nothing_and_a_bad_context_is_refused(tmp_path):
     bad = h.sup.start(parent, name="bad", brief="b", context="clone")
     assert not bad["ok"] and "fork" in bad["error"]
     assert len(h.store.children_of(parent.harness_session_id)) == 1
+
+
+# -- unit 4: read a child -----------------------------------------------------
+
+
+def _long_child(h):
+    parent = h.parent()
+    sid = h.sup.start(parent, name="maps", brief="b")["session_id"]
+    runner = h.runners.setdefault(sid, FakeRunner(sid))
+    runner._history = [{"role": "user", "content": f"step {i}"} if i % 2 == 0 else
+                       {"role": "assistant", "content": f"answer {i}"} for i in range(30)]
+    runner._history += [
+        {"role": "user", "content": "Write the report."},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {
+            "name": "run_command", "arguments": '{"command": "git log -1"}'}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "commit abc123 " + "x" * 5000},
+        {"role": "assistant", "content": "Result first.\n" + "detail " * 300},
+    ]
+    h.end_turn(sid)
+    return parent, sid, runner
+
+
+def test_read_gives_the_full_last_reply_and_a_bounded_tail(tmp_path):
+    h = Harness(tmp_path)
+    parent, sid, runner = _long_child(h)
+    note = h.store.nest_of(sid)["report"]
+    assert len(note) == ns.REPORT_CHARS
+    res = h.sup.read(parent, "maps")
+    assert res["ok"], res
+    full = runner._history[-1]["content"].strip()
+    assert len(full) > ns.REPORT_CHARS and res["report"] == full
+    assert res["status"] == "done" and res["messages"] == 34
+    tail = res["tail"]
+    assert len(tail) <= ns.READ_MESSAGES
+    assert tail[-1]["role"] == "assistant" and tail[-1]["text"].startswith("Result first.")
+    assert sum(len(m["text"]) for m in tail) <= ns.READ_TAIL_CHARS
+    calls = [m for m in tail if m["role"] == "assistant" and "run_command" in m["text"]]
+    assert calls and "git log -1" in calls[0]["text"]
+    result = next(m for m in tail if m["role"] == "tool")
+    assert result["text"].startswith("commit abc123") and len(result["text"]) <= ns.READ_MESSAGE_CHARS
+    assert not h.sup.read(parent, "nobody")["ok"]
+
+
+def test_read_an_archived_child_from_the_vault_with_no_restore(tmp_path):
+    from harness.chat_archive import ingest_marionette_session
+    from harness.sessions import load_transcript, save_transcript
+    h = Harness(tmp_path)
+    state = str(tmp_path / "state")
+    h.sup.svc.state_dir = lambda: state
+    parent, sid, runner = _long_child(h)
+    save_transcript(state, sid, {"history": runner._history})
+    h.runners.pop(sid)
+    ingest_marionette_session(state, sid, title="maps", prune=True)
+    h.store.archive(sid, True)
+    assert load_transcript(state, sid) == []
+    res = h.sup.read(parent, "maps")
+    assert res["ok"], res
+    assert res["archived"] and res["report"].startswith("Result first.")
+    assert res["messages"] == 34
+    # Read only: the hot transcript stays a stub.
+    assert load_transcript(state, sid) == []

@@ -3448,6 +3448,8 @@ def dispatch_local_action(
                               str(args.get("message") or ""))
         elif action == "stop":
             res = sup.stop(session, str(args.get("name") or args.get("session_id") or ""))
+        elif action == "read":
+            res = sup.read(session, str(args.get("name") or args.get("session_id") or ""))
         elif action == "archive":
             res = sup.archive(session, str(args.get("name") or args.get("session_id") or ""))
         elif action == "unarchive":
@@ -3456,7 +3458,7 @@ def dispatch_local_action(
             kids = sup.children(getattr(session, "harness_session_id", "") or "")
             res = {"ok": True, "children": kids}
         else:
-            res = {"ok": False, "error": "action must be start, message, stop, list, archive, or unarchive"}
+            res = {"ok": False, "error": "action must be start, message, read, stop, list, archive, or unarchive"}
         if not res.get("ok"):
             err_msg = f"nested_session {action} failed: {res.get('error')}"
             yield ConvEvent("action_result", {"id": aid, "error": err_msg})
@@ -3471,6 +3473,15 @@ def dispatch_local_action(
                              + (f" | {kid['branch']}" if kid.get("branch") else "")
                              + (f" | report: {kid['report']}" if kid.get("report") else ""))
             val = "\n".join(lines)
+        elif action == "read":
+            head = [f"Nested session {res['name']} (id {res['session_id']}): {res['status']}"
+                    + (" | archived" if res.get("archived") else "")
+                    + (f" | {res['branch']}" if res.get("branch") else "")
+                    + (f" | {res['model']}" if res.get("model") else ""),
+                    "Last reply:", res["report"] or "(none)", "",
+                    f"Last {len(res['tail'])} of {res['messages']} messages:"]
+            val = "\n".join(head + [f"[{m['role']}] {m['text']}" for m in res["tail"]])
+            res = {k: v for k, v in res.items() if k != "tail"}
         elif action == "start":
             val = (f"Started nested session {res['name']} (id {res['session_id']}) in "
                    f"{res['worktree']}" + (f" on branch {res['branch']}" if res.get("branch") else "")

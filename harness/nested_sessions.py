@@ -28,6 +28,13 @@ from .display_rows import now_ms
 
 NEST_STATUSES = ("working", "done", "failed", "stopped")
 REPORT_CHARS = 400
+# The read action: the last reply in full up to READ_REPORT_CHARS, and the
+# last READ_MESSAGES messages, each cut to READ_MESSAGE_CHARS, all of them
+# within READ_TAIL_CHARS.
+READ_REPORT_CHARS = 4000
+READ_MESSAGES = 12
+READ_MESSAGE_CHARS = 1200
+READ_TAIL_CHARS = 6000
 # Automatic parent turns since the last user message. Stops report loops.
 MAX_AUTO_WAKES = 8
 # Delivery retry while the parent is busy: every half second for one minute.
@@ -120,6 +127,44 @@ def report_from_history(history: List[dict], limit: int = REPORT_CHARS) -> str:
     return ""
 
 
+def _cut(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def last_reply(history: List[dict], limit: int = READ_REPORT_CHARS) -> str:
+    """The text of the last assistant reply, line breaks kept, cut to ``limit``."""
+    for message in reversed(history or []):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            text = message_text(message.get("content")).strip()
+            if text:
+                return _cut(text, limit)
+    return ""
+
+
+def _tail_text(message: dict) -> str:
+    text = message_text(message.get("content"))
+    if isinstance(message.get("content"), list):
+        results = [message_text(p.get("content")) for p in message["content"]
+                   if isinstance(p, dict) and p.get("type") == "tool_result"]
+        text = "\n".join([text, *results]).strip()
+    calls = []
+    for call in message.get("tool_calls") or []:
+        fn = (call or {}).get("function") or {}
+        calls.append(f"[call {fn.get('name', '?')} {_cut(str(fn.get('arguments') or ''), 200)}]")
+    return _cut("\n".join(part for part in (text, *calls) if part), READ_MESSAGE_CHARS)
+
+
+def transcript_tail(history: List[dict], count: int = READ_MESSAGES,
+                    cap: int = READ_TAIL_CHARS) -> List[dict]:
+    """The last ``count`` messages as ``{role, text}``, newest last, within ``cap``."""
+    rows = [{"role": str(m.get("role") or ""), "text": _tail_text(m)}
+            for m in (history or [])[-count:] if isinstance(m, dict)]
+    while len(rows) > 1 and sum(len(r["text"]) for r in rows) > cap:
+        rows.pop(0)
+    return rows
+
+
 def live_status(stored: str, runner_status: str, in_flight: bool = False) -> str:
     """The status to show. Only a turn that runs now is ``working``.
 
@@ -152,7 +197,8 @@ def note_text(note: dict) -> str:
     lines.append(f"Report: {report}" if report else "Report: (no text in the final reply)")
     lines.append(
         'This is the child\'s report, not proof. Check its branch or files before you '
-        'say the work is done. Use nested_session action "message" to reply to it.'
+        'say the work is done. Use nested_session action "read" for its full reply, '
+        '"message" to reply to it.'
     )
     lines.append("</nested-session-event>")
     return "\n".join(lines)
@@ -496,6 +542,40 @@ class NestedSupervisor:
                     result["worktree"] = "released"
         bump_rev()
         return result
+
+    def read(self, parent: Any, child: str) -> dict:
+        """The child's last reply in full and its recent transcript.
+
+        A live runner's history comes first. Else the saved transcript, and
+        for a child archived to the vault the vault copy, with no restore.
+        """
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        sid = row["id"]
+        history = self._history_of(sid)
+        payload = child_payload(row, self.svc.runner_status(sid), self.in_flight(sid))
+        return {
+            "ok": True, "session_id": sid, "name": payload["name"], "status": payload["status"],
+            "archived": payload["archived"], "branch": payload["branch"], "model": payload["model"],
+            "report": last_reply(history), "messages": len(history),
+            "tail": transcript_tail(history),
+        }
+
+    def _history_of(self, sid: str) -> List[dict]:
+        from .sessions import load_transcript, rematerialize_driver_messages
+        runner = self.svc.get_runner(sid)
+        live = getattr(runner, "_history", None) if runner is not None else None
+        if isinstance(live, list):
+            return list(live)
+        if self.svc.state_dir is None:
+            return []
+        state_dir = self.svc.state_dir()
+        history = rematerialize_driver_messages(load_transcript(state_dir, sid))
+        if not history:
+            from .chat_archive import pruned_transcript_view
+            history = rematerialize_driver_messages(pruned_transcript_view(state_dir, sid))
+        return history
 
     def _live_status(self, sid: str, nest: dict) -> str:
         with self._lock:
