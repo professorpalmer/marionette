@@ -82,7 +82,7 @@ describe("empty session folds", () => {
       />,
     );
     expect(
-      screen.getByText("What should we work on?"),
+      screen.getByText("Marionette"),
     ).toBeTruthy();
   });
 });

@@ -53,7 +53,7 @@ function renderColumn(opts: {
 describe("chat column feed alignment", () => {
   it("keeps the empty-session heading in the feed, above the centered composer", () => {
     const { feedRef, feedContentRef } = renderColumn();
-    const greeting = screen.getByText("What should we work on?");
+    const greeting = screen.getByText("Marionette");
     const scrollport = screen.getByTestId("transcript-feed-scrollport");
     const content = screen.getByTestId("transcript-feed-content");
     const composer = screen.getByTestId("composer-chrome");

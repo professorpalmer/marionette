@@ -1,39 +1,11 @@
 import { useEffect, useState } from "react";
-import { BookOpen, Bug, GitCompare, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import { api, type Session } from "../../lib/api";
 import { displaySessionListTitle } from "../../lib/sessionTitle";
-import { prefillComposer, recentSessionRows, requestSessionSwitch, sessionAge, workspaceName } from "../../lib/sessionNav";
+import { recentSessionRows, requestSessionSwitch, sessionAge, workspaceName } from "../../lib/sessionNav";
 
-/** Starter prompts fill the composer. They never send, so the user can edit. */
-export const STARTER_PROMPTS = [
-  {
-    id: "tour",
-    label: "Explain this codebase",
-    icon: BookOpen,
-    prompt: "Give me a tour of this repository: the layout, the main entry points, and how the parts connect.",
-  },
-  {
-    id: "bug",
-    label: "Find and fix a bug",
-    icon: Bug,
-    prompt: "Find the most likely bug in this repository. Explain it, then fix it and add a test that fails without the fix.",
-  },
-  {
-    id: "review",
-    label: "Review my changes",
-    icon: GitCompare,
-    prompt: "Review my uncommitted changes for correctness, risky edge cases and missing tests.",
-  },
-] as const;
-
-/** Below the centered composer in an empty session: starters, then recent sessions. */
-export default function EmptySessionStarters({
-  sessionId,
-  showStarters,
-}: {
-  sessionId?: string;
-  showStarters: boolean;
-}) {
+/** Below the centered composer in an empty session: recent sessions. */
+export default function EmptySessionStarters({ sessionId }: { sessionId?: string }) {
   const [recent, setRecent] = useState<Session[]>([]);
   useEffect(() => {
     let cancelled = false;
@@ -49,22 +21,6 @@ export default function EmptySessionStarters({
 
   return (
     <div data-testid="empty-session-starters" className="max-w-3xl mx-auto px-6 pt-4 pb-6 flex flex-col gap-6">
-      {showStarters ? (
-        <div className="flex flex-wrap justify-center gap-2">
-          {STARTER_PROMPTS.map(({ id, label, icon: Icon, prompt }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => prefillComposer(prompt)}
-              title={prompt}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full border border-edge bg-panel/60 text-ui-12 text-txt hover:bg-panel2 hover:border-edge2 transition"
-            >
-              <Icon size={13} className="text-muted" />
-              {label}
-            </button>
-          ))}
-        </div>
-      ) : null}
       {recent.length > 0 ? (
         <section aria-label="Recent sessions" className="mx-auto w-full max-w-md">
           <h3 className="px-2 mb-1 text-ui-10.5 font-semibold uppercase tracking-[0.12em] text-faint">Recent sessions</h3>
