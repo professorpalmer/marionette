@@ -1,21 +1,17 @@
 import { KeyRound, HardDrive } from "lucide-react";
 import type { Config } from "../../lib/api";
-import { openOnboarding, workspaceName } from "../../lib/sessionNav";
+import { openOnboarding } from "../../lib/sessionNav";
 import { focusSettingsPage } from "../SettingsShell";
 
 /** What an empty session needs to know about the shell around it. */
 export type EmptySessionContext = {
-  /** Workspace folder name, or "" for Home. */
-  workspace: string;
   /** No pilot can run: no key, plan sign-in or local model. */
   needsModel: boolean;
 };
 
 /** A keyless install still runs a local pilot (`local:` spec, no key). */
-export function emptySessionContext(config: Pick<Config, "repo" | "driver" | "pilot_ready"> | null): EmptySessionContext {
-  const name = workspaceName(config?.repo);
+export function emptySessionContext(config: Pick<Config, "driver" | "pilot_ready"> | null): EmptySessionContext {
   return {
-    workspace: name === "Home" ? "" : name,
     needsModel: config?.pilot_ready === false && !(config.driver || "").startsWith("local:"),
   };
 }
@@ -67,12 +63,8 @@ export default function TranscriptEmptyState({
     }
     return (
       <div data-testid="empty-session-heading" className="mt-auto pb-5 text-center">
-        <h2 className="text-ui-15 font-semibold text-txt text-balance">
-          {context?.workspace ? `What should we do in ${context.workspace}?` : "What should we work on?"}
-        </h2>
-        <p className="mt-1.5 text-ui-12.5 text-muted">
-          The pilot plans, reads the code, sends work to swarms, and explains what it did.
-        </p>
+        <h2 className="text-ui-15 font-semibold text-txt">Marionette</h2>
+        <p className="mt-1.5 text-ui-12.5 text-muted">Any model drives. Puppetmaster does the work.</p>
       </div>
     );
   }
