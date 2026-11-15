@@ -67,7 +67,8 @@ def display_name_for(
     """Friendly label for Settings/picker; never replaces the wire id.
 
     A native ``name`` that merely echoes the bare id (case-insensitive) is
-    uninformative — verified/shared labels and extra_labels win instead.
+    uninformative — verified/shared labels and extra_labels win instead. With
+    no such label, that echo ("MiMo-V2.6-Flash") still beats the bare id.
     """
     bare = normalize_model_id(model)
     if isinstance(metadata, dict):
@@ -76,7 +77,8 @@ def display_name_for(
             if label:
                 return label
     labels = extra_labels or {}
-    return labels.get(bare) or SHARED_DISPLAY_NAMES.get(bare, bare)
+    native = str(metadata.get("name") or "").strip() if isinstance(metadata, dict) else ""
+    return labels.get(bare) or SHARED_DISPLAY_NAMES.get(bare) or native or bare
 
 
 def overlay_metadata(
