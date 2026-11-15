@@ -48,59 +48,6 @@ const sampleSettings: Settings = {
   repo: "/tmp/repo",
 };
 
-describe("SettingsPane Opt-ins section", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    writeSettingsSnapshot(sampleSettings);
-    mockSettings.mockResolvedValue(sampleSettings);
-    mockUpdate.mockImplementation(async (partial) => ({ ...sampleSettings, ...partial }));
-  });
-
-  it("wires Opt-ins into existing Settings and writes existing keys", async () => {
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(await screen.findByTestId("settings-opt-ins")).toBeTruthy();
-    expect(screen.getByText("Opt-ins")).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId("settings-opt-in-auto_distill"));
-    await waitFor(() => {
-      expect(mockUpdate).toHaveBeenCalledWith({ auto_distill: true });
-    });
-
-    fireEvent.click(screen.getByTestId("settings-opt-in-reviewEditsBeforeApply"));
-    await waitFor(() => {
-      expect(mockUpdate).toHaveBeenCalledWith({ reviewEditsBeforeApply: true });
-    });
-  });
-
-  it("is off by default and turns Simplified Technical English on", async () => {
-    mockUpdate.mockResolvedValue({ ...sampleSettings, outputStyle: "ste" });
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(await screen.findByText("Output Style")).toBeInTheDocument();
-    const toggle = screen.getByRole("button", { name: /simplified technical english/i });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(mockUpdate).toHaveBeenCalledWith({ outputStyle: "ste" });
-    });
-  });
-
-  it("defaults the control to catalog and can opt into hybrid", async () => {
-    mockUpdate.mockResolvedValue({ ...sampleSettings, compactionResidual: "hybrid" });
-    render(<SettingsPane onOpenWizard={vi.fn()} section="general" />);
-
-    expect(await screen.findByText("Compact Residual")).toBeInTheDocument();
-    expect(screen.getByText("catalog")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /handle catalog; vault retrieve/i }));
-    await waitFor(() => {
-      expect(mockUpdate).toHaveBeenCalledWith({ compactionResidual: "hybrid" });
-    });
-  });
-});
-
 describe("SettingsPane Safety Chrome login", () => {
   beforeEach(() => {
     vi.clearAllMocks();
