@@ -315,7 +315,7 @@ def _anthropic_record(item: dict[str, Any]) -> dict[str, Any]:
     The live list names the model. Context comes from the live record when
     it has one, else models.dev. Price (per token, as OpenRouter records it)
     comes from models.dev. A plan sign-in shows Plan, not this price.
-    The registry is read from its cache only: the usage ledger loads it.
+    It reads the models.dev cache only. The fetch loads that cache first.
     """
     from .models_dev import lookup_cost, lookup_model
 
@@ -357,10 +357,12 @@ def _fetch_provider_models(provider, key: str) -> list[Any]:
             else:
                 headers["x-api-key"] = key
             data = _get("https://api.anthropic.com/v1/models?limit=100", headers)
-            return [
-                _anthropic_record(m) for m in data.get("data", [])
-                if isinstance(m, dict) and m.get("id")
-            ]
+            items = [m for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            if items:
+                # A new state has no models.dev cache: load it once, online.
+                from .models_dev import lookup_model
+                lookup_model("anthropic", str(items[0]["id"]), allow_network=True)
+            return [_anthropic_record(m) for m in items]
         if name == "openrouter":
             data = _get(
                 "https://openrouter.ai/api/v1/models",

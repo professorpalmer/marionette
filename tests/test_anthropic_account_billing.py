@@ -84,3 +84,29 @@ def test_anthropic_live_list_carries_context_and_price(state, monkeypatch):
     assert opus["pricing"] == {"prompt": 5e-06, "completion": 2.5e-05}
     assert sonnet["context_length"] == 400000
     assert "pricing" not in sonnet
+
+
+def test_a_new_state_loads_models_dev_for_context_and_price(state, monkeypatch):
+    """A new state dir has no models.dev cache. The first live fetch must
+    still give context and price, not an empty row until a later fetch."""
+    import io
+    import json
+
+    from harness import models_dev
+
+    models_dev.clear_cache_for_tests()
+    registry = {"anthropic": {"models": {"claude-opus-5-5": {
+        "name": "Claude Opus 5.5", "limit": {"context": 1_000_000},
+        "cost": {"input": 4, "output": 20},
+    }}}}
+    monkeypatch.setattr(models_dev.urllib.request, "urlopen",
+                        lambda req, timeout=None: io.BytesIO(json.dumps(registry).encode()))
+    monkeypatch.setattr(model_fetch, "_get", lambda url, headers: {"data": [
+        {"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5"},
+    ]})
+
+    (opus,) = model_fetch._fetch_provider_models(get_provider("anthropic"), "sk-ant-oat01-x")
+
+    assert opus["context_length"] == 1_000_000
+    assert opus["pricing"] == {"prompt": 4e-06, "completion": 2e-05}
+    models_dev.clear_cache_for_tests()
