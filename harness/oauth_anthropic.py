@@ -20,6 +20,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from .credential_pool import add_oauth_entry
+from .keys import forget_stored_sign_in_token
 from .diag import note as _diag
 
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -150,6 +151,32 @@ def refresh_anthropic_tokens(refresh_token: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _http_error_text(exc: urllib.error.HTTPError) -> str:
+    """'HTTP 400: <the server's reason>' from an OAuth error reply."""
+    reason = ""
+    try:
+        body = json.loads(exc.read().decode("utf-8", "replace"))
+        if isinstance(body, dict):
+            nested = body.get("error")
+            if isinstance(nested, dict):
+                reason = str(nested.get("message") or "")
+            else:
+                reason = str(body.get("error_description") or nested or "")
+    except Exception:
+        reason = ""
+    return f"HTTP {exc.code}: {reason[:200] or exc.reason}"
+
+
+def _account_name(token_response: Dict[str, Any]) -> str:
+    """The signed-in account e-mail from a token response, when it has one."""
+    account = token_response.get("account")
+    if isinstance(account, dict):
+        email = account.get("email_address") or account.get("email")
+        if isinstance(email, str) and email.strip():
+            return email.strip()
+    return ""
+
+
 def complete_anthropic_pkce_login(session_id: str, auth_code: str) -> Dict[str, Any]:
     """Exchange pasted authorization code for tokens and pool them."""
     with _lock:
@@ -189,7 +216,7 @@ def complete_anthropic_pkce_login(session_id: str, auth_code: str) -> Dict[str, 
     }).encode("utf-8")
 
     result = None
-    last_err: Optional[Exception] = None
+    last_err = ""
     for endpoint in _OAUTH_TOKEN_URLS:
         req = urllib.request.Request(
             endpoint,
@@ -204,10 +231,16 @@ def complete_anthropic_pkce_login(session_id: str, auth_code: str) -> Dict[str, 
             with urllib.request.urlopen(req, timeout=20) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
             break
-        except Exception as exc:
-            last_err = exc
+        except urllib.error.HTTPError as exc:
             _diag("oauth_anthropic.token_exchange", exc)
-            continue
+            last_err = _http_error_text(exc)
+            # The server read the code and refused it. A fallback endpoint
+            # cannot accept it either, and its 404 hides the real reason.
+            if exc.code in (400, 401, 403):
+                break
+        except Exception as exc:
+            _diag("oauth_anthropic.token_exchange", exc)
+            last_err = f"{type(exc).__name__}: the token endpoint did not answer"
 
     if result is None:
         err = f"Token exchange failed: {last_err}"
@@ -225,28 +258,23 @@ def complete_anthropic_pkce_login(session_id: str, auth_code: str) -> Dict[str, 
         return {"status": "error", "error": "No access_token in response", "provider": "anthropic"}
 
     expires_at_ms = int(time.time() * 1000) + expires_in * 1000
+    account = _account_name(result)
     try:
+        # The pool is the one store for a sign-in: add_oauth_entry puts the
+        # token in the process env. A copy in keys.json has no refresh token,
+        # so it outlives the access token and comes back as a dead api_key.
+        forget_stored_sign_in_token("anthropic")
         entry = add_oauth_entry(
             "anthropic",
             access_token=access_token,
             refresh_token=refresh_token if isinstance(refresh_token, str) else None,
-            label=label or "claude-max",
+            label=label or account or "Claude account",
             expires_at_ms=expires_at_ms,
             source="manual:pkce",
+            extra={"account": account} if account else None,
         )
     except Exception as e:
         return {"status": "error", "error": str(e), "provider": "anthropic"}
-
-    # Mirror into process env so classic AnthropicDriver key_env paths see it.
-    try:
-        import os
-        os.environ["ANTHROPIC_API_KEY"] = access_token
-        from .keys import set_api_key
-        # Avoid wiping pool via set_api_key's add — already pooled; just keys.json.
-        # Use set_api_key for has_key UI consistency.
-        set_api_key("anthropic", access_token)
-    except Exception as e:
-        _diag("oauth_anthropic.mirror_key", e)
 
     with _lock:
         s = _pending.get(session_id)

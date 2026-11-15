@@ -729,6 +729,24 @@ def set_api_key(reach: str, value: str):
     else:
         clear_api_key(reach)
 
+def forget_stored_sign_in_token(reach: str) -> bool:
+    """Drop a sign-in access token that an older build copied into keys.json.
+
+    Only a token of sign-in shape is dropped. A real API key stays.
+    """
+    keys = _read_keys()
+    value = keys.get(reach)
+    if not isinstance(value, str) or not value.strip():
+        return False
+    from .oauth_anthropic import is_anthropic_oauth_token
+    if reach != "anthropic" or not is_anthropic_oauth_token(value.strip()):
+        return False
+    del keys[reach]
+    _write_keys(keys)
+    _ENV_KEY_CACHE.pop(reach, None)
+    return True
+
+
 def clear_api_key(reach: str):
     if reach == "bedrock":
         clear_bedrock_credentials()
@@ -800,6 +818,12 @@ def persist_env_api_keys() -> list[str]:
             value = (os.environ.get("OPENCODE_API_KEY") or "").strip()
         if not value or is_placeholder_credential(value):
             continue
+        if name == "anthropic":
+            # A sign-in token in the env is the pool's own copy (or a child
+            # process inherited it). Stored here, it outlives its sign-in.
+            from .oauth_anthropic import is_anthropic_oauth_token
+            if is_anthropic_oauth_token(value):
+                continue
         keys[name] = value
         imported.append(name)
     if imported:
