@@ -24,7 +24,7 @@ from ..deferred_attach import (
 from ..repo_env import sync_harness_repo_from_cfg
 from ..session import Session
 from ..conversation import ConversationalSession
-from ..sessions import load_transcript
+from ..sessions import load_runner_transcript, load_transcript
 
 
 @dataclass
@@ -144,7 +144,7 @@ def attach_view(
 
     history: Any = []
     if load_transcript_on_create:
-        history = load_transcript(svc.sessions_state_dir(), session_id)
+        history = load_runner_transcript(svc.sessions_state_dir(), session_id)
     transcript_payload = normalize_transcript_payload(history)
 
     if want_defer:

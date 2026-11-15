@@ -155,9 +155,13 @@ class InputReceiptStore:
         except FileNotFoundError:
             # A missing manifest can be rebuilt from the verified
             # native bundle. Never turn corrupt archive evidence into emptiness.
-            from .chat_archive import _verified_raw
+            from .chat_archive import _vault_has_inputs, _verified_raw
             try:
-                bundle = _verified_raw(self.root, 'marionette:' + self.session_id)
+                # The full verify reads the whole vault copy. Each archive
+                # snapshot of a session without inputs passes here, under the
+                # publication lock that a session switch waits for.
+                chat_id = 'marionette:' + self.session_id
+                bundle = _verified_raw(self.root, chat_id) if _vault_has_inputs(self.root, chat_id) else None
                 if bundle is not None and bundle.get('inputs') is not None:
                     archived = self.validate(bundle['inputs'])
                     self._check_recovery_revision(self._manifest(archived))
