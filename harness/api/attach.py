@@ -145,7 +145,6 @@ def attach_view(
     history: Any = []
     if load_transcript_on_create:
         history = load_runner_transcript(svc.sessions_state_dir(), session_id)
-    transcript_payload = normalize_transcript_payload(history)
 
     if want_defer:
         config = svc.runner_config_snapshot()
@@ -154,7 +153,7 @@ def attach_view(
         placeholder = DeferredPilotPlaceholder(
             session_id=session_id,
             state_dir=config.state_dir,
-            transcript=transcript_payload,
+            transcript=history,
             input_state_root=svc.sessions_state_dir(),
         )
 

@@ -34,6 +34,19 @@ def normalize_transcript_payload(raw: Any) -> dict[str, list]:
     return {"history": [], "display": [], "job_ids": []}
 
 
+def _transcript_document(raw: Any) -> dict[str, Any]:
+    """Normalize the three list keys and keep every other key of a dict transcript.
+
+    The placeholder export is what a switch away saves, and what the real pilot
+    loads at the swap. A key that it drops (``flow_runs``,
+    ``cache_preferences``, ``tool_results_aged``) is lost or reset to default.
+    """
+    document = normalize_transcript_payload(raw)
+    if isinstance(raw, dict):
+        return {**{key: value for key, value in raw.items() if key not in document}, **document}
+    return document
+
+
 def is_deferred_placeholder(runner: Any) -> bool:
     return isinstance(runner, DeferredPilotPlaceholder)
 
@@ -62,7 +75,7 @@ class DeferredPilotPlaceholder:
         self._build_error: Optional[BaseException] = None
         self._real: Any = None
         self._defer_building = True
-        self._transcript = normalize_transcript_payload(transcript)
+        self._transcript = _transcript_document(transcript)
         self._mcp = None
         self._session_store = None
         self._auto_distill = False
@@ -117,19 +130,15 @@ class DeferredPilotPlaceholder:
         """No-op: cold build has no in-flight turn to cancel (Stop must not 500)."""
         return
 
-    def export_transcript_data(self) -> dict[str, list]:
-        return {
-            "history": list(self._transcript.get("history") or []),
-            "display": list(self._transcript.get("display") or []),
-            "job_ids": list(self._transcript.get("job_ids") or []),
-        }
+    def export_transcript_data(self) -> dict[str, Any]:
+        return _transcript_document(self._transcript)
 
     def export_history(self) -> list:
         """Same shape as ConversationalSession.export_history (turns only)."""
         return list(self._transcript.get("history") or [])
 
     def load_history(self, messages: Any) -> None:
-        self._transcript = normalize_transcript_payload(messages)
+        self._transcript = _transcript_document(messages)
         self._history = list(self._transcript.get("history") or [])
         # Write through once the real pilot exists so a bound load_history
         # on this placeholder (``srv._pilot.load_history`` evaluated before
