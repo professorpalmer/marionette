@@ -169,3 +169,40 @@ def test_anthropic_sidecar_key_skips_an_oauth_token(monkeypatch):
     monkeypatch.setattr("harness.credential_pool.resolve_entry_for_env",
                         lambda env: SimpleNamespace(runtime_token="sk-ant-oat01-pool"))
     assert v._sidecar_key("ANTHROPIC_API_KEY", api_key_only=True) == "sk-ant-api03-env"
+
+
+# The OpenCode Go live catalog lists image input as MIME types, not "image".
+_GO_LIVE_MIMO = {
+    "id": "mimo-v2.6-flash",
+    "name": "MiMo-V2.6-Flash",
+    "modalities": {"input": ["text", "image/jpeg", "image/png", "audio/mpeg"], "output": ["text"]},
+}
+
+
+def test_live_mime_image_types_mean_image_input(sources):
+    go = get_provider("opencode-go")
+    sources[("opencode-go", "mimo-v2.6-flash")] = _GO_LIVE_MIMO
+    assert v.model_image_input(go, "mimo-v2.6-flash") is True
+    assert v.pilot_supports_native_images(go, model="mimo-v2.6-flash") is True
+    sources[("opencode-go", "glm-5.3")] = {"id": "glm-5.3", "modalities": {"input": ["text"]}}
+    assert v.model_image_input(go, "glm-5.3") is False
+
+
+def test_go_sidecar_model_takes_images_by_the_label_rule(sources):
+    """The Go sidecar model must pass the same rule the picker label uses."""
+    from harness import opencode_go
+
+    go = get_provider("opencode-go")
+    sources[("opencode-go", opencode_go.VISION_SIDECAR_MODEL)] = dict(
+        _GO_LIVE_MIMO, id=opencode_go.VISION_SIDECAR_MODEL)
+    assert v.model_image_input(go, opencode_go.VISION_SIDECAR_MODEL) is True
+
+
+def test_models_dev_mime_image_types_mean_image_input(monkeypatch):
+    registry = {"opencode-go": {"models": {
+        "mimo-v2.6-flash": {"modalities": {"input": ["text", "image/png"]}},
+        "deepseek-v4-pro": {"modalities": {"input": ["text", "audio/wav"]}},
+    }}}
+    monkeypatch.setattr(models_dev, "_registry", lambda *, allow_network: registry)
+    assert models_dev.image_input("opencode-go", "mimo-v2.6-flash") is True
+    assert models_dev.image_input("opencode-go", "deepseek-v4-pro") is False

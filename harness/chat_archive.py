@@ -511,8 +511,11 @@ def _sync_session(state_dir: str, sid: str, *, name: str, workspace: str,
                         or _vault_digest(state_dir, chat_id) != saved[1]):
                     return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
                                         vault_present=True, backup_dir=backups)
-                _atomic_write_json(str(_session_transcript_path(state_dir, sid)),
-                                   {"pruned": True, "chat_id": chat_id})
+                target = _session_transcript_path(state_dir, sid)
+                last_active = target.stat().st_mtime
+                _atomic_write_json(str(target), {"pruned": True, "chat_id": chat_id})
+                # The session list reads the transcript mtime as last activity.
+                os.utime(target, (last_active, last_active))
         except (OSError, ValueError, sqlite3.Error):
             return IngestReport(ingested=ingested, skipped_unchanged=int(not ingested),
                                 vault_present=True, backup_dir=backups)
@@ -561,6 +564,7 @@ def ingest_all(
     skipped = 0
     errors = 0
     pruned = 0
+    repaired = 0
     for row in sessions or ():
         if not row.get("archived"):
             continue
@@ -575,6 +579,8 @@ def ingest_all(
             updated_at=int(row.get("created") or 0),
             prune=prune,
         )
+        if prune and repair_stub_mtime(state_dir, sid):
+            repaired += 1
         ingested += report.ingested
         skipped += report.skipped_unchanged
         errors += report.errors
@@ -585,6 +591,7 @@ def ingest_all(
         "skipped_unchanged": skipped,
         "errors": errors,
         "pruned": pruned,
+        "mtime_repaired": repaired,
         "backup_dir": str(backup_dir(state_dir)),
         "archive_db": str(archive_db_path(state_dir)),
     }
@@ -651,9 +658,42 @@ def restore_pruned_transcript(state_dir: str, session_id: str) -> bool:
                     "SELECT role, text FROM messages WHERE chat_id=? ORDER BY seq", ("marionette:" + sid,))]
             finally:
                 con.close()
+        last_active = path.stat().st_mtime if path.exists() else None
         _atomic_write_json(str(path), raw)
+        if last_active is not None:
+            os.utime(path, (last_active, last_active))
         return True
     except (OSError, ValueError, sqlite3.Error):
+        return False
+
+
+def repair_stub_mtime(state_dir: str, session_id: str) -> bool:
+    """Give a stub back the last-activity time that v0.9.670 replaced with the boot time.
+
+    The backups and input receipts of the chat outlive the stub. A stub newer
+    than all of them got its mtime from the write, not from chat activity.
+    A stub that keeps its old mtime is never newer, so this changes nothing twice.
+    """
+    from .native_publication import native_publication
+    sid = (session_id or "").strip()
+    if not sid:
+        return False
+    path = _session_transcript_path(state_dir, sid)
+    folder = backup_dir(state_dir) / _safe_id("marionette")
+    try:
+        with native_publication(state_dir):
+            if not _is_pruned_stub(_raw_transcript(state_dir, sid)):
+                return False
+            records = [record.stat().st_mtime for record in (
+                path.with_name(path.stem + ".inputs.json"),
+                folder / ("%s.md" % _safe_id(sid)),
+                *folder.glob("%s-*.md" % _safe_id(sid)),
+            ) if record.exists()]
+            if not records or path.stat().st_mtime <= max(records) + 60:
+                return False
+            os.utime(path, (max(records), max(records)))
+            return True
+    except (OSError, ValueError):
         return False
 
 

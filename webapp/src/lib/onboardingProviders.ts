@@ -54,7 +54,7 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
   },
   "xai-oauth": {
     tagline: "SuperGrok plan",
-    blurb: "Sign in with SuperGrok. Full stack Grok for chat and workers.",
+    blurb: "Sign in with SuperGrok. Grok runs chat and workers.",
   },
   deepseek: {
     tagline: "DeepSeek models",
@@ -73,7 +73,7 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
   },
   "openai-codex": {
     tagline: "ChatGPT plan",
-    blurb: "Paste a Codex token, or sign in from Settings after you skip. Full stack either way.",
+    blurb: "Paste a Codex token, or sign in later in Settings > Accounts. Both run chat and workers.",
     keyUrl: "https://chatgpt.com",
   },
   nous: {
@@ -83,12 +83,12 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
   },
   zai: {
     tagline: "GLM Coding Plan",
-    blurb: "Z.AI Coding Plan or API key. Full stack chat and swarms on GLM-5.2.",
+    blurb: "Z.AI Coding Plan or API key. GLM-5.2 runs chat and swarms.",
     keyUrl: "https://z.ai/manage-apikey/apikey-list",
   },
   minimax: {
     tagline: "MiniMax models",
-    blurb: "MiniMax API key. Full stack chat and swarms.",
+    blurb: "MiniMax API key. It runs chat and swarms.",
     keyUrl: "https://www.minimax.io",
   },
   nvidia: {
@@ -100,7 +100,7 @@ export const ONBOARDING_COPY: Record<string, OnboardingCopy> = {
 
 const FALLBACK_COPY: OnboardingCopy = {
   tagline: "API key",
-  blurb: "One Full stack key runs chat and swarms. No other platform install.",
+  blurb: "One API key runs chat and swarms. No other install.",
 };
 
 export function onboardingCopy(name: string): OnboardingCopy {

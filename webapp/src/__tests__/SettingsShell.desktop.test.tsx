@@ -28,7 +28,7 @@ it.each([360, 640, 1024])("retains Settings side navigation and nested Escape/fo
     render(<SettingsShell onClose={onClose} onOpenWizard={() => {}} initialPage="models" />);
     const settings = screen.getByRole("dialog", { name: "Settings" });
     expect(within(settings).queryByRole("combobox")).toBeNull();
-    expect(within(settings).getByRole("button", { name: "Accounts & Keys" })).toBeVisible();
+    expect(within(settings).getByRole("button", { name: "Accounts" })).toBeVisible();
     const trigger = within(settings).getByRole("button", { name: "Open nested dialog" });
     trigger.focus();
     fireEvent.click(trigger);

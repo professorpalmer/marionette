@@ -77,6 +77,9 @@ API_KEY_PROVIDERS = frozenset({
 
 _lock = threading.RLock()
 _pools: Dict[str, "CredentialPool"] = {}
+# Entry ids this process removed, so a merge with the disk copy does not
+# bring them back.
+_removed_ids: set = set()
 _rr_index: Dict[str, int] = {}
 _strategies: Dict[str, str] = {}
 
@@ -136,13 +139,18 @@ class PooledCredential:
 
     @classmethod
     def from_store_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
+        token = str(payload.get("access_token") or "")
+        auth_type = str(payload.get("auth_type") or AUTH_TYPE_API_KEY)
+        # Older builds stored a Claude sign-in token as an api_key entry.
+        if auth_type == AUTH_TYPE_API_KEY:
+            auth_type = _auth_type_for(provider, token.strip())
         return cls(
             provider=provider,
             id=str(payload.get("id") or uuid.uuid4().hex[:8]),
             label=str(payload.get("label") or provider),
-            auth_type=str(payload.get("auth_type") or AUTH_TYPE_API_KEY),
+            auth_type=auth_type,
             source=str(payload.get("source") or "manual"),
-            access_token=str(payload.get("access_token") or ""),
+            access_token=token,
             refresh_token=payload.get("refresh_token"),
             priority=int(payload.get("priority") or 0),
             last_status=payload.get("last_status") or STATUS_OK,
@@ -154,6 +162,18 @@ class PooledCredential:
             base_url=payload.get("base_url"),
             extra=dict(payload.get("extra") or {}),
         )
+
+
+def _is_subscription_token(provider: str, token: str) -> bool:
+    """True for a plan sign-in token (Claude Max OAuth) stored as a plain key."""
+    if provider != "anthropic":
+        return False
+    from .oauth_anthropic import is_anthropic_oauth_token
+    return is_anthropic_oauth_token(token)
+
+
+def _auth_type_for(provider: str, token: str) -> str:
+    return AUTH_TYPE_OAUTH if _is_subscription_token(provider, token) else AUTH_TYPE_API_KEY
 
 
 def _exhausted_ttl(error_code: Optional[int]) -> int:
@@ -199,6 +219,7 @@ class CredentialPool:
         before = len(self._entries)
         self._entries = [e for e in self._entries if e.id != entry_id]
         if len(self._entries) != before:
+            _removed_ids.add(entry_id)
             _persist_all()
             return True
         return False
@@ -313,18 +334,43 @@ def _load_store() -> Dict[str, Any]:
     return {"version": 1, "pools": {}, "strategies": {}}
 
 
+def _merge_disk_entries(pool: CredentialPool, stored: List[Any]) -> None:
+    """Add entries that another process saved and this process has not seen.
+
+    An entry this process removed stays removed.
+    """
+    known = {e.id for e in pool.entries()}
+    for raw in stored:
+        if not isinstance(raw, dict):
+            continue
+        entry_id = str(raw.get("id") or "")
+        if not entry_id or entry_id in known or entry_id in _removed_ids:
+            continue
+        pool._entries.append(PooledCredential.from_store_dict(pool.provider, raw))
+        known.add(entry_id)
+
+
 def _persist_all() -> None:
+    """Write every pool. Each process writes the whole file, so pools this
+    process did not load and entries another process added are kept."""
     path = _pool_path()
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        payload = {
-            "version": 1,
-            "pools": {
-                prov: [e.to_store_dict() for e in pool.entries()]
-                for prov, pool in _pools.items()
-            },
-            "strategies": dict(_strategies),
+        disk = _load_store()
+        pools = {
+            prov: list(entries)
+            for prov, entries in (disk.get("pools") or {}).items()
+            if isinstance(entries, list)
         }
+        for prov, pool in _pools.items():
+            _merge_disk_entries(pool, pools.get(prov) or [])
+            pools[prov] = [e.to_store_dict() for e in pool.entries()]
+        strategies = {
+            k: v for k, v in (disk.get("strategies") or {}).items()
+            if v in SUPPORTED_STRATEGIES
+        }
+        strategies.update(_strategies)
+        payload = {"version": 1, "pools": pools, "strategies": strategies}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as f:
             json.dump(payload, f, indent=2)
@@ -403,7 +449,7 @@ def add_api_key(
         provider=provider,
         id=uuid.uuid4().hex[:8],
         label=(label or f"{provider}-{len(pool.entries()) + 1}").strip(),
-        auth_type=AUTH_TYPE_API_KEY,
+        auth_type=_auth_type_for(provider, key),
         source="manual",
         access_token=key,
         priority=len(pool.entries()),
@@ -460,18 +506,33 @@ def add_oauth_entry(
     )
     if not entry.access_token:
         raise ValueError("access_token required")
-    with _lock:
-        pool.add_entry(entry)
-        _mirror_pool_token_to_env(provider, pool)
     # Successful OAuth is an explicit reconnect: paste-key path already clears
     # disconnected via set_api_key, but device/PKCE login only hits the pool.
     # Without this, re-auth after a Settings toggle (or a 401 scare) leaves
     # credentials healthy in auth_pool.json while Provider.key() stays None.
     try:
         from .keys import unmark_disconnected
-        unmark_disconnected(provider)
+        unmark_disconnected(_POOL_OWNER.get(provider, provider))
+        if provider in _POOL_OWNER:
+            unmark_disconnected(provider)
     except Exception as e:
         _diag("credential_pool.oauth_unmark", e)
+    with _lock:
+        # A new sign-in replaces what can never work again: dead entries and
+        # sign-in tokens without a refresh token. It goes first, so the pilot
+        # uses it before any older entry.
+        for old in pool.entries():
+            if old.last_status == STATUS_DEAD or (
+                    old.auth_type == AUTH_TYPE_OAUTH and not old.refresh_token):
+                pool._entries.remove(old)
+                _removed_ids.add(old.id)
+                _replace_mirrored_token(provider, old.runtime_token, entry.access_token)
+        entry.priority = 0
+        for i, other in enumerate(sorted(pool.entries(), key=lambda e: e.priority)):
+            other.priority = i + 1
+        pool._entries.insert(0, entry)
+        _persist_all()
+        _mirror_pool_token_to_env(provider, pool)
     return entry
 
 
@@ -511,6 +572,7 @@ _OAUTH_REFRESH_MARGIN_MS = 60_000
 _OAUTH_REFRESH_RETRY_SECONDS = 60.0
 _refresh_retry_at: Dict[str, float] = {}
 SIGN_IN_AGAIN = "Sign-in expired: the refresh token was rejected. Sign in again."
+SIGN_IN_EXPIRED = "Sign-in expired: this token has no refresh token. Sign in again."
 
 
 def _oauth_refresher(provider: str):
@@ -608,6 +670,24 @@ def refresh_oauth_entry(entry: PooledCredential) -> bool:
         return True
 
 
+def _cannot_recover(entry: PooledCredential) -> bool:
+    """True when only a new sign-in can make this entry work."""
+    if entry.last_status == STATUS_DEAD:
+        return True
+    if entry.auth_type != AUTH_TYPE_OAUTH:
+        return False
+    # Codex, Nous and xAI store a refresh token, but no code here renews it.
+    return not entry.refresh_token or _oauth_refresher(entry.provider) is None
+
+
+def _mark_sign_in_expired(entry: PooledCredential, message: str) -> None:
+    entry.last_status = STATUS_DEAD
+    entry.last_status_at = time.time()
+    entry.last_error_code = 401
+    entry.last_error_message = (message or SIGN_IN_EXPIRED)[:500]
+    _persist_all()
+
+
 def _expires_soon(entry: PooledCredential) -> bool:
     expires = entry.expires_at_ms
     return (isinstance(expires, int)
@@ -647,10 +727,18 @@ def report_failure(
         return None
     if status_code == 401:
         # An expired OAuth access token is not a dead credential: renew it.
+        # A sign-in token that cannot renew stays expired until a new sign-in.
         with _lock:
             for entry in load_pool(provider).entries():
-                if entry.id == entry_id and refresh_oauth_entry(entry):
+                if entry.id != entry_id:
+                    continue
+                if refresh_oauth_entry(entry):
                     return entry.runtime_token
+                if _cannot_recover(entry):
+                    if entry.last_status != STATUS_DEAD:
+                        _mark_sign_in_expired(entry, SIGN_IN_EXPIRED)
+                    nxt = load_pool(provider).select(model)
+                    return nxt.runtime_token if nxt else None
     immediate = False
     if status_code in (402,):
         immediate = True
@@ -720,7 +808,7 @@ def _seed_from_env_and_keys(pool: CredentialPool) -> None:
             provider=provider,
             id=uuid.uuid4().hex[:8],
             label=source or provider,
-            auth_type=AUTH_TYPE_API_KEY,
+            auth_type=_auth_type_for(provider, token),
             source=source or "seed",
             access_token=token,
             priority=0,
@@ -735,6 +823,7 @@ def clear_pools_for_tests() -> None:
         _rr_index.clear()
         _strategies.clear()
         _refresh_retry_at.clear()
+        _removed_ids.clear()
 
 
 _ENV_TO_PROVIDER = {
@@ -787,6 +876,24 @@ _PROVIDER_TO_ENV_EXTRAS: Dict[str, tuple[str, ...]] = {
 }
 
 
+# The Settings provider that owns a pool, when the names differ.
+_POOL_OWNER: Dict[str, str] = {"xai-oauth": "xai"}
+
+
+def _turned_off(pool_name: str) -> bool:
+    """True when the user turned off the provider that owns this pool.
+
+    The drivers read the pool before the env, so the switch must stop the
+    pool too, or an "off" provider still drives the pilot.
+    """
+    try:
+        from .keys import get_disconnected
+        off = get_disconnected()
+    except Exception:
+        return False
+    return pool_name in off or _POOL_OWNER.get(pool_name, pool_name) in off
+
+
 def provider_for_env_var(env_name: str) -> Optional[str]:
     """Map a driver ``api_key_env`` name to the primary pool provider id."""
     return _ENV_TO_PROVIDER.get((env_name or "").strip())
@@ -802,7 +909,7 @@ def providers_for_env_var(env_name: str) -> List[str]:
     for extra in _ENV_FALLBACK_PROVIDERS.get(key, ()):
         if extra not in out:
             out.append(extra)
-    return out
+    return [name for name in out if not _turned_off(name)]
 
 
 def env_var_for_provider(provider: str) -> Optional[str]:
@@ -855,7 +962,7 @@ def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = No
     for extra in _PROVIDER_TO_ENV_EXTRAS.get(provider, ()):
         if extra not in env_names:
             env_names.append(extra)
-    if not env_names:
+    if not env_names or _turned_off(provider):
         return
     try:
         p = pool if pool is not None else load_pool(provider)

@@ -66,11 +66,11 @@ def test_resolve_opencode_go_deepseek_flash_pin_against_v4_registry(
         out = resolve_swarm_model_pin(pin, allowed_adapters=["agentic"])
         assert out["demoted"] is False, out
         assert out["resolved"] == "agentic/deepseek-v4-flash"
-        assert out["pin_fields"]["model"] == "deepseek-flash"
+        assert out["pin_fields"]["model"] == "deepseek-v4.1-flash"
         pin_obj, err = resolve_agentic_model_pin(pin)
         assert err == ""
         assert pin_obj is not None
-        assert pin_obj.model == "deepseek-flash"
+        assert pin_obj.model == "deepseek-v4.1-flash"
         assert pin_obj.router_model_id == "agentic/deepseek-v4-flash"
 
 

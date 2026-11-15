@@ -97,7 +97,7 @@ describe("small dialogs focus", () => {
     const onClose = vi.fn();
     render(<RegistryWizard onClose={onClose} />);
     const dialog = await screen.findByTestId("provider-onboarding");
-    await screen.findByText(/No Full stack providers/i);
+    await screen.findByText(/No provider can run workers yet/i);
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
     await expectTabStaysInside(dialog);
     fireEvent.pointerDown(document.body);

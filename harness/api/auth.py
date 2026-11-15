@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from .providers import (  # noqa: F401 — re-export surface for Handler
     ProviderServices,
+    get_accounts,
     get_auth_pools,
+    post_accounts_probe,
+    post_accounts_sign_out,
     post_auth_claude_cli_login,
     post_auth_claude_cli_logout,
     post_auth_claude_cli_models,
@@ -33,6 +36,9 @@ from .providers import (  # noqa: F401 — re-export surface for Handler
 
 __all__ = [
     "ProviderServices",
+    "get_accounts",
+    "post_accounts_probe",
+    "post_accounts_sign_out",
     "get_auth_pools",
     "post_auth_pools",
     "post_auth_pools_add",

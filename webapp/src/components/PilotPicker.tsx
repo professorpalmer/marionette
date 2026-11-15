@@ -258,11 +258,11 @@ export default function PilotPicker({
     const isActive = m === activeModel;
     const label = labelOf(m);
     const facts = factsState.kind === "ready" ? factsState.facts.get(m) : undefined;
-    // The line keeps its height while loading so rows never jump.
+    // The line keeps its height while loading or with no known fact, so rows never jump.
     const meta = factsState.kind === "loading"
       ? "\u00a0"
       : facts
-        ? modelFactParts(facts).join(" \u00b7 ")
+        ? modelFactParts(facts).join(" \u00b7 ") || "\u00a0"
         : "Details unknown";
     return (
       <div
@@ -270,7 +270,7 @@ export default function PilotPicker({
         id={optionId(m)}
         role="option"
         aria-selected={isSelected}
-        aria-description={factsState.kind === "loading" ? undefined : meta}
+        aria-description={meta.trim() ? meta : undefined}
         data-active={isActive ? "true" : undefined}
         onClick={() => swap(m)}
         onMouseMove={() => { if (!isActive) setActiveIdx(flat.indexOf(m)); }}

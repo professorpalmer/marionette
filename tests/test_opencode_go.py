@@ -271,7 +271,11 @@ def test_build_pilot_routes_chat_completions_models():
     driver = prov.build_pilot("opencode-go:deepseek-v4-flash")
     assert isinstance(driver, OpenAICompatDriver)
     assert driver.base_url == go.BASE_URL
-    assert driver.model == "deepseek-flash"
+    # Go answered 400 "Model deepseek-flash isn't included in OpenCode Go"
+    # on 2026-11-15; the live /models id is deepseek-v4.1-flash.
+    assert driver.model == "deepseek-v4.1-flash"
+    assert go.wire_model_id("deepseek-flash") == "deepseek-v4.1-flash"
+    assert go.wire_model_id("deepseek-v4.1-flash") == "deepseek-v4.1-flash"
     assert driver.api_key_env == "OPENCODE_GO_API_KEY"
     assert driver.extra_headers["User-Agent"] == go.USER_AGENT
 
@@ -561,10 +565,13 @@ def test_go_display_name_treats_wire_echo_as_uninformative():
     assert go.display_name_for("ox-alpha-free", {"name": "Custom Ox"}) == "Custom Ox"
 
 
-def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
-    assert oc.needs_catalog_overlay({"name": "ox-alpha-free"}, "ox-alpha-free")
-    assert oc.needs_catalog_overlay({"name": ""}, "ox-alpha-free")
-    assert not oc.needs_catalog_overlay({"name": "Ox Alpha Free"}, "ox-alpha-free")
+def test_go_display_name_keeps_a_case_only_native_name():
+    """With no verified label, "MiMo-V2.6-Flash" beats the bare wire id."""
+    assert go.display_name_for("mimo-v2.6-flash", {"name": "MiMo-V2.6-Flash"}) == "MiMo-V2.6-Flash"
+    assert go.display_name_for("mimo-v2.6-flash", {"name": "  "}) == "mimo-v2.6-flash"
+
+
+def test_catalog_overlay_replaces_only_an_id_echo_name():
     merged = oc.merge_catalog_overlay(
         {"name": "ox-alpha-free", "id": "ox-alpha-free"},
         {"name": "Ox Alpha Free", "source": "models.dev"},
@@ -577,7 +584,6 @@ def test_catalog_overlay_gating_treats_id_echo_as_uninformative():
         "ox-alpha-free",
     )
     assert kept["name"] == "Native Ox Label"
-    assert oc.needs_catalog_overlay({"name": "x-preview-f-free"}, "x-preview-f-free")
     assert oc.merge_catalog_overlay(
         {"name": "x-preview-f-free"},
         {"name": "Ox Alpha Free"},

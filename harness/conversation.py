@@ -4080,8 +4080,8 @@ class ConversationalSession(
             EC = _ec.ErrorClass
             if cls == EC.AUTH:
                 # No provider tail — AUTH bodies often echo key material.
-                return ("pilot: your API key was rejected (authentication failed). "
-                        "Check the key for this provider in Settings > Providers.")
+                from harness.accounts import auth_failure_text
+                return auth_failure_text(str(model).split(":", 1)[0])
             if cls == EC.QUOTA:
                 return ("pilot: the provider reports insufficient credit/quota on this "
                         "key. Top up or switch to a provider/model with available "

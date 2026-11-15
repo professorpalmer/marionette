@@ -25,8 +25,8 @@ import {
 import { usePanelNotice } from "../lib/useOperationalDiagnostic";
 import { SettingsCollapse } from "./SettingsCollapse";
 import WindowGlassSettings from "./WindowGlassSettings";
-import { SwitchTrack } from "./ui/Switch";
 import ProviderConfigModal from "./ProviderConfigModal";
+import AccountsList from "./AccountsList";
 import SettingsOptIns from "./SettingsOptIns";
 import type { ProviderConfigValues } from "../lib/providerConfig";
 import { REASONING_LEVELS } from "../lib/reasoningSupport";
@@ -41,6 +41,16 @@ export {
 } from "./settingsSnapshot";
 
 type OAuthFlowOwner = "openai-codex" | "xai-oauth" | "nous" | "anthropic" | "claude-cli" | "cursor-cli";
+
+/** The Accounts row that shows each sign-in flow. */
+const FLOW_ROW: Record<OAuthFlowOwner, string> = {
+  "openai-codex": "openai-codex",
+  "xai-oauth": "xai",
+  nous: "nous",
+  anthropic: "anthropic",
+  "claude-cli": "claude-code",
+  "cursor-cli": "cursor-cli",
+};
 
 export default function SettingsPane({ onOpenWizard, section = "general" }: { onOpenWizard: () => void; section?: SettingsSection }) {
   const show = (s: SettingsSection) => section === s;
@@ -95,10 +105,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   // Per-provider key management states
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [providersLoaded, setProvidersLoaded] = useState(false);
 
   const [keyBootstrapIssues, setKeyBootstrapIssues] = useState<NonNullable<Config["key_bootstrap_issues"]>>([]);
-  const [provKeyInput, setProvKeyInput] = useState<Record<string, string>>({});
   const [provBusy, setProvBusy] = useState<string>("");
   const [providerConfig, setProviderConfig] = useState<
     { manual: true } | { manual: false; provider: ProviderInfo } | null
@@ -114,20 +122,11 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   // One sign-in flow at a time. "awaiting_code" is the paste step of the
   // Claude Max flow: Complete must be clickable while it waits.
   const [oauthFlow, setOauthFlow] = useState<{ owner: OAuthFlowOwner; phase: "running" | "awaiting_code" } | null>(null);
-  const oauthBusy = oauthFlow !== null;
   const flowOwner = oauthFlow?.owner ?? null;
   const [oauthHint, setOauthHint] = useState("");
   const [oauthSessionId, setOauthSessionId] = useState("");
-  const [oauthPasteCode, setOauthPasteCode] = useState("");
   const oauthAbortRef = useRef(false);
   const [cursorCliStatus, setCursorCliStatus] = useState<{
-    installed?: boolean;
-    authenticated?: boolean;
-    label?: string;
-    error?: string;
-    binary?: string | null;
-  } | null>(null);
-  const [claudeCliStatus, setClaudeCliStatus] = useState<{
     installed?: boolean;
     authenticated?: boolean;
     label?: string;
@@ -393,7 +392,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   const refreshProviders = async () => {
     try {
       setProviders(await api.providers());
-      setProvidersLoaded(true);
     } catch (e) {
       console.error(e);
     }
@@ -410,16 +408,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     api.getCursorCliStatus({ refresh: false })
       .then(setCursorCliStatus)
       .catch((err) => console.error("Failed to load Cursor CLI status", err));
-    api.getClaudeCliStatus({ refresh: false })
-      .then(setClaudeCliStatus)
-      .catch((err) => console.error("Failed to load Claude Code status", err));
   };
 
   const loadProvidersList = () => {
     api.providers()
       .then((list) => {
         setProviders(list);
-        setProvidersLoaded(true);
       })
       .catch((err) => console.error("Failed to load providers", err));
   };
@@ -458,16 +452,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
   };
 
   const PLAN_POOL_PROVIDERS = ["cursor-cli", "openai-codex", "anthropic", "xai-oauth", "nous"] as const;
-  const poolEntriesFor = (provider: string) =>
-    (authPools?.pools || []).find((x) => x.provider === provider)?.entries || [];
-  const planAccountStatusLine = (provider: string) => {
-    const entries = poolEntriesFor(provider);
-    if (entries.length) {
-      const e = entries[0];
-      return `Signed in as ${e.label || e.masked || provider}`;
-    }
-    return "Not signed in";
-  };
 
   const handleAddPoolKey = async () => {
     const key = poolKeyInput.trim();
@@ -500,55 +484,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  /** Sign out every pool credential for a plan OAuth provider (Codex / Claude / xAI / Nous). */
-  const handlePlanPoolSignOut = async (provider: string) => {
-    const entries = poolEntriesFor(provider);
-    if (!entries.length) return;
-    setPoolBusy(provider);
-    setOauthHint("");
-    setError("");
-    try {
-      for (const e of entries) {
-        await api.removeAuthPoolEntry(provider, e.id);
-      }
-      // OAuth login also mirrors into keys.json / process env — clear that too
-      // so Sign out matches Cursor CLI (status flips to Not signed in).
-      try {
-        await api.clearProviderKey(provider);
-      } catch {
-        /* pool-only providers may not have a keys.json row */
-      }
-      if (provider === "xai-oauth") {
-        try {
-          await api.clearProviderKey("xai");
-        } catch {
-          /* ignore */
-        }
-      }
-      if (provider === "anthropic") {
-        setOauthSessionId("");
-        setOauthPasteCode("");
-      }
-      await refreshAuthPools();
-      await refreshProviders();
-      window.dispatchEvent(new Event("harness-config-changed"));
-      setOauthHint("Signed out");
-    } catch (e) {
-      console.error("Failed to sign out plan account", e);
-      setError("Failed to sign out");
-    } finally {
-      setPoolBusy("");
-    }
-  };
 
-  const refreshPlanPoolStatus = async () => {
-    try {
-      await refreshAuthPools();
-      await refreshProviders();
-    } catch (e) {
-      console.error("Failed to refresh plan account status", e);
-    }
-  };
 
   const handlePoolStrategy = async (provider: string, strategy: string) => {
     setPoolBusy(provider);
@@ -631,7 +567,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
       api.cancelAuthOAuth(sid, flowOwner ?? poolProvider).catch(() => { /* best-effort */ });
     }
     setOauthSessionId("");
-    setOauthPasteCode("");
     setOauthFlow(null);
     // Cursor CLI often finishes browser login before the poll/trust step;
     // Cancel must not overwrite an already-good account with "cancelled".
@@ -640,6 +575,20 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     } else {
       setOauthHint("Sign-in cancelled — click Sign in to try again.");
     }
+  };
+
+  /** Sign-ins that run here; the Accounts list runs Claude (Anthropic) itself. */
+  const accountSignIn = async (provider: string): Promise<void> => {
+    if (provider === "openai-codex") return handleCodexSignIn();
+    if (provider === "xai") return handleXaiSignIn();
+    if (provider === "nous") return handleNousSignIn();
+    if (provider === "claude-code") return handleClaudeCliSignIn();
+    if (provider === "cursor-cli") return handleCursorCliSignIn();
+  };
+
+  const accountSignOut = async (provider: string): Promise<void> => {
+    if (provider === "claude-code") return handleClaudeCliLogout();
+    if (provider === "cursor-cli") return handleCursorCliLogout();
   };
 
   const handleCodexSignIn = async () => handleDeviceOAuthSignIn("openai-codex", "chatgpt-codex");
@@ -672,16 +621,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
 
   const refreshClaudeCliStatus = async (opts?: { refresh?: boolean }) => {
     try {
-      const st = await api.getClaudeCliStatus({ refresh: opts?.refresh !== false });
-      setClaudeCliStatus(st);
-      return st;
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : "status check failed";
-      setClaudeCliStatus({
-        installed: false,
-        authenticated: false,
-        error: message,
-      });
+      return await api.getClaudeCliStatus({ refresh: opts?.refresh !== false });
+    } catch {
       return null;
     }
   };
@@ -845,59 +786,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
   };
 
-  const handleAnthropicSignIn = async () => {
-    oauthAbortRef.current = false;
-    setOauthFlow({ owner: "anthropic", phase: "running" });
-    setOauthHint("");
-    setOauthPasteCode("");
-    setOauthSessionId("");
-    setError("");
-    try {
-      const start = await api.startAuthOAuth("anthropic", poolLabelInput.trim() || undefined) as any;
-      if (!start.session_id || !start.auth_url) {
-        throw new Error(start.error || "oauth start failed");
-      }
-      setOauthSessionId(start.session_id);
-      setOauthFlow({ owner: "anthropic", phase: "awaiting_code" });
-      setOauthHint("Browser opened — authorize, then paste the code below (code#state).");
-      try {
-        window.open(start.auth_url, "_blank");
-      } catch {
-        setOauthHint(`Open ${start.auth_url} then paste the code below.`);
-      }
-    } catch (e: any) {
-      console.error("Anthropic OAuth start failed", e);
-      setError(e?.message || e?.error || "Claude sign-in failed to start");
-      setOauthHint("Sign-in failed — click Sign in (Claude Max) to try again.");
-      setOauthFlow(null);
-    }
-  };
 
-  const handleAnthropicComplete = async () => {
-    const code = oauthPasteCode.trim();
-    if (!oauthSessionId || !code) return;
-    setOauthFlow({ owner: "anthropic", phase: "running" });
-    setError("");
-    try {
-      const res = await api.completeAuthOAuth(oauthSessionId, code, "anthropic");
-      if (res.status !== "done") {
-        throw new Error(res.error || "oauth complete failed");
-      }
-      setOauthHint(`Signed in as ${res.label || "claude-max"}`);
-      setOauthPasteCode("");
-      setOauthSessionId("");
-      setOauthFlow(null);
-      await refreshAuthPools();
-      await refreshProviders();
-      setPoolProvider("anthropic");
-      window.dispatchEvent(new Event("harness-config-changed"));
-    } catch (e: any) {
-      console.error("Anthropic OAuth complete failed", e);
-      setError(e?.message || e?.error || "Claude sign-in failed");
-      // The session is still open: let the user paste again or Cancel.
-      setOauthFlow({ owner: "anthropic", phase: "awaiting_code" });
-    }
-  };
 
   const handleSaveBedrock = async () => {
     setBedrockBusy(true);
@@ -973,53 +862,12 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
     }
     // Close only once the key is stored; a failure stays in the modal.
     setProviderConfig(null);
-    setProvKeyInput((p) => ({ ...p, [name]: "" }));
     window.dispatchEvent(new Event("harness-config-changed"));
     void refreshProviders();
   };
 
-  const handleSetProviderKey = async (name: string) => {
-    const val = (provKeyInput[name] || "").trim();
-    if (!val) return;
-    setProvBusy(name);
-    try {
-      await api.setProviderKey(name, val);
-      setProvKeyInput((p) => ({ ...p, [name]: "" }));
-      await refreshProviders();
-      // Picker model list may now include this provider's live catalog.
-      window.dispatchEvent(new Event("harness-config-changed"));
-    } catch (e) {
-      console.error("Failed to set provider key", e);
-    } finally {
-      setProvBusy("");
-    }
-  };
 
-  const handleToggleProvider = async (name: string, enabled: boolean) => {
-    setProvBusy(name);
-    try {
-      await api.setProviderEnabled(name, enabled);
-      await refreshProviders();
-      window.dispatchEvent(new Event("harness-config-changed"));
-    } catch (e) {
-      console.error("Failed to toggle provider", e);
-    } finally {
-      setProvBusy("");
-    }
-  };
 
-  const handleClearProviderKey = async (name: string) => {
-    setProvBusy(name);
-    try {
-      await api.clearProviderKey(name);
-      await refreshProviders();
-      window.dispatchEvent(new Event("harness-config-changed"));
-    } catch (e) {
-      console.error("Failed to disconnect provider", e);
-    } finally {
-      setProvBusy("");
-    }
-  };
 
   const handleDisconnectGit = async () => {
     setGitConnecting(true);
@@ -1132,7 +980,7 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             Connect a provider
           </button>
           <p className="text-ui-10 text-muted">
-            Pick a provider, paste a key, start chatting. One Full stack key runs chat and swarms.
+            Pick a provider, paste a key, start chatting. One API key runs chat and swarms.
           </p>
         </div>
 
@@ -1467,21 +1315,15 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
             <DeviceAccess />
           </SettingsCollapse>
         )}
-        {gate("providers", "providers api keys connect disconnect per-provider key management") && (<>
-        {/* Per-provider key management: connect/disconnect each provider independently */}
+        {gate("providers", "accounts sign in api keys connect disconnect subscription oauth claude max anthropic chatgpt codex cursor xai grok nous openrouter openai login") && (<>
+        {/* One row per provider, one state, one primary action (harness/accounts.py). */}
         <SettingsCollapse
-          id="api-keys"
-          title="API keys"
+          id="accounts"
+          title="Accounts"
           defaultOpen={true}
           forceOpen={!!q}
-          onFirstOpen={loadProvidersList}
+          onFirstOpen={() => { loadProvidersList(); loadSignInData(); }}
           className="space-y-2"
-          summary={(() => {
-            if (!providersLoaded) return "…";
-            const list = providers.filter((p) => p.name !== "bedrock");
-            const n = list.filter((p) => p.has_key && !p.disconnected).length;
-            return `${n}/${list.length} connected`;
-          })()}
         >
           {keyBootstrapIssues.length > 0 && (
             <div
@@ -1499,113 +1341,20 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
               ))}
             </div>
           )}
-          <div className="text-ui-10 text-muted">
-            One Full stack key (OpenRouter, Anthropic, OpenAI, Gemini, …) runs the chat
-            pilot and agentic swarm/implement workers. No other platform install.
-            Env-imported keys get an on/off toggle (keeps the key) and Disconnect
-            (forgets it so you can paste a replacement).
-          </div>
-          <div className="space-y-1.5">
-            {providers.filter((p) => p.name !== "bedrock").map((p) => {
-              // Env-backed providers keep a toggle so disable does not destroy
-              // the imported key. Disconnect is also available so a replacement
-              // can be pasted — the toggle alone never reveals the key field.
-              const envBacked = !!p.has_env;
-              // Claude Code authenticates through its own CLI login (Accounts
-              // above). A pasted value cannot connect it, so its row is a switch.
-              const loginBacked = p.api_mode === "claude_cli";
-              const switchable = envBacked || loginBacked;
-              const enabled = !p.disconnected;
-              const connected = p.has_key;
-              const busy = provBusy === p.name;
-              return (
-              <div key={p.name} className="bg-panel2 border border-edge/50 rounded p-2">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${connected ? "bg-good" : "bg-faint"}`} />
-                    <button
-                      type="button"
-                      data-testid="provider-account-drilldown"
-                      data-provider={p.name}
-                      onClick={() => setProviderConfig({ manual: false, provider: p })}
-                      className="text-txt font-medium text-ui-11 hover:text-accent text-left"
-                    >
-                      {p.display_name || p.name}
-                    </button>
-                    {p.worker_capability_label ? (
-                      <span
-                        title={p.worker_capability_hint || undefined}
-                        className={`text-ui-10 shrink-0 ${
-                          p.worker_capability === "full_stack"
-                            ? "text-good/80"
-                            : p.worker_capability === "platform_worker"
-                              ? "text-accent/80"
-                              : "text-warn/90"
-                        }`}
-                      >
-                        {p.worker_capability_label}
-                      </span>
-                    ) : null}
-                    <span
-                      title={envBacked ? `Key imported from your environment (${p.env_var || "env var"})` : undefined}
-                      className="text-faint text-ui-10 font-mono truncate"
-                    >
-                      {loginBacked
-                        ? (!enabled ? "disabled - via login" : connected ? "connected - via login" : "not signed in")
-                        : envBacked
-                        ? `${enabled ? "connected" : "disabled"} - via env`
-                        : p.has_key
-                          ? "connected - via key"
-                          : "not connected"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {switchable ? (
-                      <button
-                        role="switch"
-                        aria-checked={enabled}
-                        title={enabled ? "Enabled -- click to turn off (key is kept for easy re-enable)" : "Disabled -- click to turn on"}
-                        onClick={() => handleToggleProvider(p.name, !enabled)}
-                        disabled={busy}
-                        className="flex shrink-0 rounded-full disabled:opacity-40"
-                      >
-                        <SwitchTrack on={enabled} />
-                      </button>
-                    ) : null}
-                    {connected && !loginBacked ? (
-                      <button
-                        onClick={() => handleClearProviderKey(p.name)}
-                        disabled={busy}
-                        className="bg-risk/10 hover:bg-risk/20 text-risk border border-risk/30 hover:border-risk/50 rounded px-2 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors shrink-0"
-                      >
-                        Disconnect
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                {!connected && !loginBacked && (
-                  <div className="flex gap-2 mt-1.5">
-                    <input
-                      type="password"
-                      placeholder={`${p.env_var || "API key"}...`}
-                      value={provKeyInput[p.name] || ""}
-                      onChange={(e) => setProvKeyInput((prev) => ({ ...prev, [p.name]: e.target.value }))}
-                      disabled={busy}
-                      className="flex-1 bg-panel border border-edge rounded px-2 py-0.5 text-txt text-ui-11 focus:outline-none focus:border-accent disabled:opacity-50 font-mono"
-                    />
-                    <button
-                      onClick={() => handleSetProviderKey(p.name)}
-                      disabled={busy || !(provKeyInput[p.name] || "").trim()}
-                      className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 hover:border-accent/50 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30 transition-colors shrink-0"
-                    >
-                      Connect
-                    </button>
-                  </div>
-                )}
-              </div>
-              );
-            })}
-          </div>
+          <p className="text-ui-10 text-muted leading-normal">
+            Each provider has one row. The row shows the credential the pilot uses.
+            Check sends one request to the provider and shows its answer.
+          </p>
+          <AccountsList
+            onExternalSignIn={accountSignIn}
+            onExternalSignOut={accountSignOut}
+            onCancelFlow={handleCancelOAuth}
+            flow={flowOwner ? { provider: FLOW_ROW[flowOwner], hint: oauthHint } : null}
+            onOpenDetails={(name) => {
+              const provider = providers.find((p) => p.name === name);
+              if (provider) setProviderConfig({ manual: false, provider });
+            }}
+          />
           <button
             type="button"
             data-testid="add-provider"
@@ -1629,355 +1378,6 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
         ) : null}
 
         </>)}
-
-        {gate("providers", "sign in subscription oauth chatgpt codex claude max cursor xai grok nous plan account login") && (<>
-        <SettingsCollapse
-          id="sign-in"
-          title="Optional plan sign-in"
-          defaultOpen={false}
-          forceOpen={!!q}
-          onFirstOpen={loadSignInData}
-          className="space-y-2"
-          summary={(() => {
-            let n = 0;
-            if (poolEntriesFor("openai-codex").length) n++;
-            if (poolEntriesFor("anthropic").length) n++;
-            if (cursorCliStatus?.authenticated) n++;
-            if (poolEntriesFor("xai-oauth").length) n++;
-            if (poolEntriesFor("nous").length) n++;
-            return n > 0 ? `${n} signed in` : "plan accounts";
-          })()}
-        >
-          <p className="text-ui-10 text-muted leading-normal">
-            Optional. A Full stack API key below is enough for chat and swarms — no
-            Cursor, Claude, or Codex CLI install. Plan logins that are Full stack
-            (Codex, Claude Max, OpenCode Go, Nous) also drive workers. Cursor CLI is Pilot only.
-          </p>
-          <div className="space-y-1.5">
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  ChatGPT Codex{" "}
-                  <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {planAccountStatusLine("openai-codex")}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleCodexSignIn}
-                  disabled={oauthBusy || poolBusy === "openai-codex"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "openai-codex" ? "Waiting for browser..." : "Sign in"}
-                </button>
-                {poolEntriesFor("openai-codex").length ? (
-                  <button
-                    type="button"
-                    onClick={() => handlePlanPoolSignOut("openai-codex")}
-                    disabled={oauthBusy || poolBusy === "openai-codex"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                {flowOwner === "openai-codex" ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  Claude Max{" "}
-                  <span className="text-good/80 font-normal" title="Subscription auth stamps Anthropic credentials used by agentic workers.">Full stack</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {planAccountStatusLine("anthropic")}
-                </span>
-              </div>
-              <p className="text-ui-10 text-muted mt-1 leading-normal">
-                Claude Pro/Max subscription via claude.ai. Enterprise org keys use API Keys below (or Bedrock) — not this Sign in.
-              </p>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleAnthropicSignIn}
-                  disabled={oauthBusy || poolBusy === "anthropic"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "anthropic" ? "Waiting for code..." : "Sign in"}
-                </button>
-                {poolEntriesFor("anthropic").length ? (
-                  <button
-                    type="button"
-                    onClick={() => handlePlanPoolSignOut("anthropic")}
-                    disabled={oauthBusy || poolBusy === "anthropic"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                {flowOwner === "anthropic" || oauthSessionId ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-              {oauthSessionId ? (
-                <div className="flex items-center gap-2 mt-1.5">
-                  <input
-                    type="text"
-                    value={oauthPasteCode}
-                    onChange={(e) => setOauthPasteCode(e.target.value)}
-                    placeholder="paste authorization code#state"
-                    className="flex-1 bg-panel border border-edge rounded px-2 py-1 text-ui-11 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAnthropicComplete}
-                    disabled={oauthFlow?.phase === "running" || !oauthPasteCode.trim()}
-                    className="bg-accent/15 hover:bg-accent/25 text-accent border border-accent/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                  >
-                    Complete
-                  </button>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  Cursor CLI (plan){" "}
-                  <span className="text-warn/90 font-normal" title="Agent login powers the chat pilot only. Swarm/implement workers need a Full stack provider or a Cursor API key in Credential pools.">Pilot only</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {cursorCliStatus?.installed === false
-                    ? (cursorCliStatus.error || "agent binary not found")
-                    : cursorCliStatus?.authenticated
-                      ? `Signed in as ${cursorCliStatus.label || "Cursor account"}`
-                      : (cursorCliStatus?.error || "Not signed in")}
-                </span>
-              </div>
-              <p className="text-ui-10 text-muted mt-1 leading-normal">
-                Optional Cursor plan via Agent CLI or CURSOR_API_KEY. Skip if a Full stack chat key is already set.
-              </p>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleCursorCliSignIn}
-                  disabled={oauthBusy}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "cursor-cli" ? "Waiting for login..." : "Sign in"}
-                </button>
-                {cursorCliStatus?.authenticated ? (
-                  <button
-                    type="button"
-                    onClick={handleCursorCliLogout}
-                    disabled={oauthBusy}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                {flowOwner === "cursor-cli" ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshCursorCliStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  Claude Code (Max){" "}
-                  <span className="text-warn/90 font-normal" title="Claude Code login powers the chat pilot. Puppetmaster claude-code workers can use the same login when that adapter is enabled. It is not an Anthropic API key.">Pilot</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {claudeCliStatus?.installed === false
-                    ? (claudeCliStatus.error || "claude binary not found")
-                    : claudeCliStatus?.authenticated
-                      ? `Signed in as ${claudeCliStatus.label || "Claude account"}${
-                          providers.some((p) => p.name === "claude-code" && p.disconnected)
-                            ? " - off in API keys"
-                            : ""
-                        }`
-                      : (claudeCliStatus?.error || "Not signed in")}
-                </span>
-              </div>
-              <p className="text-ui-10 text-muted mt-1 leading-normal">
-                Official Claude Code CLI. Uses your Max/Pro login, not ANTHROPIC_API_KEY.
-              </p>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleClaudeCliSignIn}
-                  disabled={oauthBusy}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "claude-cli" ? "Waiting for login..." : "Sign in"}
-                </button>
-                {claudeCliStatus?.authenticated ? (
-                  <button
-                    type="button"
-                    onClick={handleClaudeCliLogout}
-                    disabled={oauthBusy}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshClaudeCliStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  xAI SuperGrok{" "}
-                  <span className="text-good/80 font-normal" title="OAuth stamps an xAI key that syncs into agentic workers.">Full stack</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {planAccountStatusLine("xai-oauth")}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleXaiSignIn}
-                  disabled={oauthBusy || poolBusy === "xai-oauth"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "xai-oauth" ? "Waiting for browser..." : "Sign in"}
-                </button>
-                {poolEntriesFor("xai-oauth").length ? (
-                  <button
-                    type="button"
-                    onClick={() => handlePlanPoolSignOut("xai-oauth")}
-                    disabled={oauthBusy || poolBusy === "xai-oauth"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                {flowOwner === "xai-oauth" ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-panel2 border border-edge/50 rounded p-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-txt font-medium text-ui-11">
-                  Nous{" "}
-                  <span className="text-good/80 font-normal" title="Powers chat pilot and agentic swarm/implement workers.">Full stack</span>
-                </span>
-                <span className="text-faint text-ui-10 font-mono truncate">
-                  {planAccountStatusLine("nous")}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                <button
-                  type="button"
-                  onClick={handleNousSignIn}
-                  disabled={oauthBusy || poolBusy === "nous"}
-                  className="bg-good/10 hover:bg-good/20 text-good border border-good/30 rounded px-2.5 py-0.5 font-medium text-ui-10 disabled:opacity-30"
-                >
-                  {flowOwner === "nous" ? "Waiting for browser..." : "Sign in"}
-                </button>
-                {poolEntriesFor("nous").length ? (
-                  <button
-                    type="button"
-                    onClick={() => handlePlanPoolSignOut("nous")}
-                    disabled={oauthBusy || poolBusy === "nous"}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10 disabled:opacity-30"
-                  >
-                    Sign out
-                  </button>
-                ) : null}
-                {flowOwner === "nous" ? (
-                  <button
-                    type="button"
-                    onClick={handleCancelOAuth}
-                    className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                  >
-                    Cancel
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => { refreshPlanPoolStatus(); }}
-                  className="text-muted hover:text-txt border border-edge rounded px-2 py-0.5 text-ui-10"
-                >
-                  Refresh status
-                </button>
-              </div>
-            </div>
-          </div>
-          {oauthHint ? (
-            <p className="text-ui-10 text-accent font-mono leading-normal">{oauthHint}</p>
-          ) : null}
-        </SettingsCollapse>
-        </>)}
         {gate("providers", "credential pool rotate cursor openrouter anthropic openai api key accounts") && (<>
         <SettingsCollapse
           id="credential-pools"
@@ -1993,12 +1393,10 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           })()}
         >
           <p className="text-ui-10 text-muted leading-normal">
-            Add multiple API keys for the same provider. On plan-limit / 429 / 402 the pilot
-            rotates to the next healthy entry (prompt cache may reset on rotate).
-            Plan accounts (ChatGPT Codex, Claude Max, Cursor CLI, xAI, Nous) come from
-            Optional plan sign-in above — pools are for multi-key rotate only. Cursor CLI
-            is Pilot only; a single Full stack API key is enough. When every entry is
-            exhausted, the turn fails until a cooldown expires or you add another key.
+            Optional. Add more API keys for one provider. When a key hits a plan limit
+            (HTTP 429 or 402), the pilot uses the next key. The prompt cache can reset then.
+            Sign-ins (ChatGPT Codex, Claude, Cursor CLI, xAI, Nous) are in Accounts above.
+            When no key works, the turn fails until a cooldown ends or you add a key.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {POOL_FOCUS.map((p) => (
@@ -2019,17 +1417,8 @@ export default function SettingsPane({ onOpenWizard, section = "general" }: { on
           <div className="space-y-1.5 bg-panel2 border border-edge/50 rounded p-2">
             {(PLAN_POOL_PROVIDERS as readonly string[]).includes(poolProvider) ? (
               <>
-                <p className="text-ui-10 font-mono text-faint">
-                  {poolProvider === "cursor-cli"
-                    ? (cursorCliStatus?.installed === false
-                      ? (cursorCliStatus.error || "agent binary not found")
-                      : cursorCliStatus?.authenticated
-                        ? `Signed in as ${cursorCliStatus.label || "Cursor account"}`
-                        : (cursorCliStatus?.error || "Not signed in"))
-                    : planAccountStatusLine(poolProvider)}
-                </p>
                 <p className="text-ui-10 text-muted">
-                  <span className="text-accent">Sign in above</span> to connect your plan account.
+                  Sign in to this account in Accounts above.
                 </p>
                 <select
                   value={

@@ -25,7 +25,7 @@ export default function ProviderKeyBanner({ onAddKey }: { onAddKey: () => void }
         Chat works. Add an API key for swarms.
       </span>
       <span className="text-muted hidden sm:inline">
-        Pilot-only login cannot drive workers. Paste a Full stack key (OpenRouter, Codex, …) — no Cursor install.
+        A CLI login runs chat only. Add an API key (OpenRouter, Codex, …) in Settings {">"} Accounts.
       </span>
       <div className="flex-1" />
       <button

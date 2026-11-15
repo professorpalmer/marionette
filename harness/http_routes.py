@@ -361,6 +361,8 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/wiki/disconnect": post_json(
             _wiki_api.post_wiki_disconnect, needs_body=False),
         "/api/bedrock": post_json(_plat_api.post_bedrock),
+        "/api/accounts/probe": post_json(_auth_api.post_accounts_probe),
+        "/api/accounts/sign-out": post_json(_auth_api.post_accounts_sign_out),
         "/api/auth/pools": post_json(_auth_api.post_auth_pools),
         "/api/auth/pools/add": post_json(
             _auth_api.post_auth_pools_add, services=svc.provider_services),
@@ -930,6 +932,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
         ),
         "/api/wiki/config": get_json(_wiki_api.get_wiki_config_payload),
         "/api/bedrock": get_json(_plat_api.get_bedrock),
+        "/api/accounts": get_json(_auth_api.get_accounts),
         "/api/auth/pools": _get_auth_pools,
         "/api/wiki/graph": get_json(
             _wiki_api.get_wiki_graph, services=svc.wiki_services),

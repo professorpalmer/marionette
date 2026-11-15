@@ -215,7 +215,7 @@ const SECTION_ORDER: readonly PaletteSectionId[] = ["commands", "sessions", "fil
 type Ranked = { item: PaletteItem; score: number };
 
 function sessionItem(session: Session, nowMs: number | undefined): PaletteItem {
-  const parts = [workspaceName(session.workspace_root)];
+  const parts = [session.archived ? "Archived" : "", workspaceName(session.workspace_root)].filter(Boolean);
   const lastActive = session.updated ?? session.created;
   if (lastActive) parts.push(sessionAge(lastActive, nowMs));
   return {
@@ -228,18 +228,20 @@ function sessionItem(session: Session, nowMs: number | undefined): PaletteItem {
 }
 
 function rankSessions(query: string, sources: PaletteSources): Ranked[] {
-  const live = sources.sessions.filter((row) => row.id !== sources.currentSessionId && !row.archived);
+  const others = sources.sessions.filter((row) => row.id !== sources.currentSessionId);
   if (!query.trim()) {
-    return recentSessionRows(live, sources.currentSessionId, RECENT_SESSIONS).map((row) => ({
+    // Recents leave archived chats out; a typed query finds them.
+    return recentSessionRows(others.filter((row) => !row.archived), sources.currentSessionId, RECENT_SESSIONS).map((row) => ({
       item: sessionItem(row, sources.nowMs),
       score: 0,
     }));
   }
-  const byId = new Map(live.map((row) => [row.id, row]));
+  const byId = new Map(others.map((row) => [row.id, row]));
   const ranked: Ranked[] = [];
-  for (const row of live) {
+  for (const row of others) {
     const score = scoreText(`${row.title || ""} ${workspaceName(row.workspace_root)}`, query);
-    if (score !== null) ranked.push({ item: sessionItem(row, sources.nowMs), score });
+    // An archived title match ranks just below a live one with the same score.
+    if (score !== null) ranked.push({ item: sessionItem(row, sources.nowMs), score: row.archived ? score - 0.5 : score });
   }
   const seen = new Set(ranked.map((row) => row.item.key));
   for (const hit of sources.sessionHits) {
@@ -249,7 +251,8 @@ function rankSessions(query: string, sources: PaletteSources): Ranked[] {
     const item = sessionItem(row, sources.nowMs);
     // A transcript hit ranks below any title hit; the snippet says why it matched.
     const snippet = hit.snippet.replace(/^(?:user|assistant|pilot):\s*/i, "");
-    ranked.push({ item: snippet && item.kind === "session" ? { ...item, detail: snippet } : item, score: 90 });
+    const detail = row.archived ? `Archived \u00b7 ${snippet}` : snippet;
+    ranked.push({ item: snippet && item.kind === "session" ? { ...item, detail } : item, score: 90 });
   }
   return ranked;
 }

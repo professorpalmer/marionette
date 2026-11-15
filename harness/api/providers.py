@@ -437,7 +437,38 @@ def post_auth_oauth_complete(body: dict) -> tuple[int, dict]:
             invalidate_models_cache("anthropic")
         except Exception:
             pass
-        res = {**res, **list_pool_public("anthropic")}
+        from ..accounts import probe_account
+        res = {**res, **list_pool_public("anthropic"), **probe_account("anthropic")}
+    return 200, res
+
+
+def get_accounts() -> tuple[int, dict]:
+    """GET /api/accounts — one row per provider with one state."""
+    from ..accounts import account_rows
+    return 200, {"accounts": account_rows()}
+
+
+def post_accounts_probe(body: dict) -> tuple[int, dict]:
+    """POST /api/accounts/probe — send one request with the pilot credential."""
+    from ..accounts import probe_account
+    name = str(body.get("provider", "")).strip()
+    if not name:
+        return 400, {"error": "provider required"}
+    res = probe_account(name)
+    return (400 if "error" in res else 200), res
+
+
+def post_accounts_sign_out(body: dict) -> tuple[int, dict]:
+    """POST /api/accounts/sign-out — remove the sign-in entries of one row."""
+    from ..accounts import sign_out_account
+    from ..auto_registry import sync_agentic_registry_safe
+    name = str(body.get("provider", "")).strip()
+    if not name:
+        return 400, {"error": "provider required"}
+    res = sign_out_account(name)
+    if "error" in res:
+        return 400, res
+    sync_agentic_registry_safe()
     return 200, res
 
 

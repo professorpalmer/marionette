@@ -28,6 +28,13 @@ from .display_rows import now_ms
 
 NEST_STATUSES = ("working", "done", "failed", "stopped")
 REPORT_CHARS = 400
+# The read action: the last reply in full up to READ_REPORT_CHARS, and the
+# last READ_MESSAGES messages, each cut to READ_MESSAGE_CHARS, all of them
+# within READ_TAIL_CHARS.
+READ_REPORT_CHARS = 4000
+READ_MESSAGES = 12
+READ_MESSAGE_CHARS = 1200
+READ_TAIL_CHARS = 6000
 # Automatic parent turns since the last user message. Stops report loops.
 MAX_AUTO_WAKES = 8
 # Delivery retry while the parent is busy: every half second for one minute.
@@ -120,6 +127,44 @@ def report_from_history(history: List[dict], limit: int = REPORT_CHARS) -> str:
     return ""
 
 
+def _cut(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def last_reply(history: List[dict], limit: int = READ_REPORT_CHARS) -> str:
+    """The text of the last assistant reply, line breaks kept, cut to ``limit``."""
+    for message in reversed(history or []):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            text = message_text(message.get("content")).strip()
+            if text:
+                return _cut(text, limit)
+    return ""
+
+
+def _tail_text(message: dict) -> str:
+    text = message_text(message.get("content"))
+    if isinstance(message.get("content"), list):
+        results = [message_text(p.get("content")) for p in message["content"]
+                   if isinstance(p, dict) and p.get("type") == "tool_result"]
+        text = "\n".join([text, *results]).strip()
+    calls = []
+    for call in message.get("tool_calls") or []:
+        fn = (call or {}).get("function") or {}
+        calls.append(f"[call {fn.get('name', '?')} {_cut(str(fn.get('arguments') or ''), 200)}]")
+    return _cut("\n".join(part for part in (text, *calls) if part), READ_MESSAGE_CHARS)
+
+
+def transcript_tail(history: List[dict], count: int = READ_MESSAGES,
+                    cap: int = READ_TAIL_CHARS) -> List[dict]:
+    """The last ``count`` messages as ``{role, text}``, newest last, within ``cap``."""
+    rows = [{"role": str(m.get("role") or ""), "text": _tail_text(m)}
+            for m in (history or [])[-count:] if isinstance(m, dict)]
+    while len(rows) > 1 and sum(len(r["text"]) for r in rows) > cap:
+        rows.pop(0)
+    return rows
+
+
 def live_status(stored: str, runner_status: str, in_flight: bool = False) -> str:
     """The status to show. Only a turn that runs now is ``working``.
 
@@ -152,7 +197,8 @@ def note_text(note: dict) -> str:
     lines.append(f"Report: {report}" if report else "Report: (no text in the final reply)")
     lines.append(
         'This is the child\'s report, not proof. Check its branch or files before you '
-        'say the work is done. Use nested_session action "message" to reply to it.'
+        'say the work is done. Use nested_session action "read" for its full reply, '
+        '"message" to reply to it.'
     )
     lines.append("</nested-session-event>")
     return "\n".join(lines)
@@ -182,11 +228,28 @@ def should_wake(*, pending_wake: bool, siblings_working: bool, parent_idle: bool
             and not stop_held and auto_wakes < MAX_AUTO_WAKES)
 
 
-def child_preamble(parent_title: str, name: str, branch: str, worktree: str) -> str:
+def fork_prefix(history: Any) -> List[dict]:
+    """A deep copy of ``history`` up to its last tool-complete boundary.
+
+    The same cut as ``/api/session/fork``: the parent's turn that calls
+    ``start`` has an open tool call, so the copy ends before that turn's
+    tool work and never holds a call with no result.
+    """
+    import copy
+    from .sessions import _fork_boundaries, rematerialize_driver_messages
+    messages = rematerialize_driver_messages(list(history or []))
+    bounds = _fork_boundaries(messages)
+    return copy.deepcopy(messages[:bounds[-1]["event_id"]]) if bounds else []
+
+
+def child_preamble(parent_title: str, name: str, branch: str, worktree: str,
+                   forked: bool = False) -> str:
     where = f"Your git worktree is {worktree} on branch {branch}. " if branch else ""
+    context = ("The messages above are copied from the parent session for context. "
+               "They are not your task, and their paths are not your worktree. ") if forked else ""
     return (
         f'You are the nested session "{name}", started by the session "{parent_title}". '
-        f"{where}Do only the task below. The first {REPORT_CHARS} characters of your final "
+        f"{context}{where}Do only the task below. The first {REPORT_CHARS} characters of your final "
         "reply go back to the parent session, so put the result first: what you did, "
         "the commit or files, and what is not done or not verified. Do not push.\n\nTask:\n"
     )
@@ -203,6 +266,8 @@ def child_payload(row: dict, runner_status: str, in_flight: bool = False) -> dic
         "todo": nest.get("todo", ""),
         "branch": nest.get("branch", ""),
         "worktree": nest.get("worktree", ""),
+        "archived": bool(row.get("archived")),
+        "model": (row.get("pilot_preferences") or {}).get("driver", ""),
         "updated": nest.get("updated") or row.get("created") or 0,
     }
 
@@ -230,6 +295,17 @@ class NestServices:
     add_worktree: Optional[Callable[[str, str], dict]] = None
     # Build a runner for a session with no view change (a wake needs one).
     ensure_runner: Optional[Callable[[str], Any]] = None
+    # (session_id, archived) -> (http status, body). The session archive path:
+    # vault ingest and prune, or restore.
+    archive_row: Optional[Callable[[str, bool], Any]] = None
+    # Remove a session's runner from the registry.
+    drop_runner: Optional[Callable[[str], None]] = None
+    # The picker spec a model name means, or None when the picker does not list it.
+    resolve_model: Optional[Callable[[str], Optional[str]]] = None
+    picker_models: Optional[Callable[[], List[str]]] = None
+    # The sessions state dir (transcripts). A fork start writes the child
+    # transcript there; ``read`` loads a child with no runner from there.
+    state_dir: Optional[Callable[[], str]] = None
 
 
 class NestedSupervisor:
@@ -247,7 +323,8 @@ class NestedSupervisor:
     # -- tool actions --------------------------------------------------
 
     def start(self, parent: Any, *, name: str, brief: str, title: str = "",
-              todo: str = "") -> dict:
+              todo: str = "", model: str = "", reasoning_effort: str = "",
+              context: str = "") -> dict:
         sessions = self.svc.sessions
         parent_id = getattr(parent, "harness_session_id", "") or ""
         if not parent_id:
@@ -259,6 +336,17 @@ class NestedSupervisor:
             return {"ok": False, "error": "name must be 2-40 characters: lowercase letters, digits, and hyphens."}
         if not (brief or "").strip():
             return {"ok": False, "error": "brief is required: the full task for the child."}
+        prefs = self._pilot_choice(model, reasoning_effort)
+        if "error" in prefs:
+            return {"ok": False, "error": prefs["error"]}
+        context = (context or "").strip().lower()
+        if context not in ("", "fresh", "fork"):
+            return {"ok": False, "error": 'context must be "fork" (the child gets this conversation) or "fresh".'}
+        history: Optional[List[dict]] = None
+        if context == "fork":
+            if self.svc.state_dir is None:
+                return {"ok": False, "error": "A fork start needs the Marionette app server."}
+            history = fork_prefix(getattr(parent, "_history", None))
         taken = [(row.get("nest") or {}).get("name", "") for row in sessions.children_of(parent_id)]
         slug = unique_name(slug, taken)
         parent_row = next((r for r in sessions.rows() if r.get("id") == parent_id), {})
@@ -266,14 +354,17 @@ class NestedSupervisor:
                 or getattr(getattr(parent, "config", None), "repo", "") or "").strip()
         if not root or self.svc.add_worktree is None:
             return {"ok": False, "error": "Nested sessions need a project folder that is a git repository."}
+        nest = {"name": slug, "todo": (todo or "").strip(), "status": "working",
+                "report": "", "updated": time.time(), "worktree": "", "branch": ""}
+        if history is not None:
+            nest.update(context="fork", forked_messages=len(history))
         try:
             row = sessions.create_child(
-                parent_id, title=(title or "").strip() or slug,
-                nest={"name": slug, "todo": (todo or "").strip(), "status": "working",
-                      "report": "", "updated": time.time(), "worktree": "", "branch": ""},
-                workspace_root=root,
+                parent_id, title=(title or "").strip() or slug, nest=nest,
+                workspace_root=root, pilot_preferences=prefs,
+                history=history, state_dir=self.svc.state_dir() if history is not None else "",
             )
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             return {"ok": False, "error": str(exc)}
         sid = row["id"]
         # Each child writes only in its own worktree, so two children never
@@ -289,16 +380,47 @@ class NestedSupervisor:
         sessions.update_nest(sid, worktree=tree["path"], branch=tree.get("branch", ""))
         linked = self._link_todo(parent, todo, sid, slug)
         message = child_preamble(parent_row.get("title") or "parent", slug,
-                                 tree.get("branch", ""), tree.get("path", "")) + brief.strip()
+                                 tree.get("branch", ""), tree.get("path", ""),
+                                 forked=history is not None) + brief.strip()
         self._begin(sid, message, driver="parent")
         bump_rev()
         result = {
             "ok": True, "session_id": sid, "name": slug,
             "branch": tree.get("branch", ""), "worktree": tree["path"],
         }
+        if history is not None:
+            result["forked_messages"] = len(history)
+        chosen = sessions.pilot_preferences(sid)
+        for key, field in (("driver", "model"), ("reasoning_effort", "reasoning_effort")):
+            if chosen.get(key):
+                result[field] = chosen[key]
         if linked is not None:
             result["todos"] = linked
         return result
+
+    def _pilot_choice(self, model: str, effort: str) -> dict:
+        """The child's own pilot preferences, or ``{"error": ...}``.
+
+        The model must be one the picker lists. There is no substitute: an
+        unknown name, or no picker to check it against, is refused.
+        """
+        from .reasoning_effort import REASONING_EFFORT_LEVELS
+        prefs: dict = {}
+        effort = (effort or "").strip().lower()
+        if effort:
+            if effort not in REASONING_EFFORT_LEVELS:
+                return {"error": f"reasoning_effort must be one of: {', '.join(REASONING_EFFORT_LEVELS)}."}
+            prefs["reasoning_effort"] = effort
+        model = (model or "").strip()
+        if model:
+            spec = self.svc.resolve_model(model) if self.svc.resolve_model is not None else None
+            if not spec:
+                listed = self.svc.picker_models() if self.svc.picker_models is not None else []
+                shown = ", ".join(listed[:12]) + (", ..." if len(listed) > 12 else "")
+                return {"error": f"Model {model!r} is not in the model picker. "
+                                 + (f"Picker models: {shown}." if shown else "No picker models are available.")}
+            prefs["driver"] = spec
+        return prefs
 
     def message(self, parent: Any, child: str, text: str) -> dict:
         row = self._child_row(parent, child)
@@ -306,6 +428,8 @@ class NestedSupervisor:
             return {"ok": False, "error": f"No child session {child!r} of this session."}
         if not (text or "").strip():
             return {"ok": False, "error": "message is required."}
+        if row.get("archived"):
+            return {"ok": False, "error": f"The child {child!r} is archived. Use action unarchive first."}
         sid = row["id"]
         runner = self.svc.get_runner(sid)
         busy = self.svc.runner_status(sid) in ("running", "attaching")
@@ -337,6 +461,126 @@ class NestedSupervisor:
         self.svc.sessions.update_nest(row["id"], status="stopped", updated=time.time())
         bump_rev()
         return {"ok": True, "session_id": row["id"], "status": "stopped"}
+
+    def archive(self, parent: Any, child: str) -> dict:
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        return self.set_archived(row["id"], True)
+
+    def unarchive(self, parent: Any, child: str) -> dict:
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        return self.set_archived(row["id"], False)
+
+    def is_child(self, sid: str) -> bool:
+        return bool((self.svc.sessions.nest_of(sid) or {}).get("parent_id"))
+
+    def set_archived(self, sid: str, archived: bool) -> dict:
+        """Archive or unarchive a child. The tool and the rail both come here.
+
+        Archive refuses a working child. It drops the runner, moves the
+        transcript to the vault, and removes the worktree only when the branch
+        holds no commit that the project HEAD lacks and no uncommitted file.
+        Unarchive adds a removed worktree again on the same branch, then
+        restores the transcript.
+        """
+        sessions = self.svc.sessions
+        row = next((r for r in sessions.rows() if r.get("id") == sid), None)
+        nest = (row or {}).get("nest") or {}
+        if not nest.get("parent_id"):
+            return {"ok": False, "error": "Not a nested session."}
+        if self.svc.archive_row is None:
+            return {"ok": False, "error": "Archive needs the Marionette app server."}
+        name = nest.get("name") or sid
+        result = {"ok": True, "session_id": sid, "name": name, "archived": archived}
+        if bool(row.get("archived")) == archived:
+            return result
+        root = (row.get("workspace_root") or "").strip()
+        tree = (nest.get("worktree") or "").strip()
+        branch = (nest.get("branch") or "").strip()
+        if not archived:
+            if nest.get("released") and tree and not os.path.isdir(tree):
+                if self.svc.add_worktree is None or not root or not branch:
+                    return {"ok": False, "error": "Cannot add the child worktree again."}
+                try:
+                    added = self.svc.add_worktree(root, branch)
+                except Exception as exc:
+                    reason = " ".join((str(exc).strip() or type(exc).__name__).split())[:300]
+                    return {"ok": False, "error": f"Could not add the child worktree again: {reason}"}
+                sessions.update_nest(sid, worktree=added["path"], released=False)
+                result["worktree"] = added["path"]
+            elif nest.get("released"):
+                sessions.update_nest(sid, released=False)
+            status, body = self.svc.archive_row(sid, False)
+            if status != 200:
+                return {"ok": False, "error": str((body or {}).get("error") or "Unarchive failed.")}
+            bump_rev()
+            return result
+        if self._live_status(sid, nest) == "working":
+            return {"ok": False, "error": f"The child {name!r} is working. Stop it or wait for its report."}
+        if self.svc.drop_runner is not None and sessions.active != sid:
+            try:
+                self.svc.drop_runner(sid)
+            except Exception as exc:
+                self.svc.diag("nested.archive_drop_runner", exc)
+        status, body = self.svc.archive_row(sid, True)
+        if status != 200:
+            return {"ok": False, "error": str((body or {}).get("error") or "Archive failed.")}
+        if tree and os.path.isdir(tree) and root:
+            state = branch_state(root, tree, branch)
+            reason = state_reason(state)
+            if reason:
+                result.update(worktree="kept", reason=reason)
+            else:
+                error = release_worktree(root, tree)
+                if error:
+                    result.update(worktree="kept", reason=f"git could not remove it: {error}")
+                else:
+                    sessions.update_nest(sid, released=True)
+                    result["worktree"] = "released"
+        bump_rev()
+        return result
+
+    def read(self, parent: Any, child: str) -> dict:
+        """The child's last reply in full and its recent transcript.
+
+        A live runner's history comes first. Else the saved transcript, and
+        for a child archived to the vault the vault copy, with no restore.
+        """
+        row = self._child_row(parent, child)
+        if row is None:
+            return {"ok": False, "error": f"No child session {child!r} of this session."}
+        sid = row["id"]
+        history = self._history_of(sid)
+        payload = child_payload(row, self.svc.runner_status(sid), self.in_flight(sid))
+        return {
+            "ok": True, "session_id": sid, "name": payload["name"], "status": payload["status"],
+            "archived": payload["archived"], "branch": payload["branch"], "model": payload["model"],
+            "report": last_reply(history), "messages": len(history),
+            "tail": transcript_tail(history),
+        }
+
+    def _history_of(self, sid: str) -> List[dict]:
+        from .sessions import load_transcript, rematerialize_driver_messages
+        runner = self.svc.get_runner(sid)
+        live = getattr(runner, "_history", None) if runner is not None else None
+        if isinstance(live, list):
+            return list(live)
+        if self.svc.state_dir is None:
+            return []
+        state_dir = self.svc.state_dir()
+        history = rematerialize_driver_messages(load_transcript(state_dir, sid))
+        if not history:
+            from .chat_archive import pruned_transcript_view
+            history = rematerialize_driver_messages(pruned_transcript_view(state_dir, sid))
+        return history
+
+    def _live_status(self, sid: str, nest: dict) -> str:
+        with self._lock:
+            flying = sid in self._in_flight
+        return live_status(nest.get("status", ""), self.svc.runner_status(sid), flying)
 
     def children(self, parent_id: str) -> List[dict]:
         rows = self.svc.sessions.children_of(parent_id)
@@ -673,6 +917,70 @@ def lock_worktree(path: str, reason: str) -> None:
                        capture_output=True, text=True, timeout=10)
     except Exception:
         pass
+
+
+def _git_out(cwd: str, *args: str) -> tuple:
+    try:
+        proc = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        return 1, "", str(exc)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def branch_state(root: str, worktree: str, branch: str) -> dict:
+    """What a child worktree holds that the project HEAD does not.
+
+    ``ahead`` counts commits on ``branch`` that the project HEAD lacks.
+    ``dirty`` is True for tracked changes or untracked files (not ignored
+    files, not the CodeGraph index: its ``.codegraph/.gitignore`` ignores all
+    but itself, so git lists that one file in every child). ``error`` is set
+    when git cannot answer.
+    """
+    state: dict = {"ahead": 0, "dirty": False, "error": ""}
+    if branch:
+        rc, out, err = _git_out(root, "rev-list", "--count", f"HEAD..refs/heads/{branch}")
+        if rc != 0:
+            state["error"] = err or "git rev-list failed"
+            return state
+        state["ahead"] = int(out or 0)
+    rc, out, err = _git_out(worktree, "status", "--porcelain", "--", ".", ":(exclude).codegraph")
+    if rc != 0:
+        state["error"] = err or "git status failed"
+        return state
+    state["dirty"] = bool(out)
+    return state
+
+
+def state_reason(state: dict) -> str:
+    """Why a worktree stays after archive, or "" when it can go."""
+    if state.get("error"):
+        return f"git could not check the branch: {state['error'][:200]}"
+    parts = []
+    ahead = int(state.get("ahead") or 0)
+    if ahead:
+        parts.append(f"{ahead} commit{'s' if ahead != 1 else ''} that the parent branch does not have")
+    if state.get("dirty"):
+        parts.append("uncommitted changes")
+    return ("The worktree has " + " and ".join(parts) + ".") if parts else ""
+
+
+def release_worktree(root: str, path: str) -> str:
+    """Unlock and remove a child worktree. Returns "" or the git error.
+
+    The caller checked that no commit or change is lost. Ignored files (the
+    CodeGraph seed, caches) go with the worktree.
+    """
+    _git_out(root, "worktree", "unlock", path)
+    try:
+        from .worktrees import reap_worktree_processes
+        reap_worktree_processes(path)
+    except Exception:
+        pass
+    rc, out, err = _git_out(root, "worktree", "remove", "--force", path)
+    if rc != 0:
+        lock_worktree(path, "Marionette nested session")
+        return (err or out or "git worktree remove failed")[:300]
+    return ""
 
 
 _CODEGRAPH_SEED = ("codegraph.db", "config.json", ".gitignore")
