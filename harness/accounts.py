@@ -13,6 +13,7 @@ credential the pilot uses.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -213,6 +214,20 @@ def account_rows() -> List[Dict[str, Any]]:
         except Exception as exc:
             _diag("accounts.row", exc, msg=provider.name)
     return rows
+
+
+def credential_billing(provider, declared: str) -> str:
+    """"plan" when the credential the pilot uses is a plan sign-in token.
+
+    Same order as the driver: a healthy pool entry, then the env. An
+    expired sign-in is still a plan account, so the env copy counts.
+    """
+    from .oauth_anthropic import is_anthropic_oauth_token
+    for env_name in provider.env_vars:
+        token = cp.peek_token_for_env(env_name) or os.environ.get(env_name, "")
+        if token.strip():
+            return "plan" if is_anthropic_oauth_token(token.strip()) else declared
+    return declared
 
 
 def find_provider(name: str):
