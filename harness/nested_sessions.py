@@ -204,6 +204,7 @@ def child_payload(row: dict, runner_status: str, in_flight: bool = False) -> dic
         "branch": nest.get("branch", ""),
         "worktree": nest.get("worktree", ""),
         "archived": bool(row.get("archived")),
+        "model": (row.get("pilot_preferences") or {}).get("driver", ""),
         "updated": nest.get("updated") or row.get("created") or 0,
     }
 
@@ -236,6 +237,9 @@ class NestServices:
     archive_row: Optional[Callable[[str, bool], Any]] = None
     # Remove a session's runner from the registry.
     drop_runner: Optional[Callable[[str], None]] = None
+    # The picker spec a model name means, or None when the picker does not list it.
+    resolve_model: Optional[Callable[[str], Optional[str]]] = None
+    picker_models: Optional[Callable[[], List[str]]] = None
 
 
 class NestedSupervisor:
@@ -253,7 +257,7 @@ class NestedSupervisor:
     # -- tool actions --------------------------------------------------
 
     def start(self, parent: Any, *, name: str, brief: str, title: str = "",
-              todo: str = "") -> dict:
+              todo: str = "", model: str = "", reasoning_effort: str = "") -> dict:
         sessions = self.svc.sessions
         parent_id = getattr(parent, "harness_session_id", "") or ""
         if not parent_id:
@@ -265,6 +269,9 @@ class NestedSupervisor:
             return {"ok": False, "error": "name must be 2-40 characters: lowercase letters, digits, and hyphens."}
         if not (brief or "").strip():
             return {"ok": False, "error": "brief is required: the full task for the child."}
+        prefs = self._pilot_choice(model, reasoning_effort)
+        if "error" in prefs:
+            return {"ok": False, "error": prefs["error"]}
         taken = [(row.get("nest") or {}).get("name", "") for row in sessions.children_of(parent_id)]
         slug = unique_name(slug, taken)
         parent_row = next((r for r in sessions.rows() if r.get("id") == parent_id), {})
@@ -277,7 +284,7 @@ class NestedSupervisor:
                 parent_id, title=(title or "").strip() or slug,
                 nest={"name": slug, "todo": (todo or "").strip(), "status": "working",
                       "report": "", "updated": time.time(), "worktree": "", "branch": ""},
-                workspace_root=root,
+                workspace_root=root, pilot_preferences=prefs,
             )
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
@@ -302,9 +309,37 @@ class NestedSupervisor:
             "ok": True, "session_id": sid, "name": slug,
             "branch": tree.get("branch", ""), "worktree": tree["path"],
         }
+        chosen = sessions.pilot_preferences(sid)
+        for key, field in (("driver", "model"), ("reasoning_effort", "reasoning_effort")):
+            if chosen.get(key):
+                result[field] = chosen[key]
         if linked is not None:
             result["todos"] = linked
         return result
+
+    def _pilot_choice(self, model: str, effort: str) -> dict:
+        """The child's own pilot preferences, or ``{"error": ...}``.
+
+        The model must be one the picker lists. There is no substitute: an
+        unknown name, or no picker to check it against, is refused.
+        """
+        from .reasoning_effort import REASONING_EFFORT_LEVELS
+        prefs: dict = {}
+        effort = (effort or "").strip().lower()
+        if effort:
+            if effort not in REASONING_EFFORT_LEVELS:
+                return {"error": f"reasoning_effort must be one of: {', '.join(REASONING_EFFORT_LEVELS)}."}
+            prefs["reasoning_effort"] = effort
+        model = (model or "").strip()
+        if model:
+            spec = self.svc.resolve_model(model) if self.svc.resolve_model is not None else None
+            if not spec:
+                listed = self.svc.picker_models() if self.svc.picker_models is not None else []
+                shown = ", ".join(listed[:12]) + (", ..." if len(listed) > 12 else "")
+                return {"error": f"Model {model!r} is not in the model picker. "
+                                 + (f"Picker models: {shown}." if shown else "No picker models are available.")}
+            prefs["driver"] = spec
+        return prefs
 
     def message(self, parent: Any, child: str, text: str) -> dict:
         row = self._child_row(parent, child)

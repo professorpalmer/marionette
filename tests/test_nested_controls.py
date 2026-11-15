@@ -185,3 +185,64 @@ def test_http_archive_of_a_child_uses_the_supervisor_rules(tmp_path):
         assert code == 200 and not _row(h, sid)["archived"]
     finally:
         ns.set_supervisor(None)
+
+
+# -- unit 2: a model and an effort for each child ------------------------------
+
+
+PICKER = ["openrouter:deepseek/deepseek-v4.1-flash", "anthropic:claude-sonnet-5-5"]
+
+
+def _with_picker(h):
+    h.sup.svc.picker_models = lambda: list(PICKER)
+    h.sup.svc.resolve_model = lambda spec: spec if spec in PICKER else (
+        "anthropic:claude-sonnet-5-5" if spec == "claude-sonnet-5-5" else None)
+    return h
+
+
+def test_start_pins_a_picker_model_and_an_effort(tmp_path):
+    h = _with_picker(Harness(tmp_path))
+    parent = h.parent()
+    h.store.pilot_preferences(parent.harness_session_id, updates={"driver": "openai:gpt-6", "reasoning_effort": "high"})
+    res = h.sup.start(parent, name="cheap", brief="b", model="claude-sonnet-5-5", reasoning_effort="low")
+    assert res["ok"], res
+    assert res["model"] == "anthropic:claude-sonnet-5-5" and res["reasoning_effort"] == "low"
+    prefs = h.store.pilot_preferences(res["session_id"])
+    assert prefs["driver"] == "anthropic:claude-sonnet-5-5"
+    assert prefs["reasoning_effort"] == "low"
+    # The parent keeps its own choice.
+    assert h.store.pilot_preferences(parent.harness_session_id)["driver"] == "openai:gpt-6"
+    assert h.sup.children(parent.harness_session_id)[0]["model"] == "anthropic:claude-sonnet-5-5"
+
+
+def test_start_without_a_model_keeps_the_parent_model(tmp_path):
+    h = _with_picker(Harness(tmp_path))
+    parent = h.parent()
+    h.store.pilot_preferences(parent.harness_session_id, updates={"driver": "openai:gpt-6", "reasoning_effort": "high"})
+    res = h.sup.start(parent, name="same", brief="b")
+    prefs = h.store.pilot_preferences(res["session_id"])
+    assert prefs["driver"] == "openai:gpt-6" and prefs["reasoning_effort"] == "high"
+
+
+def test_an_unknown_model_or_effort_fails_closed(tmp_path):
+    h = _with_picker(Harness(tmp_path))
+    parent = h.parent()
+    res = h.sup.start(parent, name="bad", brief="b", model="gpt-9-imaginary")
+    assert not res["ok"]
+    assert "gpt-9-imaginary" in res["error"] and PICKER[0] in res["error"]
+    bad_effort = h.sup.start(parent, name="bad", brief="b", reasoning_effort="turbo")
+    assert not bad_effort["ok"] and "low" in bad_effort["error"]
+    # No row, no worktree, no turn for a refused start.
+    assert h.store.children_of(parent.harness_session_id) == [] and h.turns == [] and h.trees == []
+    # A model with no allowlist to check against is refused, not trusted.
+    h.sup.svc.resolve_model = None
+    assert not h.sup.start(parent, name="bad", brief="b", model=PICKER[0])["ok"]
+
+
+def test_the_server_checks_a_child_model_against_the_picker_list(monkeypatch):
+    from harness import model_visibility, server
+    monkeypatch.setattr(model_visibility, "enabled_pilots", lambda: list(PICKER))
+    assert server._nested_resolve_model(PICKER[0]) == PICKER[0]
+    assert server._nested_resolve_model("deepseek/deepseek-v4.1-flash") == PICKER[0]
+    assert server._nested_resolve_model("gpt-9-imaginary") is None
+    assert server._nested_picker_models() == PICKER

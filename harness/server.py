@@ -1552,6 +1552,16 @@ def _nested_drop_runner(session_id: str) -> None:
     _drop_runner(session_id, _session_services(), "server.nested_archive_drop_runner")
 
 
+def _nested_picker_models() -> list:
+    from . import model_visibility as _mv
+    return list(_mv.enabled_pilots())
+
+
+def _nested_resolve_model(model: str) -> Optional[str]:
+    """The picker spec ``model`` names, or None. The same allowlist as the picker."""
+    return _picker_spec_for(model, _nested_picker_models())
+
+
 def _install_nested_supervisor() -> Any:
     from .nested_sessions import NestServices, NestedSupervisor, set_supervisor
     sup = NestedSupervisor(NestServices(
@@ -1565,6 +1575,8 @@ def _install_nested_supervisor() -> Any:
         ensure_runner=_ensure_background_runner,
         archive_row=_nested_archive_row,
         drop_runner=_nested_drop_runner,
+        resolve_model=_nested_resolve_model,
+        picker_models=_nested_picker_models,
     ))
     set_supervisor(sup)
     return sup

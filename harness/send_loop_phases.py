@@ -3439,6 +3439,8 @@ def dispatch_local_action(
             res = sup.start(
                 session, name=str(args.get("name") or ""), brief=str(args.get("brief") or ""),
                 title=str(args.get("title") or ""), todo=str(args.get("todo") or ""),
+                model=str(args.get("model") or ""),
+                reasoning_effort=str(args.get("reasoning_effort") or ""),
             )
         elif action == "message":
             res = sup.message(session, str(args.get("name") or args.get("session_id") or ""),
@@ -3471,6 +3473,8 @@ def dispatch_local_action(
         elif action == "start":
             val = (f"Started nested session {res['name']} (id {res['session_id']}) in "
                    f"{res['worktree']}" + (f" on branch {res['branch']}" if res.get("branch") else "")
+                   + (f", model {res['model']}" if res.get("model") else "")
+                   + (f", effort {res['reasoning_effort']}" if res.get("reasoning_effort") else "")
                    + ". It runs now. Its report comes back as a <nested-session-event> note; "
                    "do not wait or poll for it.")
         else:
