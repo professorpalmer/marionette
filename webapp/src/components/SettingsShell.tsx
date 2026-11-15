@@ -6,13 +6,14 @@ import GeneralSettingsPage from "./GeneralSettingsPage";
 import NotificationsSettingsPage from "./NotificationsSettingsPage";
 import SafetySettingsPage from "./SafetySettingsPage";
 import AdvancedSettingsPage from "./AdvancedSettingsPage";
+import AccountsSettingsPage from "./AccountsSettingsPage";
 import SettingsPane, { type SettingsSection } from "./SettingsPane";
 import PluginsPane from "./PluginsPane";
 import ArchivedChatsPane from "./ArchivedChatsPane";
 import { TITLEBAR_TRAFFIC_PAD_SM_PX } from "../lib/titlebarSafe";
 import { Modal } from "./ui/overlay";
 
-type PageId = "models" | "local-models" | "safety" | "advanced" | SettingsSection | "archived" | "about";
+type PageId = "models" | "local-models" | "safety" | "advanced" | "providers" | SettingsSection | "archived" | "about";
 
 const NAV: { id: PageId; label: string; icon: any }[] = [
   { id: "models", label: "Models", icon: Cpu },
@@ -127,6 +128,7 @@ export default function SettingsShell({
           {page === "notifications" && <NotificationsSettingsPage />}
           {page === "safety" && <SafetySettingsPage />}
           {page === "advanced" && <AdvancedSettingsPage />}
+          {page === "providers" && <AccountsSettingsPage />}
           {page === "plugins" && (
             <div className="max-w-2xl">
               <h2 className="text-ui-15 font-semibold text-txt mb-3">Plugins</h2>
@@ -145,7 +147,7 @@ export default function SettingsShell({
               <p>Marionette -- a desktop AI coding harness over Puppetmaster durable state.</p>
             </div>
           )}
-          {page !== "models" && page !== "local-models" && page !== "general" && page !== "notifications" && page !== "about" && page !== "plugins" && page !== "archived" && page !== "safety" && page !== "advanced" && (
+          {page !== "models" && page !== "local-models" && page !== "general" && page !== "notifications" && page !== "about" && page !== "plugins" && page !== "archived" && page !== "safety" && page !== "advanced" && page !== "providers" && (
             <SettingsPane onOpenWizard={onOpenWizard} section={page as SettingsSection} />
           )}
         </div>
