@@ -917,3 +917,55 @@ def test_deferred_cold_attach_restores_pending_command_approval(tmp_path, monkey
         srv._pilot = old_pilot
         srv._cfg.state_dir = old_state
         srv._cfg.repo = old_repo
+
+
+def test_deferred_attach_keeps_every_transcript_key(tmp_path, monkeypatch):
+    """A switch away mid-build saves the placeholder export, and the swap
+    hydrates the real pilot from it. Neither may drop or reset the keys
+    beside history, display and job_ids."""
+    import harness.server as srv
+
+    monkeypatch.setenv("HARNESS_DEFER_COLD_ATTACH", "1")
+    old_runners = srv._runners
+    old_pilot = srv._pilot
+    old_state = srv._cfg.state_dir
+    try:
+        state_dir = str(tmp_path)
+        srv._cfg.state_dir = state_dir
+        reg = SessionRunnerRegistry(max_concurrent_sessions=3)
+        srv._runners = reg
+        sid = srv._sessions.create(title="Cold")["id"]
+        extra = {
+            "flow_runs": {"run-1": {"status": "done"}},
+            "cache_preferences": {"retain_reasoning": True},
+            "tool_results_aged": ["call-7"],
+        }
+        transcript = {
+            "history": [{"role": "user", "content": "keep me"}],
+            "display": [{"role": "user", "content": "keep me"}],
+            "job_ids": ["job-1"],
+            **extra,
+        }
+        save_transcript(state_dir, sid, transcript)
+        hydrated: list = []
+        real = _idle_runner(sid=sid)
+        real.load_history = hydrated.append
+        gate = threading.Event()
+
+        def blocked_build(*, config=None):
+            gate.wait(timeout=5.0)
+            return real
+
+        with patch.object(srv, "_build_conversational_pilot", side_effect=blocked_build):
+            out = srv._attach_view(sid, defer_cold_build=True)
+            assert is_deferred_placeholder(out)
+            assert out.export_transcript_data() == transcript
+            # The switch response keeps its three-key shape.
+            assert set(srv._attach_view_transcript_payload(out, sid)) == {"history", "display", "job_ids"}
+        gate.set()
+        assert out.ensure_ready(timeout=5.0) is real
+        assert hydrated == [transcript]
+    finally:
+        srv._runners = old_runners
+        srv._pilot = old_pilot
+        srv._cfg.state_dir = old_state
