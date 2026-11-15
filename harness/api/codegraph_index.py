@@ -266,6 +266,11 @@ def prepare_codegraph_scope(repo_path: str) -> dict:
     return pre
 
 
+def _owns_index(proc) -> bool:
+    with codegraph_index_lock:
+        return bool(codegraph_index_proc and codegraph_index_proc[1] is proc)
+
+
 def index_codegraph_bg(repo_path: str):
     global codegraph_status, codegraph_status_reason, codegraph_status_cache
     global codegraph_preflight, codegraph_suggested_action
@@ -379,6 +384,9 @@ def index_codegraph_bg(repo_path: str):
         timed_out = False
         try:
             proc.wait(timeout=index_timeout)
+            if not _owns_index(proc):
+                # A newer indexer owns the shared status. Its result wins.
+                return
             if proc.returncode == 0 and codegraph_indexed(repo_path):
                 _mark_index_fresh(repo_path, index_started)
                 codegraph_status = "ready"
@@ -409,6 +417,10 @@ def index_codegraph_bg(repo_path: str):
                 # restart a doomed indexer every few seconds.
                 codegraph_fail_until[repo_path] = time.monotonic() + 120.0
         except Exception:
+            from ..command_policy import kill_process_group
+            if not _owns_index(proc):
+                kill_process_group(proc)
+                return
             timed_out = True
             codegraph_status = "unsupported"
             codegraph_status_reason = (

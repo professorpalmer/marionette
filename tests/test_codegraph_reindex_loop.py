@@ -119,3 +119,22 @@ def test_home_folder_and_its_parents_are_refused(tmp_path, monkeypatch):
     assert cgi.auto_index_refused(str(user_home))
     assert cgi.auto_index_refused(str(user_home.parent))
     assert cgi.auto_index_refused(str(project)) is None
+
+
+def test_stale_indexer_waiter_does_not_overwrite_a_newer_status(tmp_path, monkeypatch):
+    repo = _indexed_repo(tmp_path)
+    _bind(monkeypatch, tmp_path, repo,
+          cmd=[sys.executable, "-c", "import time; time.sleep(0.5); raise SystemExit(1)"])
+    cgi.index_codegraph_bg(str(repo))
+    stale = cgi.codegraph_index_proc[1]
+    # A newer indexer owns the status before the stale one exits.
+    newer = (str(repo), object())
+    cgi.codegraph_index_proc = newer
+    cgi.codegraph_status = "ready"
+    stale.wait(timeout=15)
+    deadline = time.monotonic() + 5
+    while cgi.codegraph_status_cache.get(str(repo), "absent") != "absent" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.3)
+    assert cgi.codegraph_status == "ready"
+    assert cgi.codegraph_index_proc is newer
