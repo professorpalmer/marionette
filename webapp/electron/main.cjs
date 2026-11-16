@@ -1280,6 +1280,11 @@ ipcMain.handle("translucency:get", () => ({
 }));
 ipcMain.handle("translucency:set", (_e, payload) => translucency.setState(payload));
 ipcMain.handle("translucency:capabilities", () => translucency.capabilities());
+const speechBridge = require("./speech-bridge.cjs").createSpeechBridge({
+  app, shell, systemPreferences: require("electron").systemPreferences,
+  fakeCaptureDevice: app.commandLine.hasSwitch("use-fake-device-for-media-stream"),
+});
+require("./speech-bridge.cjs").registerSpeechIpc({ ipcMain, bridge: speechBridge });
 
 // Image upload bridge: the renderer hands us raw bytes (File over IPC can't carry
 // a browser File object), we POST a multipart body to the backend's /api/upload on
@@ -2571,6 +2576,7 @@ app.on("window-all-closed", () => {
 });
 let quitFinalized = false;
 app.on("before-quit", (e) => {
+  speechBridge.stopAll();
   quitting = true;
   browserController.clear();
   computerController.close();

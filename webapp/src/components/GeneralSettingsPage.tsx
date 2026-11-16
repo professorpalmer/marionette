@@ -3,6 +3,7 @@ import { api, type Settings } from "../lib/api";
 import { readSettingsSnapshot, writeSettingsSnapshot } from "./settingsSnapshot";
 import { SettingsGroup, SettingsPage, SettingsRow } from "./SettingsLayout";
 import SettingsSwitch from "./SettingsSwitch";
+import VoiceSettingsGroup from "./VoiceSettingsGroup";
 import WindowGlassSettings from "./WindowGlassSettings";
 
 type Residual = NonNullable<Settings["compactionResidual"]>;
@@ -97,7 +98,7 @@ export default function GeneralSettingsPage() {
   };
 
   return (
-    <SettingsPage title="General" description="How the agent writes and edits, and how the window looks." testId="general-settings">
+    <SettingsPage title="General" description="How the agent writes and edits, voice dictation, and how the window looks." testId="general-settings">
       {error ? <p className="text-ui-11 text-risk" role="alert">{error}</p> : null}
       {!settings ? (
         error ? null : <p className="text-ui-11 text-faint">Loading settings...</p>
@@ -151,6 +152,8 @@ export default function GeneralSettingsPage() {
               }
             />
           </SettingsGroup>
+
+          <VoiceSettingsGroup />
 
           <WindowGlassSettings />
 

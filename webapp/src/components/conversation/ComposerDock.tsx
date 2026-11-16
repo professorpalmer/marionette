@@ -7,7 +7,7 @@ import { ImageResource } from "./ImageResource";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
-import { useId, useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   ChevronDown,
   Code,
@@ -51,6 +51,8 @@ import { focusSettingsPage } from "../SettingsShell";
 import { usePanelNotice } from "../../lib/useOperationalDiagnostic";
 import { pickerConfig } from "../../lib/sessionConfig";
 import type { TurnRecovery } from "../../lib/turnTerminal";
+import { useDictation } from "../../lib/useDictation";
+import { DictationButton, DictationError } from "./DictationButton";
 
 export type AttachedImage = { path: string; name: string; previewUrl: string };
 export type ServerQueueItem = { id: string; text: string; images?: string[]; model?: string };
@@ -269,6 +271,29 @@ export default function ComposerDock({
   const busyChrome = composerBusy && !sessionSwitching;
   const slashPrefs = useSlashMenuPrefs();
   const contextRingRef = useRef<HTMLButtonElement>(null);
+  // "send" by voice: send once the composer shows the dictated text.
+  const [sendWhenInputIs, setSendWhenInputIs] = useState<string | null>(null);
+  // The caret goes after dictated text once React writes the new value.
+  const dictationCaret = useRef<number | null>(null);
+  const dictation = useDictation({
+    textarea: () => taRef.current,
+    apply: (value, caret) => {
+      dictationCaret.current = caret;
+      handleInputChange(value, caret);
+    },
+    send: setSendWhenInputIs,
+  });
+  useLayoutEffect(() => {
+    const caret = dictationCaret.current;
+    if (caret === null) return;
+    dictationCaret.current = null;
+    taRef.current?.setSelectionRange(caret, caret);
+  }, [input, taRef]);
+  useEffect(() => {
+    if (sendWhenInputIs === null || input !== sendWhenInputIs) return;
+    setSendWhenInputIs(null);
+    send();
+  }, [input, sendWhenInputIs, send]);
   const closeContextOnEscape = (event: React.KeyboardEvent) => {
     if (event.key !== "Escape" || !showContextPanel) return;
     event.preventDefault();
@@ -1032,18 +1057,19 @@ export default function ComposerDock({
             </div>
           )}
 
-          <textarea ref={taRef} value={input} disabled={editBusy}
+          <textarea ref={taRef} value={input} disabled={editBusy} readOnly={dictation.active}
             aria-label="Message"
             aria-autocomplete="list"
             aria-controls={mentionSearch !== null ? `${suggestId}-mentions` : slashSearch !== null ? `${suggestId}-commands` : undefined}
             aria-activedescendant={activeSuggestionId}
             onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
-            onKeyDown={handleKeyDown}
+            onKeyDown={(event) => { if (!dictation.handleKey(event)) handleKeyDown(event); }}
             onBlur={handleComposerBlur}
             onPaste={handlePaste}
             rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
             className="w-full bg-transparent px-3 pt-2.5 pb-1 text-[0.8125rem] resize-none focus:outline-none overflow-hidden placeholder:text-faint" />
           <ComposerContextMenu textareaRef={taRef} />
+          <DictationError state={dictation.state} onDismiss={dictation.dismiss} />
           <div className="composer-toolbar px-3 pb-2">
             <div className="composer-toolbar-actions">
             <ModeToggle
@@ -1167,6 +1193,7 @@ export default function ComposerDock({
                 <span className="composer-toolbar-send-label">{recovery.action === "continue" ? "Continue" : "Retry"}</span>
               </button>
             )}
+            <DictationButton state={dictation.state} level={dictation.level} onToggle={dictation.toggle} />
             {busyChrome
               ? <>
                   {input.trim() ? (

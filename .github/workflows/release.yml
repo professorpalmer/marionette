@@ -109,6 +109,8 @@ jobs:
           # every existing Developer ID install. Fork PRs still cannot sign: GitHub
           # does not expose CSC_* secrets to them.
           CSC_FOR_PULL_REQUEST: ${{ matrix.platform == 'mac' && 'true' || '' }}
+          # The mac installer must carry the dictation helper (macOS 26 SDK).
+          MARIONETTE_REQUIRE_SPEECH_HELPER: ${{ matrix.platform == 'mac' && '1' || '' }}
           APPLE_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'mac' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.platform == 'mac' && secrets.APPLE_TEAM_ID || '' }}

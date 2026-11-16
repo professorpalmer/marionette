@@ -29,9 +29,17 @@ mac:
   extraResources:
     - from: electron/native/bin/computer-macos
       to: native-computer/computer-macos
+    # Built by before-pack when the macOS 26 SDK is present; the filter copies
+    # nothing when it is absent, so an older SDK still packages the app.
+    - from: electron/native/bin
+      to: native-speech
+      filter:
+        - speech-macos
   binaries:
     - Contents/Resources/native-computer/computer-macos
   category: public.app-category.developer-tools
+  extendInfo:
+    NSMicrophoneUsageDescription: Marionette uses the microphone only while you dictate a message. Speech becomes text on this Mac.
   target:
     - target: dmg
       arch: universal

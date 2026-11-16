@@ -129,6 +129,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
     from .api import skills as _skills_api
     from .api import terminals as _term_api
     from .api import usage as _usage_api
+    from .api import voice as _voice_api
     from .api import wiki as _wiki_api
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
@@ -402,6 +403,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
             _settings_api.post_settings, services=svc.settings_services),
         "/api/session/pilot-preferences": lambda handler, body: handler._set_pilot_preferences(body),
         "/api/usage": post_json(_usage_api.post_usage),
+        "/api/voice/transcribe": post_json(_voice_api.post_voice_transcribe),
         "/api/providers/probe": post_json(_prov_api.post_providers_probe),
         "/api/providers/key": post_json(
             _prov_api.post_providers_key, services=svc.provider_services),
@@ -586,6 +588,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
     from .api import skills as _skills_api
     from .api import sse as _sse_api
     from .api import usage as _usage_api
+    from .api import voice as _voice_api
     from .api import wiki as _wiki_api
     from .api import workspace as _ws_api
     from .api import worktrees as _wt_api
@@ -952,6 +955,7 @@ def build_get_routes(svc: Any) -> dict[str, GetHandler]:
             _job_evidence_api.get_job_evidence, services=svc.job_services, pass_qs=True),
         "/api/jobs/events": get_json(
             _jobs_api.get_job_events, services=svc.job_services, pass_qs=True),
+        "/api/voice/status": get_json(_voice_api.get_voice_status),
         "/api/usage": get_json(
             _usage_api.get_usage, services=svc.usage_services, qs_arg="repo"),
         "/api/economics": get_json(
