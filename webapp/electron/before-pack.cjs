@@ -9,9 +9,11 @@ module.exports = async context => {
   if (context.electronPlatformName === "darwin") {
     nativeBuild ||= buildUniversalMacHelper();
     await nativeBuild;
-    // Voice dictation is optional: an SDK older than macOS 26 cannot build it,
-    // and the app then reports on-device dictation as missing from this build.
+    // An SDK older than macOS 26 cannot build the dictation helper. A local
+    // build then ships without it. A release build sets
+    // MARIONETTE_REQUIRE_SPEECH_HELPER=1 and fails.
     speechBuild ||= buildUniversalSpeechHelper().catch(error => {
+      if (process.env.MARIONETTE_REQUIRE_SPEECH_HELPER === "1") throw error;
       console.warn(`speech-macos helper not built: ${error.message}`);
     });
     await speechBuild;

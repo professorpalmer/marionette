@@ -15,9 +15,9 @@ const packagedHelperPaths = Object.freeze({
 });
 const packagedSpeechHelperPath = path.join("native-speech", "speech-macos");
 
-function run(file, args) {
+function run(file, args, env = process.env) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(file, args, { maxBuffer: 1024 * 1024, env }, (error, stdout, stderr) => {
       if (error) {
         error.message = `${file} failed: ${stderr.trim() || error.message}`;
         reject(error);
@@ -41,12 +41,13 @@ async function compileDevelopmentMacHelper(destination, source = sourcePath, fra
   return destination;
 }
 
-function xcodeSdkRoots() {
+/** Each Xcode compiles with its own swiftc: an older compiler cannot read a newer SDK. */
+function xcodeDeveloperDirs() {
   try {
     return fs.readdirSync("/Applications")
       .filter(name => /^Xcode.*\.app$/.test(name))
       .sort().reverse()
-      .map(name => path.join("/Applications", name, "Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs"));
+      .map(name => path.join("/Applications", name, "Contents/Developer"));
   } catch { return []; }
 }
 
@@ -54,26 +55,31 @@ function sdkCandidates() {
   const roots = [
     "/Library/Developer/CommandLineTools/SDKs",
     "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs",
-    ...xcodeSdkRoots(),
   ];
-  return [null, ...roots.flatMap(root => {
-    try { return fs.readdirSync(root).filter(name => /^MacOSX[\d.]+\.sdk$/.test(name)).sort().reverse().map(name => path.join(root, name)); }
+  const sdks = roots.flatMap(root => {
+    try { return fs.readdirSync(root).filter(name => /^MacOSX[\d.]+\.sdk$/.test(name)).sort().reverse().map(name => ({ sdk: path.join(root, name) })); }
     catch { return []; }
-  })];
+  });
+  return [{}, ...sdks, ...xcodeDeveloperDirs().map(developerDir => ({ developerDir }))];
+}
+
+function toolchainEnv(candidate) {
+  return candidate.developerDir ? { ...process.env, DEVELOPER_DIR: candidate.developerDir } : process.env;
 }
 
 async function compileSwift(args, cacheRoot, candidates = sdkCandidates()) {
-  let lastError;
+  const errors = [];
   for (let index = 0; index < candidates.length; index++) {
-    const sdk = candidates[index];
+    const candidate = candidates[index];
     const cache = path.join(cacheRoot, String(index));
     fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+    const env = toolchainEnv(candidate);
     try {
-      await run("xcrun", ["swiftc", ...(sdk ? ["-sdk", sdk] : []), "-module-cache-path", cache, ...args]);
-      return sdk;
-    } catch (error) { lastError = error; }
+      await run("xcrun", ["swiftc", ...(candidate.sdk ? ["-sdk", candidate.sdk] : []), "-module-cache-path", cache, ...args], env);
+      return candidate;
+    } catch (error) { errors.push(`[${candidate.developerDir || candidate.sdk || "default"}] ${error.message.split("\n")[0]}`); }
   }
-  throw lastError;
+  throw new Error(`no SDK compiled it:\n${errors.join("\n")}`);
 }
 
 async function buildUniversalMacHelper(destination = path.join(outputDir, "computer-macos"), source = sourcePath, frameworks = computerFrameworks) {
@@ -83,9 +89,9 @@ async function buildUniversalMacHelper(destination = path.join(outputDir, "compu
     const arm64 = path.join(work, "helper-arm64");
     const x64 = path.join(work, "helper-x86_64");
     const common = ["-O", source, ...frameworkArgs(frameworks)];
-    const sdk = await compileSwift([...common, "-target", "arm64-apple-macos14.0", "-o", arm64], path.join(work, "module-cache-arm64"));
-    await compileSwift([...common, "-target", "x86_64-apple-macos14.0", "-o", x64], path.join(work, "module-cache-x64"), [sdk]);
-    await run("xcrun", ["lipo", "-create", arm64, x64, "-output", destination]);
+    const toolchain = await compileSwift([...common, "-target", "arm64-apple-macos14.0", "-o", arm64], path.join(work, "module-cache-arm64"));
+    await compileSwift([...common, "-target", "x86_64-apple-macos14.0", "-o", x64], path.join(work, "module-cache-x64"), [toolchain]);
+    await run("xcrun", ["lipo", "-create", arm64, x64, "-output", destination], toolchainEnv(toolchain));
     fs.chmodSync(destination, 0o755);
     return destination;
   } finally {
