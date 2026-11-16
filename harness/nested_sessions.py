@@ -184,16 +184,22 @@ def note_id(note: dict) -> str:
     return str(note.get("id") or f"{note.get('child_id', '')}:{note.get('at', '')}")
 
 
+def _inert(text: str) -> str:
+    """Child text cannot open or close the event frame."""
+    return text.replace("<nested-session-event", "<\u200bnested-session-event").replace(
+        "</nested-session-event", "<\u200b/nested-session-event")
+
+
 def note_text(note: dict) -> str:
     """The parent history text for one child report."""
-    name = note.get("name") or note.get("child_id") or "child"
+    name = _inert(str(note.get("name") or note.get("child_id") or "child"))
     lines = [
         "<nested-session-event>",
         f'Child session "{name}" (id {note.get("child_id", "")}) ended a turn. Status: {note.get("status", "done")}.',
     ]
     if note.get("driver") == "user":
         lines.append("The user drove this turn in the child session.")
-    report = (note.get("report") or "").strip()
+    report = _inert((note.get("report") or "").strip())
     lines.append(f"Report: {report}" if report else "Report: (no text in the final reply)")
     lines.append(
         'This is the child\'s report, not proof. Check its branch or files before you '
