@@ -83,6 +83,7 @@ Installers (DMG, `.exe`, AppImage) are on [Releases](https://github.com/professo
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, ground rules, PR flow (branch off `dev`) |
 | [AGENTS.md](AGENTS.md) | Rules for agents working in this repo |
 | [Releasing](docs/develop/releasing.md) | How a merge reaches every install, tags, GitHub Releases |
+| [LICENSE](LICENSE) | MIT |
 | [NOTICE.md](NOTICE.md) | Third-party attributions |
 
 Full list: the [docs index](docs/README.md).
