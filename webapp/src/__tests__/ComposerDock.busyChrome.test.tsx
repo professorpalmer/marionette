@@ -205,6 +205,33 @@ describe("ComposerDock picker layout and accessibility", () => {
   });
 });
 
+describe("ComposerDock crowded send row", () => {
+  it("marks the send row crowded only while a turn runs with a draft", () => {
+    const crowded = (container: HTMLElement) =>
+      container.querySelector(".composer-toolbar-send")?.hasAttribute("data-crowded");
+    expect(crowded(renderBusyDock("pivot to auth").container)).toBe(true);
+    expect(crowded(renderBusyDock("").container)).toBe(false);
+    expect(crowded(renderBusyDock("pivot", { composerBusy: false }).container)).toBe(false);
+  });
+
+  it("drops crowded send labels to icons at 760px and every busy action keeps a name and icon", () => {
+    const root = postcss.parse(css);
+    const hidden: string[] = [];
+    root.walkAtRules("container", at => {
+      if (!at.params.includes("max-width: 760px")) return;
+      at.walkRules(".composer-toolbar-send[data-crowded] .composer-toolbar-send-label", rule => {
+        rule.walkDecls("display", decl => { hidden.push(decl.value); });
+      });
+    });
+    expect(hidden).toEqual(["none"]);
+    renderBusyDock("pivot to auth");
+    for (const name of ["Queue", "Interrupt", "Steer", "Stop"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button.querySelector("svg")).not.toBeNull();
+    }
+  });
+});
+
 describe("ComposerDock action preservation", () => {
   it.each([
     { auto: false, plan: false, label: "Send" },

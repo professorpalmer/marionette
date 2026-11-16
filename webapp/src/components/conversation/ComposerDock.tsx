@@ -21,6 +21,7 @@ import {
   Pencil,
   Send,
   Share2,
+  SkipForward,
   Square,
   X,
   Zap,
@@ -271,6 +272,7 @@ export default function ComposerDock({
 }) {
   const queueNotice = usePanelNotice(queueLoadError);
   const busyChrome = composerBusy && !sessionSwitching;
+  const hasDraft = !!input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0;
   const slashPrefs = useSlashMenuPrefs();
   const contextRingRef = useRef<HTMLButtonElement>(null);
   // "send" by voice: send once the composer shows the dictated text.
@@ -1132,18 +1134,19 @@ export default function ComposerDock({
               ) : null}
             </button>
             </div>
-            <div className="composer-toolbar-send">
-            {(input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
+            <div className="composer-toolbar-send" data-crowded={busyChrome && hasDraft ? "" : undefined}>
+            {hasDraft && (
               <button
                 type="button"
                 onClick={handleQueueAdd}
                 title="Queue: runs after the current turn finishes (same as Cmd/Ctrl+Enter)"
+                aria-label="Queue"
                 className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition"
               >
                 <ListChecks size={9} /><span className="composer-toolbar-send-label">Queue</span>
               </button>
             )}
-            {busyChrome && (input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
+            {busyChrome && hasDraft && (
               <button
                 type="button"
                 onClick={() => send("interrupt")}
@@ -1152,7 +1155,7 @@ export default function ComposerDock({
                 aria-label="Interrupt"
                 className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
               >
-                <span className="composer-toolbar-send-label">Interrupt</span>
+                <SkipForward size={9} /><span className="composer-toolbar-send-label">Interrupt</span>
               </button>
             )}
             {!composerBusy && recovery && (
@@ -1179,6 +1182,7 @@ export default function ComposerDock({
                       onClick={() => send()}
                       disabled={editBusy || transcriptStale}
                       title="Steer: redirect the current turn now (Enter). Cmd/Ctrl+Enter or Queue = run after this turn finishes. Alt+Enter or Interrupt = stop this turn, then run this prompt next."
+                      aria-label="Steer"
                       className="px-2 h-[20px] rounded-md bg-panel2/60 border border-edge/60 text-faint hover:text-muted hover:border-edge2 text-ui-10.5 font-medium flex items-center gap-1 transition disabled:opacity-40 disabled:cursor-default"
                     >
                       <Send size={9} /><span className="composer-toolbar-send-label">Steer</span>
