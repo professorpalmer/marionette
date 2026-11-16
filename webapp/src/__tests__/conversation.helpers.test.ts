@@ -203,7 +203,9 @@ import {
   mentionTokenForDroppedPath,
   normalizeOsPath,
   pathIsInsideRepo,
+  pathReferenceForLargeDrop,
   resolveDroppedOsPath,
+  UPLOAD_MAX_BYTES,
   uploadErrorMessage,
   type DirectoryEntryLike,
 } from "../components/conversation/composerInput";
@@ -3332,6 +3334,13 @@ describe("composerInput module", () => {
     expect(cycleSelectIndex(0, 1, 3)).toBe(1);
     expect(cycleSelectIndex(0, -1, 3)).toBe(2);
     expect(clampSelectIndex(9, 3)).toBe(2);
+    expect(pathReferenceForLargeDrop("/dl/small.zip", UPLOAD_MAX_BYTES)).toBeNull();
+    expect(pathReferenceForLargeDrop("", UPLOAD_MAX_BYTES + 1)).toBeNull();
+    expect(pathReferenceForLargeDrop("/dl/big.zip", UPLOAD_MAX_BYTES + 1)).toBe("/dl/big.zip");
+    expect(
+      pathReferenceForLargeDrop("/dl/Disc (1).zip", 444_473_038),
+    ).toBe('"/dl/Disc (1).zip"');
+    expect(pathReferenceForLargeDrop("C:\\dl\\big.zip", 444_473_038)).toBe("C:/dl/big.zip");
     expect(
       mentionTokenForDroppedPath({ osPath: "/repo/a.ts", repo: "/repo" }),
     ).toBe("@a.ts");
