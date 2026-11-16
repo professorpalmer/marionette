@@ -56,6 +56,24 @@ def restrict_dir_to_owner(path: str) -> bool:
     return _icacls_owner_only(path, inheritable=True)
 
 
+def restrict_install_root(state_dir: str) -> None:
+    """Owner-only ``~/.pmharness`` and the state dir, when the state dir is in it.
+
+    Files under the root (tool output, memory, prompt queues) are written with
+    the umask, and a default home can be read by other local accounts. A state
+    dir outside the root is the caller's choice and stays as it is. POSIX only:
+    a Windows profile directory is private already."""
+    if os.name == "nt":
+        return
+    root = os.path.realpath(os.path.expanduser("~/.pmharness"))
+    state = os.path.realpath(state_dir or root)
+    if state != root and not state.startswith(root + os.sep):
+        return
+    for path in (root, state):
+        if os.path.isdir(path):
+            restrict_dir_to_owner(path)
+
+
 def restrict_to_owner(path: str) -> bool:
     """Make `path` readable/writable by the owner only. Returns True on success.
 

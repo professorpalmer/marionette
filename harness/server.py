@@ -56,7 +56,7 @@ from .deferred_attach import is_deferred_placeholder
 from .autobudget import AutoBudget  # noqa: F401
 from ._exec import _puppetmaster_python, _puppetmaster_available, _puppetmaster_cmd, _ensure_node_on_path
 from .diag import note as _diag
-from .secure_files import restrict_dir_to_owner, restrict_to_owner
+from .secure_files import restrict_dir_to_owner, restrict_install_root, restrict_to_owner
 # SSE ring + pump/write live in harness.api.sse; stream bodies in
 # harness.api.streams. Re-export historical names so Handler methods and
 # tests keep importing harness.server.
@@ -821,6 +821,8 @@ elif not _cfg.state_dir:
         os.environ.setdefault("HARNESS_STATE_DIR", _stable)
     except Exception as e:
         _diag("server.stable_state_dir", e)
+
+restrict_install_root(_cfg.state_dir)
 
 _bind_cost_deps(_CostDeps(
     # Late-bind through module globals so test monkeypatches on harness.server
