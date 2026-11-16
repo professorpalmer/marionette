@@ -407,9 +407,13 @@ def test_read_file_can_read_spilled_result_outside_repo():
         assert ok, f"reading spilled result should be allowed, got {status}: {val}"
         assert "SPILLED CONTENT" in val
 
-        # A path outside both the repo and the spill dir is still rejected.
-        bad = session._do_read_file(_ReadAct(path="/etc/passwd"))
-        assert bad[0] is False and bad[1] == "path_traversal"
+        # Other files in the state dir stay refused (keys, other sessions).
+        keys = os.path.join(os.path.realpath(state), "keys.json")
+        with open(keys, "w") as f:
+            f.write("{}")
+        bad = session._do_read_file(_ReadAct(path=keys))
+        assert bad[0] is False and bad[1] == "forbidden"
+        assert "Marionette or Puppetmaster state" in bad[2]
 
 
 def test_read_file_allows_bound_operator_extra_root(tmp_path):
@@ -429,8 +433,11 @@ def test_read_file_allows_bound_operator_extra_root(tmp_path):
     ok, status, val = session._do_read_file(_ReadAct(path=str(target)))
     assert ok, f"expected extra-root read, got {status}: {val}"
     assert "VISITOR" in val
-    still_bad = session._do_read_file(_ReadAct(path="/etc/passwd"))
-    assert still_bad[0] is False and still_bad[1] == "path_traversal"
+    ssh = tmp_path / ".ssh" / "config"
+    ssh.parent.mkdir()
+    ssh.write_text("Host x\n", encoding="utf-8")
+    still_bad = session._do_read_file(_ReadAct(path=str(ssh)))
+    assert still_bad[0] is False and still_bad[1] == "forbidden"
 
 
 def test_read_file_on_directory_returns_listing():
@@ -509,13 +516,14 @@ def test_nested_workspace_read_file_allows_git_toplevel_parent():
         assert ok_sib, f"sibling under git toplevel should be readable, got {status_sib}: {val_sib}"
         assert "sibling" in val_sib
 
-        # True escape outside the git clone is still rejected.
+        # A read outside the git clone also works: read tools match the shell.
         with tempfile.TemporaryDirectory() as outside_dir:
             outside = os.path.join(outside_dir, "escape-outside.txt")
             with open(outside, "w", encoding="utf-8") as f:
                 f.write("outside\n")
-            bad = session._do_read_file(_ReadAct(path=outside))
-        assert bad[0] is False and bad[1] == "path_traversal"
+            ok_out, status_out, val_out = session._do_read_file(_ReadAct(path=outside))
+        assert ok_out, (status_out, val_out)
+        assert "outside" in val_out
 
         # Writes/edits stay confined to the nested workspace (not the git root).
         assert not is_safe_path(readme, cfg.repo)
@@ -531,7 +539,7 @@ def test_file_tool_schemas_describe_read_and_write_boundaries(monkeypatch):
     monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
 
     read_schema = _tool_schema("read_file")
-    assert "configured read roots" in read_schema["description"]
+    assert "outside it" in read_schema["description"]
     assert "workspace-relative" in read_schema["parameters"]["properties"]["path"]["description"]
 
     for name in ("write_file", "edit_file", "hash_edit"):
@@ -756,8 +764,11 @@ def test_send_loop_native_file_failures_keep_error_semantics(
 
 
 def _assert_file_tools_reject_path(session, requested, workspace, original):
+    # Reads outside the workspace work (read tools match the shell). Writes stay confined.
+    ok, status, content = session._do_read_file(PilotAction(kind="read_file", path=requested))
+    assert ok is True, (status, content)
+    assert "ORIGINAL" in content
     actions = (
-        PilotAction(kind="read_file", path=requested),
         PilotAction(kind="write_file", path=requested, content="WRITTEN\n"),
         PilotAction(
             kind="edit_file",
@@ -772,7 +783,6 @@ def _assert_file_tools_reject_path(session, requested, workspace, original):
         ),
     )
     handlers = (
-        session._do_read_file,
         session._do_write_file,
         session._do_edit_file,
         session._do_hash_edit,

@@ -64,27 +64,43 @@ def _forbidden_tool_result(path: str, state_dir: Optional[str]) -> Optional[tupl
     return None
 
 
-def _file_tool_path_denial(
-    requested_path: str,
-    workspace: str,
-    *,
-    read_scope: bool = False,
-) -> str:
-    if read_scope:
-        boundary = "Outside the file tool read scope"
-        scope = (
-            "Native read tools (read_file, list_dir, search_files, view_image, "
-            "read_pdf) are limited to this workspace, its git toplevel, and the "
-            "configured read roots. "
-        )
-    else:
-        boundary = "Outside the file tool workspace"
-        scope = "Native write_file, edit_file, and hash_edit are limited to this workspace. "
+def _file_tool_path_denial(requested_path: str, workspace: str) -> str:
     return (
-        f"{boundary}: requested path {requested_path!r}; workspace {workspace!r}. "
-        f"Request rejected. {scope}"
+        f"Outside the file tool workspace: requested path {requested_path!r}; "
+        f"workspace {workspace!r}. Request rejected. Native write_file, edit_file, "
+        "and hash_edit are limited to this workspace. "
         "For an explicitly authorized external destination, use run_command "
         "subject to its existing permissions and preserve the requested location."
+    )
+
+
+# Electron writes desktop screenshots here (webapp/electron/main.cjs
+# screenshotDir, native-computer.cjs helper tmp). Only the session that took a
+# screenshot may view it, through desktop_browser.can_view_screenshot.
+_SCREENSHOT_DIR_PARTS = (("marionette-browser-shots",), ("native-computer", "tmp"))
+
+
+def _has_part_sequence(parts: list, sequence: tuple) -> bool:
+    size = len(sequence)
+    return any(tuple(parts[i:i + size]) == sequence for i in range(len(parts) - size + 1))
+
+
+def _protected_read_text(requested_path: str, target_path: str, state_dirs: list) -> Optional[str]:
+    """Refusal text for a read outside the scope roots, or None when the read may go ahead."""
+    from .operator_read_roots import _denied_root
+
+    if _denied_root(target_path):
+        location = "a credential location (.ssh, .aws, .gnupg, .config, .env, keys)"
+    elif any(is_safe_path(target_path, root) for root in state_dirs if root):
+        location = "Marionette or Puppetmaster state (keys, other sessions)"
+    else:
+        parts = os.path.normpath(os.path.realpath(target_path)).replace("\\", "/").split("/")
+        if not any(_has_part_sequence(parts, seq) for seq in _SCREENSHOT_DIR_PARTS):
+            return None
+        location = "the desktop screenshot store of another session"
+    return (
+        f"Protected path: requested path {requested_path!r} is in {location}. "
+        "Native read tools do not read it."
     )
 
 
@@ -805,19 +821,34 @@ class ToolDispatchMixin:
     def _read_target(self, requested: str) -> tuple[str, Optional[tuple]]:
         """Absolute target of a native read tool, and its refusal or None.
 
-        The read scope is the workspace, its git toplevel, the results spill
-        dir, and the operator read roots. A path outside the scope that does
-        not exist gets the not-found text, not the scope text.
+        Read tools read any existing path, except credential locations,
+        Marionette and Puppetmaster state, desktop screenshots, and privacy
+        patterns. Writes stay confined to the workspace.
+
+        The read tools match the shell: no sandbox mode limits shell reads
+        (os_sandbox.build_seatbelt_profile allows file-read*, bwrap mounts
+        / read-only). If the sandbox ever limits reads, these tools must
+        follow that policy.
         """
         target = tool_target_path(requested, self.config.repo)
         if any(is_safe_path(target, root) for root in self._read_allowed_roots()):
             return target, None
         if not os.path.lexists(target):
             return target, (False, "not_found", _missing_path_text(requested, target))
-        return target, (
-            False, "path_traversal",
-            _file_tool_path_denial(requested, self.config.repo, read_scope=True),
-        )
+        state_dir = getattr(self, "state_dir", None) or getattr(self.config, "state_dir", None)
+        state_dirs = [
+            state_dir,
+            os.environ.get("HARNESS_STATE_DIR"),
+            os.path.expanduser("~/.pmharness"),
+            os.path.expanduser("~/.puppetmaster"),
+        ]
+        protected = _protected_read_text(requested, target, state_dirs)
+        if protected is not None:
+            return target, (False, "forbidden", protected)
+        forbidden = _forbidden_tool_result(target, state_dir)
+        if forbidden is not None:
+            return target, forbidden
+        return target, None
 
     def _drop_forbidden_search_hits(self, matches: list) -> list:
         kept = []

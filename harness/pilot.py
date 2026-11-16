@@ -1149,8 +1149,8 @@ def build_tools_schema(
     # 1. read_file
     from .hash_edit import hash_edit_enabled as _hash_edit_on
     read_desc = (
-        "Read a file's contents from the open workspace or configured read roots. "
-        "For a workspace nested in a larger git clone, the git toplevel is also readable. "
+        "Read a file's contents. The path can be in the workspace or outside it; "
+        "credential locations and Marionette state are refused. ~ expands to the home directory. "
         "A read of up to about 400 lines comes back whole on a large-context model. "
         "A larger result comes back as a short preview with the rest saved to a spill "
         "file, so read very large files in ranges with start_line and limit. "
@@ -1170,7 +1170,7 @@ def build_tools_schema(
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute or workspace-relative path within the workspace or configured read roots, or a Marionette internal URI"},
+                    "path": {"type": "string", "description": "Absolute, ~/, or workspace-relative path, or a Marionette internal URI"},
                     "start_line": {"type": "integer", "description": "1-based starting line number to read"},
                     "limit": {"type": "integer", "description": "Maximum number of lines to read"}
                 },

@@ -146,9 +146,11 @@ def test_hash_edit_expands_tilde(home_ws, monkeypatch):
     assert (ws / "notes" / "a.txt").read_text(encoding="utf-8") == "pin in ws\n"
 
 
+@pytest.mark.parametrize("mode", ["off", "auto", "required"])
 @pytest.mark.parametrize("kind", ["write_file", "edit_file", "hash_edit"])
-def test_writes_outside_workspace_stay_refused_after_expansion(home_ws, monkeypatch, kind):
+def test_writes_outside_workspace_stay_refused_after_expansion(home_ws, monkeypatch, kind, mode):
     monkeypatch.setenv("HARNESS_HASH_EDIT", "1")
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", mode)
     session, ws, other = home_ws
     act = PilotAction(
         kind=kind,
@@ -182,17 +184,77 @@ def test_lsp_root_expands_tilde(home_ws, monkeypatch):
     assert "traversal" not in val.lower()
 
 
-def test_outside_read_gets_read_scope_text(home_ws):
+SANDBOX_MODES = ["off", "auto", "required"]
+
+
+@pytest.mark.parametrize("mode", SANDBOX_MODES)
+def test_outside_read_works_in_every_sandbox_mode(home_ws, monkeypatch, mode):
+    """Read tools match the shell, which no sandbox mode limits for reads."""
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", mode)
     session, _ws, other = home_ws
+    ok, status, val = session._do_read_file(PilotAction(kind="read_file", path=str(other / "b.txt")))
+    assert ok and "needle in other" in val, (status, val)
+    ok, status, val = session._do_list_dir(PilotAction(kind="list_dir", path="~/other"))
+    assert ok and "b.txt" in val[1], (status, val)
+    act = PilotAction(kind="search_files", query="needle", arguments={"path": "~/other"})
+    ok, status, val = session._do_search_files(act)
+    assert ok and "needle in other" in val, (status, val)
+
+
+@pytest.mark.parametrize("mode", SANDBOX_MODES)
+@pytest.mark.parametrize("location,text", [
+    (".ssh/id_ed25519", "credential location"),
+    (".config/gh/hosts.yml", "credential location"),
+    ("project/.env", "credential location"),
+    (".pmharness/state/keys.json", "Marionette or Puppetmaster state"),
+    (".puppetmaster/auth_pool.json", "Marionette or Puppetmaster state"),
+    ("tmp/marionette-browser-shots/browser-1.png", "desktop screenshot store"),
+    ("Support/Marionette/native-computer/tmp/snapshot-1.png", "desktop screenshot store"),
+])
+def test_protected_locations_stay_refused(home_ws, monkeypatch, mode, location, text):
+    monkeypatch.setenv("HARNESS_OS_SANDBOX", mode)
+    session, ws, _other = home_ws
+    target = ws.parent / location
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret\n", encoding="utf-8")
+    requested = "~/" + location
+    acts = [
+        PilotAction(kind="read_file", path=requested),
+        PilotAction(kind="search_files", query="secret", arguments={"path": requested}),
+        PilotAction(kind="view_image", path=requested),
+        PilotAction(kind="read_pdf", path=requested),
+    ]
+    if not location.endswith(".env"):
+        # The folder itself is protected, so a listing is refused too.
+        acts.append(PilotAction(kind="list_dir", path=os.path.dirname(requested)))
+    for act in acts:
+        ok, status, val = getattr(session, f"_do_{act.kind}")(act)
+        assert not ok and status == "forbidden", (act.kind, status, val)
+        assert text in val, act.kind
+
+
+def test_session_state_dir_stays_refused(home_ws, tmp_path):
+    session, _ws, _other = home_ws
+    transcript = tmp_path / "state" / "sessions" / "other.json"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}", encoding="utf-8")
+    ok, status, val = session._do_read_file(PilotAction(kind="read_file", path=str(transcript)))
+    assert not ok and status == "forbidden"
+    assert "Marionette or Puppetmaster state" in val
+
+
+def test_privacy_pattern_refuses_an_outside_read(home_ws, tmp_path):
+    session, _ws, other = home_ws
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "privacy.json").write_text(
+        json.dumps({"forbidden_patterns": ["b.txt"]}), encoding="utf-8",
+    )
     for act in (
         PilotAction(kind="read_file", path=str(other / "b.txt")),
-        PilotAction(kind="list_dir", path="~/other"),
-        PilotAction(kind="search_files", query="needle", arguments={"path": str(other)}),
+        PilotAction(kind="search_files", query="needle", arguments={"path": str(other / "b.txt")}),
     ):
         ok, status, val = getattr(session, f"_do_{act.kind}")(act)
-        assert not ok and status == "path_traversal", act.kind
-        assert "Outside the file tool read scope" in val
-        assert "traversal" not in val.lower()
+        assert not ok and status == "forbidden", (act.kind, status, val)
 
 
 def test_missing_path_names_the_home_directory(home_ws):

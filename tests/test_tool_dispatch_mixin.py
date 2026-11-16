@@ -186,7 +186,7 @@ def test_read_file_truncation_notice_only_when_content_remains(tmp_path):
 
 
 def test_read_file_path_confinement_fail_closed(tmp_path):
-    """Workspace path confinement still rejects escapes outside allowed roots."""
+    """Outside reads work; a protected location outside the workspace is refused."""
     from harness.config import HarnessConfig
 
     workspace = tmp_path / "repo"
@@ -199,5 +199,11 @@ def test_read_file_path_confinement_fail_closed(tmp_path):
     )
     ok, status, val = session._do_read_file(PilotAction(kind="read_file", path="ok.txt"))
     assert ok is True and "inside" in val
-    bad = session._do_read_file(PilotAction(kind="read_file", path=str(outside)))
-    assert bad[0] is False and bad[1] == "path_traversal"
+    ok, status, val = session._do_read_file(PilotAction(kind="read_file", path=str(outside)))
+    assert ok is True and "outside" in val
+    aws = tmp_path / ".aws" / "credentials"
+    aws.parent.mkdir()
+    aws.write_text("[default]\n", encoding="utf-8")
+    bad = session._do_read_file(PilotAction(kind="read_file", path=str(aws)))
+    assert bad[0] is False and bad[1] == "forbidden"
+    assert "credential location" in bad[2]
