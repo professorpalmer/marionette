@@ -381,6 +381,15 @@ export function settleFromAssistantDone(opts: {
   };
 }
 
+/**
+ * The client settles a turn as provider EOF only when its stream closed
+ * with no terminal frame. A later assistant_done is the backend record of
+ * that turn, so it replaces the guess.
+ */
+export function assistantDoneSupersedes(last: TurnSettle | null | undefined): boolean {
+  return last?.cause === CAUSE_PROVIDER_EOF;
+}
+
 export function settleFromTransportEof(opts: {
   turnSettled: boolean;
   userStopped: boolean;

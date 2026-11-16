@@ -182,3 +182,29 @@ def test_stream_chat_writes_resume_before_done(monkeypatch):
     assert kinds.index("swarm_result") < kinds.index("done")
     assert kinds.index("pilot_resume") < kinds.index("done")
     assert kinds[-1] == "done"
+
+
+class _ResetWfile(_Wfile):
+    def write(self, payload):
+        raise ConnectionResetError("peer reset")
+
+
+def test_sse_pump_records_a_note_when_the_view_detaches(monkeypatch):
+    import harness.api.sse as sse_mod
+
+    notes = []
+    monkeypatch.setattr(
+        sse_mod, "_diag_note", lambda where, exc=None, msg="": notes.append((where, msg)),
+    )
+    ring = SseEventRing("sess-detach", generation=4, cap=32, ttl=60.0)
+
+    def gen():
+        yield SimpleNamespace(kind="message_delta", data={"text": "a"}, turn=0)
+        yield SimpleNamespace(kind="assistant_done", data={"stop_cause": "natural"}, turn=0)
+
+    assert sse_pump(_ResetWfile(), gen(), _frame, ring=ring) is True
+    detach = [msg for where, msg in notes if where == "sse_pump.detached"]
+    assert detach == ["kind=message_delta session=sess-detach generation=4"]
+    # The ring still holds the terminal the view did not get.
+    kinds = [e["kind"] for e in ring.since(0)["events"]]
+    assert kinds[-2:] == ["assistant_done", "done"]

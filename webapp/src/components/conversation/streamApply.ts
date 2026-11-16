@@ -43,7 +43,7 @@ import {
 } from "./nestedActionBounds";
 import { normalizeToolKind } from "../../lib/turnProgress";
 import { sessionNoteKey, type SessionNoteItem } from "./SessionNoteRow";
-import { suppressUnspecifiedDirtyFinish } from "../../lib/turnTerminal";
+import { CAUSE_PROVIDER_EOF, suppressUnspecifiedDirtyFinish } from "../../lib/turnTerminal";
 
 export {
   boundActionField,
@@ -1885,6 +1885,22 @@ export function appendTurnTerminal(
     return [...items.slice(0, -1), next];
   }
   return [...items, next];
+}
+
+/**
+ * Remove the provider-EOF chip of the open turn. The client paints that chip
+ * when its stream closed without a terminal; a later backend terminal for the
+ * same turn replaces it.
+ */
+export function dropProviderEofChip(items: Item[]): Item[] {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === "msg" && item.msg.role === "user") return items;
+    if (item.kind === "turn_terminal" && item.cause === CAUSE_PROVIDER_EOF) {
+      return [...items.slice(0, i), ...items.slice(i + 1)];
+    }
+  }
+  return items;
 }
 
 export function appendNonStreamingThinking(items: Item[], text: string): Item[] {
