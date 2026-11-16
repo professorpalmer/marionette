@@ -28,6 +28,7 @@ from contextlib import ExitStack, nullcontext
 from typing import Iterator, Optional
 
 from .context_budget import age_history_images
+from .transcript_flatten import flatten_message
 
 # "(read_file <path as the model spelled it> returned)" heads a read result.
 # It is not file text: two reads of one slice via different path spellings
@@ -860,7 +861,6 @@ class CompactionContextMixin:
                 body = self._unwrap_prior_summary_content(m.get("content") or "")
                 lines.append(body)
                 continue
-            role = m.get("role", "user").upper()
             content = m.get("content") or ""
             if str(m.get("role") or "") == "assistant" and not m.get("tool_calls"):
                 try:
@@ -869,18 +869,7 @@ class CompactionContextMixin:
                     _ack_like = None
                 if _ack_like is not None and _ack_like(str(content).strip()):
                     continue
-            if m.get("tool_calls"):
-                tc_strs = []
-                for tc in m["tool_calls"]:
-                    func = tc.get("function") or {}
-                    tc_strs.append(f"({func.get('name')} with arguments {func.get('arguments')})")
-                if tc_strs:
-                    content = (content + "\n" + "\n".join(tc_strs)).strip()
-            elif m.get("role") == "tool":
-                role = "USER"
-                tc_id = m.get("tool_call_id") or ""
-                content = f"(tool result for {tc_id}):\n{content}"
-            lines.append(f"{role}: {content}")
+            lines.append(flatten_message(m))
         return "\n\n".join(lines)
 
     def _clip_text(self, text: str, limit: int) -> str:
