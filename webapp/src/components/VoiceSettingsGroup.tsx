@@ -59,7 +59,7 @@ export default function VoiceSettingsGroup() {
   return (
     <SettingsGroup
       title="Voice"
-      description={`Use the mic button next to Send, or ${DICTATION_SHORTCUT_LABEL}. Audio stays on this computer.`}
+      description={`Use the mic button next to Send, or ${DICTATION_SHORTCUT_LABEL}: press once to start and again to finish, or hold the keys while you talk. Enter finishes and sends. Audio stays on this computer.`}
       testId="voice-settings"
     >
       <SettingsRow

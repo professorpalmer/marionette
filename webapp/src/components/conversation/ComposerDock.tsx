@@ -1057,13 +1057,13 @@ export default function ComposerDock({
             </div>
           )}
 
-          <textarea ref={taRef} value={input} disabled={editBusy}
+          <textarea ref={taRef} value={input} disabled={editBusy} readOnly={dictation.active}
             aria-label="Message"
             aria-autocomplete="list"
             aria-controls={mentionSearch !== null ? `${suggestId}-mentions` : slashSearch !== null ? `${suggestId}-commands` : undefined}
             aria-activedescendant={activeSuggestionId}
             onChange={(e) => handleInputChange(e.target.value, e.target.selectionStart)}
-            onKeyDown={handleKeyDown}
+            onKeyDown={(event) => { if (!dictation.handleKey(event)) handleKeyDown(event); }}
             onBlur={handleComposerBlur}
             onPaste={handlePaste}
             rows={1} placeholder={auto ? "Give the pilot an objective..." : "Message the pilot..."}
@@ -1156,7 +1156,6 @@ export default function ComposerDock({
             </button>
             </div>
             <div className="composer-toolbar-send">
-            <DictationButton state={dictation.state} onToggle={dictation.toggle} />
             {(input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && (
               <button
                 type="button"
@@ -1194,6 +1193,7 @@ export default function ComposerDock({
                 <span className="composer-toolbar-send-label">{recovery.action === "continue" ? "Continue" : "Retry"}</span>
               </button>
             )}
+            <DictationButton state={dictation.state} level={dictation.level} onToggle={dictation.toggle} />
             {busyChrome
               ? <>
                   {input.trim() ? (

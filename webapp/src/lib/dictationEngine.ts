@@ -13,7 +13,7 @@ export const WHISPER_MAX_SECONDS = 180;
 const WHISPER_PARTIAL_MS = 1_200;
 const STOP_TIMEOUT_MS = 8_000;
 
-export type DictationErrorCode = "mic_denied" | "mic_unavailable" | "engine_unavailable" | "engine_failed";
+export type DictationErrorCode = "mic_denied" | "mic_unavailable" | "mic_lost" | "engine_unavailable" | "engine_failed";
 
 export class DictationError extends Error {
   readonly code: DictationErrorCode;
@@ -26,6 +26,8 @@ export class DictationError extends Error {
 export type DictationCallbacks = {
   /** The whole spoken text so far. It can change words already shown. */
   onText: (text: string) => void;
+  /** Microphone loudness, 0 to 1, about eight times a second. */
+  onLevel: (level: number) => void;
   /** A failure after start. The session is over. */
   onError: (error: DictationError) => void;
 };
@@ -58,6 +60,8 @@ export function voiceIpc(): VoiceIpc | null {
   if (typeof window === "undefined") return null;
   return (window as { harnessIPC?: { voice?: VoiceIpc } }).harnessIPC?.voice ?? null;
 }
+
+export const MICROPHONE_LOST_MESSAGE = "The microphone was disconnected. Dictation stopped.";
 
 export const MICROPHONE_DENIED_MESSAGE =
   "Microphone access is off for Marionette. Turn it on in System Settings > Privacy & Security > Microphone.";
@@ -100,6 +104,15 @@ export function toPcm16(samples: Float32Array, fromRate: number): Int16Array {
   return out;
 }
 
+/** Loudness of one chunk, 0 to 1. Speech at a normal distance is about 0.3 to 0.8. */
+export function pcmLevel(chunk: Int16Array): number {
+  if (chunk.length === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+  const rms = Math.sqrt(sum / chunk.length) / 0x8000;
+  return Math.min(1, rms * 8);
+}
+
 export function pcm16ToBase64(chunks: readonly Int16Array[]): string {
   let binary = "";
   for (const chunk of chunks) {
@@ -113,8 +126,14 @@ export function pcm16ToBase64(chunks: readonly Int16Array[]): string {
 
 type MicCapture = { stop: () => void };
 
+type MicHandlers = {
+  onPcm: (chunk: Int16Array) => void;
+  /** The device went away (unplugged, or the OS took it back). */
+  onLost: () => void;
+};
+
 /** Record the default microphone and hand 16 kHz PCM chunks to `onPcm`. */
-export async function captureMicrophone(onPcm: (chunk: Int16Array) => void): Promise<MicCapture> {
+export async function captureMicrophone({ onPcm, onLost }: MicHandlers): Promise<MicCapture> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new DictationError("mic_unavailable", "This window cannot open a microphone.");
   }
@@ -140,6 +159,8 @@ export async function captureMicrophone(onPcm: (chunk: Int16Array) => void): Pro
   source.connect(processor);
   processor.connect(context.destination);
   let stopped = false;
+  const lost = () => { if (!stopped) onLost(); };
+  for (const track of stream.getAudioTracks()) track.addEventListener("ended", lost);
   return {
     stop: () => {
       if (stopped) return;
@@ -160,11 +181,35 @@ async function startMacos(language: string, callbacks: DictationCallbacks): Prom
   if (!status.available) throw new DictationError("engine_unavailable", status.reason || "On-device dictation is not available.");
   const access = await ipc.requestMicrophone();
   if (!access.granted) throw new DictationError("mic_denied", MICROPHONE_DENIED_MESSAGE);
-  const started = await ipc.start({ locale: language });
-  if (!started.ok) throw new DictationError("engine_unavailable", started.error);
-  const id = started.id;
 
-  let mic: MicCapture | null = null;
+  // The microphone opens first. Audio waits here until the helper runs, so
+  // the first words are not lost while it starts.
+  let id: string | null = null;
+  const waiting: ArrayBuffer[] = [];
+  let lostEarly = false;
+  let onLost = () => { lostEarly = true; };
+  const mic = await captureMicrophone({
+    onPcm: (chunk) => {
+      callbacks.onLevel(pcmLevel(chunk));
+      const bytes = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer;
+      if (id === null) waiting.push(bytes);
+      else ipc.write(id, bytes);
+    },
+    onLost: () => onLost(),
+  });
+  let started: Awaited<ReturnType<VoiceIpc["start"]>>;
+  try {
+    started = await ipc.start({ locale: language });
+  } catch (error) {
+    mic.stop();
+    throw new DictationError("engine_unavailable", String(error));
+  }
+  if (!started.ok) {
+    mic.stop();
+    throw new DictationError("engine_unavailable", started.error);
+  }
+  const sessionId = started.id;
+
   let text = "";
   let finished = false;
   let resolveDone: (text: string) => void = () => {};
@@ -175,9 +220,15 @@ async function startMacos(language: string, callbacks: DictationCallbacks): Prom
     unsubscribe();
     resolveDone(final);
   };
+  const fail = (error: DictationError) => {
+    mic.stop();
+    ipc.cancel(sessionId);
+    finish(text);
+    callbacks.onError(error);
+  };
   const unsubscribe = ipc.onEvent((raw) => {
     const event = parseHelperEvent(raw);
-    if (!event || event.id !== id) return;
+    if (!event || event.id !== sessionId) return;
     switch (event.type) {
       case "ready":
         return;
@@ -191,14 +242,11 @@ async function startMacos(language: string, callbacks: DictationCallbacks): Prom
         finish(text);
         return;
       case "error":
-        mic?.stop();
-        finish(text);
-        callbacks.onError(new DictationError("engine_failed", event.message));
+        fail(new DictationError("engine_failed", event.message));
         return;
       case "exit":
         if (!finished && event.code !== 0) {
-          mic?.stop();
-          callbacks.onError(new DictationError("engine_failed", event.stderr || "The dictation helper stopped."));
+          fail(new DictationError("engine_failed", event.stderr || "The dictation helper stopped."));
         }
         finish(text);
         return;
@@ -209,20 +257,15 @@ async function startMacos(language: string, callbacks: DictationCallbacks): Prom
     }
   });
 
-  try {
-    mic = await captureMicrophone((chunk) => {
-      ipc.write(id, chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength) as ArrayBuffer);
-    });
-  } catch (error) {
-    ipc.cancel(id);
-    finish("");
-    throw error;
-  }
+  id = sessionId;
+  for (const bytes of waiting.splice(0)) ipc.write(sessionId, bytes);
+  onLost = () => fail(new DictationError("mic_lost", MICROPHONE_LOST_MESSAGE));
+  if (lostEarly) onLost();
 
   return {
     stop: () => {
-      mic?.stop();
-      ipc.stop(id);
+      mic.stop();
+      ipc.stop(sessionId);
       const timeout = new Promise<string>((resolve) => setTimeout(() => resolve(text), STOP_TIMEOUT_MS));
       return Promise.race([done, timeout]).then((final) => {
         finish(final);
@@ -230,8 +273,8 @@ async function startMacos(language: string, callbacks: DictationCallbacks): Prom
       });
     },
     cancel: () => {
-      mic?.stop();
-      ipc.cancel(id);
+      mic.stop();
+      ipc.cancel(sessionId);
       finish("");
     },
   };
@@ -276,10 +319,21 @@ async function startWhisper(language: string, callbacks: DictationCallbacks): Pr
       .finally(() => { inflight = null; });
   };
 
-  const mic = await captureMicrophone((chunk) => {
-    if (samples >= SAMPLE_RATE * WHISPER_MAX_SECONDS) return;
-    chunks.push(chunk);
-    samples += chunk.length;
+  const mic = await captureMicrophone({
+    onPcm: (chunk) => {
+      callbacks.onLevel(pcmLevel(chunk));
+      if (samples >= SAMPLE_RATE * WHISPER_MAX_SECONDS) return;
+      chunks.push(chunk);
+      samples += chunk.length;
+    },
+    onLost: () => {
+      if (stopped || failed) return;
+      failed = true;
+      stopped = true;
+      clearInterval(timer);
+      mic.stop();
+      callbacks.onError(new DictationError("mic_lost", MICROPHONE_LOST_MESSAGE));
+    },
   });
   const timer = setInterval(partial, WHISPER_PARTIAL_MS);
 

@@ -11,6 +11,7 @@
 // `--locale <id>` selects the language (default en-US).
 
 import AVFoundation
+import CoreMedia
 import Foundation
 import Speech
 
@@ -53,7 +54,7 @@ func installAssets(_ module: SpeechTranscriber) async throws {
 
 /// Reads stdin on its own thread and yields converted buffers until EOF.
 @available(macOS 26.0, *)
-func pumpStdin(into continuation: AsyncStream<AnalyzerInput>.Continuation, format target: AVAudioFormat) {
+func pumpStdin(into continuations: [AsyncStream<AnalyzerInput>.Continuation], format target: AVAudioFormat) {
   guard let source = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true),
         let converter = AVAudioConverter(from: source, to: target) else {
     fail("audio_format", "Cannot convert 16 kHz PCM to \(target).")
@@ -89,11 +90,50 @@ func pumpStdin(into continuation: AsyncStream<AnalyzerInput>.Continuation, forma
         return input
       }
       if let error { fail("audio_convert", error.localizedDescription) }
-      if output.frameLength > 0 { continuation.yield(AnalyzerInput(buffer: output)) }
+      if output.frameLength > 0 {
+        for continuation in continuations { continuation.yield(AnalyzerInput(buffer: output)) }
+      }
     }
-    continuation.finish()
+    for continuation in continuations { continuation.finish() }
   }
   thread.start()
+}
+
+/// Committed text from the accurate transcriber, then the fast transcriber's
+/// text for the audio after it.
+actor Transcript {
+  private(set) var committed = ""
+  private var committedEnd = 0.0
+  private var fastFinals: [(text: String, start: Double)] = []
+  private var fastVolatile: (text: String, start: Double)? = nil
+  private var shown = ""
+
+  func fast(_ text: String, start: Double, end: Double, isFinal: Bool) {
+    if isFinal {
+      fastFinals.append((text, start))
+      fastVolatile = nil
+    } else {
+      fastVolatile = (text, start)
+    }
+    show()
+  }
+
+  func commit(_ text: String, end: Double) {
+    committed += text
+    committedEnd = max(committedEnd, end)
+    fastFinals.removeAll { $0.start < committedEnd - 0.05 }
+    emit(["type": "final", "text": committed])
+    show()
+  }
+
+  private func show() {
+    var text = committed
+    for segment in fastFinals where segment.start >= committedEnd - 0.05 { text += segment.text }
+    if let volatile = fastVolatile, volatile.start >= committedEnd - 0.05 { text += volatile.text }
+    if text == shown { return }
+    shown = text
+    emit(["type": "partial", "text": text])
+  }
 }
 
 @available(macOS 26.0, *)
@@ -106,30 +146,40 @@ func run(localeId: String, checkOnly: Bool) async {
       emit(["type": "check", "available": true, "locale": tag, "installed": installed])
       exit(0)
     }
-    let module = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults, .fastResults], attributeOptions: [])
-    try await installAssets(module)
-    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
+    // Two analyzers on the same audio: the fast one gives live text while the
+    // user talks; the accurate one commits text at each pause. One analyzer
+    // with both transcribers gives the fast (less accurate) text for both.
+    let fast = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults, .fastResults], attributeOptions: [])
+    let accurate = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [])
+    try await installAssets(fast)
+    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [fast, accurate]) else {
       fail("audio_format", "SpeechAnalyzer has no audio format for this language.")
     }
-    let analyzer = SpeechAnalyzer(modules: [module])
-    let (inputs, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-    let results = Task { () -> String in
-      var finalText = ""
-      for try await result in module.results {
-        let text = String(result.text.characters)
-        if result.isFinal {
-          finalText += text
-          emit(["type": "final", "text": finalText])
-        } else {
-          emit(["type": "partial", "text": finalText + text])
-        }
+    let fastAnalyzer = SpeechAnalyzer(modules: [fast])
+    let accurateAnalyzer = SpeechAnalyzer(modules: [accurate])
+    let (fastInputs, fastContinuation) = AsyncStream<AnalyzerInput>.makeStream()
+    let (accurateInputs, accurateContinuation) = AsyncStream<AnalyzerInput>.makeStream()
+    let transcript = Transcript()
+    let fastTask = Task {
+      for try await result in fast.results {
+        await transcript.fast(String(result.text.characters), start: result.range.start.seconds,
+                              end: result.range.end.seconds, isFinal: result.isFinal)
       }
-      return finalText
     }
-    try await analyzer.start(inputSequence: inputs)
+    let results = Task { () -> String in
+      for try await result in accurate.results {
+        await transcript.commit(String(result.text.characters), end: result.range.end.seconds)
+      }
+      try await fastTask.value
+      return await transcript.committed
+    }
+    try await fastAnalyzer.start(inputSequence: fastInputs)
+    try await accurateAnalyzer.start(inputSequence: accurateInputs)
     emit(["type": "ready"])
-    pumpStdin(into: continuation, format: format)
-    try await analyzer.finalizeAndFinishThroughEndOfInput()
+    pumpStdin(into: [fastContinuation, accurateContinuation], format: format)
+    async let fastDone: Void = fastAnalyzer.finalizeAndFinishThroughEndOfInput()
+    try await accurateAnalyzer.finalizeAndFinishThroughEndOfInput()
+    try await fastDone
     let text = try await results.value
     emit(["type": "done", "text": text.trimmingCharacters(in: .whitespacesAndNewlines)])
     exit(0)

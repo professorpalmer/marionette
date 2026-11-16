@@ -19,9 +19,17 @@ export type DictationTarget = {
   send: (value: string) => void;
 };
 
+/** A shortcut press held this long is hold-to-talk: the release stops. */
+export const HOLD_TO_TALK_MS = 400;
+
 /** Cmd+Shift+D on macOS, Ctrl+Shift+D elsewhere. */
 export function isDictationShortcut(event: KeyboardEvent): boolean {
   return (event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === "d";
+}
+
+function releasesShortcut(event: KeyboardEvent): boolean {
+  const key = event.key.toLowerCase();
+  return key === "d" || key === "meta" || key === "control" || key === "shift";
 }
 
 export const DICTATION_SHORTCUT_LABEL =
@@ -29,41 +37,60 @@ export const DICTATION_SHORTCUT_LABEL =
 
 /**
  * Voice dictation into the message box. Spoken text goes in at the cursor and
- * changes as the engine revises it. It never sends, unless the user turned on
- * "send" by voice and the dictation ends with that word.
+ * changes as the engine revises it. The box is read-only while dictation runs.
+ * It sends only when the user presses Enter to finish, or says "send" with
+ * "Send when I say send" on.
  */
 export function useDictation(target: DictationTarget) {
   const settings = useVoiceSettings();
   const [state, setState] = useState<DictationState>({ phase: "idle" });
+  // Microphone loudness, 0 to 1, while listening.
+  const [level, setLevel] = useState(0);
   const session = useRef<DictationSession | null>(null);
   const anchor = useRef<DictationAnchor>({ before: "", after: "" });
-  // The value dictation last wrote. A different value means the user typed.
   const written = useRef<string | null>(null);
-  // The part of the spoken text that is already inside `anchor`.
-  const consumed = useRef(0);
   const generation = useRef(0);
+  // A stop asked for before the engine was ready: { send } or null.
+  const pendingStop = useRef<{ send: boolean } | null>(null);
   const targetRef = useRef(target);
   targetRef.current = target;
 
-  // How much spoken text produced `written`.
-  const writtenSpoken = useRef(0);
-
-  // Set by the box's input event: the user typed while dictation ran.
-  const userEdited = useRef(false);
+  const takePendingStop = (): { send: boolean } | null => {
+    const stop = pendingStop.current;
+    pendingStop.current = null;
+    return stop;
+  };
 
   const write = (spoken: string): string => {
-    const box = targetRef.current.textarea();
-    if (box && userEdited.current) {
-      // Keep the user's edit and go on at their cursor.
-      userEdited.current = false;
-      anchor.current = anchorAt(box.value, box.selectionStart, box.selectionEnd);
-      consumed.current = writtenSpoken.current;
-    }
-    const next = spliceDictation(anchor.current, spoken.slice(consumed.current));
+    const next = spliceDictation(anchor.current, spoken);
     written.current = next.value;
-    writtenSpoken.current = spoken.length;
     targetRef.current.apply(next.value, next.caret);
     return next.value;
+  };
+
+  const finish = async (send: boolean) => {
+    const current = session.current;
+    if (!current) {
+      if (state.phase === "starting") pendingStop.current = { send };
+      return;
+    }
+    session.current = null;
+    const run = generation.current;
+    setState({ phase: "finishing" });
+    setLevel(0);
+    try {
+      const final = await current.stop();
+      if (run !== generation.current) return;
+      const command = settings.sendOnPhrase ? stripSendPhrase(final) : { text: final, send: false };
+      const value = final || command.send ? write(command.text) : written.current;
+      setState({ phase: "idle" });
+      targetRef.current.textarea()?.focus();
+      if ((send || command.send) && value !== null) targetRef.current.send(value);
+    } catch (error) {
+      if (run !== generation.current) return;
+      const message = error instanceof Error ? error.message : String(error);
+      setState({ phase: "error", message, micDenied: false });
+    }
   };
 
   const start = async () => {
@@ -71,20 +98,21 @@ export function useDictation(target: DictationTarget) {
     const value = box?.value ?? "";
     anchor.current = anchorAt(value, box?.selectionStart ?? value.length, box?.selectionEnd ?? value.length);
     written.current = null;
-    consumed.current = 0;
-    writtenSpoken.current = 0;
-    userEdited.current = false;
+    pendingStop.current = null;
     const run = ++generation.current;
     setState({ phase: "starting" });
     try {
       const next = await startDictation(settings.engine, settings.language, {
         onText: (text) => {
-          if (run !== generation.current) return;
-          write(text);
+          if (run === generation.current) write(text);
+        },
+        onLevel: (value) => {
+          if (run === generation.current) setLevel(value);
         },
         onError: (error) => {
           if (run !== generation.current) return;
           session.current = null;
+          setLevel(0);
           setState({ phase: "error", message: error.message, micDenied: error.code === "mic_denied" });
         },
       });
@@ -94,6 +122,8 @@ export function useDictation(target: DictationTarget) {
       }
       session.current = next;
       setState({ phase: "listening" });
+      const stopNow = takePendingStop();
+      if (stopNow) await finish(stopNow.send);
     } catch (error) {
       if (run !== generation.current) return;
       const failure = error instanceof DictationError ? error : new DictationError("engine_failed", String(error));
@@ -101,29 +131,8 @@ export function useDictation(target: DictationTarget) {
     }
   };
 
-  const stop = async () => {
-    const current = session.current;
-    if (!current) return;
-    session.current = null;
-    const run = generation.current;
-    setState({ phase: "finishing" });
-    try {
-      const final = await current.stop();
-      if (run !== generation.current) return;
-      const command = settings.sendOnPhrase ? stripSendPhrase(final) : { text: final, send: false };
-      const value = final || command.send ? write(command.text) : written.current;
-      setState({ phase: "idle" });
-      targetRef.current.textarea()?.focus();
-      if (command.send && value !== null) targetRef.current.send(value);
-    } catch (error) {
-      if (run !== generation.current) return;
-      const message = error instanceof Error ? error.message : String(error);
-      setState({ phase: "error", message, micDenied: false });
-    }
-  };
-
   const toggle = () => {
-    if (state.phase === "listening") void stop();
+    if (state.phase === "listening" || state.phase === "starting") void finish(false);
     else if (state.phase === "idle" || state.phase === "error") void start();
   };
 
@@ -131,28 +140,50 @@ export function useDictation(target: DictationTarget) {
     if (state.phase === "error") setState({ phase: "idle" });
   };
 
-  const toggleRef = useRef(toggle);
-  toggleRef.current = toggle;
+  const active = state.phase === "starting" || state.phase === "listening" || state.phase === "finishing";
+
+  /** Keys in the message box while dictation runs: Enter finishes and sends, Escape finishes. */
+  const handleKey = (event: { key: string; shiftKey: boolean; preventDefault: () => void }): boolean => {
+    if (!active) return false;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void finish(true);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void finish(false);
+      return true;
+    }
+    return false;
+  };
+
+  const latest = useRef({ toggle, finish, phase: state.phase });
+  latest.current = { toggle, finish, phase: state.phase };
   useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
+    // A press that starts dictation and is held is hold-to-talk; a short press toggles.
+    let heldFrom: number | null = null;
+    const onDown = (event: KeyboardEvent) => {
       if (!isDictationShortcut(event)) return;
       event.preventDefault();
-      toggleRef.current();
+      if (event.repeat) return;
+      const idle = latest.current.phase === "idle" || latest.current.phase === "error";
+      heldFrom = idle ? Date.now() : null;
+      latest.current.toggle();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const onUp = (event: KeyboardEvent) => {
+      if (heldFrom === null || !releasesShortcut(event)) return;
+      const held = Date.now() - heldFrom;
+      heldFrom = null;
+      if (held >= HOLD_TO_TALK_MS) void latest.current.finish(false);
+    };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+    };
   }, []);
-
-  const active = state.phase === "starting" || state.phase === "listening" || state.phase === "finishing";
-  useEffect(() => {
-    if (!active) return;
-    const box = targetRef.current.textarea();
-    if (!box) return;
-    // React writes the dictated value without an input event, so this fires only for the user.
-    const onInput = () => { userEdited.current = true; };
-    box.addEventListener("input", onInput);
-    return () => box.removeEventListener("input", onInput);
-  }, [active]);
 
   useEffect(() => () => {
     generation.current += 1;
@@ -160,5 +191,5 @@ export function useDictation(target: DictationTarget) {
     session.current = null;
   }, []);
 
-  return { state, toggle, dismiss, engine: settings.engine };
+  return { state, level, active, toggle, dismiss, handleKey, engine: settings.engine };
 }
