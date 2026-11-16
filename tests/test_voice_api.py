@@ -29,10 +29,17 @@ class VoiceApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = self.tmp.name
-        self.cli = os.path.join(self.home, "whisper-cli")
-        with open(self.cli, "w") as f:
+        script = os.path.join(self.home, "whisper-cli.py")
+        with open(script, "w", encoding="utf-8") as f:
             f.write(FAKE_CLI.format(python=sys.executable))
-        os.chmod(self.cli, os.stat(self.cli).st_mode | stat.S_IEXEC)
+        if os.name == "nt":
+            # Windows cannot run a #! script. A .cmd file runs the same script.
+            self.cli = os.path.join(self.home, "whisper-cli.cmd")
+            with open(self.cli, "w", encoding="utf-8") as f:
+                f.write('@"%s" "%s" %%*\r\n' % (sys.executable, script))
+        else:
+            self.cli = script
+            os.chmod(self.cli, os.stat(self.cli).st_mode | stat.S_IEXEC)
         self.env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home}, clear=False)
         self.env.start()
         os.environ.pop("HARNESS_WHISPER_MODEL", None)
