@@ -392,8 +392,9 @@ def test_small_window_ratio_behavior_unchanged():
     assert advice["budget_tokens"] == 0
 
 
-def test_large_window_absolute_soon_fires_before_ratio():
-    """1M budget with 160k-token L0 equivalent fires soon via absolute rule."""
+def test_large_window_absolute_soon_fires_before_ratio(monkeypatch):
+    """An operator soon budget of 150k fires on a 1M window at 160k."""
+    monkeypatch.setenv("HARNESS_ADVISOR_SOON_TOKENS", "150000")
     budget = 1_000_000
     l0_bytes = 160_000 * 4
     advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
@@ -403,7 +404,8 @@ def test_large_window_absolute_soon_fires_before_ratio():
     assert advice["budget_tokens"] == 150_000
 
 
-def test_large_window_absolute_now_fires_at_270k():
+def test_large_window_absolute_now_fires_at_270k(monkeypatch):
+    monkeypatch.setenv("HARNESS_ADVISOR_NOW_TOKENS", "270000")
     budget = 1_000_000
     l0_bytes = 280_000 * 4
     advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
@@ -427,16 +429,26 @@ def test_absolute_threshold_invalid_env_ignored(monkeypatch):
     l0_bytes = 160_000 * 4
     monkeypatch.setenv("HARNESS_ADVISOR_SOON_TOKENS", "not-a-number")
     advice = assess_layer_pressure(_snapshot(l0_bytes), budget)
-    assert advice["level"] == "soon"
-    assert "150000 tokens on a large window" in advice["reasons"][0]
-    assert advice["budget_kind"] == "absolute"
-    assert advice["budget_tokens"] == 150_000
+    # An invalid value falls back to the default, which is off.
+    assert advice["level"] == "none"
+
+
+def test_default_large_window_uses_the_window_ratio(monkeypatch):
+    """No operator budget: a 1M window warns at 55% and advises at 70%."""
+    monkeypatch.delenv("HARNESS_ADVISOR_NOW_TOKENS", raising=False)
+    monkeypatch.delenv("HARNESS_ADVISOR_SOON_TOKENS", raising=False)
+    budget = 1_000_000
+    assert assess_layer_pressure(_snapshot(300_000 * 4), budget)["level"] == "none"
+    soon = assess_layer_pressure(_snapshot(560_000 * 4), budget)
+    assert soon["level"] == "soon" and soon["budget_kind"] == "percent"
+    now = assess_layer_pressure(_snapshot(710_000 * 4), budget)
+    assert now["level"] == "now" and now["budget_kind"] == "percent"
 
 
 def test_absolute_now_uses_the_provider_usage_clock(monkeypatch, tmp_path):
     """A 1M-window session billed at 300k tokens compacts even when the layer bytes read low."""
     monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
-    monkeypatch.delenv("HARNESS_ADVISOR_NOW_TOKENS", raising=False)
+    monkeypatch.setenv("HARNESS_ADVISOR_NOW_TOKENS", "270000")
     cfg = HarnessConfig(max_context_tokens=1_000_000, state_dir=str(tmp_path))
     session = ConversationalSession(cfg)
     session.harness_session_id = "advisor-usage-clock"
@@ -461,3 +473,28 @@ def test_absolute_now_uses_the_provider_usage_clock(monkeypatch, tmp_path):
     session2._last_prompt_tokens = 300_000
     session2._last_prompt_heuristic = session2._estimate_context_tokens_for_list(session2._history)
     assert list(session2._maybe_compact_history()) == []
+
+
+def test_default_1m_window_compacts_at_the_window_trigger(monkeypatch, tmp_path):
+    """No operator budget: a 1M session at 300k billed keeps its history; past 75% it compacts."""
+    monkeypatch.delenv("HARNESS_ADVISOR_COMPACTION", raising=False)
+    monkeypatch.delenv("HARNESS_ADVISOR_NOW_TOKENS", raising=False)
+    cfg = HarnessConfig(max_context_tokens=1_000_000, state_dir=str(tmp_path))
+
+    def _session(prompt_tokens):
+        session = ConversationalSession(cfg)
+        session.harness_session_id = "advisor-window-default"
+        session.config.max_context_tokens_pinned = True
+        session._history[0]["content"] = "system prompt"
+        session.pilot = _MockPilot()  # type: ignore[assignment]
+        for i in range(40):
+            session._history.append({"role": "user", "content": f"user turn {i} " + "u" * 400})
+            session._history.append({"role": "assistant", "content": f"assistant turn {i} " + "a" * 400})
+        session._last_prompt_tokens = prompt_tokens
+        session._last_prompt_heuristic = session._estimate_context_tokens_for_list(session._history)
+        return session
+
+    record_memory_layer_snapshot(str(tmp_path), "advisor-window-default", 1, _snapshot(40_000))
+    assert list(_session(300_000)._maybe_compact_history()) == []
+    events = list(_session(760_000)._maybe_compact_history())
+    assert events and events[0].kind == "compacting"
