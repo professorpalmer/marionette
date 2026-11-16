@@ -369,6 +369,7 @@ export default function Conversation({
   // a turn begins without a local EventSource (e.g. Discord Bridge queue drain).
   const ensureChatEventsReattachRef = useRef<() => void>(() => {});
   const abandonStaleLocalStreamRef = useRef<() => void>(() => {});
+  const replayMissedTerminalRef = useRef<(sid: string | null) => Promise<boolean>>(async () => false);
   // Last frame on the live local stream (quiet-stream watchdog).
   const lastLocalStreamEventAtRef = useRef(0);
 
@@ -2994,6 +2995,31 @@ export default function Conversation({
     }
   };
 
+  // The backend ring keeps every terminal it sends. Before this view calls a
+  // closed or quiet stream lost, replay the ring after the last applied frame
+  // and settle from the terminal it holds. Ring unavailable or no terminal:
+  // false, and the caller paints the provider-EOF settle.
+  replayMissedTerminalRef.current = async (sid: string | null): Promise<boolean> => {
+    if (!sid) return false;
+    try {
+      const replay = await api.chatEvents({
+        session: sid,
+        since: lastAppliedRingCursorRef.current,
+        generation: ringGenerationRef.current,
+      });
+      const frames = replay && !replay.missed && replay.ok !== false ? replay.events || [] : [];
+      if (streamSessionIdRef.current !== sid) return false;
+      if (!frames.some((f) => isTerminalStreamKind(f.kind))) return false;
+      for (const frame of frames) {
+        recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, frame);
+        applyStreamEventRef.current(chatFrameToStreamEvent(frame));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   abandonStaleLocalStreamRef.current = () => {
     if (userStoppedRef.current) return;
     const settle = settleFromStaleLocalAbandon({
@@ -3085,28 +3111,14 @@ export default function Conversation({
           // The backend usually recorded the terminal we missed: replay the
           // ring after our last frame and settle from it (Done, not a lost
           // stream). Only when it holds no terminal is the stream abandoned.
-          let recovered = false;
-          try {
-            const replay = await api.chatEvents({
-              session: sid,
-              since: lastAppliedRingCursorRef.current,
-              generation: ringGenerationRef.current,
-            });
-            const frames = replay && !replay.missed && replay.ok !== false ? replay.events || [] : [];
-            if (streamSessionIdRef.current === sid && frames.some((f) => isTerminalStreamKind(f.kind))) {
-              for (const frame of frames) {
-                recordPrimaryStreamFrame({ lastAppliedRingCursorRef, ringGenerationRef }, frame);
-                applyStreamEventRef.current(chatFrameToStreamEvent(frame));
-              }
-              cancelRef.current?.();
-              cancelRef.current = null;
-              localStreamActiveRef.current = false;
-              recovered = true;
-            }
-          } catch {
-            // Ring unavailable: fall through to the honest abandon.
+          const recovered = await replayMissedTerminalRef.current(sid);
+          if (recovered) {
+            cancelRef.current?.();
+            cancelRef.current = null;
+            localStreamActiveRef.current = false;
+          } else {
+            abandonStaleLocalStreamRef.current();
           }
-          if (!recovered) abandonStaleLocalStreamRef.current();
         } else if (next.kind === "count" || next.kind === "skip") {
           idleSamples = next.idleSamples;
         }
@@ -3154,6 +3166,7 @@ export default function Conversation({
     refreshQueue,
     fetchContextUsage,
     recordTurnSettle,
+    lastSettleRef,
   });
   applyStreamEventRef.current = applyStreamEvent;
 
@@ -3323,61 +3336,77 @@ export default function Conversation({
            turnSettled: turnSettledRef.current,
            userStopped: userStoppedRef.current,
          });
+         const closeStream = () => {
+           cancelRef.current = null;
+           localStreamActiveRef.current = false;
+           setCompactingStatus(null);
+           maybeRunApprovedCommandRetryRef.current();
+           maybeRunQueuedResume();
+           maybeDrainQueue();
+           ensureChatEventsReattachRef.current();
+         };
          if (doneDec.kind === "abort_error") {
-           const settle = settleFromTransportEof({
-             turnSettled: false,
-             userStopped: false,
-             hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
+           // The socket closed before this view applied a terminal. The
+           // backend can still hold it (a frame it did not write or this view
+           // did not get): settle from the ring when it does. Paint provider
+           // EOF only when the ring has no terminal either.
+           cancelRef.current = null;
+           localStreamActiveRef.current = false;
+           void replayMissedTerminalRef.current(streamSid).then((recovered) => {
+             if (!streamLive()) return;
+             if (!recovered && !turnSettledRef.current && !userStoppedRef.current) {
+               const settle = settleFromTransportEof({
+                 turnSettled: false,
+                 userStopped: false,
+                 hasPartialAnswer: hasPartialAssistantAnswer(itemsRef.current),
+               });
+               if (settle.kind === "settle") {
+                 turnSettledRef.current = true;
+                 setTurnOpen(false);
+                 setWaitHint(null);
+                 setStatus(settle.status);
+                 recordTurnSettle(settle);
+                 const liveIds = liveNonLocalSwarmJobIds();
+                 setPendingJobIds(liveIds);
+                 setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
+               }
+             }
+             closeStream();
            });
-           if (settle.kind === "already_settled") return;
-           turnSettledRef.current = true;
-           setTurnOpen(false);
-           setWaitHint(null);
-           setStatus(settle.status);
-           recordTurnSettle(settle);
-           const liveIds = liveNonLocalSwarmJobIds();
-           setPendingJobIds(liveIds);
-           setItems((p) => applyLocalTurnSettle(settle, p, liveIds));
-         } else {
-           // Authoritative settle already won — preserve error/interrupted
-           // chrome and the terminal chip. Never reseal as success.
-           turnSettledRef.current = true;
-           setTurnOpen(false);
-           const liveIds = liveNonLocalSwarmJobIds();
-           const liveJobs = liveIds.some((id) => Boolean(id));
-           setPendingJobIds(liveIds);
-           const lastSettle = lastSettleRef.current;
-           const preserveInterrupt = lastSettle?.lifecycle === "error"
-             || lastSettle?.lifecycle === "interrupted"
-             || lastSettle?.lifecycle === "aborted";
-           setStatus((prev) => alreadySettledOnDoneStatus({
-             prev,
-             liveJobs,
-             userStopped: userStoppedRef.current,
-           }));
-           if (liveJobs && !userStoppedRef.current && !preserveInterrupt) {
-             setWaitHint((prev) => prev || SWARM_AWAIT_HINT);
-           } else {
-             setWaitHint(null);
-           }
-           setItems((p) => {
-             const sealed = sealTurnItems(p, liveIds);
-             if (!lastSettle?.explanation) return sealed;
-             return appendTurnTerminal(sealed, {
-               id: `turn-term-${streamGenRef.current}`,
-               cause: lastSettle.cause,
-               state: lastSettle.lifecycle,
-               text: lastSettle.explanation,
-             });
-           });
+           return;
          }
-         cancelRef.current = null;
-         localStreamActiveRef.current = false;
-         setCompactingStatus(null);
-         maybeRunApprovedCommandRetryRef.current();
-         maybeRunQueuedResume();
-         maybeDrainQueue();
-         ensureChatEventsReattachRef.current();
+         // Authoritative settle already won — preserve error/interrupted
+         // chrome and the terminal chip. Never reseal as success.
+         turnSettledRef.current = true;
+         setTurnOpen(false);
+         const liveIds = liveNonLocalSwarmJobIds();
+         const liveJobs = liveIds.some((id) => Boolean(id));
+         setPendingJobIds(liveIds);
+         const lastSettle = lastSettleRef.current;
+         const preserveInterrupt = lastSettle?.lifecycle === "error"
+           || lastSettle?.lifecycle === "interrupted"
+           || lastSettle?.lifecycle === "aborted";
+         setStatus((prev) => alreadySettledOnDoneStatus({
+           prev,
+           liveJobs,
+           userStopped: userStoppedRef.current,
+         }));
+         if (liveJobs && !userStoppedRef.current && !preserveInterrupt) {
+           setWaitHint((prev) => prev || SWARM_AWAIT_HINT);
+         } else {
+           setWaitHint(null);
+         }
+         setItems((p) => {
+           const sealed = sealTurnItems(p, liveIds);
+           if (!lastSettle?.explanation) return sealed;
+           return appendTurnTerminal(sealed, {
+             id: `turn-term-${streamGenRef.current}`,
+             cause: lastSettle.cause,
+             state: lastSettle.lifecycle,
+             text: lastSettle.explanation,
+           });
+         });
+         closeStream();
        },
        (streamErr: any) => {
          if (!streamLive()) return;

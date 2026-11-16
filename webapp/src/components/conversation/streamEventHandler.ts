@@ -16,6 +16,7 @@ import {
 } from "./thinkingToolPrep";
 import {
   appendActionStartCard,
+  dropProviderEofChip,
   dropSwarmToolPrep,
   applyActionResultCard,
   appendAuthFailure,
@@ -87,6 +88,7 @@ import {
   settleFromFramingDone,
   settleFromInterrupted,
   settleFromStreamError,
+  assistantDoneSupersedes,
   type TurnSettle,
 } from "../../lib/turnTerminal";
 
@@ -140,6 +142,8 @@ export type ApplyStreamEventDeps = {
   fetchContextUsage: () => void;
   /** Optional Wave 3 lifecycle hook — tests may omit it. */
   recordTurnSettle?: (settle: TurnSettle) => void;
+  /** Last settle this view painted (see recordTurnSettle). */
+  lastSettleRef?: { current: TurnSettle | null };
 };
 
 export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
@@ -171,6 +175,7 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     refreshQueue,
     fetchContextUsage,
     recordTurnSettle,
+    lastSettleRef,
   } = deps;
 
   const clearWaitHintOnProgress = () =>
@@ -675,7 +680,11 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
     } else if (ev.kind === "assistant_done") {
       // Interrupt/error already sealed this turn. A later assistant_done
       // (often stop_cause=natural) must not flip Done over Stopped/Continue.
-      if (turnSettledRef.current) {
+      // A provider-EOF settle is different: the client made it because its
+      // stream closed with no terminal, so the backend record replaces it.
+      const replacesEof = turnSettledRef.current
+        && assistantDoneSupersedes(lastSettleRef?.current);
+      if (turnSettledRef.current && !replacesEof) {
         flushTypewriter();
         setCompactingStatus(null);
         setPendingJobIds(ids => ids.filter(id => !id.startsWith("local-swarm-")));
@@ -713,7 +722,9 @@ export function createApplyStreamEvent(deps: ApplyStreamEventDeps) {
             finalizeOrphanSwarmPills(
               // Cursor CLI often paints the finale before buffered tool_call
               // events; hoist late cards/thinking under that readout into the fold.
-              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(p)),
+              hoistCardsBeforeTrailingFinals(sealOpenStreamSurfaces(
+                replacesEof ? dropProviderEofChip(p) : p,
+              )),
               liveIds,
             ),
             liveIds,

@@ -638,6 +638,16 @@ def sse_pump(
             if not detached:
                 if not sse_write(wfile, frame_for_event(wire_ev)):
                     detached = True
+                    # The view gets no more frames, terminal included. Record
+                    # it: the client then settles from the ring or paints EOF.
+                    _diag_note(
+                        "sse_pump.detached",
+                        msg=(
+                            f"kind={getattr(ev, 'kind', '')} "
+                            f"session={getattr(ring, 'session_id', '')} "
+                            f"generation={getattr(ring, 'generation', '')}"
+                        ),
+                    )
             if on_event is not None:
                 on_event(ev)
         if write_done and not detached:

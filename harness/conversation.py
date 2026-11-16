@@ -2551,22 +2551,9 @@ class ConversationalSession(
 
     def _render_history(self) -> str:
         """Flatten transcript into a single prompt for completion-style drivers."""
-        lines = []
-        for m in self._history:
-            role = m["role"].upper()
-            content = m.get("content") or ""
-            if m.get("tool_calls"):
-                tc_strs = []
-                for tc in m["tool_calls"]:
-                    func = tc.get("function") or {}
-                    tc_strs.append(f"({func.get('name')} with arguments {func.get('arguments')})")
-                if tc_strs:
-                    content = (content + "\n" + "\n".join(tc_strs)).strip()
-            elif m.get("role") == "tool":
-                role = "USER"
-                tc_id = m.get("tool_call_id") or ""
-                content = f"(tool result for {tc_id}):\n{content}"
-            lines.append(f"{role}: {content}")
+        from .transcript_flatten import flatten_message
+
+        lines = [flatten_message(m) for m in self._history]
         lines.append("ASSISTANT:")
         return "\n\n".join(lines)
 
@@ -3868,7 +3855,7 @@ class ConversationalSession(
             if not self._replace_stub_tool_result(tc_id, msg):
                 self._history.append(msg)
         else:
-            msg = {"role": "user", "content": clamped_content}
+            msg = {"role": "user", "content": clamped_content, "_action_result": True}
             if read_path:
                 msg["_read_path"] = read_path
             self._history.append(msg)

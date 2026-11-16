@@ -344,6 +344,13 @@ body {
   .pilot-picker-trigger-label { max-width: 7.5rem; }
 }
 
+/* A running turn with a typed draft shows Queue, Interrupt, Steer and Stop.
+   With labels that cluster is about 290px and pushed the pickers over each
+   other, so a crowded cluster drops to icons much earlier. */
+@container (max-width: 760px) {
+  .composer-toolbar-send[data-crowded] .composer-toolbar-send-label { display: none; }
+}
+
 @container (max-width: 420px) {
   .composer-toolbar-send-label { display: none; }
   .pilot-picker-trigger-label { max-width: 6.5rem; }

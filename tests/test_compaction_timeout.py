@@ -182,3 +182,30 @@ def test_anti_thrash_recovery_probe_after_cooldown(monkeypatch):
         assert session._compaction_ineffective_count == 1  # probation strike
     finally:
         shutil.rmtree(temp_dir)
+
+
+def test_compaction_wait_uses_wall_clock_deadline(monkeypatch):
+    """The summarizer wait ends by elapsed time, not by a count of 0.1 s joins.
+
+    A counted loop drifted long under load (5 s counted ran 6.3 s), so a 6 s
+    summarizer finished first and no cooldown was set (CI run 43936609736).
+    """
+    import harness.compaction_mixin as cm
+
+    clock = {"now": 1000.0}
+
+    def fake_monotonic():
+        clock["now"] += 1.0
+        return clock["now"]
+
+    monkeypatch.setattr(cm.time, "monotonic", fake_monotonic)
+    session, temp_dir = _fat_session(monkeypatch, _HangPilot(), timeout_s="1", cooldown_s="90")
+    try:
+        started = time.time()
+        events = list(session._maybe_compact_history(force=True))
+        elapsed = time.time() - started
+        assert elapsed < 3.0, elapsed
+        assert any(e.kind == "compaction" for e in events)
+        assert session._compaction_fail_until > time.time()
+    finally:
+        shutil.rmtree(temp_dir)

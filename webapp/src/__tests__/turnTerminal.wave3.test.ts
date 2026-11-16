@@ -92,6 +92,7 @@ function makeApplyDeps(opts?: { turnSettled?: boolean; pendingJobIds?: string[];
     );
   };
 
+  const lastSettleRef: { current: TurnSettle | null } = { current: null };
   const apply = createApplyStreamEvent({
     setCompactingStatus: () => {},
     setItems,
@@ -133,7 +134,9 @@ function makeApplyDeps(opts?: { turnSettled?: boolean; pendingJobIds?: string[];
     fetchContextUsage: () => {},
     recordTurnSettle: (settle) => {
       state.settle = settle;
+      lastSettleRef.current = settle;
     },
+    lastSettleRef,
   });
 
   return { state, apply };
@@ -214,6 +217,30 @@ describe("Wave 3: transport EOF is never a silent success", () => {
     expect(terminalChip(length.state.items)?.cause).toBe("length");
     expect(terminalChip(length.state.items)?.text).toMatch(/length/i);
     expect(terminalChip(length.state.items)?.text).not.toMatch(/context\s*%/i);
+  });
+});
+
+describe("A backend terminal replaces a client provider-EOF guess", () => {
+  it("assistant_done after a framing-only EOF settles complete and drops the chip", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "message_delta", data: { text: "Working on it" } });
+    apply({ kind: "done", data: {} });
+    expect(terminalChip(state.items)?.cause).toBe("provider_eof");
+    apply({ kind: "message_delta", data: { text: ". Done now." } });
+    apply({ kind: "assistant_done", data: { stop_cause: "natural", finish_reason: "end_turn" } });
+    expect(state.settle?.lifecycle).toBe("settled_complete");
+    expect(state.status).toBe("done");
+    expect(terminalChip(state.items)).toBeUndefined();
+  });
+
+  it("assistant_done after an interrupt keeps the interrupted settle", () => {
+    const { state, apply } = makeApplyDeps();
+    apply({ kind: "message_delta", data: { text: "Partial" } });
+    apply({ kind: "interrupted", data: {} });
+    const before = state.settle?.lifecycle;
+    apply({ kind: "assistant_done", data: { stop_cause: "natural" } });
+    expect(state.settle?.lifecycle).toBe(before);
+    expect(state.settle?.lifecycle).not.toBe("settled_complete");
   });
 });
 

@@ -28,6 +28,7 @@ from contextlib import ExitStack, nullcontext
 from typing import Iterator, Optional
 
 from .context_budget import age_history_images
+from .transcript_flatten import flatten_message
 
 # "(read_file <path as the model spelled it> returned)" heads a read result.
 # It is not file text: two reads of one slice via different path spellings
@@ -91,6 +92,7 @@ REASON_RESIDUAL_OFF = "residual_off"
 REASON_WATERMARK_FENCE = "watermark_fence"
 REASON_IDLE_UNGROWN = "idle_ungrown"
 REASON_ARCHIVE_FAILED = "archive_failed"
+REASON_STOPPED = "stopped"
 
 # Dest-native skip taxonomy (MiniMax ContextManager names, dest reasons).
 SKIP_DISABLED = "context_manager_disabled"
@@ -113,6 +115,7 @@ _SKIP_BY_REASON = {
     REASON_THRASH_COOLDOWN: SKIP_DEFERRED_PLUGIN,
     REASON_SUMMARY_REJECTED: SKIP_SUMMARY_FAILED,
     REASON_ARCHIVE_FAILED: SKIP_SUMMARY_FAILED,
+    REASON_STOPPED: SKIP_SUMMARY_FAILED,
 }
 
 
@@ -133,6 +136,10 @@ def _active_message_id(message, index: int) -> int:
         return int(index)
     except (TypeError, ValueError):
         return 0
+
+
+class CompactionStopped(Exception):
+    """Stop arrived while the summarizer ran. History stays as it was."""
 
 
 def neutralize_compaction_control_tokens(text: str) -> str:
@@ -860,7 +867,6 @@ class CompactionContextMixin:
                 body = self._unwrap_prior_summary_content(m.get("content") or "")
                 lines.append(body)
                 continue
-            role = m.get("role", "user").upper()
             content = m.get("content") or ""
             if str(m.get("role") or "") == "assistant" and not m.get("tool_calls"):
                 try:
@@ -869,18 +875,7 @@ class CompactionContextMixin:
                     _ack_like = None
                 if _ack_like is not None and _ack_like(str(content).strip()):
                     continue
-            if m.get("tool_calls"):
-                tc_strs = []
-                for tc in m["tool_calls"]:
-                    func = tc.get("function") or {}
-                    tc_strs.append(f"({func.get('name')} with arguments {func.get('arguments')})")
-                if tc_strs:
-                    content = (content + "\n" + "\n".join(tc_strs)).strip()
-            elif m.get("role") == "tool":
-                role = "USER"
-                tc_id = m.get("tool_call_id") or ""
-                content = f"(tool result for {tc_id}):\n{content}"
-            lines.append(f"{role}: {content}")
+            lines.append(flatten_message(m))
         return "\n\n".join(lines)
 
     def _clip_text(self, text: str, limit: int) -> str:
@@ -1623,21 +1618,27 @@ class CompactionContextMixin:
                     finally:
                         resources.close()
 
-                # Daemon thread + join timeout by design: never block shutdown on
-                # a hung summarizer (ThreadPoolExecutor.__exit__ would wait
-                # forever). On timeout we abandon the thread — it is not forcibly
-                # killed — then fall back + set _compaction_fail_until cooldown.
-                # daemon=True so abandoned threads die with the process; retries
-                # are bounded by that cooldown. A cancel Event inside the
-                # summarizer would be cleaner but is not worth the complexity
-                # for desktop-app risk.
+                # Daemon thread: never block shutdown on a hung summarizer. On
+                # timeout or Stop the thread is abandoned, not killed, and its
+                # result is never read. A Stop flag already set when the wait
+                # starts is stale and does not count.
+                stale_stop = self._cancel.is_set()
                 t = threading.Thread(target=_run_summarizer, daemon=True)
                 try:
                     t.start()
                 except BaseException:
                     resources.close()
                     raise
-                t.join(timeout=max(5.0, _compact_timeout))
+                # Wall-clock deadline: a count of 0.1 s joins drifts long under
+                # load (5 s counted ran 6.3 s with six busy threads).
+                deadline = time.monotonic() + max(5.0, _compact_timeout)
+                while t.is_alive():
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    t.join(timeout=min(0.1, left))
+                    if not stale_stop and self._cancel.is_set():
+                        raise CompactionStopped()
                 if t.is_alive():
                     raise TimeoutError("compaction summarizer timed out")
                 if box.get("err") is not None:
@@ -1686,6 +1687,17 @@ class CompactionContextMixin:
                 else:
                     summary = _use_extractive_fallback()
                     self._set_compaction_fail_until(time.time() + _compact_cooldown)
+            except CompactionStopped:
+                self._set_compaction_attempt(REASON_STOPPED, before_tokens=before_tokens)
+                yield ConvEvent("compaction", {
+                    "before_tokens": before_tokens,
+                    "after_tokens": before_tokens,
+                    "summarized_messages": 0,
+                    "aborted": True,
+                    "reason": REASON_STOPPED,
+                    "message": "Compaction stopped. History is unchanged.",
+                })
+                return
             except TimeoutError:
                 summary = _use_extractive_fallback()
                 self._set_compaction_fail_until(time.time() + _compact_cooldown)
