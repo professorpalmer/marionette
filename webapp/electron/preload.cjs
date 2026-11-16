@@ -179,6 +179,20 @@ contextBridge.exposeInMainWorld("harnessIPC", {
     get: () => ipcRenderer.invoke("harness:selfDev:get"),
     set: (enabled) => ipcRenderer.invoke("harness:selfDev:set", enabled),
   },
+  voice: {
+    status: () => ipcRenderer.invoke("voice:status"),
+    requestMicrophone: () => ipcRenderer.invoke("voice:requestMicrophone"),
+    openMicrophoneSettings: () => ipcRenderer.invoke("voice:openMicrophoneSettings"),
+    start: (payload) => ipcRenderer.invoke("voice:start", payload),
+    write: (id, chunk) => ipcRenderer.send("voice:chunk", id, chunk),
+    stop: (id) => ipcRenderer.send("voice:stop", id),
+    cancel: (id) => ipcRenderer.send("voice:cancel", id),
+    onEvent: (cb) => {
+      const handler = (_e, event) => cb(event);
+      ipcRenderer.on("voice:event", handler);
+      return () => ipcRenderer.removeListener("voice:event", handler);
+    },
+  },
   translucency: {
     get: () => ipcRenderer.invoke("translucency:get"),
     set: (state) => ipcRenderer.invoke("translucency:set", state),
