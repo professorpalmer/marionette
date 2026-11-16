@@ -189,22 +189,28 @@ def test_compaction_wait_uses_wall_clock_deadline(monkeypatch):
 
     A counted loop drifted long under load (5 s counted ran 6.3 s), so a 6 s
     summarizer finished first and no cooldown was set (CI run 43936609736).
+    Here each 0.1 s join takes 1 s on a private clock, as on a loaded host:
+    the 5 s deadline must end the wait after about 5 joins, not 50.
     """
+    import threading
+
     import harness.compaction_mixin as cm
+    from tests._isolation import isolate_module_attr
 
     clock = {"now": 1000.0}
+    joins = []
 
-    def fake_monotonic():
-        clock["now"] += 1.0
-        return clock["now"]
+    class LoadedThread(threading.Thread):
+        def join(self, timeout=None):
+            joins.append(timeout)
+            clock["now"] += 1.0
 
-    monkeypatch.setattr(cm.time, "monotonic", fake_monotonic)
+    isolate_module_attr(monkeypatch, cm, "time", monotonic=lambda: clock["now"])
+    isolate_module_attr(monkeypatch, cm, "threading", Thread=LoadedThread)
     session, temp_dir = _fat_session(monkeypatch, _HangPilot(), timeout_s="1", cooldown_s="90")
     try:
-        started = time.time()
         events = list(session._maybe_compact_history(force=True))
-        elapsed = time.time() - started
-        assert elapsed < 3.0, elapsed
+        assert 1 <= len(joins) <= 6, joins
         assert any(e.kind == "compaction" for e in events)
         assert session._compaction_fail_until > time.time()
     finally:

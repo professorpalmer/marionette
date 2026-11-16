@@ -12,8 +12,13 @@ _HOT_NOW_RATIO = 0.70
 _HOT_SOON_RATIO = 0.55
 _HOT_L1_COMBO_RATIO = 0.40
 _L1_PRESSURE_BYTES = 5 * 1024 * 1024
-_HOT_NOW_TOKENS = 270_000
-_HOT_SOON_TOKENS = 150_000
+# Absolute token budgets below the window. Off by default: the window
+# decides (``_HOT_*_RATIO`` here, ``compaction_trigger_tokens`` for the hard
+# trigger), so a 1M-window model uses its window. An operator who wants a
+# smaller working context for latency or cost sets
+# HARNESS_ADVISOR_NOW_TOKENS / HARNESS_ADVISOR_SOON_TOKENS.
+_HOT_NOW_TOKENS = 0
+_HOT_SOON_TOKENS = 0
 
 
 def _env_enabled(name: str, default_on: bool) -> bool:

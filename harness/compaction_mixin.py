@@ -1331,8 +1331,8 @@ class CompactionContextMixin:
         if not force and not advised:
             # The layer snapshot counts history bytes / 4, which under-counts
             # what the provider bills (tool schemas, system prompt, dense
-            # code). On a large window the absolute rule must also see the
-            # usage clock, or a 1M-window session runs past 300k uncompacted.
+            # code). An operator absolute budget must also see the usage
+            # clock, or a session runs past it uncompacted.
             try:
                 from .compaction_advisor import absolute_now_tokens, advisor_compaction_enabled
 
