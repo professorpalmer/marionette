@@ -243,6 +243,24 @@ def _latest_cursor_agent_version_dir(root: Path) -> Optional[Path]:
     return best[1] if best else None
 
 
+def keychain_missing_reason(env: Optional[dict] = None) -> Optional[str]:
+    """Why the Agent CLI must not start under this HOME, or None when it may.
+
+    On macOS the CLI stores its login ("cursor-user") in the login keychain
+    under HOME. A HOME with no Library/Keychains (a test or probe home) makes
+    macOS show a modal "Keychain Not Found" dialog on the user's screen.
+    """
+    if sys.platform != "darwin":
+        return None
+    home = (env if env is not None else os.environ).get("HOME") or os.path.expanduser("~")
+    if os.path.isdir(os.path.join(home, "Library", "Keychains")):
+        return None
+    return (
+        f"Cursor Agent CLI not started: HOME {home!r} has no Library/Keychains, "
+        "so macOS cannot keep the Cursor login there."
+    )
+
+
 def resolve_agent_exec(binary: Optional[str] = None) -> List[str]:
     """Argv prefix to launch the Agent CLI without cmd.exe/PowerShell shims.
 
@@ -1034,6 +1052,9 @@ class CursorCliDriver:
         *,
         resume_chat_id: Optional[str] = None,
     ) -> list[str]:
+        no_keychain = keychain_missing_reason()
+        if no_keychain:
+            raise RuntimeError(no_keychain)
         exec_prefix = resolve_agent_exec(self._binary())
         if not exec_prefix:
             raise RuntimeError(f"Cursor Agent CLI not found. {INSTALL_HINT}")

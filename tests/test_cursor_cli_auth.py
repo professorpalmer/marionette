@@ -386,3 +386,40 @@ def test_invalidation_discards_an_in_flight_refresh(monkeypatch):
     for refresher in refreshers:
         refresher.join(5)
     assert auth._status_cache is None
+
+
+def test_keychain_guard_blocks_cli_under_a_home_without_keychains(tmp_path, monkeypatch):
+    """A test or probe HOME has no login keychain. Starting the Agent CLI there
+    makes macOS show a modal "Keychain Not Found" dialog for "cursor-user"."""
+    import subprocess
+    import sys
+
+    from harness import cursor_cli_auth
+    from pmharness.drivers.cursor_cli import keychain_missing_reason
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    reason = keychain_missing_reason()
+    assert reason and "Library/Keychains" in reason
+
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a) or None)
+    monkeypatch.setattr(cursor_cli_auth, "resolve_agent_binary", lambda: "/fake/agent")
+    with pytest.raises(FileNotFoundError):
+        cursor_cli_auth._run_agent(["models"])
+    assert cursor_cli_auth.list_models(live=True) == cursor_cli_auth.list_models()
+    assert calls == []
+
+    (tmp_path / "Library" / "Keychains").mkdir(parents=True)
+    assert keychain_missing_reason() is None
+
+
+def test_keychain_guard_is_macos_only(tmp_path, monkeypatch):
+    import sys
+
+    from pmharness.drivers.cursor_cli import keychain_missing_reason
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for platform in ("linux", "win32"):
+        monkeypatch.setattr(sys, "platform", platform)
+        assert keychain_missing_reason() is None

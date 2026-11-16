@@ -28,6 +28,7 @@ from .cursor_cli import (
     _messages_to_prompt,
     goal_from_tool_args,
     humanize_cursor_tool_name,
+    keychain_missing_reason,
     resolve_agent_exec,
     resolve_cursor_execution_mode,
 )
@@ -682,6 +683,9 @@ class WarmAcpSession:
         raise RuntimeError("warm ACP session closed during ensure")
 
     def _spawn_transport(self) -> AcpTransport:
+        no_keychain = keychain_missing_reason()
+        if no_keychain:
+            raise RuntimeError(no_keychain)
         exec_prefix = resolve_agent_exec()
         if not exec_prefix:
             raise RuntimeError(f"Cursor Agent CLI not found. {INSTALL_HINT}")

@@ -23,6 +23,7 @@ from pmharness.drivers.cursor_cli import (
     DEFAULT_CURSOR_CLI_MODELS,
     INSTALL_HINT,
     _cursor_cli_login_is_sentinel,
+    keychain_missing_reason,
     resolve_agent_binary,
     resolve_agent_exec,
 )
@@ -70,6 +71,9 @@ def _refresh_status_in_background() -> None:
 
 
 def _run_agent(args: list[str], *, timeout: int = _STATUS_TIMEOUT) -> subprocess.CompletedProcess:
+    no_keychain = keychain_missing_reason()
+    if no_keychain:
+        raise FileNotFoundError(no_keychain)
     binary = resolve_agent_binary()
     if not binary:
         raise FileNotFoundError(INSTALL_HINT)
