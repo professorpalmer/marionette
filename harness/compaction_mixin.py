@@ -1629,10 +1629,14 @@ class CompactionContextMixin:
                 except BaseException:
                     resources.close()
                     raise
-                remaining = max(5.0, _compact_timeout)
-                while remaining > 0 and t.is_alive():
-                    t.join(timeout=min(0.1, remaining))
-                    remaining -= 0.1
+                # Wall-clock deadline: a count of 0.1 s joins drifts long under
+                # load (5 s counted ran 6.3 s with six busy threads).
+                deadline = time.monotonic() + max(5.0, _compact_timeout)
+                while t.is_alive():
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    t.join(timeout=min(0.1, left))
                     if not stale_stop and self._cancel.is_set():
                         raise CompactionStopped()
                 if t.is_alive():
