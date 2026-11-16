@@ -63,6 +63,8 @@ def test_native_implement_worker_spec(monkeypatch, expects_diff, sandbox):
     pin, error = pins.resolve_worker_model_pin('codex/gpt-6-astra', 'low')
     assert not error
     result = run_implement(_cfg('/unused'), 'Inspect code', agentic_pin=pin, expects_diff=expects_diff)
+    # CI saw an empty specs list once (run 43910331949); name the early exit.
+    assert specs, f"no worker spec: error={result.error!r} summary={result.summary!r}"
     assert specs[0]['adapter'] == 'codex'
     payload = specs[0]['payload']
     assert payload['model'] == 'gpt-6-astra'
