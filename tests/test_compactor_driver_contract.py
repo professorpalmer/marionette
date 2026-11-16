@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import threading
+import time
 from contextlib import ExitStack
 from types import SimpleNamespace
 
@@ -36,15 +37,31 @@ def fat_session(tmp_path, monkeypatch, driver):
 
 
 def timeout_threads(monkeypatch, entered):
+    """Each join times out at once and moves a fake clock by its timeout.
+
+    The summarizer wait has a monotonic deadline. A join that returned with
+    no time passed made that loop spin for the real deadline.
+    """
     real = threading.Thread
     workers = []
+    clock = SimpleNamespace(now=time.monotonic())
 
     class TimeoutThread(real):
         def join(self, timeout=None):
-            workers.append(self)
+            if self not in workers:
+                workers.append(self)
             assert entered.wait(5)
+            clock.now += timeout or 0
+
+    class FakeTime:
+        def monotonic(self):
+            return clock.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
 
     monkeypatch.setattr("harness.compaction_mixin.threading", SimpleNamespace(Thread=TimeoutThread))
+    monkeypatch.setattr("harness.compaction_mixin.time", FakeTime())
     return workers, real
 
 
