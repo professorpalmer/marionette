@@ -188,6 +188,7 @@ import {
   droppedDirectoryPlan,
   droppedPathIsDirectory,
   mentionTokenForDroppedPath,
+  pathReferenceForLargeDrop,
   resolveDroppedOsPath,
   uploadErrorMessage,
   type DirectoryEntryLike,
@@ -2456,6 +2457,11 @@ export default function Conversation({
         mentions.push(insideToken);
         continue;
       }
+      const pathReference = pathReferenceForLargeDrop(osPath, file.size);
+      if (pathReference) {
+        mentions.push(pathReference);
+        continue;
+      }
       try {
         const uploaded = await api.uploadImage(file);
         if (!uploadLive()) return;
@@ -4435,6 +4441,10 @@ export default function Conversation({
         onRemoveDocument={index => {
           cancelPendingInitialSend();
           setAttachedDocuments(current => current.filter((_, i) => i !== index));
+        }}
+        onClearDocuments={() => {
+          cancelPendingInitialSend();
+          setAttachedDocuments([]);
         }}
         queueRecovery={queueRecovery}
         onCopyQueueRecovery={(text) => {

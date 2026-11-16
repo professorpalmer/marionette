@@ -3,7 +3,7 @@
  * State and send/stop wiring stay owned by Conversation.tsx.
  */
 
-import { ImageResource } from "./ImageResource";
+import ComposerAttachmentTray from "./ComposerAttachmentTray";
 import { imagePath } from "../../lib/transport";
 import QueueRecoveryNotice from "./QueueRecoveryNotice";
 import type { InputDocument, QueueRecovery, ReasoningEffort } from "../../lib/api";
@@ -96,6 +96,7 @@ export default function ComposerDock({
   queueLoadError,
   attachedDocuments = [],
   onRemoveDocument,
+  onClearDocuments,
   queueRecovery = [],
   onCopyQueueRecovery,
   queueDragIndex,
@@ -191,6 +192,7 @@ export default function ComposerDock({
   queueLoadError?: string | null;
   attachedDocuments?: InputDocument[];
   onRemoveDocument?: (index: number) => void;
+  onClearDocuments?: () => void;
   queueRecovery?: QueueRecovery[];
   onCopyQueueRecovery?: (text: string) => void;
   queueDragIndex: number | null;
@@ -1003,53 +1005,28 @@ export default function ComposerDock({
             </div>
           )}
 
-          {attachedDocuments.length > 0 && <div className="flex flex-wrap gap-2 px-3 pt-2">
-            {attachedDocuments.map((document, index) => <div key={index} className="flex items-center gap-2 rounded border border-edge px-2 text-xs">
-              <span>{document.name || ("ref" in document ? document.ref : document.path)}</span>
-              <button type="button" className="min-h-8 px-2" aria-label={`Remove document ${document.name || index + 1}`} onClick={() => onRemoveDocument?.(index)}>Remove</button>
-            </div>)}
-          </div>}
-          {attachedImages.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 px-3 pt-2.5">
-              {attachedImages.map((img, idx) => (
-                <div
-                  key={img.path}
-                  className="relative group/thumb w-[40px] h-[40px] rounded-lg overflow-hidden border border-edge bg-panel/50 select-none"
-                >
-                  <button
-                    type="button"
-                    aria-label={`Preview ${img.name}`}
-                    onClick={() => onSetLightboxUrl(imagePath(img.path))}
-                    className="block w-full h-full focus:outline-none focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent"
-                  >
-                    <ImageResource
-                      src={img.previewUrl.startsWith("blob:") ? img.previewUrl : imagePath(img.path)}
-                      alt={img.name}
-                      className="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity"
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${img.name}`}
-                    onClick={() => {
-                      onSetAttachedImages((prev) => prev.filter((_, i) => i !== idx));
-                      URL.revokeObjectURL(img.previewUrl);
-                      onSetUploadError(null);
-                    }}
-                    className="absolute top-0 right-0 p-0.5 bg-black/60 text-txt hover:text-risk opacity-0 group-hover/thumb:opacity-100 focus-visible:opacity-100 flex items-center justify-center transition rounded-bl"
-                    title="Remove image"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
-              {attachedImages.length > 1 && (
-                <span className="text-ui-10 text-muted self-center ml-1 select-none font-medium">
-                  {attachedImages.length} images
-                </span>
-              )}
-            </div>
-          )}
+          <ComposerAttachmentTray
+            images={attachedImages.map((img) => ({
+              path: img.path,
+              name: img.name,
+              src: img.previewUrl.startsWith("blob:") ? img.previewUrl : imagePath(img.path),
+            }))}
+            documents={attachedDocuments}
+            onPreviewImage={(path) => onSetLightboxUrl(imagePath(path))}
+            onRemoveImage={(idx) => {
+              const removed = attachedImages[idx];
+              onSetAttachedImages((prev) => prev.filter((_, i) => i !== idx));
+              if (removed) URL.revokeObjectURL(removed.previewUrl);
+              onSetUploadError(null);
+            }}
+            onRemoveDocument={(index) => onRemoveDocument?.(index)}
+            onClear={() => {
+              for (const img of attachedImages) URL.revokeObjectURL(img.previewUrl);
+              onSetAttachedImages([]);
+              onClearDocuments?.();
+              onSetUploadError(null);
+            }}
+          />
 
           {uploadError && (
             <div className="text-ui-11 text-risk px-3 pt-1">

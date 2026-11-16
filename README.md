@@ -9,7 +9,7 @@ It makes $0 off your tokens, so its whole job is spending fewer of them, and it 
 
 [Watch the demo on the site](https://professorpalmer.github.io/marionette/).
 
-Current release: **v0.9.674**. Still pre-1.0 on purpose.
+Current release: **v0.9.675**. Still pre-1.0 on purpose.
 Puppetmaster is the bundled kernel, not a second thing to set up: `puppetmaster-ai==1.50.0` gets pinned into the venv for you.
 
 ## Quick start
@@ -83,6 +83,7 @@ Installers (DMG, `.exe`, AppImage) are on [Releases](https://github.com/professo
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, ground rules, PR flow (branch off `dev`) |
 | [AGENTS.md](AGENTS.md) | Rules for agents working in this repo |
 | [Releasing](docs/develop/releasing.md) | How a merge reaches every install, tags, GitHub Releases |
+| [LICENSE](LICENSE) | MIT |
 | [NOTICE.md](NOTICE.md) | Third-party attributions |
 
 Full list: the [docs index](docs/README.md).

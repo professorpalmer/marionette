@@ -35,6 +35,11 @@ from harness.pilot import PilotAction, PilotError, parse_tool_calls
 from harness.send_loop_phases import dispatch_local_action
 
 
+# A hang guard, not a pass budget: each wait ends when the job ends.
+# 3 s was too short for a busy Windows runner (run 43905665588).
+_JOB_WAIT_SECONDS = 30.0
+
+
 class _Session(LocalJobsMixin):
     """Minimal LocalJobsMixin host (no ConversationalSession)."""
 
@@ -201,7 +206,7 @@ def test_terminal_persistence_and_restart_safe_lookup(session):
         receipt = start_background_run_command(sess, act, "a-term")
         job_id = receipt["job_id"]
         # Allow the daemon thread to finish.
-        deadline = time.time() + 3.0
+        deadline = time.time() + _JOB_WAIT_SECONDS
         while time.time() < deadline:
             job = sess.get_local_job(job_id)
             if job and job.get("status") in ("completed", "failed", "cancelled"):
@@ -260,7 +265,7 @@ def test_output_cap_and_spill_metadata(session):
     ):
         receipt = start_background_run_command(sess, act, "a-spill")
         job_id = receipt["job_id"]
-        deadline = time.time() + 3.0
+        deadline = time.time() + _JOB_WAIT_SECONDS
         while time.time() < deadline:
             job = sess.get_local_job(job_id)
             if job and job.get("status") == "completed":
@@ -347,7 +352,7 @@ def test_background_dispatch_returns_pending_receipt(session):
             assert data["status"] in {"registered", "running"}
             assert data["terminal_receipt"] is None
             release.set()
-            deadline = time.time() + 3.0
+            deadline = time.time() + _JOB_WAIT_SECONDS
             while time.time() < deadline:
                 if sess.get_local_job(data["job_id"]).get("status") == "completed":
                     break
@@ -363,7 +368,7 @@ def test_background_dispatch_returns_pending_receipt(session):
     assert data["accounting_scope"] == "marionette"
     assert data["terminal_receipt"] is None
     # Wait for terminal so the suite does not leak a live process.
-    deadline = time.time() + 3.0
+    deadline = time.time() + _JOB_WAIT_SECONDS
     while time.time() < deadline:
         job = sess.get_local_job(data["job_id"])
         if job and job.get("status") in ("completed", "failed", "cancelled"):
@@ -412,7 +417,7 @@ def test_background_cancel_preserves_partial_output(session):
         assert mid.get("terminal_receipt") is None
         release.set()
 
-        deadline = time.time() + 3.0
+        deadline = time.time() + _JOB_WAIT_SECONDS
         while time.time() < deadline:
             job = sess.get_local_job(job_id)
             if job and job.get("status") in ("completed", "failed", "cancelled"):
@@ -526,7 +531,7 @@ def test_public_receipt_omits_spill_path(session):
     ):
         receipt = start_background_run_command(sess, act, "a-spill-pub")
         job_id = receipt["job_id"]
-        deadline = time.time() + 3.0
+        deadline = time.time() + _JOB_WAIT_SECONDS
         while time.time() < deadline:
             job = sess.get_local_job(job_id)
             if job and job.get("status") == "completed":

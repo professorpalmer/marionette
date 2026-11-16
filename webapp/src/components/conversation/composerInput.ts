@@ -235,6 +235,24 @@ export function resolveDroppedOsPath(file: { path?: string }): string {
   return normalizeOsPath(String(file?.path || ""));
 }
 
+/** Backend default of `HARNESS_UPLOAD_MAX_BYTES` (harness/api/files.py). */
+export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * A dropped file larger than the upload cap goes into the draft as its disk
+ * path, as a terminal drop does. The pilot reads it with its own tools.
+ * Returns null when the file can upload or has no disk path (web build).
+ */
+export function pathReferenceForLargeDrop(
+  osPath: string,
+  size: number,
+  maxBytes = UPLOAD_MAX_BYTES,
+): string | null {
+  const path = normalizeOsPath(osPath);
+  if (!path || !(size > maxBytes)) return null;
+  return /\s/.test(path) ? `"${path}"` : path;
+}
+
 /**
  * Resolve a dropped non-image file/folder to an @-mention token.
  * Paths with spaces become quoted tokens (@"path with spaces.ts") so the
