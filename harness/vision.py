@@ -58,10 +58,15 @@ def _media_type(path: str) -> str:
 
 
 def _read_data_url(image_path: str) -> str:
+    from .image_fit import fit_image_bytes, image_too_large_text
     from .seal import read_file
 
-    b64 = base64.b64encode(read_file(image_path)).decode()
-    return f"data:{_media_type(image_path)};base64,{b64}"
+    raw = read_file(image_path)
+    fitted = fit_image_bytes(raw, _media_type(image_path))
+    if fitted is None:
+        raise ValueError(image_too_large_text(len(raw), os.path.basename(image_path)))
+    data, media_type = fitted
+    return f"data:{media_type};base64,{base64.b64encode(data).decode()}"
 
 
 def _sidecar_key(api_key_env: str, *, api_key_only: bool = False) -> str:

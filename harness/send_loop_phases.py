@@ -1173,6 +1173,15 @@ def dispatch_pilot_provider_call(
     history = getattr(session, "_history", ()) or ()
     if history and history[-1].get("source") == "goal_mode":
         sys_prompt += "\n\n" + history[-1]["content"]
+    # An image over the provider limit fails every later turn (HTTP 400) and
+    # survives compaction in a pinned request row. Fit it before each call.
+    try:
+        from .image_fit import fit_history_images
+        if fit_history_images(history):
+            session._invalidate_ctx_cache()
+    except Exception as exc:
+        from .diag import note as _diag_note
+        _diag_note("send_loop.fit_history_images", exc)
     _clear_provider_dispatch_invoked(session)
     try:
         session._last_provider_request_at = time.monotonic()
@@ -2400,7 +2409,11 @@ def meter_pilot_step(
     except (TypeError, ValueError):
         _reported_in = 0
     _tokens_in_basis = "provider" if _reported_in > 0 else "estimated"
-    _t_in = _reported_in if _reported_in > 0 else int(len(prompt) // 4)
+    if _reported_in > 0:
+        _t_in = _reported_in
+    else:
+        from .image_fit import estimate_text_tokens
+        _t_in = estimate_text_tokens(prompt or "")
     session._tokens_used += _t_out + _t_in
     session._tokens_out += _t_out
     session._turn_output_tokens += _t_out
