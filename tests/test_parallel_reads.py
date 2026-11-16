@@ -79,16 +79,20 @@ def test_parallel_reads_ordering_and_contents():
 
 
 def test_parallel_reads_confinement_rejected():
-    # (b) a read_file outside the repo root is still rejected (confinement honored in the parallel path)
+    # (b) a protected read outside the repo root is rejected in the parallel path
     temp_dir = tempfile.mkdtemp()
     
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_dir
     s = ConversationalSession(cfg)
-    
+    outside = os.path.join(tempfile.mkdtemp(), ".ssh", "outside.txt")
+    os.makedirs(os.path.dirname(outside))
+    with open(outside, "w") as f:
+        f.write("outside")
+
     # Let's request a read_file outside the repository
     actions = [
-        {"kind": "read_file", "path": "../outside.txt"},
+        {"kind": "read_file", "path": outside},
         {"kind": "read_file", "path": "file1.txt"}  # needs 2+ reads to trigger prefetch
     ]
     s.pilot = _FakePilotWithActions(actions)
@@ -102,9 +106,8 @@ def test_parallel_reads_confinement_rejected():
     assert ar_events[0].data["id"] == "a1"
     assert "error" in ar_events[0].data
     error = ar_events[0].data["error"]
-    assert "Outside the file tool read scope" in error
-    assert "requested path '../outside.txt'" in error
-    assert "run_command subject to its existing permissions" in error
+    assert f"Protected path: requested path {outside!r}" in error
+    assert "credential location" in error
 
 
 def test_parallel_reads_mixed_with_write():

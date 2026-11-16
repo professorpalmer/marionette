@@ -229,22 +229,25 @@ def test_view_image_confinement(monkeypatch):
         events = list(s.send("Look at outside image."))
         tool_msgs = [m for m in s._history if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
-        assert "Path traversal attempt rejected" in tool_msgs[0]["content"]
+        assert "Path not found: '../outside_image.png'" in tool_msgs[0]["content"]
 
-def test_view_image_rejects_path_outside_read_allowed_roots(monkeypatch):
+def test_view_image_rejects_protected_state_path(monkeypatch):
     def mock_transcribe_images(paths, sidecar=None):
         return [VisionResult(text="should not run", model="mock-vlm")]
     monkeypatch.setattr(harness.vision, "transcribe_images", mock_transcribe_images)
 
-    with tempfile.TemporaryDirectory() as repo:
+    with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as state:
         cfg = HarnessConfig(
             driver="stub-oracle-v2",
-            state_dir=tempfile.mkdtemp(),
+            state_dir=os.path.realpath(state),
             repo=os.path.realpath(repo),
         )
         session = ConversationalSession(cfg)
-        bad = session._do_view_image(_ViewAct(path="/etc/passwd"))
-        assert bad[0] is False and bad[1] == "path_traversal"
+        shot = os.path.join(os.path.realpath(state), "other-session.png")
+        with open(shot, "wb") as f:
+            f.write(_MIN_PNG)
+        bad = session._do_view_image(_ViewAct(path=shot))
+        assert bad[0] is False and bad[1] == "forbidden"
 
 
 def test_nested_workspace_view_image_allows_git_toplevel_parent(monkeypatch):
@@ -282,9 +285,13 @@ def test_nested_workspace_view_image_allows_git_toplevel_parent(monkeypatch):
         assert ok, f"parent image under git toplevel should be viewable, got {status}: {val}"
         assert canned in val
 
-        outside = os.path.join(os.path.dirname(root), "escape-outside.png")
-        bad = session._do_view_image(_ViewAct(path=outside))
-        assert bad[0] is False and bad[1] == "path_traversal"
+        # An image outside the git clone is also viewable: read tools match the shell.
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "escape-outside.png")
+            with open(outside, "wb") as f:
+                f.write(_MIN_PNG)
+            ok_out, status_out, val_out = session._do_view_image(_ViewAct(path=outside))
+        assert ok_out, (status_out, val_out)
 
 def test_vision_default_sidecar_fallback(monkeypatch):
     from harness.vision import NullVisionSidecar

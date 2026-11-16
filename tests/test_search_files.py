@@ -72,11 +72,19 @@ def test_search_files_pure_python(monkeypatch):
         assert "subdir/b.py" in val
         assert "a.txt" not in val
 
-        # 5. Path traversal block
+        # 5. Outside the workspace: searched. A missing path says so.
+        with tempfile.TemporaryDirectory() as outside:
+            with open(os.path.join(outside, "c.txt"), "w", encoding="utf-8") as f:
+                f.write("hello outside\n")
+            act = PilotAction(kind="search_files", query="hello", arguments={"path": outside})
+            ok, status, val = s._do_search_files(act)
+            assert ok, (status, val)
+            assert "hello outside" in val
         act = PilotAction(kind="search_files", query="hello", arguments={"path": "../escaped"})
         ok, status, val = s._do_search_files(act)
         assert not ok
-        assert status == "path_traversal"
+        assert status == "not_found"
+        assert "Path not found: '../escaped'" in val
 
 
 def test_search_files_ripgrep(monkeypatch):

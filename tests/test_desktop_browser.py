@@ -73,29 +73,31 @@ def test_returned_screenshot_is_viewable_only_by_owning_session(bridge, tmp_path
     from harness.pilot import PilotAction
     from harness.tool_dispatch import ToolDispatchMixin
     from harness import vision
-    image = tmp_path / "screenshot.png"
+    image = tmp_path / "marionette-browser-shots" / "screenshot.png"
+    image.parent.mkdir()
     image.write_bytes(b"fixture pixels")
     result = {"screenshot_path": str(image)}
     bridge.result = {"state": result} if nested else result
     monkeypatch.setattr(vision, "session_supports_native_images", lambda _session: True)
     session = SimpleNamespace(config=SimpleNamespace(repo=str(tmp_path / "workspace")),
                               harness_session_id="session", _read_allowed_roots=lambda: [str(tmp_path / "workspace")])
+    session._read_target = lambda path: ToolDispatchMixin._read_target(session, path)
     act = PilotAction(kind="view_image", path=str(image))
     view = lambda: ToolDispatchMixin._do_view_image(session, act)
-    assert view()[1] == "path_traversal"
+    assert view()[1] == "forbidden"
     desktop_browser.call("session", action, {"operation": "snapshot"})
     assert view() == (True, "native_image", str(image))
     session.config.repo = None
     assert view() == (True, "native_image", str(image))
     session.config.repo = str(tmp_path / "workspace")
     session.harness_session_id = "other"
-    assert view()[1] == "path_traversal"
+    assert view()[1] == "forbidden"
     session.harness_session_id = "session"
     monkeypatch.setattr(vision, "session_supports_native_images", lambda _session: False)
     monkeypatch.setattr(vision, "transcribe_images", lambda _paths: pytest.fail("desktop pixels leaked to another provider"))
     assert view()[1] == "vision_unavailable"
     image.write_bytes(b"replaced pixels")
-    assert view()[1] == "path_traversal"
+    assert view()[1] == "forbidden"
 
 
 def test_page_text_cannot_grant_image_access(bridge, tmp_path):

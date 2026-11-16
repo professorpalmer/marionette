@@ -503,23 +503,27 @@ def test_search_files_multi_path_notes_skipped_parts(repo, monkeypatch):
     assert "ghost" in val
 
 
-def test_search_files_still_rejects_traversal(repo):
-    session, _workspace = repo
-    act = PilotAction(kind="search_files", query="x", arguments={"path": "../escaped"})
-    ok, status, _val = session._do_search_files(act)
-    assert ok is False and status == "path_traversal"
+def test_search_files_outside_reads_and_protected_paths(repo):
+    session, workspace = repo
+    (workspace.parent / "escaped").mkdir()
+    (workspace.parent / "escaped" / "f.txt").write_text("xmark\n", encoding="utf-8")
+    (workspace.parent / ".ssh").mkdir()
+    act = PilotAction(kind="search_files", query="xmark", arguments={"path": "../escaped"})
+    ok, status, val = session._do_search_files(act)
+    assert ok is True and "xmark" in val, (status, val)
 
     act = PilotAction(kind="search_files", query="x", arguments={"paths": ["../a", "../b"]})
     ok, status, _val = session._do_search_files(act)
-    assert ok is False and status == "path_traversal"
+    assert ok is False and status == "not_found"
 
+    # A protected path fails the call even when another requested path exists.
     act = PilotAction(
         kind="search_files",
         query="x",
-        arguments={"paths": ["missing-safe", "../escaped"]},
+        arguments={"paths": ["../escaped", "../.ssh"]},
     )
     ok, status, _val = session._do_search_files(act)
-    assert ok is False and status == "path_traversal"
+    assert ok is False and status == "forbidden"
 
 
 def test_is_multiline_query():

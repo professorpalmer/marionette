@@ -351,10 +351,10 @@ class TestToolDispatchIntegration:
         with tempfile.TemporaryDirectory() as repo:
             cfg = HarnessConfig(state_dir=tempfile.mkdtemp(), repo=repo)
             session = ConversationalSession(cfg)
-            act = PilotAction(kind="read_file", path="../../etc/passwd")
+            act = PilotAction(kind="read_file", path="../../no-such-dir-zz/passwd")
             ok, status, _ = session._do_read_file(act)
             assert not ok
-            assert status == "path_traversal"
+            assert status == "not_found"
 
     def test_search_state_dispatch_returns_job_hit(self):
         state_dir = tempfile.mkdtemp(prefix="internal-uri-tool-")

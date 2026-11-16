@@ -14,6 +14,8 @@ import os
 import re
 from typing import Callable, Optional, Sequence
 
+from .paths import expand_home, tool_target_path
+
 # Probe kinds a caller must be able to count. Bounded on purpose: at most
 # three extra scans, and the literal probe only runs for regex-looking queries.
 PROBE_CASE_INSENSITIVE = "case_insensitive"
@@ -40,22 +42,23 @@ def resolve_search_paths(raw: object, repo: str) -> tuple[list[str], list[str]]:
     default and any single string that resolves on disk is returned unchanged,
     spaces included. Only a string that does *not* resolve is reconsidered as a
     whitespace/comma separated list, and only when at least one part exists.
+    A leading ``~`` in each path expands to the home directory.
     """
     if isinstance(raw, (list, tuple)):
-        candidates = [str(part).strip() for part in raw if str(part).strip()]
+        candidates = [expand_home(str(part).strip()) for part in raw if str(part).strip()]
         if not candidates:
             return [""], []
         existing = [p for p in candidates if _exists_under(p, repo)]
         missing = [p for p in candidates if p not in existing]
         return (existing or candidates[:1]), missing
 
-    text = str(raw or "").strip()
+    text = expand_home(str(raw or "").strip())
     if not text:
         return [""], []
     if _exists_under(text, repo):
         return [text], []
 
-    parts = [p for p in _PATH_SPLIT_RE.split(text) if p]
+    parts = [expand_home(p) for p in _PATH_SPLIT_RE.split(text) if p]
     if len(parts) < 2:
         return [text], []
     existing = [p for p in parts if _exists_under(p, repo)]
@@ -65,8 +68,7 @@ def resolve_search_paths(raw: object, repo: str) -> tuple[list[str], list[str]]:
 
 
 def _exists_under(path: str, repo: str) -> bool:
-    absolute = path if os.path.isabs(path) else os.path.join(repo, path)
-    return os.path.exists(absolute)
+    return os.path.exists(tool_target_path(path, repo))
 
 
 def skipped_paths_note(skipped: Sequence[str], *, cap: int = 3) -> str:
