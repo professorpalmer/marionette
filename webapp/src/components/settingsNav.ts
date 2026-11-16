@@ -44,7 +44,8 @@ export const NAV: readonly NavItem[] = [
     keywords: "glass window tint transparent background "
       + "opt-ins auto-distill hash-anchored edits review edits auto-verify edits jev turn judgment "
       + "compact residual compaction catalog hybrid summary vault output style simplified technical english ste "
-      + "project folder state folder repository",
+      + "project folder state folder repository "
+      + "voice dictation dictate microphone mic speech to text whisper language send by voice",
   },
   {
     id: "safety",
