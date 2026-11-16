@@ -60,6 +60,11 @@ def _template_git_repo() -> str:
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, capture_output=True)
         subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, capture_output=True)
         subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, capture_output=True)
+        # Each test copies this repo. Background auto-maintenance after the
+        # commit created and removed .git/objects/maintenance.lock during a
+        # copy, and copytree failed (macOS CI, test_native_implement_worker_spec).
+        subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=repo_dir, capture_output=True)
+        subprocess.run(["git", "config", "gc.auto", "0"], cwd=repo_dir, capture_output=True)
         with open(os.path.join(repo_dir, "test.txt"), "w", encoding="utf-8") as f:
             f.write("hello\n")
         subprocess.run(["git", "add", "test.txt"], cwd=repo_dir, capture_output=True)
