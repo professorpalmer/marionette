@@ -115,7 +115,7 @@ def test_agent_tools_execution():
                     return FakeResponse(text=json.dumps({
                         "say": "Trying traversal",
                         "actions": [
-                            {"kind": "read_file", "path": "../../etc/passwd"}
+                            {"kind": "write_file", "path": "../escape-traversal.txt", "content": "x"}
                         ]
                     }))
                 return FakeResponse(text=json.dumps({
@@ -127,10 +127,12 @@ def test_agent_tools_execution():
         session_traversal.pilot = TraversalPilot()
         trav_events = list(session_traversal.send("start"))
         
-        # Verify traversal was blocked
+        # Writes stay workspace-confined in every mode. Reads outside the
+        # workspace work, so a read of ../../etc/passwd proves nothing here.
         results = [e.data for e in trav_events if e.kind == "action_result"]
         assert len(results) > 0
-        assert "path not found" in results[0].get("error", "").lower()
+        assert "outside the file tool workspace" in results[0].get("error", "").lower()
+        assert not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(cfg.repo)), "escape-traversal.txt"))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

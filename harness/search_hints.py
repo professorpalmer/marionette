@@ -14,7 +14,7 @@ import os
 import re
 from typing import Callable, Optional, Sequence
 
-from .paths import tool_target_path
+from .paths import expand_home, tool_target_path
 
 # Probe kinds a caller must be able to count. Bounded on purpose: at most
 # three extra scans, and the literal probe only runs for regex-looking queries.
@@ -45,20 +45,20 @@ def resolve_search_paths(raw: object, repo: str) -> tuple[list[str], list[str]]:
     A leading ``~`` in each path expands to the home directory.
     """
     if isinstance(raw, (list, tuple)):
-        candidates = [os.path.expanduser(str(part).strip()) for part in raw if str(part).strip()]
+        candidates = [expand_home(str(part).strip()) for part in raw if str(part).strip()]
         if not candidates:
             return [""], []
         existing = [p for p in candidates if _exists_under(p, repo)]
         missing = [p for p in candidates if p not in existing]
         return (existing or candidates[:1]), missing
 
-    text = os.path.expanduser(str(raw or "").strip())
+    text = expand_home(str(raw or "").strip())
     if not text:
         return [""], []
     if _exists_under(text, repo):
         return [text], []
 
-    parts = [os.path.expanduser(p) for p in _PATH_SPLIT_RE.split(text) if p]
+    parts = [expand_home(p) for p in _PATH_SPLIT_RE.split(text) if p]
     if len(parts) < 2:
         return [text], []
     existing = [p for p in parts if _exists_under(p, repo)]

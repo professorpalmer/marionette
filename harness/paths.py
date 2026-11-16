@@ -139,6 +139,18 @@ def is_safe_path(path: str, parent: str) -> bool:
     return path_within(path, parent, allow_equal=True)
 
 
+def expand_home(path: str) -> str:
+    """Expand a leading ``~`` to the home directory, with native separators.
+
+    ``expanduser("~/a/b")`` keeps the forward slashes on Windows
+    (``C:\\Users\\me/a/b``). ``normpath`` gives one separator style, so scope
+    checks and error text see the same path the tool opens.
+    """
+    if not path.startswith("~"):
+        return path
+    return os.path.normpath(os.path.expanduser(path))
+
+
 def tool_target_path(requested: str, repo: str) -> str:
     """Absolute target of a file-tool path argument.
 
@@ -146,7 +158,7 @@ def tool_target_path(requested: str, repo: str) -> str:
     workspace. File tools and the send loop use this one function, so every
     scope check sees the same path that the tool then opens.
     """
-    path = os.path.expanduser(str(requested or ""))
+    path = expand_home(str(requested or ""))
     if os.path.isabs(path):
         return path
     return os.path.join(repo, path)
