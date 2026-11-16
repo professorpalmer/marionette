@@ -77,6 +77,7 @@ from .terminal_cause import (
     provider_tools_are_executable,
 )
 from .text_clean import clean_say
+from .paths import tool_target_path
 from .tool_dispatch import _file_tool_write_denial
 from .tool_timeout import invoke_do, run_with_tool_deadline
 from .workspace_rules_refresh import maybe_refresh_workspace_rules
@@ -3586,9 +3587,7 @@ def dispatch_local_action(
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(write_file {aid} failed: {error_msg})", is_native, ok=False)
             return
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(session.config.repo, target_path)
+        target_path = tool_target_path(act.path, session.config.repo)
         error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
         if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
@@ -3662,9 +3661,7 @@ def dispatch_local_action(
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(edit_file {aid} failed: {error_msg})", is_native, ok=False)
             return
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(session.config.repo, target_path)
+        target_path = tool_target_path(act.path, session.config.repo)
         error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
         if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
@@ -3736,9 +3733,7 @@ def dispatch_local_action(
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})
             session._append_action_result(act, aid, f"(hash_edit {aid} failed: {error_msg})", is_native, ok=False)
             return
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(session.config.repo, target_path)
+        target_path = tool_target_path(act.path, session.config.repo)
         error_msg = _file_tool_write_denial(act.path, session.config.repo, target_path)
         if error_msg is not None:
             yield ConvEvent("action_result", {"id": aid, "error": error_msg})

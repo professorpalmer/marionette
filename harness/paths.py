@@ -139,6 +139,19 @@ def is_safe_path(path: str, parent: str) -> bool:
     return path_within(path, parent, allow_equal=True)
 
 
+def tool_target_path(requested: str, repo: str) -> str:
+    """Absolute target of a file-tool path argument.
+
+    A leading ``~`` expands to the home directory. A relative path joins the
+    workspace. File tools and the send loop use this one function, so every
+    scope check sees the same path that the tool then opens.
+    """
+    path = os.path.expanduser(str(requested or ""))
+    if os.path.isabs(path):
+        return path
+    return os.path.join(repo, path)
+
+
 def _strip_file_uri(raw: str) -> str:
     """Normalize ``file://`` / ``file:///C:/...`` forms to a filesystem path."""
     text = (raw or "").strip()

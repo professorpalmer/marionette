@@ -80,6 +80,7 @@ def test_returned_screenshot_is_viewable_only_by_owning_session(bridge, tmp_path
     monkeypatch.setattr(vision, "session_supports_native_images", lambda _session: True)
     session = SimpleNamespace(config=SimpleNamespace(repo=str(tmp_path / "workspace")),
                               harness_session_id="session", _read_allowed_roots=lambda: [str(tmp_path / "workspace")])
+    session._read_target = lambda path: ToolDispatchMixin._read_target(session, path)
     act = PilotAction(kind="view_image", path=str(image))
     view = lambda: ToolDispatchMixin._do_view_image(session, act)
     assert view()[1] == "path_traversal"

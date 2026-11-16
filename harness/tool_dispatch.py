@@ -27,7 +27,7 @@ from typing import Any, NamedTuple, Optional
 
 from ._exec import _puppetmaster_cmd
 from .internal_uri import InternalUriContext, InternalUriError, is_internal_uri, resolve_internal_uri
-from .paths import is_safe_path, targets_git_dir
+from .paths import is_safe_path, targets_git_dir, tool_target_path
 from .pilot import PilotAction
 
 # Re-export for callers that historically imported from tool_dispatch /
@@ -72,7 +72,11 @@ def _file_tool_path_denial(
 ) -> str:
     if read_scope:
         boundary = "Outside the file tool read scope"
-        scope = "read_file is limited to this workspace and configured read roots. "
+        scope = (
+            "Native read tools (read_file, list_dir, search_files, view_image, "
+            "read_pdf) are limited to this workspace, its git toplevel, and the "
+            "configured read roots. "
+        )
     else:
         boundary = "Outside the file tool workspace"
         scope = "Native write_file, edit_file, and hash_edit are limited to this workspace. "
@@ -82,6 +86,24 @@ def _file_tool_path_denial(
         "For an explicitly authorized external destination, use run_command "
         "subject to its existing permissions and preserve the requested location."
     )
+
+
+_HOME_PREFIX_RE = re.compile(r"^(/Users/[^/]+|/home/[^/]+)")
+
+
+def _missing_path_text(requested_path: str, target_path: str) -> str:
+    """Not-found text that names the home directory when the path guessed another one."""
+    text = f"Path not found: {requested_path!r}"
+    if target_path != requested_path and str(requested_path).startswith("~"):
+        text += f" (expanded to {target_path!r})"
+    home = os.path.expanduser("~")
+    match = _HOME_PREFIX_RE.match(target_path.replace("\\", "/"))
+    if match and match.group(1) != home and not os.path.exists(match.group(1)):
+        text += (
+            f". {match.group(1)!r} does not exist. The home directory on this "
+            f"machine is {home!r}"
+        )
+    return text + "."
 
 
 def _file_tool_write_denial(requested_path: str, workspace: str, target_path: str) -> Optional[str]:
@@ -426,13 +448,9 @@ class ToolDispatchMixin:
 
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
-        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
-            return False, "path_traversal", _file_tool_path_denial(
-                act.path, self.config.repo, read_scope=True
-            )
+        target_path, refused = self._read_target(act.path)
+        if refused is not None:
+            return refused
         forbidden = _forbidden_tool_result(target_path, getattr(self, "state_dir", None))
         if forbidden is not None:
             return forbidden
@@ -529,12 +547,12 @@ class ToolDispatchMixin:
         desktop_image = can_view_screenshot(getattr(self, "harness_session_id", ""), act.path)
         if not self.config.repo and not desktop_image:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
-        # Same read roots as read_file (workspace + git toplevel + spill).
-        if not desktop_image and not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        if desktop_image:
+            target_path = act.path
+        else:
+            target_path, refused = self._read_target(act.path)
+            if refused is not None:
+                return refused
         try:
             if not os.path.exists(target_path):
                 return False, "error", f"view_image: not an image file or not found: {act.path}"
@@ -583,16 +601,10 @@ class ToolDispatchMixin:
 
         if not self.config.repo:
             return False, "repo_not_open", "No workspace directory (config.repo) is open."
-        target_path = act.path
-        if not target_path or not target_path.strip():
-            target_path = self.config.repo
-        else:
-            if not os.path.isabs(target_path):
-                target_path = os.path.join(self.config.repo, target_path)
-        # Same read roots as read_file (workspace + git toplevel + spill).
-        # Writes/edits stay confined to config.repo only.
-        if not any(is_safe_path(target_path, root) for root in self._read_allowed_roots()):
-            return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
+        # Same read scope as read_file. Writes stay confined to config.repo.
+        target_path, refused = self._read_target((act.path or "").strip())
+        if refused is not None:
+            return refused
         try:
             if not os.path.exists(target_path):
                 raise FileNotFoundError(f"Directory not found: {act.path}")
@@ -653,12 +665,9 @@ class ToolDispatchMixin:
         if not is_remote:
             if not self.config.repo:
                 return False, "repo_not_open", "No workspace directory (config.repo) is open."
-            target_path = act.path
-            if not os.path.isabs(target_path):
-                target_path = os.path.join(self.config.repo, target_path)
-            if not is_safe_path(target_path, self.config.repo):
-                return False, "path_traversal", f"Path traversal attempt rejected: {act.path}"
-            target = target_path
+            target, refused = self._read_target(act.path)
+            if refused is not None:
+                return refused
 
         try:
             result_text = read_pdf(target)
@@ -760,9 +769,9 @@ class ToolDispatchMixin:
         # Validate skipped paths too. A missing traversal path must not become
         # harmless merely because another requested path exists and was kept.
         for candidate in (*search_paths, *skipped):
-            absolute = self._absolute_repo_path(candidate)
-            if not is_safe_path(absolute, self.config.repo):
-                return False, "path_traversal", f"Path traversal attempt rejected: {candidate}"
+            absolute, refused = self._read_target(candidate)
+            if refused is not None:
+                return refused
             forbidden = _forbidden_tool_result(absolute, getattr(self, "state_dir", None))
             if forbidden is not None:
                 return forbidden
@@ -791,9 +800,24 @@ class ToolDispatchMixin:
         return True, "success", "\n".join(part for part in (note, hint) if part)
 
     def _absolute_repo_path(self, path: str) -> str:
-        if os.path.isabs(path):
-            return path
-        return os.path.join(self.config.repo, path)
+        return tool_target_path(path, self.config.repo)
+
+    def _read_target(self, requested: str) -> tuple[str, Optional[tuple]]:
+        """Absolute target of a native read tool, and its refusal or None.
+
+        The read scope is the workspace, its git toplevel, the results spill
+        dir, and the operator read roots. A path outside the scope that does
+        not exist gets the not-found text, not the scope text.
+        """
+        target = tool_target_path(requested, self.config.repo)
+        if any(is_safe_path(target, root) for root in self._read_allowed_roots()):
+            return target, None
+        if not os.path.lexists(target):
+            return target, (False, "not_found", _missing_path_text(requested, target))
+        return target, (
+            False, "path_traversal",
+            _file_tool_path_denial(requested, self.config.repo, read_scope=True),
+        )
 
     def _drop_forbidden_search_hits(self, matches: list) -> list:
         kept = []
@@ -991,14 +1015,13 @@ class ToolDispatchMixin:
         symbol = (args.get("symbol") or "").strip()
         timeout_ms = args.get("timeout_ms")
         root_arg = args.get("root") or ""
-        root_path = root_arg
-        if not root_path:
-            root_path = self.config.repo
-        if not os.path.isabs(root_path):
-            root_path = os.path.join(self.config.repo, root_path)
+        root_path = tool_target_path(root_arg, self.config.repo)
         # LSP root stays repo-confined; do not climb to git toplevel like read_file.
         if not is_safe_path(root_path, self.config.repo):
-            return False, "path_traversal", f"Path traversal attempt rejected: {root_arg}"
+            return False, "path_traversal", (
+                f"Outside the workspace: lsp root {root_arg!r} is not inside "
+                f"{self.config.repo!r}. lsp runs only inside the workspace."
+            )
 
         if mode == "references" and not symbol:
             return False, "invalid_arguments", "lsp references mode requires a 'symbol'"
@@ -1813,9 +1836,7 @@ class ToolDispatchMixin:
             refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
             if refused is not None:
                 return refused
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
+        target_path = tool_target_path(act.path, self.config.repo)
         denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
         if denial is not None:
             return False, "path_traversal", denial
@@ -1888,9 +1909,7 @@ class ToolDispatchMixin:
             refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
             if refused is not None:
                 return refused
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
+        target_path = tool_target_path(act.path, self.config.repo)
         denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
         if denial is not None:
             return False, "path_traversal", denial
@@ -1946,9 +1965,7 @@ class ToolDispatchMixin:
             refused = getattr(self, "_refuse_quarantined_disk_mutation", lambda: None)()
             if refused is not None:
                 return refused
-        target_path = act.path
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.config.repo, target_path)
+        target_path = tool_target_path(act.path, self.config.repo)
         denial = _file_tool_write_denial(act.path, self.config.repo, target_path)
         if denial is not None:
             return False, "path_traversal", denial

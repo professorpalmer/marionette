@@ -85,10 +85,13 @@ def test_parallel_reads_confinement_rejected():
     cfg = HarnessConfig(driver="stub-oracle-v2", state_dir=tempfile.mkdtemp())
     cfg.repo = temp_dir
     s = ConversationalSession(cfg)
-    
+    outside = os.path.join(tempfile.mkdtemp(), "outside.txt")
+    with open(outside, "w") as f:
+        f.write("outside")
+
     # Let's request a read_file outside the repository
     actions = [
-        {"kind": "read_file", "path": "../outside.txt"},
+        {"kind": "read_file", "path": outside},
         {"kind": "read_file", "path": "file1.txt"}  # needs 2+ reads to trigger prefetch
     ]
     s.pilot = _FakePilotWithActions(actions)
@@ -103,7 +106,7 @@ def test_parallel_reads_confinement_rejected():
     assert "error" in ar_events[0].data
     error = ar_events[0].data["error"]
     assert "Outside the file tool read scope" in error
-    assert "requested path '../outside.txt'" in error
+    assert f"requested path {outside!r}" in error
     assert "run_command subject to its existing permissions" in error
 
 

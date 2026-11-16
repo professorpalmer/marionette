@@ -72,11 +72,18 @@ def test_search_files_pure_python(monkeypatch):
         assert "subdir/b.py" in val
         assert "a.txt" not in val
 
-        # 5. Path traversal block
+        # 5. Outside the read scope: refused. A missing path says so.
+        with tempfile.TemporaryDirectory() as outside:
+            act = PilotAction(kind="search_files", query="hello", arguments={"path": outside})
+            ok, status, val = s._do_search_files(act)
+            assert not ok
+            assert status == "path_traversal"
+            assert "Outside the file tool read scope" in val
         act = PilotAction(kind="search_files", query="hello", arguments={"path": "../escaped"})
         ok, status, val = s._do_search_files(act)
         assert not ok
-        assert status == "path_traversal"
+        assert status == "not_found"
+        assert "Path not found: '../escaped'" in val
 
 
 def test_search_files_ripgrep(monkeypatch):

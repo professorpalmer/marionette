@@ -351,7 +351,7 @@ class TestToolDispatchIntegration:
         with tempfile.TemporaryDirectory() as repo:
             cfg = HarnessConfig(state_dir=tempfile.mkdtemp(), repo=repo)
             session = ConversationalSession(cfg)
-            act = PilotAction(kind="read_file", path="../../etc/passwd")
+            act = PilotAction(kind="read_file", path="/etc/passwd")
             ok, status, _ = session._do_read_file(act)
             assert not ok
             assert status == "path_traversal"

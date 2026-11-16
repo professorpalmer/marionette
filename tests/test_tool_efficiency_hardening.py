@@ -504,7 +504,9 @@ def test_search_files_multi_path_notes_skipped_parts(repo, monkeypatch):
 
 
 def test_search_files_still_rejects_traversal(repo):
-    session, _workspace = repo
+    session, workspace = repo
+    for name in ("escaped", "a", "b"):
+        (workspace.parent / name).mkdir()
     act = PilotAction(kind="search_files", query="x", arguments={"path": "../escaped"})
     ok, status, _val = session._do_search_files(act)
     assert ok is False and status == "path_traversal"

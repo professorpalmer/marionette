@@ -229,7 +229,7 @@ def test_view_image_confinement(monkeypatch):
         events = list(s.send("Look at outside image."))
         tool_msgs = [m for m in s._history if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
-        assert "Path traversal attempt rejected" in tool_msgs[0]["content"]
+        assert "Path not found: '../outside_image.png'" in tool_msgs[0]["content"]
 
 def test_view_image_rejects_path_outside_read_allowed_roots(monkeypatch):
     def mock_transcribe_images(paths, sidecar=None):
@@ -282,8 +282,11 @@ def test_nested_workspace_view_image_allows_git_toplevel_parent(monkeypatch):
         assert ok, f"parent image under git toplevel should be viewable, got {status}: {val}"
         assert canned in val
 
-        outside = os.path.join(os.path.dirname(root), "escape-outside.png")
-        bad = session._do_view_image(_ViewAct(path=outside))
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "escape-outside.png")
+            with open(outside, "wb") as f:
+                f.write(_MIN_PNG)
+            bad = session._do_view_image(_ViewAct(path=outside))
         assert bad[0] is False and bad[1] == "path_traversal"
 
 def test_vision_default_sidecar_fallback(monkeypatch):

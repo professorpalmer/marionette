@@ -130,7 +130,7 @@ def test_agent_tools_execution():
         # Verify traversal was blocked
         results = [e.data for e in trav_events if e.kind == "action_result"]
         assert len(results) > 0
-        assert "rejected" in results[0].get("error", "").lower() or "traversal" in results[0].get("error", "").lower()
+        assert "path not found" in results[0].get("error", "").lower()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -510,8 +510,11 @@ def test_nested_workspace_read_file_allows_git_toplevel_parent():
         assert "sibling" in val_sib
 
         # True escape outside the git clone is still rejected.
-        outside = os.path.join(os.path.dirname(root), "escape-outside.txt")
-        bad = session._do_read_file(_ReadAct(path=outside))
+        with tempfile.TemporaryDirectory() as outside_dir:
+            outside = os.path.join(outside_dir, "escape-outside.txt")
+            with open(outside, "w", encoding="utf-8") as f:
+                f.write("outside\n")
+            bad = session._do_read_file(_ReadAct(path=outside))
         assert bad[0] is False and bad[1] == "path_traversal"
 
         # Writes/edits stay confined to the nested workspace (not the git root).
