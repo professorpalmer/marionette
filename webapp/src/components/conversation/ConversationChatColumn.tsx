@@ -8,7 +8,7 @@ import type { TranscriptViewportHandle } from "./sessionViewport";
  * that currently owns them — never paint session A rows under B's id.
  */
 
-import { useCallback, useRef, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { useCallback, useMemo, useRef, type MutableRefObject, type ReactNode, type RefObject } from "react";
 import { ChevronDown } from "lucide-react";
 import { panelOpacityClass } from "../../lib/panelTransition";
 import {
@@ -31,8 +31,11 @@ import { peekTranscriptCache } from "./transcriptCache";
 import { retainSessionPanes } from "./sessionPanes";
 import { useDockClearance } from "../../lib/dockClearance";
 import { useTranscriptFind } from "./useTranscriptFind";
+import PlanCard, { useSessionPlanSync } from "./PlanCard";
+import type { Job } from "../../lib/api";
 
 const DORMANT_SCROLL_REF: RefObject<HTMLDivElement | null> = { current: null };
+const NO_JOBS: readonly Job[] = [];
 
 type SessionStatus =
   | "idle"
@@ -77,6 +80,8 @@ export default function ConversationChatColumn({
   itemSessionId = "",
   paneIds = [],
   emptySession,
+  planJobs = NO_JOBS,
+  planActive = false,
 }: {
   feedRef: RefObject<HTMLDivElement | null>;
   /** Direct child of the feed scrollport — observed for height-driven stick. */
@@ -116,7 +121,13 @@ export default function ConversationChatColumn({
   paneIds?: string[];
   /** Shell facts for the empty-session state (workspace name, model readiness). */
   emptySession?: EmptySessionContext;
+  /** Live jobs of the session on screen; a job that still works keeps its plan step lit. */
+  planJobs?: readonly Job[];
+  /** The pilot's turn is open (the composer shows Stop). */
+  planActive?: boolean;
 }) {
+  useSessionPlanSync(sessionId || "");
+  const planBodyJobs = useMemo(() => planJobs.filter((job) => !job.metadata_only), [planJobs]);
   const ids = retainSessionPanes({
     prev: paneIds,
     activeId: sessionId,
@@ -208,6 +219,9 @@ export default function ConversationChatColumn({
                   onAuthFailureRetry={onAuthFailureRetry}
                   sessionId={id}
                 />
+                {visible && live && id ? (
+                  <PlanCard jobs={planBodyJobs} sessionId={id} active={planActive} />
+                ) : null}
               </div>
             </div>
           );

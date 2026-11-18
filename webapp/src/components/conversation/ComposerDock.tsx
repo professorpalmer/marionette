@@ -79,7 +79,6 @@ export default function ComposerDock({
   plan,
   composerBusy,
   sessionSwitching = false,
-  pilotStep = null,
   transcriptStale,
   wikiPrepared,
   memoryProposals,
@@ -174,8 +173,6 @@ export default function ComposerDock({
   composerBusy: boolean;
   /** A->B switch in flight: disabled Send, never Stop/Steer/Interrupt from either session. */
   sessionSwitching?: boolean;
-  /** The pilot's current step, shown under the active todo item. */
-  pilotStep?: string | null;
   transcriptStale: boolean;
   wikiPrepared: { pages: any[]; autoIngested: boolean } | null;
   memoryProposals: MemoryProposal[];
@@ -497,7 +494,7 @@ export default function ComposerDock({
             </button>
           </div>
         )}
-        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} active={composerBusy} pilotStep={pilotStep} />
+        <ComposerActivityRail jobs={swarmLiveJobs} sessionId={sessionId} />
         {/* Server-side PROMPT QUEUE, stacked ABOVE the composer (Cursor-style)
             so the "runs next" items are always visible right over the input.
             These prompts are drained by the backend one full turn at a time. */}

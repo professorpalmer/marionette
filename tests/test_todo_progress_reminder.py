@@ -51,3 +51,45 @@ def test_no_reminder_without_a_task_in_progress(tmp_path):
     for task in s._todo_phases[0].tasks:
         task.status = "completed"
     assert "still in progress" not in _run(s, "read_file", 10)
+
+
+def _no_plan_session(tmp_path):
+    s = ConversationalSession(HarnessConfig(driver="stub-oracle-v2", state_dir=str(tmp_path)))
+    s._todo_phases = []
+    return s
+
+
+def test_asks_for_a_plan_once_when_a_turn_works_without_one(tmp_path):
+    from harness.todo_reminder import reset_turn_plan_state
+
+    s = _no_plan_session(tmp_path)
+    reset_turn_plan_state(s)
+    assert "[plan]" not in _run(s, "read_file", 3)
+    assert "Send todo op init" in _run(s, "read_file")
+    assert "[plan]" not in _run(s, "read_file", 6)
+    reset_turn_plan_state(s)
+    _run(s, "read_file", 3)
+    assert "[plan]" in _run(s, "read_file")
+
+
+def test_no_plan_request_after_a_plan_call_or_in_a_micro_turn(tmp_path):
+    from harness.todo_reminder import reset_turn_plan_state
+
+    s = _no_plan_session(tmp_path)
+    reset_turn_plan_state(s)
+    _run(s, "todo")
+    assert "[plan]" not in _run(s, "read_file", 8)
+
+    micro = _no_plan_session(tmp_path)
+    reset_turn_plan_state(micro)
+    micro._task_profile = "MICRO"
+    assert "[plan]" not in _run(micro, "read_file", 8)
+
+
+def test_waiting_on_a_job_does_not_count_toward_the_plan_request(tmp_path):
+    from harness.todo_reminder import reset_turn_plan_state
+
+    s = _no_plan_session(tmp_path)
+    reset_turn_plan_state(s)
+    assert "[plan]" not in _run(s, "wait", 8)
+

@@ -9,7 +9,6 @@ import {
   todoMatchesAnyDescription,
   todoPhaseProgress,
   todoSnapshotProgress,
-  toRoman,
 } from "../lib/composerTodos";
 import type { Job } from "../lib/api";
 import type { SessionTodoItem, SessionTodoSnapshot } from "../lib/api";
@@ -51,12 +50,6 @@ describe("composerTodos", () => {
       "open-5",
     ]);
     expect(hidden).toBe(3);
-  });
-
-  it("formats roman phase indexes", () => {
-    expect(toRoman(1)).toBe("I");
-    expect(toRoman(2)).toBe("II");
-    expect(toRoman(4)).toBe("IV");
   });
 
   it("fuzzy-matches live job labels at six-character overlap", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentTurnStep, deriveBusyProgress, headlineFocusCard, liveActivityLine, toolVerb, type TurnItem } from "../lib/turnProgress";
+import { deriveBusyProgress, headlineFocusCard, liveActivityLine, toolVerb, type TurnItem } from "../lib/turnProgress";
 
 const user: TurnItem = { kind: "msg", msg: { role: "user", text: "run the probes" } };
 const done = (id: string, goal: string): TurnItem => ({
@@ -53,15 +53,12 @@ describe("busy labels say what is happening", () => {
   });
 });
 
-describe("currentTurnStep", () => {
-  it("names the latest tool of the open turn, skipping todo bookkeeping", () => {
+describe("plan updates and the busy label", () => {
+  it("does not name a running plan update as the running tool", () => {
     const items: TurnItem[] = [
       { kind: "msg", msg: { role: "user", text: "go" } },
-      { kind: "card", card: { id: "t", kind: "todo", goal: "init", running: false } },
-      done("a", "echo probe 1"),
-      done("b", "echo probe 2"),
+      { kind: "card", card: { id: "t", kind: "todo", goal: "advance", running: true } },
     ];
-    expect(currentTurnStep(items)).toMatch(/echo probe 2$/);
-    expect(currentTurnStep(items.slice(0, 2))).toBeNull();
+    expect(deriveBusyProgress(items, "executing", 1000).runningKind).toBe("");
   });
 });

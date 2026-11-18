@@ -207,70 +207,15 @@ describe("composer-family chrome", () => {
     expect(rail.queryByText(/observed jobs/)).toBeNull();
   });
 
-  it("renders a nested session TODO tree on the activity rail", () => {
+  it("shows no plan on the activity rail: the plan card in the transcript owns it", () => {
     publishSessionTodos({
-      phases: [
-        {
-          name: "WP-02",
-          tasks: [
-            { content: "hosted pari", status: "in_progress" },
-            { content: "service invariants", status: "pending" },
-          ],
-        },
-      ],
-      next: "hosted pari",
+      phases: [{ name: "WP-02", tasks: [{ content: "hosted pari", status: "in_progress" }] }],
     }, "sess-1");
     const rail = render(
       <ComposerActivityRail jobs={[]} sessionId="sess-1" />,
     );
-    expect(rail.container.querySelector("[data-slot=composer-todo-panel]")).toBeTruthy();
-    expect(rail.getByText("TODO 0/2")).toBeInTheDocument();
-    expect(rail.getByText(/I\. WP-02 · 0\/2/)).toBeInTheDocument();
-    clearSessionTodos();
-  });
-
-  it("does not paint another session's TODO tree on this conversation", () => {
-    publishSessionTodos({
-      phases: [
-        {
-          name: "Wave I",
-          tasks: [{ content: "beyblade leftover", status: "in_progress" }],
-        },
-      ],
-    }, "sess-arena");
-    const rail = render(
-      <ComposerActivityRail jobs={[]} sessionId="sess-marionette" />,
-    );
     expect(rail.container.querySelector("[data-slot=composer-activity-rail]")).toBeNull();
-    expect(rail.queryByText("beyblade leftover")).toBeNull();
-    clearSessionTodos();
-  });
-
-  it("lights a pending session TODO from a live swarm label", () => {
-    publishSessionTodos({
-      phases: [
-        {
-          name: "WP-02",
-          tasks: [
-            { content: "hosted pari", status: "pending" },
-            { content: "unrelated cutover", status: "pending" },
-          ],
-        },
-      ],
-    }, "sess-1");
-    const job = {
-      id: "j-live",
-      goal: "nested lighting",
-      status: "running",
-      session_id: "sess-1",
-      tasks: [{ id: "t1", role: "explore", instruction: "hosted pari service", status: "running" }],
-    } as Job;
-    const rail = render(
-      <ComposerActivityRail jobs={[job]} sessionId="sess-1" />,
-    );
-    const lit = rail.container.querySelector("[data-todo-lit='1']");
-    expect(lit).toBeTruthy();
-    expect(lit?.textContent).toContain("hosted pari");
+    expect(rail.queryByText("hosted pari")).toBeNull();
     clearSessionTodos();
   });
 

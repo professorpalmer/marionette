@@ -67,6 +67,38 @@ def test_done_by_phase_then_next_advances():
     assert next_actionable_task(phases) is None
 
 
+def test_advance_completes_the_step_in_progress_and_starts_the_next():
+    phases, errors, _ = _apply([], op="init", items=["read", "build", "test"])
+    assert errors == []
+    phases, errors, op = _apply(phases, op="advance")
+    assert (errors, op) == ([], "advance")
+    assert [t.status for t in phases[0].tasks] == ["completed", "in_progress", "pending"]
+    phases, _, _ = _apply(phases, op="advance")
+    phases, errors, _ = _apply(phases, op="advance")
+    assert errors == []
+    assert [t.status for t in phases[0].tasks] == ["completed"] * 3
+
+
+def test_advance_with_no_step_in_progress_changes_nothing():
+    phases, _, _ = _apply([], op="init", items=["only"])
+    phases, _, _ = _apply(phases, op="advance")
+    again, errors, _ = _apply(phases, op="advance")
+    assert errors == []
+    assert [t.status for t in again[0].tasks] == ["completed"]
+    blocked, _, _ = _apply([], op="init", items=["a", "b"])
+    blocked, _, _ = _apply(blocked, op="block", task="a", reason="waits")
+    blocked, _, _ = _apply(blocked, op="block", task="b", reason="waits")
+    after, errors, _ = _apply(blocked, op="advance")
+    assert errors == []
+    assert [t.status for t in after[0].tasks] == ["blocked", "blocked"]
+
+
+def test_advance_is_a_valid_wire_op():
+    act = from_wire("todo", {"op": "advance"})
+    assert act.kind == "todo"
+    assert act.arguments == {"op": "advance"}
+
+
 def test_append_creates_phase_and_rejects_duplicates():
     phases, _, _ = _apply([], op="init", items=["alpha"], phase="Core")
     phases, errors, _ = _apply(phases, op="append", phase="UI", items=["button"])
