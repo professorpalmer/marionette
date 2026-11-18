@@ -3,8 +3,9 @@
 OpenRouter/Gemini often resend the whole message (or message+message) after
 true token deltas. Cursor CLI already skips that; Completions did not.
 
-Only a cumulative snapshot is absorbed: ``incoming`` starts with the whole
-``accumulated`` text. Prefix / suffix / crumb heuristics are deliberately
+Only a replay of the whole message is absorbed: ``incoming`` starts with the
+whole ``accumulated`` text, or is equal to it apart from whitespace at the two
+ends. Prefix / suffix / crumb heuristics are deliberately
 absent -- a later ``###`` chunk is not a replay of the opening ``###``, and a
 lone ``**`` delta is half of a bold marker. Anything dropped here diverges the
 streamed bubble from the final message and paints the answer twice.
