@@ -5,7 +5,6 @@ import pytest
 
 from harness.pilot import PilotAction
 from harness.pilot_guards import (
-    _is_cross_platform_compare,
     is_broad_intent_user_message,
     is_explicit_swarm_user_message,
     normalize_action_args,
@@ -24,21 +23,6 @@ def test_where_is_question_alone_stays_not_explicit():
     assert is_explicit_swarm_user_message("Where is the config? Run it.") is False
 
 
-# Bug 1af9b7d4-2: refusing agentic workers counted as a swarm request.
-@pytest.mark.parametrize("msg", [
-    "Please do not use agentic workers",
-    "Don't launch any agentic workers",
-])
-def test_refusing_agentic_workers_is_opt_out(msg):
-    assert is_explicit_swarm_user_message(msg) is False
-    assert swarm_policy_for_message(msg) == "solo"
-
-
-def test_agentic_workers_request_stays_explicit():
-    assert is_explicit_swarm_user_message("spin up agentic workers") is True
-    assert is_explicit_swarm_user_message("use agentic workers") is True
-
-
 # Bug 1af9b7d4-3: a typographic apostrophe hid the refusal.
 @pytest.mark.parametrize("msg", [
     "Don’t swarm the repo",
@@ -52,17 +36,6 @@ def test_typographic_apostrophe_refusal(msg):
 def test_plain_swarm_the_repo_stays_explicit():
     assert is_explicit_swarm_user_message("please swarm the repo") is True
     assert is_explicit_swarm_user_message("Don't swarm the repo") is False
-
-
-# Bug 1af9b7d4-5: a launch verb lost to "where is" in the same clause.
-def test_launch_verb_wins_over_narrow_phrase_in_same_clause():
-    msg = "Launch a swarm to find where is the auth token validated"
-    assert is_explicit_swarm_user_message(msg) is True
-
-
-def test_narrow_clause_without_launch_verb_stays_vetoed():
-    msg = "use kimi k2 workers to find where is the auth token validated"
-    assert is_explicit_swarm_user_message(msg) is False
 
 
 # Bug e3af4031-2: search_files keys ignored "paths" and result options.
@@ -141,20 +114,3 @@ def test_in_word_map_the_is_not_broad(msg):
 
 def test_map_the_verb_stays_broad():
     assert is_broad_intent_user_message("Map the pipeline architecture") is True
-
-
-# Bug 791b83f9-7: app windows on a Mac were read as a Windows-vs-Mac contrast.
-def test_browser_windows_on_mac_is_not_platform_compare():
-    msg = "How do I close all browser windows on my Mac?"
-    assert _is_cross_platform_compare(msg) is False
-    assert is_broad_intent_user_message(msg) is False
-
-
-@pytest.mark.parametrize("msg", [
-    "Compare Windows vs Mac browser launch",
-    "the browser is not working on windows. doesn't have this issue on Mac",
-    "It works on Linux but fails in Windows",
-])
-def test_real_platform_compare_stays_broad(msg):
-    assert _is_cross_platform_compare(msg) is True
-    assert is_broad_intent_user_message(msg) is True

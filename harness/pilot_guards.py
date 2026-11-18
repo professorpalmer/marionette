@@ -284,9 +284,8 @@ _DELEGATION_OPT_OUT_RE = re.compile(
     r"(?:"
     r"\bno\s+(?:(?:additional|more|external|remote|parallel)\s+)?(?:workers?|swarms?|delegation)\b|"
     r"\b(?:do\s+not|don['’]?t)\s+(?:delegate|swarm)\b|"
-    # Up to three qualifiers so "do not use agentic workers" is a refusal.
     r"\b(?:do\s+not|don['’]?t)\s+(?:use|launch|start|run|dispatch)\s+"
-    r"(?:an?\s+)?(?:\w+\s+){0,3}?(?:swarm|workers?)\b|"
+    r"(?:an?\s+)?(?:swarm|workers?)\b|"
     r"\bwithout\s+(?:any\s+)?(?:delegation|workers?|a\s+swarm)\b|"
     r"\b(?:local\s+)?native\s+tools?\s+only\b"
     r")",
@@ -340,20 +339,7 @@ _NARROW_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A launch verb aimed at a swarm wins over a narrow phrase in the same clause.
-_SWARM_LAUNCH_RE = re.compile(
-    r"\b(?:start|spin\s+up|launch|dispatch|run)\s+(?:an?\s+)?(?:\w+\s+){0,3}?swarm\b",
-    re.IGNORECASE,
-)
-
 _WINDOWS_OS_RE = re.compile(r"\bwindows\b", re.IGNORECASE)
-# "windows" alone can be app windows. Ask for OS context or a contrast cue.
-_WINDOWS_OS_CONTEXT_RE = re.compile(
-    r"\b(?:on|in|under|for|with)\s+windows\b", re.IGNORECASE,
-)
-_PLATFORM_CONTRAST_RE = re.compile(
-    r"\b(?:vs\.?|versus|compared?|comparing|comparison|between)\b", re.IGNORECASE,
-)
 _OTHER_OS_RE = re.compile(r"\b(?:mac|macos|linux)\b", re.IGNORECASE)
 
 
@@ -777,11 +763,7 @@ class GuardVerdict:
 
 def _is_cross_platform_compare(text: str) -> bool:
     """True when a message contrasts Windows with Mac/macOS/Linux."""
-    if not (_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text)):
-        return False
-    return bool(
-        _WINDOWS_OS_CONTEXT_RE.search(text) or _PLATFORM_CONTRAST_RE.search(text)
-    )
+    return bool(_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text))
 
 
 SWARM_POLICY_SOLO = "solo"
@@ -877,10 +859,7 @@ def _delegation_preference(text: str) -> Optional[bool]:
             and not _EXPLICIT_SWARM_NEG_RE.search(clause)
             # The narrow veto is per clause: a separate question must not
             # cancel a launch request in another clause.
-            and (
-                not _NARROW_INTENT_RE.search(clause)
-                or _SWARM_LAUNCH_RE.search(clause)
-            )
+            and not _NARROW_INTENT_RE.search(clause)
         ):
             preference = True
     return preference
