@@ -313,8 +313,12 @@ def build_persisted_message(
     original_size: int,
     file_path: str,
     spill_uri: Optional[str] = None,
+    head_tail: Optional[bool] = None,
 ) -> str:
     """Build the <persisted-output> replacement block.
+
+    head_tail: the preview shape that generate_preview used. When None the
+    shape is guessed from the elision marker, which content can also hold.
 
     The preview is passed through verbatim; because generate_preview slices on
     character boundaries the preview never splits a multibyte character.
@@ -325,7 +329,8 @@ def build_persisted_message(
     else:
         size_str = f"{size_kb:.1f} KB"
 
-    head_tail = "... [omitted" in preview
+    if head_tail is None:
+        head_tail = "... [omitted" in preview
     label = "head and tail" if head_tail else f"first {len(preview)} chars"
 
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
@@ -465,8 +470,10 @@ def maybe_persist_result(
             estimated_uri = spill_uri(spill_session_id, result_id)
         except Exception:
             estimated_uri = None
+    shown_head_tail = bool(head_tail and has_more)
     estimated_result = build_persisted_message(
-        preview, has_more, original_len, estimated_path, spill_uri=estimated_uri
+        preview, has_more, original_len, estimated_path, spill_uri=estimated_uri,
+        head_tail=shown_head_tail,
     )
     try:
         from harness.offload_policy import should_offload
@@ -495,7 +502,8 @@ def maybe_persist_result(
                 )
                 if not registered:
                     uri = None
-        result = build_persisted_message(preview, has_more, original_len, file_path, spill_uri=uri)
+        result = build_persisted_message(preview, has_more, original_len, file_path, spill_uri=uri,
+                                         head_tail=shown_head_tail)
         _notify_compaction(on_compaction, original_len, len(result), "persist")
         return result
     except Exception as e:

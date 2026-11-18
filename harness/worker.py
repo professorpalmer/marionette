@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import uuid
 import logging
 import threading
@@ -275,9 +276,66 @@ _RE_PY_OPEN = re.compile(
 )
 
 # `cp SRC /abs`, `mv SRC /abs`, `install SRC /abs`, `rsync SRC /abs`. We match
-# the command through the end of its shell segment and then pick the LAST
-# absolute path token as the destination (POSIX convention for these tools).
-_RE_CP_MV = re.compile(r"\b(?:cp|mv|install|rsync)\b[^;|&`\n]*")
+# the command through the end of its shell segment and then take the last
+# operand (or `-t DIR`) as the destination (POSIX convention for these tools).
+# A word next to '/' is a path component (`ls /opt/install/bin`), not a command.
+_RE_CP_MV = re.compile(r"(?<!/)\b(cp|mv|install|rsync)\b(?!/)([^;|&`\n]*)")
+_RE_ABS_START = re.compile(r"/|[A-Za-z]:[\\/]")
+
+# `pip install /x.whl` and similar only read the package path.
+_PACKAGE_MANAGERS = frozenset({
+    "pip", "pip3", "pipx", "uv", "poetry", "conda", "mamba", "npm", "pnpm",
+    "yarn", "bun", "apt", "apt-get", "brew", "gem", "cargo", "go", "dnf",
+    "yum", "apk", "pacman", "zypper", "port", "choco", "winget", "scoop",
+})
+
+
+def _is_package_install(cmd: str, start: int) -> bool:
+    """True when `install` at ``start`` is an argument of a package manager."""
+    seg_start = max(cmd.rfind(c, 0, start) for c in ";|&`\n") + 1
+    for tok in reversed(cmd[seg_start:start].split()):
+        if tok.startswith("-"):
+            continue
+        return os.path.basename(tok.strip("'\"")) in _PACKAGE_MANAGERS
+    return False
+
+
+def _cp_mv_destination(args: str) -> str | None:
+    """Return the absolute destination of a cp/mv/install/rsync argument list.
+
+    The destination is the `-t DIR` value or else the last operand. A relative
+    destination resolves under the worktree, so it returns None.
+    """
+    tokens: list[str] = []
+    if "\\" not in args:
+        # shlex keeps a quoted path with spaces whole. It would eat the
+        # backslashes of a Windows path, so those use a plain split.
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            tokens = []
+    if not tokens:
+        tokens = [t.strip("'\"") for t in args.split()]
+    operands: list[str] = []
+    target: str | None = None
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if "<" in tok or ">" in tok:
+            break
+        if tok in ("-t", "--target-directory") and i + 1 < len(tokens):
+            target = tokens[i + 1]
+            i += 2
+            continue
+        if tok.startswith("--target-directory="):
+            target = tok.split("=", 1)[1]
+        elif tok and not tok.startswith("-"):
+            operands.append(tok)
+        i += 1
+    dest = target if target is not None else (operands[-1] if operands else None)
+    if dest and _RE_ABS_START.match(dest):
+        return dest
+    return None
 
 # POSIX / Windows null and stdio sinks. On Windows, os.path.abspath("/dev/null")
 # becomes C:\dev\null and would otherwise false-positive as an escaped write.
@@ -382,14 +440,15 @@ def _detect_escaped_writes(events, wt_path: str) -> list[str]:
                 candidates.append(m.group(1) or m.group(2))
             for m in _RE_PY_OPEN.finditer(cmd):
                 candidates.append(m.group(1))
-            # cp/mv/install/rsync: destination is the last absolute path in the
-            # segment. Segment-scoped so we do not wander across ; | & or a
-            # backtick into an unrelated command.
-            for seg in _RE_CP_MV.findall(cmd):
-                abs_paths = re.findall(_ABS_PATH, seg)
-                if abs_paths:
-                    last = abs_paths[-1]
-                    candidates.append(last[0] or last[1])
+            # cp/mv/install/rsync: the destination operand of the segment.
+            # Segment-scoped so we do not wander across ; | & or a backtick
+            # into an unrelated command.
+            for m in _RE_CP_MV.finditer(cmd):
+                if m.group(1) == "install" and _is_package_install(cmd, m.start()):
+                    continue
+                dest = _cp_mv_destination(m.group(2))
+                if dest:
+                    candidates.append(dest)
         except Exception:
             # Regex on adversarial input should not throw, but if it does we
             # would rather skip this event than crash the finalizer.

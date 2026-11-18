@@ -534,7 +534,9 @@ def codegraph_is_stale(repo_path: str) -> bool:
             return False
         cg_mtime = os.path.getmtime(codegraph_path)
         skip_dirs = {".git", "node_modules", ".venv", ".codegraph", "dist", "build", "__pycache__"}
-        extensions = {".py", ".ts", ".tsx", ".js", ".jsx", ".java", ".swift", ".go", ".rs"}
+        # One extension list with the indexer, so an edit of any indexed language is seen.
+        from ..codegraph_preflight import INDEXABLE_EXTENSIONS as extensions
+
         for root, dirs, files in os.walk(repo_path):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             # (b) directory mtime -- catches deletions/renames/additions in this dir

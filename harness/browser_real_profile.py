@@ -113,13 +113,18 @@ def is_live_browser_user_data_dir(path: str, system: Optional[str] = None) -> bo
     hosts = (system,) if system else ("Darwin", "Windows", "Linux")
     for host in hosts:
         for browser in _BROWSER_PATHS:
-            live = real_profile_data_dir(browser, system=host)
-            try:
-                live_resolved = Path(live).resolve()
-            except (OSError, RuntimeError):
-                continue
-            if resolved == live_resolved or live_resolved in resolved.parents:
-                return True
+            # Every Linux install location counts, not only the first one that exists.
+            if host == "Linux":
+                lives = _linux_profile_candidates(browser)
+            else:
+                lives = [real_profile_data_dir(browser, system=host)]
+            for live in lives:
+                try:
+                    live_resolved = Path(live).resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if resolved == live_resolved or live_resolved in resolved.parents:
+                    return True
     return False
 
 
@@ -133,6 +138,24 @@ def real_profile_enabled() -> bool:
     return raw in _TRUTHY
 
 
+def _linux_profile_candidates(browser: str) -> list:
+    """Return the XDG, snap and flatpak user-data-dirs for ``browser``."""
+    key = browser if browser in _BROWSER_PATHS else "chrome"
+    linux_name = _BROWSER_PATHS[key][2]
+    home = Path.home()
+    config = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
+    candidates = [Path(config).joinpath(*linux_name.split("/"))]
+    snap = _LINUX_SNAP_PARTS.get(key)
+    if snap:
+        candidates.append(home.joinpath(*snap))
+    flatpak_id = _LINUX_FLATPAK_IDS.get(key)
+    if flatpak_id:
+        candidates.append(
+            home / ".var" / "app" / flatpak_id / "config" / Path(*linux_name.split("/"))
+        )
+    return candidates
+
+
 def real_profile_data_dir(browser: str = "chrome", system: Optional[str] = None) -> Path:
     """Return the OS default user-data-dir for ``browser``."""
     key = browser if browser in _BROWSER_PATHS else "chrome"
@@ -144,16 +167,7 @@ def real_profile_data_dir(browser: str = "chrome", system: Optional[str] = None)
     if host == "Windows":
         local = os.environ.get("LOCALAPPDATA") or str(home / "AppData" / "Local")
         return Path(local).joinpath(*win_parts)
-    config = os.environ.get("XDG_CONFIG_HOME") or str(home / ".config")
-    candidates = [Path(config).joinpath(*linux_name.split("/"))]
-    snap = _LINUX_SNAP_PARTS.get(key)
-    if snap:
-        candidates.append(home.joinpath(*snap))
-    flatpak_id = _LINUX_FLATPAK_IDS.get(key)
-    if flatpak_id:
-        candidates.append(
-            home / ".var" / "app" / flatpak_id / "config" / Path(*linux_name.split("/"))
-        )
+    candidates = _linux_profile_candidates(key)
     for candidate in candidates:
         if candidate.is_dir():
             return candidate

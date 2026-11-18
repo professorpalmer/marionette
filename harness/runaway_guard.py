@@ -240,6 +240,9 @@ def observe_step(
             })
         progress = progress_fingerprint(kind, content)
         if progress:
+            # The steer names "the same work target", so a wait on another
+            # job with the same generic body must not extend the count.
+            progress = "%s|%s" % (poll_key, progress)
             if state.get("progress_key") == progress:
                 state["progress_count"] = int(state.get("progress_count") or 0) + 1
             else:

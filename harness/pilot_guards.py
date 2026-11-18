@@ -227,7 +227,7 @@ _BROAD_INTENT_RE = re.compile(
     r"\binherit\b|"
     r"\binspect\b[^.!?]{0,120}?\bsubprocess(?:es)?\b|"
     r"how\s+does\b.{0,120}?\baffect\b|"
-    r"map\s+the\b|"
+    r"\bmap\s+the\b|"
     r"improve\s+quality|"
     r"what\s+could\s+break|"
     r"\bsweep\b|"
@@ -270,7 +270,7 @@ _EXPLICIT_SWARM_RE = re.compile(
 
 _EXPLICIT_SWARM_NEG_RE = re.compile(
     r"(?:"
-    r"don'?t\s+swarm|"
+    r"don['’]?t\s+swarm|"
     r"do\s+not\s+swarm|"
     r"swarm\s+tracker|"
     r"where\s+is\s+run_swarm|"
@@ -280,12 +280,18 @@ _EXPLICIT_SWARM_NEG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A negation, a launch verb, at most two words from a closed list, then the
+# worker noun. "do not run more than three workers" is a limit, not a refusal.
+_REFUSAL_NEGATION = r"(?:do\s+not|don['’]?t|dont|never|no\s+need\s+to|without)"
+_LAUNCH_VERB = r"(?:use|launch|start|run|dispatch|spawn|spin\s+up|fan\s+out)"
+
 _DELEGATION_OPT_OUT_RE = re.compile(
     r"(?:"
     r"\bno\s+(?:(?:additional|more|external|remote|parallel)\s+)?(?:workers?|swarms?|delegation)\b|"
-    r"\b(?:do\s+not|don'?t)\s+(?:delegate|swarm)\b|"
-    r"\b(?:do\s+not|don'?t)\s+(?:use|launch|start|run|dispatch)\s+"
-    r"(?:an?\s+)?(?:swarm|workers?)\b|"
+    r"\b" + _REFUSAL_NEGATION + r"\s+(?:delegate|swarm)\b|"
+    r"\b" + _REFUSAL_NEGATION + r"\s+" + _LAUNCH_VERB + r"\s+"
+    r"(?:(?:a|an|any|the|more|agentic|extra|additional|parallel)\s+){0,2}"
+    r"(?:workers?|swarms?|agents|subagents)\b|"
     r"\bwithout\s+(?:any\s+)?(?:delegation|workers?|a\s+swarm)\b|"
     r"\b(?:local\s+)?native\s+tools?\s+only\b"
     r")",
@@ -329,13 +335,20 @@ _CLI_SHELL_OPERATORS = frozenset({
 
 _NARROW_INTENT_RE = re.compile(
     r"(?:"
-    r"where\s+is\b|"
-    r"what\s+(?:calls|defines|implements)\b|"
-    r"how\s+does\s+\S+\s+work|"
-    r"definition\s+of\b|"
-    r"show\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
-    r"find\s+(?:the\s+)?(?:function|class|method|symbol)\b"
+    r"\bwhere\s+is\b|"
+    r"\bwhat\s+(?:calls|defines|implements)\b|"
+    r"\bhow\s+does\s+\S+\s+work|"
+    r"\bdefinition\s+of\b|"
+    r"\bshow\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
+    r"\bfind\s+(?:the\s+)?(?:function|class|method|symbol)\b"
     r")",
+    re.IGNORECASE,
+)
+
+# A launch verb, an optional article, then "swarm". It wins over a narrow
+# phrase in the same clause ("Launch a swarm to find where is X").
+_SWARM_LAUNCH_RE = re.compile(
+    r"\b" + _LAUNCH_VERB + r"\s+(?:(?:a|an|the|another|one)\s+)?swarm\b",
     re.IGNORECASE,
 )
 
@@ -771,15 +784,65 @@ SWARM_POLICY_BROAD = "broad"
 SWARM_POLICY_EXPLICIT = "explicit"
 
 
-def swarm_policy_for_message(message: str) -> str:
-    """Deterministic solo vs swarm-first policy for this user turn."""
-    if _is_delegation_opt_out_user_message(message):
+def swarm_policy_table(refusal: bool, launch: bool, narrow: bool, broad: bool) -> str:
+    """The one order of the swarm policy.
+
+    A refusal gives solo. Else a launch gives explicit. Else a narrow
+    question gives solo. Else broad intent gives broad. Else the result is
+    solo.
+
+    refusal: the last delegation clause declines workers. launch: a clause
+    asks for a swarm.
+    narrow: the message asks a narrow question. broad: the message asks for
+    a broad audit or a platform contrast.
+    """
+    if refusal:
         return SWARM_POLICY_SOLO
-    if is_explicit_swarm_user_message(message):
+    if launch:
         return SWARM_POLICY_EXPLICIT
-    if is_broad_intent_user_message(message):
+    if narrow:
+        return SWARM_POLICY_SOLO
+    if broad:
         return SWARM_POLICY_BROAD
     return SWARM_POLICY_SOLO
+
+
+def _delegation_signals(text: str) -> tuple:
+    """(refusal, launch) for normalized text, each judged for each clause.
+
+    The last delegation clause wins, so "no workers, then use a swarm" is a
+    launch and "use a swarm. Actually, do not use the swarm" is a refusal.
+    """
+    refusal = False
+    launch = False
+    for clause in _INTENT_CLAUSE_SPLIT_RE.split(text):
+        if _DELEGATION_OPT_OUT_RE.search(clause):
+            refusal = True
+        elif not _EXPLICIT_SWARM_NEG_RE.search(clause) and (
+            _SWARM_LAUNCH_RE.search(clause)
+            or (
+                _EXPLICIT_SWARM_RE.search(clause)
+                and not _NARROW_INTENT_RE.search(clause)
+            )
+        ):
+            launch = True
+            refusal = False
+    return refusal, launch
+
+
+def _broad_signal(text: str) -> bool:
+    if not text or is_conversational_followup(text):
+        return False
+    return bool(_BROAD_INTENT_RE.search(text)) or _is_cross_platform_compare(text)
+
+
+def swarm_policy_for_message(message: str) -> str:
+    """Deterministic solo vs swarm-first policy for this user turn."""
+    text = _norm_whitespace(message or "")
+    refusal, launch = _delegation_signals(text)
+    return swarm_policy_table(
+        refusal, launch, bool(_NARROW_INTENT_RE.search(text)), _broad_signal(text),
+    )
 
 
 def swarm_policy_turn_note(
@@ -839,43 +902,17 @@ def swarm_policy_turn_note(
 def is_broad_intent_user_message(message: str) -> bool:
     """Classify user text for broad audit/review/investigate tasks (pure function)."""
     text = _norm_whitespace(message or "")
-    if not text or is_conversational_followup(text):
-        return False
-    if _NARROW_INTENT_RE.search(text):
-        return False
-    if _BROAD_INTENT_RE.search(text):
-        return True
-    return _is_cross_platform_compare(text)
-
-
-def _delegation_preference(text: str) -> Optional[bool]:
-    """Last explicit delegation clause wins; discussion alone has no preference."""
-    preference = None
-    for clause in _INTENT_CLAUSE_SPLIT_RE.split(text):
-        if _DELEGATION_OPT_OUT_RE.search(clause):
-            preference = False
-        elif (
-            _EXPLICIT_SWARM_RE.search(clause)
-            and not _EXPLICIT_SWARM_NEG_RE.search(clause)
-        ):
-            preference = True
-    return preference
+    return _broad_signal(text) and not _NARROW_INTENT_RE.search(text)
 
 
 def is_explicit_swarm_user_message(message: str) -> bool:
     """True when the user asked to launch a swarm, not merely mentioned one."""
-    text = _norm_whitespace(message or "")
-    if not text:
-        return False
-    if _NARROW_INTENT_RE.search(text):
-        return False
-    return _delegation_preference(text) is True
+    return swarm_policy_for_message(message) == SWARM_POLICY_EXPLICIT
 
 
 def _is_delegation_opt_out_user_message(message: str) -> bool:
-    """True when the last explicit delegation clause declines workers."""
-    text = _norm_whitespace(message or "")
-    return _delegation_preference(text) is False
+    """True when the last delegation clause declines workers."""
+    return _delegation_signals(_norm_whitespace(message or ""))[0]
 
 
 def is_swarm_continuation_user_message(message: str) -> bool:
@@ -1057,8 +1094,11 @@ def normalize_action_args(kind: str, act: Any) -> str:
                 hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] if text else ""
             )
         if kind == "edit_file":
-            payload["old_str"] = _norm_whitespace(getattr(act, "old_str", "") or "")
-            payload["new_str"] = _norm_whitespace(getattr(act, "new_str", "") or "")
+            import hashlib
+            # Exact text: edits that differ only in whitespace are different edits.
+            for field in ("old_str", "new_str"):
+                raw = str(getattr(act, field, "") or "")
+                payload[field] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         if kind == "hash_edit":
             ops = args.get("ops")
             payload["ops"] = ops if isinstance(ops, list) else []
@@ -1095,8 +1135,26 @@ def normalize_action_args(kind: str, act: Any) -> str:
     elif kind in ("search_files", "search_codegraph", "search_state", "search_archive", "search_tools", "web_search"):
         payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
         if kind == "search_files":
-            payload["path"] = _norm_path(args.get("path", "") or "")
+            # Key on every argument that _do_search_files reads. Keys for calls
+            # without the extra arguments stay as before.
+            requested = args.get("path") or args.get("paths") or ""
+            if isinstance(requested, (list, tuple)):
+                payload["path"] = ""
+                payload["paths"] = sorted(
+                    _norm_path(str(p)) for p in requested if str(p or "").strip()
+                )
+            else:
+                payload["path"] = _norm_path(str(requested))
             payload["max_results"] = _norm_optional_int(args.get("max_results"))
+            if args.get("case_insensitive") is True:
+                payload["case_insensitive"] = True
+            if args.get("files_only") is True:
+                payload["files_only"] = True
+            glob = str(args.get("glob") or "").strip()
+            if glob:
+                payload["glob"] = glob
+            if args.get("context_lines"):
+                payload["context_lines"] = _norm_optional_int(args.get("context_lines"))
         if kind == "search_codegraph":
             payload["kind_arg"] = (args.get("kind") or "search").strip().lower()
         if kind == "search_tools":
