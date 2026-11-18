@@ -673,8 +673,11 @@ def build_pilot(spec: str, *, max_tokens: int | None = None):
     provider = None
     model = spec
     if ":" in spec:
-        pname, model = spec.split(":", 1)
+        pname, rest = spec.split(":", 1)
         provider = get_provider(pname)
+        # An unknown prefix is part of a bare slug (e.g. OpenRouter ':free').
+        if provider is not None:
+            model = rest
     if provider is None:
         # Resolve a bare model name against the CANONICAL provider table (see
         # resolve_bare_model): stable winner independent of which keys happen
