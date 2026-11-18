@@ -133,6 +133,36 @@ describe("turn changed-files footer", () => {
     expect(within(patches[0]).getByText("+new line").className).toContain("text-good");
   });
 
+  it("keeps Hide reachable in a long review and returns to the footer", () => {
+    // A long review pushed the only Hide control off screen (2026-11-17).
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    renderItems(turn("fix it", "cp1", [editCard("e1", "src/calc.py", 1, 1)]));
+    const footer = screen.getByTestId("turn-changes");
+    const bar = within(footer).getByTestId("turn-changes-bar");
+    expect(bar.className).not.toContain("sticky");
+    fireEvent.click(within(footer).getByTestId("turn-changes-review"));
+    expect(bar.className).toContain("sticky");
+
+    // Footer row in view: Hide closes without a scroll.
+    fireEvent.click(within(footer).getByTestId("turn-changes-review"));
+    expect(within(footer).queryByTestId("turn-changes-files")).toBeNull();
+    expect(scrolled).not.toHaveBeenCalled();
+
+    // Deep in the diff the bar is stuck below the row start: the end Hide
+    // scrolls back to the row before the list closes.
+    fireEvent.click(within(footer).getByTestId("turn-changes-review"));
+    const rect = (top: number) => ({ top } as DOMRect);
+    vi.spyOn(footer, "getBoundingClientRect").mockReturnValue(rect(-900));
+    vi.spyOn(bar, "getBoundingClientRect").mockReturnValue(rect(0));
+    fireEvent.click(within(footer).getByTestId("turn-changes-hide-end"));
+    expect(within(footer).queryByTestId("turn-changes-files")).toBeNull();
+    expect(bar.className).not.toContain("sticky");
+    expect(scrolled).toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveBeenCalledWith({ block: "start" });
+    expect(scrolled.mock.contexts[0]).toBe(footer);
+  });
+
   it("has no footer for a turn without writes", () => {
     renderItems([
       { kind: "msg", msg: { role: "user", text: "hi" } },
