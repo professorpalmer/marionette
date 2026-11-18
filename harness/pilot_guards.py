@@ -280,12 +280,18 @@ _EXPLICIT_SWARM_NEG_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A negation, a launch verb, at most two words from a closed list, then the
+# worker noun. "do not run more than three workers" is a limit, not a refusal.
+_REFUSAL_NEGATION = r"(?:do\s+not|don['’]?t|dont|never|no\s+need\s+to|without)"
+_LAUNCH_VERB = r"(?:use|launch|start|run|dispatch|spawn|spin\s+up|fan\s+out)"
+
 _DELEGATION_OPT_OUT_RE = re.compile(
     r"(?:"
     r"\bno\s+(?:(?:additional|more|external|remote|parallel)\s+)?(?:workers?|swarms?|delegation)\b|"
-    r"\b(?:do\s+not|don['’]?t)\s+(?:delegate|swarm)\b|"
-    r"\b(?:do\s+not|don['’]?t)\s+(?:use|launch|start|run|dispatch)\s+"
-    r"(?:an?\s+)?(?:swarm|workers?)\b|"
+    r"\b" + _REFUSAL_NEGATION + r"\s+(?:delegate|swarm)\b|"
+    r"\b" + _REFUSAL_NEGATION + r"\s+" + _LAUNCH_VERB + r"\s+"
+    r"(?:(?:a|an|any|the|more|agentic|extra|additional|parallel)\s+){0,2}"
+    r"(?:workers?|swarms?|agents|subagents)\b|"
     r"\bwithout\s+(?:any\s+)?(?:delegation|workers?|a\s+swarm)\b|"
     r"\b(?:local\s+)?native\s+tools?\s+only\b"
     r")",
@@ -336,6 +342,13 @@ _NARROW_INTENT_RE = re.compile(
     r"\bshow\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
     r"\bfind\s+(?:the\s+)?(?:function|class|method|symbol)\b"
     r")",
+    re.IGNORECASE,
+)
+
+# A launch verb, an optional article, then "swarm". It wins over a narrow
+# phrase in the same clause ("Launch a swarm to find where is X").
+_SWARM_LAUNCH_RE = re.compile(
+    r"\b" + _LAUNCH_VERB + r"\s+(?:(?:a|an|the|another|one)\s+)?swarm\b",
     re.IGNORECASE,
 )
 
@@ -771,15 +784,61 @@ SWARM_POLICY_BROAD = "broad"
 SWARM_POLICY_EXPLICIT = "explicit"
 
 
-def swarm_policy_for_message(message: str) -> str:
-    """Deterministic solo vs swarm-first policy for this user turn."""
-    if _is_delegation_opt_out_user_message(message):
+def swarm_policy_table(refusal: bool, launch: bool, narrow: bool, broad: bool) -> str:
+    """The one order of the swarm policy. A refusal always wins.
+
+    refusal: the last delegation clause declines workers. launch: a clause
+    asks for a swarm.
+    narrow: the message asks a narrow question. broad: the message asks for
+    a broad audit or a platform contrast.
+    """
+    if refusal:
         return SWARM_POLICY_SOLO
-    if is_explicit_swarm_user_message(message):
+    if launch:
         return SWARM_POLICY_EXPLICIT
-    if is_broad_intent_user_message(message):
+    if narrow:
+        return SWARM_POLICY_SOLO
+    if broad:
         return SWARM_POLICY_BROAD
     return SWARM_POLICY_SOLO
+
+
+def _delegation_signals(text: str) -> tuple:
+    """(refusal, launch) for normalized text, each judged for each clause.
+
+    The last delegation clause wins, so "no workers, then use a swarm" is a
+    launch and "use a swarm. Actually, do not use the swarm" is a refusal.
+    """
+    refusal = False
+    launch = False
+    for clause in _INTENT_CLAUSE_SPLIT_RE.split(text):
+        if _DELEGATION_OPT_OUT_RE.search(clause):
+            refusal = True
+        elif not _EXPLICIT_SWARM_NEG_RE.search(clause) and (
+            _SWARM_LAUNCH_RE.search(clause)
+            or (
+                _EXPLICIT_SWARM_RE.search(clause)
+                and not _NARROW_INTENT_RE.search(clause)
+            )
+        ):
+            launch = True
+            refusal = False
+    return refusal, launch
+
+
+def _broad_signal(text: str) -> bool:
+    if not text or is_conversational_followup(text):
+        return False
+    return bool(_BROAD_INTENT_RE.search(text)) or _is_cross_platform_compare(text)
+
+
+def swarm_policy_for_message(message: str) -> str:
+    """Deterministic solo vs swarm-first policy for this user turn."""
+    text = _norm_whitespace(message or "")
+    refusal, launch = _delegation_signals(text)
+    return swarm_policy_table(
+        refusal, launch, bool(_NARROW_INTENT_RE.search(text)), _broad_signal(text),
+    )
 
 
 def swarm_policy_turn_note(
@@ -839,44 +898,17 @@ def swarm_policy_turn_note(
 def is_broad_intent_user_message(message: str) -> bool:
     """Classify user text for broad audit/review/investigate tasks (pure function)."""
     text = _norm_whitespace(message or "")
-    if not text or is_conversational_followup(text):
-        return False
-    if _NARROW_INTENT_RE.search(text):
-        return False
-    if _BROAD_INTENT_RE.search(text):
-        return True
-    return _is_cross_platform_compare(text)
-
-
-def _delegation_preference(text: str) -> Optional[bool]:
-    """Last explicit delegation clause wins; discussion alone has no preference."""
-    preference = None
-    for clause in _INTENT_CLAUSE_SPLIT_RE.split(text):
-        if _DELEGATION_OPT_OUT_RE.search(clause):
-            preference = False
-        elif (
-            _EXPLICIT_SWARM_RE.search(clause)
-            and not _EXPLICIT_SWARM_NEG_RE.search(clause)
-            # The narrow veto is per clause: a separate question must not
-            # cancel a launch request in another clause.
-            and not _NARROW_INTENT_RE.search(clause)
-        ):
-            preference = True
-    return preference
+    return _broad_signal(text) and not _NARROW_INTENT_RE.search(text)
 
 
 def is_explicit_swarm_user_message(message: str) -> bool:
     """True when the user asked to launch a swarm, not merely mentioned one."""
-    text = _norm_whitespace(message or "")
-    if not text:
-        return False
-    return _delegation_preference(text) is True
+    return swarm_policy_for_message(message) == SWARM_POLICY_EXPLICIT
 
 
 def _is_delegation_opt_out_user_message(message: str) -> bool:
-    """True when the last explicit delegation clause declines workers."""
-    text = _norm_whitespace(message or "")
-    return _delegation_preference(text) is False
+    """True when the last delegation clause declines workers."""
+    return _delegation_signals(_norm_whitespace(message or ""))[0]
 
 
 def is_swarm_continuation_user_message(message: str) -> bool:

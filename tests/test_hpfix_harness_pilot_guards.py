@@ -9,6 +9,7 @@ from harness.pilot_guards import (
     is_explicit_swarm_user_message,
     normalize_action_args,
     swarm_policy_for_message,
+    swarm_policy_table,
 )
 
 
@@ -114,3 +115,60 @@ def test_in_word_map_the_is_not_broad(msg):
 
 def test_map_the_verb_stays_broad():
     assert is_broad_intent_user_message("Map the pipeline architecture") is True
+
+
+# The owner's rules for 1af9b7d4-2, 1af9b7d4-5 and 791b83f9-7: a refusal
+# always wins, a launch beats a narrow question, the Windows rule stays.
+_GOLDEN = [
+    # 1af9b7d4-2: a refusal of agentic workers.
+    ("Please do not use agentic workers", "solo"),
+    ("do not use agentic workers", "solo"),
+    ("Don’t launch any agentic workers", "solo"),
+    ("never spawn subagents for this", "solo"),
+    ("no need to run a swarm", "solo"),
+    # 1af9b7d4-5: a launch verb beats a narrow phrase in its clause.
+    ("Launch a swarm to find where is the auth token validated", "explicit"),
+    ("where is the swarm launched? spin up a swarm to check", "explicit"),
+    # Counter-examples of the review packet: each keeps its result.
+    ("Use a swarm to audit auth. Do not run more than three workers", "explicit"),
+    ("Run a swarm over auth, do not use the old swarm results", "explicit"),
+    ("Launch a swarm. Don't start until the swarm tracker is clear", "explicit"),
+    ("Where is the code we run when the swarm finishes?", "solo"),
+    ("Do not dispatch more than two workers", "solo"),
+    ("Why does the build fail on Linux but not Windows?", "broad"),
+    ("Does this work on Mac and Windows?", "broad"),
+    # 791b83f9-7: accepted by the owner (low severity).
+    ("How do I close all browser windows on my Mac?", "broad"),
+    # Earlier rows of this file.
+    ("Launch a swarm to audit the repo. Where is the config?", "explicit"),
+    ("Where is the config? Run it.", "solo"),
+    ("Don’t swarm the repo", "solo"),
+    ("please swarm the repo", "explicit"),
+    # The last delegation clause wins (tests/test_pilot_guards.py keeps the
+    # contrast "no workers, then use a swarm").
+    ("Use a swarm to audit everything. Actually, do not use the swarm", "solo"),
+    ("Do not use workers for this part, but use a swarm for the audit.", "explicit"),
+]
+
+
+@pytest.mark.parametrize("msg,policy", _GOLDEN)
+def test_swarm_policy_golden_table(msg, policy):
+    assert swarm_policy_for_message(msg) == policy
+
+
+@pytest.mark.parametrize("refusal", [False, True])
+@pytest.mark.parametrize("launch", [False, True])
+@pytest.mark.parametrize("narrow", [False, True])
+@pytest.mark.parametrize("broad", [False, True])
+def test_swarm_policy_table_order(refusal, launch, narrow, broad):
+    if refusal:
+        expected = "solo"
+    elif launch:
+        expected = "explicit"
+    elif narrow:
+        expected = "solo"
+    elif broad:
+        expected = "broad"
+    else:
+        expected = "solo"
+    assert swarm_policy_table(refusal, launch, narrow, broad) == expected
