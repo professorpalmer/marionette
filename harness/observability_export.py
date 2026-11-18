@@ -179,11 +179,11 @@ def _ensure_worker() -> None:
 def _worker_loop() -> None:
     while True:
         try:
-            envelope = _queue.get()
+            item = _queue.get()
         except Exception:
             continue
         try:
-            _deliver(envelope)
+            _deliver(item["envelope"], item["target"])
         except Exception:
             pass
         finally:
@@ -193,12 +193,25 @@ def _worker_loop() -> None:
                 pass
 
 
-def _deliver(envelope: dict[str, Any]) -> None:
+def _target() -> dict[str, Any]:
+    """Where an event goes: the export settings at the time of the call."""
+    return {
+        "file": (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_FILE") or "").strip(),
+        "endpoint": (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_ENDPOINT") or "").strip(),
+        "timeout_s": _int_env("HARNESS_OBSERVABILITY_EXPORT_TIMEOUT_MS", _DEFAULT_TIMEOUT_MS) / 1000.0,
+    }
+
+
+def _deliver(envelope: dict[str, Any], target: Optional[dict[str, Any]] = None) -> None:
+    # The target is fixed when the event is queued. The worker delivers later, and
+    # the settings can be different then: an event must not go to a file or an
+    # endpoint that was not configured when it was emitted.
+    target = target if target is not None else _target()
     envelope = _privacy_redact_envelope(envelope)
     line = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False) + "\n"
-    file_path = (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_FILE") or "").strip()
-    endpoint = (os.environ.get("HARNESS_OBSERVABILITY_EXPORT_ENDPOINT") or "").strip()
-    timeout_s = _int_env("HARNESS_OBSERVABILITY_EXPORT_TIMEOUT_MS", _DEFAULT_TIMEOUT_MS) / 1000.0
+    file_path = target["file"]
+    endpoint = target["endpoint"]
+    timeout_s = target["timeout_s"]
 
     if file_path:
         try:
@@ -235,7 +248,7 @@ def emit_event(name: str, attributes: Mapping[str, Any], *, kind: str = "event")
     try:
         envelope = build_envelope(name, attributes, kind=kind)
         _ensure_worker()
-        _queue.put_nowait(envelope)
+        _queue.put_nowait({"envelope": envelope, "target": _target()})
     except Exception:
         pass
 
