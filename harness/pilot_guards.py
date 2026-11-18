@@ -785,7 +785,11 @@ SWARM_POLICY_EXPLICIT = "explicit"
 
 
 def swarm_policy_table(refusal: bool, launch: bool, narrow: bool, broad: bool) -> str:
-    """The one order of the swarm policy. A refusal always wins.
+    """The one order of the swarm policy.
+
+    A refusal gives solo. Else a launch gives explicit. Else a narrow
+    question gives solo. Else broad intent gives broad. Else the result is
+    solo.
 
     refusal: the last delegation clause declines workers. launch: a clause
     asks for a swarm.
