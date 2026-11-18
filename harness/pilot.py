@@ -1407,12 +1407,17 @@ def build_tools_schema(
         "function": {
             "name": "todo",
             "description": (
-                "Maintain a nested session TODO tree (phases with child tasks). "
-                "Use this for multi-step work: init a phased list, start the "
-                "current task, mark done, append, block, or view. Tasks are "
-                "addressed by their full content text, not by ids. One task "
-                "is in_progress at a time. After init/start/done, keep working "
-                "the Next task from the result instead of restating the plan. "
+                "The plan the user watches under the chat: a short step list, "
+                "one step in progress at a time. op init with `items` (3 to 7 "
+                "short imperative steps in work order) makes the plan and "
+                "starts step one. op advance takes no other argument: it "
+                "completes the step in progress and starts the next one. Send "
+                "init and advance in the same response as your other tool "
+                "calls, so the plan costs no extra roundtrip. The other ops "
+                "address a task by its full content text: start, done, append, "
+                "block, unblock, rm, drop, view. `list` gives init named "
+                "phases for long work. After a todo call, keep working the "
+                "Next task from the result instead of restating the plan. "
                 "Prefix a task with [parallel] when it is an independent unit "
                 "(no shared files or ordering with its siblings); Marionette "
                 "uses those to tell you when to hand the rest to run_flow."
@@ -1423,7 +1428,7 @@ def build_tools_schema(
                     "op": {
                         "type": "string",
                         "enum": [
-                            "init", "start", "done", "rm", "drop",
+                            "init", "advance", "start", "done", "rm", "drop",
                             "block", "unblock", "append", "view",
                         ],
                         "description": "Operation to apply",
@@ -3187,7 +3192,8 @@ HOW TO DO CODE WORK:
 - Read a file before you edit it. Use `edit_file` to change an existing file. Use `write_file` only to create a new file.
 - `run_command` runs a shell command. Check the exit code of each command, and look at failures before you continue. Use it for builds, tests, git and programs, not to read or search files.
 - LATENCY (mandatory): minimize provider roundtrips. Put independent tool calls in one response, because they run at the same time. `run_command_batch` runs independent shell commands together.
-- Use `todo` for multi-step work. Use `run_ipython` only for stateful Python probes.
+- PLAN: for work that edits files or needs more than three tool calls, send `todo` op init in the same response as your first tool calls. The user follows the work on this list. Each time a step is done, send `todo` op advance in the same response as the tool call that starts the next step, and once more when the last step is done. Make no plan for a question or a one-step task.
+- Use `run_ipython` only for stateful Python probes.
 - Run the project's tests and your own checks after you edit. Take the expected values for your tests from the request text, not from your own code. Copy exact names, formats and strings from the request. Test the error paths and the option combinations that the request names.
 - Graders and teammates can add test files to the same package or directory. Give each new test file and test function a name with a unique prefix (for example agent_ or TestAgent), so that it cannot collide with theirs.
 - Remove scratch files that the request did not ask for. Report the checks that you actually ran and their results. Keep your assumptions apart from the user's requirements.

@@ -199,22 +199,3 @@ export function litTodoContentsFromGroups(
 export function todoHasWork(snapshot: SessionTodoSnapshot | null | undefined): boolean {
   return (snapshot?.phases || []).some((phase) => phase.tasks.length > 0);
 }
-
-export function toRoman(value: number): string {
-  const table: Array<[number, string]> = [
-    [10, "X"],
-    [9, "IX"],
-    [5, "V"],
-    [4, "IV"],
-    [1, "I"],
-  ];
-  let remaining = Math.max(1, Math.floor(value));
-  let out = "";
-  for (const [arabic, glyph] of table) {
-    while (remaining >= arabic) {
-      out += glyph;
-      remaining -= arabic;
-    }
-  }
-  return out;
-}

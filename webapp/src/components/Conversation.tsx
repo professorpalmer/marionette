@@ -16,7 +16,6 @@ import {
   type Item,
 } from "./TranscriptList";
 import {
-  currentTurnStep,
   deriveBusyProgress,
   latchWaitingPhaseStartedAt,
   turnHasLiveInvestigation,
@@ -769,12 +768,11 @@ export default function Conversation({
   });
   // Mouth ≠ runner. awaiting_swarm / holdSwarmAwait keep the fold, not Stop.
   const composerBusy = isPilotMouthBusy(turnOpen, status, sessionSwitchPending);
-  const pilotStepBusy = composerBusy && !sessionSwitchPending;
+  const turnActivity = composerBusy && !sessionSwitchPending;
   useEffect(() => {
-    setActivity("turn", pilotStepBusy);
+    setActivity("turn", turnActivity);
     return () => setActivity("turn", false);
-  }, [pilotStepBusy]);
-  const pilotStep = pilotStepBusy ? currentTurnStep(items) : null;
+  }, [turnActivity]);
   const derivedPillStatus: string = derivePillStatus({
     transcriptStale,
     paintableCount: countPaintableTranscriptItems(items),
@@ -4441,6 +4439,8 @@ export default function Conversation({
           itemSessionId={cachedSessionIdRef.current ?? ""}
           paneIds={retainedPaneIds}
           emptySession={emptySessionContext(config)}
+          planJobs={swarmLiveJobs}
+          planActive={composerBusy}
           composerDock={(
       <ComposerDock
         config={config}
@@ -4450,7 +4450,6 @@ export default function Conversation({
         plan={plan}
         composerBusy={composerBusy}
         sessionSwitching={sessionSwitchPending}
-        pilotStep={pilotStep}
         transcriptStale={transcriptStale}
         wikiPrepared={wikiPrepared}
         memoryProposals={memoryProposals}

@@ -548,3 +548,36 @@ describe("prior fold does not stay Exploring after steer flush", () => {
     expect(screen.getAllByText(phrase)).toHaveLength(1);
   });
 });
+
+describe("plan updates are not transcript rows", () => {
+  it("leaves todo calls out of the fold count and the fold rows", () => {
+    const planCall = (id: string, goal: string): Extract<Item, { kind: "card" }> => {
+      const card = sealedCard(id, goal);
+      return { ...card, card: { ...card.card, kind: "todo" } };
+    };
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "fix the parser" } },
+      planCall("p1", "init"),
+      sealedCard("c1", "src/parser.ts"),
+      planCall("p2", "advance"),
+    ];
+    render(<TranscriptList {...listProps(items, { turnOpen: true, status: "executing" })} />);
+
+    const fold = screen.getByTestId("activity-fold");
+    expect(fold.textContent).toMatch(/1 file/);
+    expect(fold.textContent).not.toMatch(/step/);
+    fireEvent.click(fold.querySelector("button")!);
+    expect(screen.getByTestId("activity-rows").textContent).toMatch(/parser\.ts/);
+    expect(screen.getByTestId("activity-rows").textContent).not.toMatch(/advance|init|todo/i);
+  });
+
+  it("makes no fold for a turn whose only tool calls are plan updates", () => {
+    const card = sealedCard("p1", "init");
+    const items: Item[] = [
+      { kind: "msg", msg: { role: "user", text: "plan it" } },
+      { ...card, card: { ...card.card, kind: "todo" } },
+    ];
+    render(<TranscriptList {...listProps(items, { turnOpen: false, status: "idle" })} />);
+    expect(screen.queryByTestId("activity-fold")).toBeNull();
+  });
+});

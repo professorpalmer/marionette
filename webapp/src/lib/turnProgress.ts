@@ -811,6 +811,9 @@ export function itemsInCurrentTurn(items: TurnItem[]): TurnItem[] {
   return lastUser >= 0 ? items.slice(lastUser + 1) : items;
 }
 
+/** Tool kind of a plan update. The plan card shows it, not the tool rows. */
+export const PLAN_TOOL_KIND = "todo";
+
 function cardsInTurn(items: TurnItem[]): TurnCard[] {
   const out: TurnCard[] = [];
   for (const it of itemsInCurrentTurn(items)) {
@@ -819,19 +822,6 @@ function cardsInTurn(items: TurnItem[]): TurnCard[] {
     }
   }
   return out;
-}
-
-/**
- * The step the open turn is on, for the todo list: the latest tool card of the
- * current turn, running or just finished. Latest rather than running, so the
- * line steps from one command to the next instead of blinking out between them.
- */
-export function currentTurnStep(items: TurnItem[]): string | null {
-  const card = [...cardsInTurn(items)].reverse().find((c) => (c.kind || "") !== "todo");
-  if (!card) return null;
-  const goal = shortenGoal(resolveCardCliInput(card) || "");
-  const kind = toolFocusPhrase(card.kind || "");
-  return [kind, goal].filter(Boolean).join(" ") || null;
 }
 
 const LEADING_CD = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*(?:&&|;)\s*)+/;
@@ -1033,14 +1023,16 @@ export function deriveBusyProgress(
     || awaitingSwarm;
   const cards = cardsInTurn(items);
   const step = cards.length;
-  const running = [...cards].reverse().find((c) => cardEffectivelyRunning(c));
+  const running = [...cards].reverse().find((c) => c.kind !== PLAN_TOOL_KIND && cardEffectivelyRunning(c));
   const runningKind = (running?.kind || "").replace(/_/g, " ").trim();
   const runningGoal = shortenGoal(resolveCardCliInput(running || {}) || "");
 
   let toolPrep = "";
   for (const it of [...itemsInCurrentTurn(items)].reverse()) {
     if (it.kind === "tool_prep") {
-      toolPrep = String((it as { name?: string }).name || "").replace(/_/g, " ").trim();
+      const name = String((it as { name?: string }).name || "");
+      if (name === PLAN_TOOL_KIND) continue;
+      toolPrep = name.replace(/_/g, " ").trim();
       break;
     }
   }

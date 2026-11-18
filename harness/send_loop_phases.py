@@ -227,6 +227,9 @@ def begin_turn_task_kernel(session: Any, user_message: str) -> None:
         session._task_tx = None
     session._turn_ran_command = False
     session._verify_remind_count = 0
+    from .todo_reminder import reset_turn_plan_state
+
+    reset_turn_plan_state(session)
     session._turn_user_message = user_message or ""
     session._turn_verification = ""
     try:

@@ -61,6 +61,7 @@ import {
   joinThoughtFoldText,
   liveActivityLine,
   partitionActivityRows,
+  PLAN_TOOL_KIND,
   swarmDoneFoldLabel,
   resolveCardCliInput,
   shortenGoal,
@@ -789,6 +790,8 @@ export function groupAgentActivity(items: Item[], intermediateItems: Set<Item>):
     }
     // tool_prep is busy-footer only -- never a transcript row.
     if (item.kind === "tool_prep") continue;
+    // A plan update shows on the plan card, not as a tool row.
+    if (item.kind === "card" && item.card.kind === PLAN_TOOL_KIND) continue;
 
     if (item.kind === "msg") {
       if (item.msg.role === "user") {

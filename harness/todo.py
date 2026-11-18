@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from .paths import resolve_workspace_path
 
 TODO_STATUSES = ("pending", "in_progress", "completed", "abandoned", "blocked")
-TODO_OPS = ("init", "start", "done", "rm", "drop", "block", "unblock", "append", "view")
+TODO_OPS = ("init", "advance", "start", "done", "rm", "drop", "block", "unblock", "append", "view")
 DEFAULT_INIT_PHASE = "Tasks"
 TODO_FILENAME = "session_todos.json"
 COLLAPSED_OPEN_CAP = 5
@@ -287,7 +287,7 @@ def resolve_todo_params(raw: Any, has_existing: bool) -> Tuple[Optional[Dict[str
             op = inferred
             args["op"] = inferred
     if op not in TODO_OPS:
-        return None, "todo requires op: init|start|done|rm|drop|block|unblock|append|view"
+        return None, "todo requires op: init|advance|start|done|rm|drop|block|unblock|append|view"
     return args, ""
 
 
@@ -463,6 +463,15 @@ def apply_entry(phases: List[TodoPhase], entry: Dict[str, Any], errors: List[str
                 if candidate.status == "in_progress" and candidate is not target:
                     candidate.status = "pending"
         target.status = "in_progress"
+        return phases
+    if op == "advance":
+        # Complete the step in progress. normalize_in_progress then starts the
+        # next pending step. With no step in progress the list stays as it is,
+        # so a repeated advance at the end of the work is not an error.
+        for phase in phases:
+            for candidate in phase.tasks:
+                if candidate.status == "in_progress":
+                    candidate.status = "completed"
         return phases
     if op == "done":
         for task in _task_targets(phases, entry, errors):
