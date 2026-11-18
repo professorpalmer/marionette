@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { api } from "../../lib/api";
 import { openAgentFile } from "../../lib/agentLinks";
 import { EditDiffCounts, EditDiffPatch } from "./EditDiff";
@@ -41,6 +41,8 @@ const LINK_BUTTON =
 
 export function TurnChangesFooter({ item }: { item: TurnChangesItem }) {
   const [reviewOpen, setReviewOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [undo, setUndo] = useState<UndoState>({ phase: "idle" });
   const added = item.files.reduce((n, f) => n + f.added, 0);
   const removed = item.files.reduce((n, f) => n + f.removed, 0);
@@ -57,10 +59,28 @@ export function TurnChangesFooter({ item }: { item: TurnChangesItem }) {
     }
   };
 
+  // A long review scrolls the footer row out of view (the bar is then stuck
+  // below the row start). Scroll back to the row before it shrinks: after
+  // the shrink, the transcript virtualizer re-measures the row and resets
+  // the scroll offset, so a later scroll does not hold.
+  const hideReview = () => {
+    const root = rootRef.current;
+    const bar = barRef.current;
+    if (root && bar && bar.getBoundingClientRect().top - root.getBoundingClientRect().top > 1) {
+      root.scrollIntoView({ block: "start" });
+    }
+    setReviewOpen(false);
+  };
+
   const undoId = item.canUndo ? item.checkpointId : null;
   return (
-    <div className="flex flex-col py-1 text-ui-11 font-sans select-none" data-testid="turn-changes">
-      <div className="flex items-center gap-2 text-faint">
+    <div ref={rootRef} className="flex flex-col pb-1 scroll-mt-3 text-ui-11 font-sans select-none" data-testid="turn-changes">
+      {/* Sticky while open: Hide and Undo stay reachable inside a long diff. */}
+      <div
+        ref={barRef}
+        className={`flex items-center gap-2 pt-1 text-faint ${reviewOpen ? "sticky top-0 z-10 bg-bg pb-1 border-b border-edge/40" : ""}`}
+        data-testid="turn-changes-bar"
+      >
         <span className="text-muted">{filesLabel(item.files.length)}</span>
         <EditDiffCounts added={added} removed={removed} />
         <span aria-hidden>·</span>
@@ -69,7 +89,7 @@ export function TurnChangesFooter({ item }: { item: TurnChangesItem }) {
           className={LINK_BUTTON}
           aria-expanded={reviewOpen}
           data-testid="turn-changes-review"
-          onClick={() => setReviewOpen((v) => !v)}
+          onClick={() => (reviewOpen ? hideReview() : setReviewOpen(true))}
         >
           {reviewOpen ? "Hide" : "Review"}
         </button>
@@ -124,6 +144,16 @@ export function TurnChangesFooter({ item }: { item: TurnChangesItem }) {
               {f.patches.map((p, i) => (p.patch ? <EditDiffPatch key={i} patch={p.patch} truncated={p.truncated} /> : null))}
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              className={LINK_BUTTON}
+              data-testid="turn-changes-hide-end"
+              onClick={hideReview}
+            >
+              Hide changes
+            </button>
+          </li>
         </ul>
       ) : null}
     </div>
