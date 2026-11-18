@@ -208,6 +208,29 @@ def test_basis_preserved_in_tool_output_wire(monkeypatch, tmp_path):
     assert rec["attributes"]["reason"] == "persist"
 
 
+def test_event_goes_to_the_target_of_its_emit_time(monkeypatch, tmp_path):
+    """A queued event must not go to a file that was configured after the emit.
+
+    The worker delivers later. On Windows CI, an event of an earlier test was
+    delivered into the export file of the next test.
+    """
+    import harness.observability_export as oe
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    monkeypatch.setenv("HARNESS_OBSERVABILITY_EXPORT", "1")
+    monkeypatch.setenv("HARNESS_OBSERVABILITY_EXPORT_FILE", str(first))
+    # No worker thread: this test delivers the queued event itself, after the change.
+    monkeypatch.setattr(oe, "_ensure_worker", lambda: None)
+    emit_event("harness.routing.savings", {"x": 1})
+    monkeypatch.setenv("HARNESS_OBSERVABILITY_EXPORT_FILE", str(second))
+    item = oe._queue.get_nowait()
+    oe._queue.task_done()
+    oe._deliver(item["envelope"], item["target"])
+    assert json.loads(first.read_text(encoding="utf-8").strip())["name"] == "harness.routing.savings"
+    assert not second.exists()
+
+
 def test_history_compaction_export_basis(monkeypatch, tmp_path):
     out = tmp_path / "obs.jsonl"
     state_dir = str(tmp_path / "state")
