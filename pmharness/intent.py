@@ -9,6 +9,7 @@ The model is judged on whether it can hit this target, not on prose.
 """
 
 import json
+import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
@@ -104,7 +105,15 @@ _BROAD_AUDIT_SIGNALS = (
     "go through", "comb through", "sweep", "find all", "find any",
     "find signs", "everywhere", "anywhere", "across the",
 )
-_FLOW_SIGNALS = ("pipeline", "data flow", "control flow", "end to end", "end-to-end", "trace")
+# Each signal must start at a word start, so "previewer" does not match "review".
+# Stems such as "evaluat" still match the rest of a word.
+_BROAD_AUDIT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(s) for s in _BROAD_AUDIT_SIGNALS) + r")"
+)
+_FLOW_SIGNALS = (
+    "pipeline", "data flow", "data-flow", "control flow", "control-flow",
+    "end to end", "end-to-end", "trace",
+)
 
 # Mid-breadth: a goal that clearly spans a whole subsystem/area but is not a
 # full-platform audit gets a focused multi-lens team (structure + conflicts +
@@ -175,7 +184,7 @@ def infer_roles(goal: str) -> list:
     if any(sig in text for sig in _LOCATOR_PINPOINT):
         return ["explore"]
     # A full-platform audit/quality pass fans out across every lens.
-    if any(signal in text for signal in _BROAD_AUDIT_SIGNALS):
+    if _BROAD_AUDIT_RE.search(text):
         return list(_FULL_AUDIT_ROLES)
     # A flow-shaped goal adds the pipeline lens to the explorer.
     if any(signal in text for signal in _FLOW_SIGNALS):

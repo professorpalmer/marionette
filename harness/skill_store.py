@@ -38,7 +38,8 @@ _WIN_RESERVED = frozenset(
 
 def _slug(name: str, *, fallback: str = "skill") -> str:
     s = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    s = (s[:48] or fallback).rstrip(". ")
+    # The cut can end on a separator; strip it so _slug is idempotent.
+    s = (s[:48].rstrip("-") or fallback).rstrip(". ")
     stem = s.split(".", 1)[0].upper()
     if stem in _WIN_RESERVED:
         s = f"{s}-item" if s else fallback
@@ -384,13 +385,19 @@ class SkillStore:
 
             if state == "active" and getattr(sk, "supersedes", ""):
                 orig_slug = sk.supersedes
+                orig_path = self._find(orig_slug)
                 orig_sk = self.get(orig_slug)
                 if orig_sk:
+                    old_orig_slug = orig_sk.slug
                     orig_sk.body = sk.body
                     orig_sk.description = sk.description
                     orig_sk.name = sk.name
                     orig_sk.source = sk.source
                     self.save(orig_sk)
+                    # A new name moves the skill to a new slug. Remove the old
+                    # file so the update replaces the skill and does not copy it.
+                    if orig_path and orig_sk.slug != old_orig_slug and orig_path.exists():
+                        orig_path.unlink()
                     p_patch = self._find(slug)
                     if p_patch:
                         p_patch.unlink()
@@ -422,6 +429,14 @@ class SkillStore:
             )
             # Stable slug ({root}-patch): re-proposing overwrites the same pending
             # patch rather than creating a new one each time.
+            occupant = self.get(patch_skill.slug)
+            if occupant and (not occupant.supersedes
+                             or _slug(occupant.supersedes) != _slug(root_slug)):
+                # Only an earlier patch of this root may be replaced. Another
+                # skill at this slug is the user's work; do not overwrite it.
+                raise ValueError(
+                    f"slug {patch_skill.slug} is held by another skill: {occupant.name}"
+                )
             self.save(patch_skill)
             return patch_skill
 

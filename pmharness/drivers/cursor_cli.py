@@ -503,7 +503,8 @@ def _tool_hint_payload(
         str((args or {}).get("name") or "")
     )
     if not kind:
-        kind = (name or "tool_call").strip() or "tool_call"
+        # A raw generic word such as "tool" paints the "tool tool" placeholder row.
+        kind = "tool_call"
     kind = _canonicalize_tool_kind(kind)
     args = args if isinstance(args, dict) else {}
     if kind == "call_mcp" or "mcp" in humanize_cursor_tool_name(name):
