@@ -227,7 +227,7 @@ _BROAD_INTENT_RE = re.compile(
     r"\binherit\b|"
     r"\binspect\b[^.!?]{0,120}?\bsubprocess(?:es)?\b|"
     r"how\s+does\b.{0,120}?\baffect\b|"
-    r"map\s+the\b|"
+    r"\bmap\s+the\b|"
     r"improve\s+quality|"
     r"what\s+could\s+break|"
     r"\bsweep\b|"
@@ -270,7 +270,7 @@ _EXPLICIT_SWARM_RE = re.compile(
 
 _EXPLICIT_SWARM_NEG_RE = re.compile(
     r"(?:"
-    r"don'?t\s+swarm|"
+    r"don['’]?t\s+swarm|"
     r"do\s+not\s+swarm|"
     r"swarm\s+tracker|"
     r"where\s+is\s+run_swarm|"
@@ -283,9 +283,10 @@ _EXPLICIT_SWARM_NEG_RE = re.compile(
 _DELEGATION_OPT_OUT_RE = re.compile(
     r"(?:"
     r"\bno\s+(?:(?:additional|more|external|remote|parallel)\s+)?(?:workers?|swarms?|delegation)\b|"
-    r"\b(?:do\s+not|don'?t)\s+(?:delegate|swarm)\b|"
-    r"\b(?:do\s+not|don'?t)\s+(?:use|launch|start|run|dispatch)\s+"
-    r"(?:an?\s+)?(?:swarm|workers?)\b|"
+    r"\b(?:do\s+not|don['’]?t)\s+(?:delegate|swarm)\b|"
+    # Up to three qualifiers so "do not use agentic workers" is a refusal.
+    r"\b(?:do\s+not|don['’]?t)\s+(?:use|launch|start|run|dispatch)\s+"
+    r"(?:an?\s+)?(?:\w+\s+){0,3}?(?:swarm|workers?)\b|"
     r"\bwithout\s+(?:any\s+)?(?:delegation|workers?|a\s+swarm)\b|"
     r"\b(?:local\s+)?native\s+tools?\s+only\b"
     r")",
@@ -329,17 +330,30 @@ _CLI_SHELL_OPERATORS = frozenset({
 
 _NARROW_INTENT_RE = re.compile(
     r"(?:"
-    r"where\s+is\b|"
-    r"what\s+(?:calls|defines|implements)\b|"
-    r"how\s+does\s+\S+\s+work|"
-    r"definition\s+of\b|"
-    r"show\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
-    r"find\s+(?:the\s+)?(?:function|class|method|symbol)\b"
+    r"\bwhere\s+is\b|"
+    r"\bwhat\s+(?:calls|defines|implements)\b|"
+    r"\bhow\s+does\s+\S+\s+work|"
+    r"\bdefinition\s+of\b|"
+    r"\bshow\s+me\s+(?:the\s+)?(?:function|class|method|symbol)\b|"
+    r"\bfind\s+(?:the\s+)?(?:function|class|method|symbol)\b"
     r")",
     re.IGNORECASE,
 )
 
+# A launch verb aimed at a swarm wins over a narrow phrase in the same clause.
+_SWARM_LAUNCH_RE = re.compile(
+    r"\b(?:start|spin\s+up|launch|dispatch|run)\s+(?:an?\s+)?(?:\w+\s+){0,3}?swarm\b",
+    re.IGNORECASE,
+)
+
 _WINDOWS_OS_RE = re.compile(r"\bwindows\b", re.IGNORECASE)
+# "windows" alone can be app windows. Ask for OS context or a contrast cue.
+_WINDOWS_OS_CONTEXT_RE = re.compile(
+    r"\b(?:on|in|under|for|with)\s+windows\b", re.IGNORECASE,
+)
+_PLATFORM_CONTRAST_RE = re.compile(
+    r"\b(?:vs\.?|versus|compared?|comparing|comparison|between)\b", re.IGNORECASE,
+)
 _OTHER_OS_RE = re.compile(r"\b(?:mac|macos|linux)\b", re.IGNORECASE)
 
 
@@ -763,7 +777,11 @@ class GuardVerdict:
 
 def _is_cross_platform_compare(text: str) -> bool:
     """True when a message contrasts Windows with Mac/macOS/Linux."""
-    return bool(_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text))
+    if not (_WINDOWS_OS_RE.search(text) and _OTHER_OS_RE.search(text)):
+        return False
+    return bool(
+        _WINDOWS_OS_CONTEXT_RE.search(text) or _PLATFORM_CONTRAST_RE.search(text)
+    )
 
 
 SWARM_POLICY_SOLO = "solo"
@@ -857,6 +875,12 @@ def _delegation_preference(text: str) -> Optional[bool]:
         elif (
             _EXPLICIT_SWARM_RE.search(clause)
             and not _EXPLICIT_SWARM_NEG_RE.search(clause)
+            # The narrow veto is per clause: a separate question must not
+            # cancel a launch request in another clause.
+            and (
+                not _NARROW_INTENT_RE.search(clause)
+                or _SWARM_LAUNCH_RE.search(clause)
+            )
         ):
             preference = True
     return preference
@@ -866,8 +890,6 @@ def is_explicit_swarm_user_message(message: str) -> bool:
     """True when the user asked to launch a swarm, not merely mentioned one."""
     text = _norm_whitespace(message or "")
     if not text:
-        return False
-    if _NARROW_INTENT_RE.search(text):
         return False
     return _delegation_preference(text) is True
 
@@ -1057,8 +1079,11 @@ def normalize_action_args(kind: str, act: Any) -> str:
                 hashlib.sha256(text.encode("utf-8")).hexdigest()[:16] if text else ""
             )
         if kind == "edit_file":
-            payload["old_str"] = _norm_whitespace(getattr(act, "old_str", "") or "")
-            payload["new_str"] = _norm_whitespace(getattr(act, "new_str", "") or "")
+            import hashlib
+            # Exact text: edits that differ only in whitespace are different edits.
+            for field in ("old_str", "new_str"):
+                raw = str(getattr(act, field, "") or "")
+                payload[field] = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         if kind == "hash_edit":
             ops = args.get("ops")
             payload["ops"] = ops if isinstance(ops, list) else []
@@ -1095,8 +1120,26 @@ def normalize_action_args(kind: str, act: Any) -> str:
     elif kind in ("search_files", "search_codegraph", "search_state", "search_archive", "search_tools", "web_search"):
         payload["query"] = _norm_whitespace(getattr(act, "query", "") or args.get("query", "") or "")
         if kind == "search_files":
-            payload["path"] = _norm_path(args.get("path", "") or "")
+            # Key on every argument that _do_search_files reads. Keys for calls
+            # without the extra arguments stay as before.
+            requested = args.get("path") or args.get("paths") or ""
+            if isinstance(requested, (list, tuple)):
+                payload["path"] = ""
+                payload["paths"] = sorted(
+                    _norm_path(str(p)) for p in requested if str(p or "").strip()
+                )
+            else:
+                payload["path"] = _norm_path(str(requested))
             payload["max_results"] = _norm_optional_int(args.get("max_results"))
+            if args.get("case_insensitive") is True:
+                payload["case_insensitive"] = True
+            if args.get("files_only") is True:
+                payload["files_only"] = True
+            glob = str(args.get("glob") or "").strip()
+            if glob:
+                payload["glob"] = glob
+            if args.get("context_lines"):
+                payload["context_lines"] = _norm_optional_int(args.get("context_lines"))
         if kind == "search_codegraph":
             payload["kind_arg"] = (args.get("kind") or "search").strip().lower()
         if kind == "search_tools":
