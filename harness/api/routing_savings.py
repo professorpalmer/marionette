@@ -143,7 +143,9 @@ def _ids_match_for_price(left: str, right: str) -> bool:
         return False
     if left == right:
         return True
-    return _cw_norm_slug(left) == _cw_norm_slug(right)
+    slug = _cw_norm_slug(left)
+    # Two ids of only punctuation have the same empty slug, and are not one model.
+    return bool(slug) and slug == _cw_norm_slug(right)
 
 
 def _registry_spec_matches(spec, candidates: list) -> bool:
