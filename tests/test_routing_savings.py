@@ -540,3 +540,10 @@ def test_sum_job_set_savings_detail_threads_swarm_cache_honesty(monkeypatch):
     assert detail["cache_saved_usd_swarm"] == pytest.approx(expected_cache)
     assert detail["swarm_cache_unpriced_tokens"] == 30_000
     assert detail["swarm_cache_savings_basis"] == "unknown"
+
+
+def test_registry_rates_ids_of_only_punctuation_are_not_one_model():
+    """Two ids with an empty slug do not match (Hard Proof conflict audit)."""
+    registry = [_registry_spec(".", input_per_mtok_usd=1.0, output_per_mtok_usd=1.0)]
+    assert _registry_rates("-", registry) == (0.0, 0.0)
+    assert _registry_rates(".", registry) == (pytest.approx(1.0), pytest.approx(1.0))
