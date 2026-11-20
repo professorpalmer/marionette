@@ -436,7 +436,7 @@ wheels = [
 
 [[package]]
 name = "pm-harness"
-version = "0.9.689"
+version = "0.9.690"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography", version = "47.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version <= '3.9'" },
@@ -456,7 +456,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=44" },
-    { name = "puppetmaster-ai", specifier = "==1.52.1" },
+    { name = "puppetmaster-ai", specifier = "==1.53.0" },
     { name = "pypdf" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.5" },
@@ -466,11 +466,11 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "puppetmaster-ai"
-version = "1.52.1"
+version = "1.53.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e5/ab/6000728ea9408e420415fd2379dd6d57dbb594d5090ba4f0fb56f2b6b830/puppetmaster_ai-1.52.1.tar.gz", hash = "sha256:31337712dfa1f063476a4248a5cb973680df84a3d32eb109301c385d08cfaa48", size = 2461364, upload-time = "2026-11-19T23:03:02.41Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/9b/a06e07fa3e7ce47f69d54faf4cc4aaaaa4c76dbba7163151b0cdee20c772/puppetmaster_ai-1.53.0.tar.gz", hash = "sha256:221470ce7f6f839a6ad5f1090d6daf721de0be56bb32d4123887dc3ecdc0275e", size = 2479206, upload-time = "2026-11-20T19:16:35.043Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/75/b0f2428d39b6ed439cbde11f8d8212cf1a19e185e222a0073a4b1f2ada7e/puppetmaster_ai-1.52.1-py3-none-any.whl", hash = "sha256:fe66b81ad2c732b2aa280a48b019cd9851778e4eace5543535b3b70e0b93da95", size = 1288435, upload-time = "2026-11-19T23:03:00.892Z" },
+    { url = "https://files.pythonhosted.org/packages/72/00/a2c96c566071294bbea983a501f90b668bb0afe9882b47342d63990ccb6a/puppetmaster_ai-1.53.0-py3-none-any.whl", hash = "sha256:0317bf9064c460fd34902b7d56918f1936bb17cf2effe7397a7fa76097339c32", size = 1299166, upload-time = "2026-11-20T19:16:33.586Z" },
 ]
 
 [[package]]
