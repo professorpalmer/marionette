@@ -719,11 +719,12 @@ def set_api_key(reach: str, value: str):
                     pass
             # Reconnecting clears the explicit-disconnect flag.
             unmark_disconnected(reach)
-            # Keep the credential pool in sync so multi-key rotation can include
-            # keys pasted via the classic Settings form.
+            # The pilot reads the pool before the env. The key the user saves
+            # here is the key of the provider, so the pool tries it first. An
+            # older key stays behind it as the next key.
             try:
                 from .credential_pool import add_api_key
-                add_api_key(reach, value, label=f"{reach}-settings")
+                add_api_key(reach, value, label=f"{reach}-settings", first=True)
             except Exception:
                 pass
     else:

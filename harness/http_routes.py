@@ -368,6 +368,7 @@ def build_post_json_routes(svc: Any) -> dict[str, PostHandler]:
         "/api/auth/pools/add": post_json(
             _auth_api.post_auth_pools_add, services=svc.provider_services),
         "/api/auth/pools/remove": post_json(_auth_api.post_auth_pools_remove),
+        "/api/auth/pools/check": post_json(_auth_api.post_auth_pools_check),
         "/api/auth/pools/strategy": post_json(_auth_api.post_auth_pools_strategy),
         "/api/auth/pools/reset": post_json(_auth_api.post_auth_pools_reset),
         "/api/auth/oauth/start": post_json(_auth_api.post_auth_oauth_start),

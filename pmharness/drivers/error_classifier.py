@@ -108,6 +108,24 @@ def is_upstream_provider_block(message: Optional[str] = None) -> bool:
     return any(p in msg for p in _UPSTREAM_BLOCK_PATTERNS)
 
 
+# A 403 can refuse the request (moderation, region, a model without access) or
+# the account of the key. Only these bodies name the account. OpenCode Go sends
+# the first one for a key whose workspace has no active plan (seen 2026-11-22).
+_ACCOUNT_DENIAL_PATTERNS = [
+    "subscription is required",
+]
+
+
+def key_scoped_failure(http_status: Optional[int], message: Optional[str] = None) -> bool:
+    """True when the failure belongs to the key, so a pool can try its next key."""
+    if http_status in (401, 402, 429):
+        return True
+    if http_status != 403:
+        return False
+    msg = _norm(message)
+    return any(p in msg for p in _ACCOUNT_DENIAL_PATTERNS)
+
+
 def classify(http_status: Optional[int] = None, message: Optional[str] = None) -> ErrorClass:
     """Map an HTTP status and/or error message to an ErrorClass.
 

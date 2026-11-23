@@ -246,37 +246,42 @@ def post_providers_key(body: dict, svc: ProviderServices) -> tuple[int, dict]:
 # Auth pools
 # ---------------------------------------------------------------------------
 
+def _pool_public(pname: str) -> dict:
+    """One pool for Settings: its entries and the name of its Accounts row."""
+    from ..accounts import pool_display_name
+    from ..credential_pool import list_pool_public
+    return {**list_pool_public(pname), "name": pool_display_name(pname)}
+
+
+def _all_pools_public() -> dict:
+    from ..accounts import pool_display_name, pool_key_providers
+    from ..credential_pool import list_all_pools_public, known_pool_providers
+    listing = list_all_pools_public()
+    return {
+        **listing,
+        "pools": [{**pool, "name": pool_display_name(pool["provider"])}
+                  for pool in listing["pools"]],
+        "providers": known_pool_providers(),
+        "key_providers": [{"provider": name, "name": pool_display_name(name)}
+                          for name in pool_key_providers()],
+    }
+
+
 def get_auth_pools(*, provider: str = "") -> tuple[int, dict]:
     """GET /api/auth/pools — public pool summary (no raw secrets)."""
-    from ..credential_pool import (
-        list_all_pools_public, list_pool_public, known_pool_providers,
-    )
     pname = str(provider or "").strip()
-    if pname:
-        return 200, list_pool_public(pname)
-    return 200, {
-        **list_all_pools_public(),
-        "providers": known_pool_providers(),
-    }
+    return 200, _pool_public(pname) if pname else _all_pools_public()
 
 
 def post_auth_pools(body: dict) -> tuple[int, dict]:
     """POST /api/auth/pools — same shape as GET, provider from body."""
-    from ..credential_pool import (
-        list_all_pools_public, list_pool_public, known_pool_providers,
-    )
     pname = str(body.get("provider", "")).strip()
-    if pname:
-        return 200, list_pool_public(pname)
-    return 200, {
-        **list_all_pools_public(),
-        "providers": known_pool_providers(),
-    }
+    return 200, _pool_public(pname) if pname else _all_pools_public()
 
 
 def post_auth_pools_add(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     """POST /api/auth/pools/add — add an api_key pool entry (no key logging)."""
-    from ..credential_pool import add_api_key, list_pool_public
+    from ..credential_pool import add_api_key, load_pool
     pname = str(body.get("provider", "")).strip()
     auth_type = str(body.get("type", "api_key")).strip().lower()
     if not pname:
@@ -290,14 +295,16 @@ def post_auth_pools_add(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     label = str(body.get("label", "")).strip()
     if not key:
         return 400, {"error": "api_key required"}
+    only_key = not load_pool(pname).entries()
     try:
         entry = add_api_key(pname, key, label=label)
     except ValueError as e:
         return 400, {"error": str(e)}
-    # Mirror into keys.json so classic has_key / env paths stay honest
-    # for the first (or latest) key of providers that use set_api_key.
+    # The only key of a provider is also its keys.json key, so the classic
+    # has_key and env paths see it. One more key goes behind the keys that
+    # are there: set_api_key would put it first.
     try:
-        if pname in (
+        if only_key and pname in (
             "openrouter", "openai", "anthropic", "xai", "google",
             "groq", "deepseek", "mistral", "cursor", "opencode-go",
             "opencode-zen",
@@ -305,19 +312,29 @@ def post_auth_pools_add(body: dict, svc: ProviderServices) -> tuple[int, dict]:
             set_api_key(pname, key)
     except Exception as e:
         svc.diag("server.auth_pool_mirror_key", e)
-    pub = list_pool_public(pname)
-    return 200, {"ok": True, "entry_id": entry.id, **pub}
+    return 200, {"ok": True, "entry_id": entry.id, **_pool_public(pname)}
 
 
 def post_auth_pools_remove(body: dict) -> tuple[int, dict]:
     """POST /api/auth/pools/remove — drop one pool entry."""
-    from ..credential_pool import remove_entry, list_pool_public
+    from ..credential_pool import remove_entry
     pname = str(body.get("provider", "")).strip()
     eid = str(body.get("entry_id", "")).strip()
     if not pname or not eid:
         return 400, {"error": "provider and entry_id required"}
     ok = remove_entry(pname, eid)
-    return 200, {"ok": ok, **list_pool_public(pname)}
+    return 200, {"ok": ok, **_pool_public(pname)}
+
+
+def post_auth_pools_check(body: dict) -> tuple[int, dict]:
+    """POST /api/auth/pools/check — send one request with one stored credential."""
+    from ..accounts import check_pool_entry
+    pname = str(body.get("provider", "")).strip()
+    eid = str(body.get("entry_id", "")).strip()
+    if not pname or not eid:
+        return 400, {"error": "provider and entry_id required"}
+    result = check_pool_entry(pname, eid)
+    return 200, {"ok": "error" not in result, **result, **_pool_public(pname)}
 
 
 def post_auth_pools_strategy(body: dict) -> tuple[int, dict]:

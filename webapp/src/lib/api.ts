@@ -193,14 +193,24 @@ export type PoolEntryPublic = {
   request_count?: number;
   masked?: string;
   has_refresh?: boolean;
+  /** False while the provider refuses the credential or a cooldown runs. */
+  usable: boolean;
+  /** True for the credential that the next request takes. */
+  first: boolean;
 };
 
 export type AuthPoolPublic = {
   provider: string;
+  /** The name of the Accounts row that owns the pool. */
+  name?: string;
   strategy: string;
   oauth_capable?: boolean;
+  /** In the order the pilot tries them. */
   entries: PoolEntryPublic[];
 };
+
+/** A provider that takes one more API key in its pool. */
+export type PoolKeyProvider = { provider: string; name: string };
 
 /** One state per account row (harness/accounts.py STATES). */
 export type AccountState =
@@ -239,10 +249,14 @@ export type AccountRow = {
 
 export type AccountReply = { row?: AccountRow; error?: string };
 
+/** Latest live check of one stored credential. */
+export type PoolEntryCheck = AccountCheck & { entry_id: string };
+
 export type AuthPoolsResponse = {
   pools: AuthPoolPublic[];
   strategies?: string[];
   providers?: string[];
+  key_providers?: PoolKeyProvider[];
 };
 
 export type PendingReviewHunk = {
@@ -1614,6 +1628,11 @@ export const api = {
     }),
   removeAuthPoolEntry: (provider: string, entry_id: string) =>
     postJSON<AuthPoolPublic & { ok?: boolean }>("/api/auth/pools/remove", {
+      provider,
+      entry_id,
+    }),
+  checkAuthPoolEntry: (provider: string, entry_id: string) =>
+    postJSON<AuthPoolPublic & { ok?: boolean; check?: PoolEntryCheck; error?: string }>("/api/auth/pools/check", {
       provider,
       entry_id,
     }),
