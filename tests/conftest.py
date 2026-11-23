@@ -194,7 +194,25 @@ def _popen_init_without_cursor_cli(self, args, *rest, **kwargs):
     _real_popen_init(self, args, *rest, **kwargs)
 
 
-subprocess.Popen.__init__ = _popen_init_without_cursor_cli
+def _install_cursor_cli_guard() -> None:
+    """Put the guard under the Windows hidden-console hook when it is there.
+
+    ``harness.win_console`` replaces ``Popen.__init__`` with its hook when
+    ``harness`` is imported. When that came first, the guard goes in as the
+    init that the hook calls, so the hook stays the outer layer.
+    """
+    global _real_popen_init
+    import sys
+
+    win_console = sys.modules.get("harness.win_console")
+    if win_console is not None and subprocess.Popen.__init__ is win_console._hidden_popen_init:
+        _real_popen_init = win_console._original_popen_init
+        win_console._original_popen_init = _popen_init_without_cursor_cli
+        return
+    subprocess.Popen.__init__ = _popen_init_without_cursor_cli
+
+
+_install_cursor_cli_guard()
 _INSTALLED_CURSOR_CLI = _installed_cursor_cli()
 
 from harness import model_visibility as _model_visibility
