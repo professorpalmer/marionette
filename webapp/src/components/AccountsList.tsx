@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type AccountAction, type AccountRow, type AccountState } from "../lib/api";
+import { api, type AccountAction, type AccountCheck, type AccountRow, type AccountState } from "../lib/api";
 import { ACCOUNTS_CHANGED_EVENT } from "../lib/pilotModelFacts";
 import { SETTINGS_PRIMARY_BUTTON, SETTINGS_QUIET_BUTTON } from "./SettingsLayout";
 
@@ -92,13 +92,16 @@ function showDetail(row: AccountRow): boolean {
     || (row.state === "signed_in" && row.detail.includes("without renewal"));
 }
 
-function checkText(row: AccountRow): string {
-  const c = row.check;
-  if (!c) return "";
+/** The one sentence for a live check. The stored keys list uses it too. */
+export function checkLine(c: AccountCheck): string {
   const when = new Date(c.at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   if (c.ok) return `Checked ${when}: the provider accepted it${c.status ? ` (HTTP ${c.status})` : ""}.`;
   const why = c.message || (c.status ? `HTTP ${c.status}` : "no answer");
   return `Checked ${when}: failed (${c.status ? `HTTP ${c.status}, ` : ""}${why}).`;
+}
+
+function checkText(row: AccountRow): string {
+  return row.check ? checkLine(row.check) : "";
 }
 
 const PRIMARY = SETTINGS_PRIMARY_BUTTON;

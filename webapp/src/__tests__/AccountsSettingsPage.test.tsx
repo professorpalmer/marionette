@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccountsSettingsPage from "../components/AccountsSettingsPage";
 import { bedrockPatch } from "../components/AccountsSettingsGroups";
-import { api, type AccountRow } from "../lib/api";
+import { api, type AccountRow, type AuthPoolsResponse } from "../lib/api";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -22,6 +22,7 @@ vi.mock("../lib/api", () => ({
     getAuthPools: vi.fn(),
     addAuthPoolKey: vi.fn(),
     removeAuthPoolEntry: vi.fn(),
+    checkAuthPoolEntry: vi.fn(),
     setAuthPoolStrategy: vi.fn(),
     getBedrockStatus: vi.fn(),
     setBedrockCredentials: vi.fn(),
@@ -52,22 +53,43 @@ const openrouterInfo = {
   masked: "sk-or-****abcd",
 };
 
-const pools = {
+const pools: AuthPoolsResponse = {
   strategies: ["fill_first", "round_robin", "least_used", "random"],
+  key_providers: [
+    { provider: "openai", name: "OpenAI" },
+    { provider: "opencode-go", name: "OpenCode Go" },
+    { provider: "openrouter", name: "OpenRouter" },
+  ],
   pools: [
     {
       provider: "openrouter",
+      name: "OpenRouter",
       strategy: "fill_first",
       entries: [
-        { id: "e1", label: "plan-a", auth_type: "api_key", source: "manual", priority: 0, masked: "sk-or-****1111", last_status: "ok" },
-        { id: "e2", label: "plan-b", auth_type: "api_key", source: "manual", priority: 1, masked: "sk-or-****2222", last_status: "exhausted" },
+        { id: "e1", label: "plan-a", auth_type: "api_key", source: "manual", priority: 0, masked: "sk-or-****1111", last_status: "ok", request_count: 7, usable: true, first: true },
+        { id: "e2", label: "plan-b", auth_type: "api_key", source: "manual", priority: 1, masked: "sk-or-****2222", last_status: "exhausted", last_error_code: 429, usable: false, first: false },
       ],
     },
-    { provider: "openai", strategy: "fill_first", entries: [] },
+    { provider: "openai", name: "OpenAI", strategy: "fill_first", entries: [] },
     {
       provider: "cursor",
+      name: "cursor",
       strategy: "fill_first",
-      entries: [{ id: "env", label: "env:CURSOR_API_KEY", auth_type: "api_key", source: "env", priority: 0, masked: "crsr****0000", last_status: "ok" }],
+      entries: [{ id: "env", label: "env:CURSOR_API_KEY", auth_type: "api_key", source: "env", priority: 0, masked: "crsr****0000", last_status: "ok", usable: true, first: true }],
+    },
+    {
+      // The live case of 2026-11-22: the oldest key has no plan, two new keys wait behind it.
+      provider: "opencode-go",
+      name: "OpenCode Go",
+      strategy: "fill_first",
+      entries: [
+        { id: "new", label: "opencode-go-settings", auth_type: "api_key", source: "manual", priority: -1, masked: "sk-n…DQ-7", last_status: "ok", request_count: 0, usable: true, first: true },
+        {
+          id: "old", label: "keys.json", auth_type: "api_key", source: "keys.json", priority: 0, masked: "sk-o…KeKe",
+          last_status: "exhausted", last_error_code: 403, request_count: 95, usable: false, first: false,
+          last_error_message: '{"error":{"type":"permission_error","message":"An active OpenCode Go subscription is required to use OpenCode Go models."}}',
+        },
+      ],
     },
   ],
 };
@@ -91,7 +113,7 @@ describe("AccountsSettingsPage", () => {
     vi.mocked(api.config).mockResolvedValue({} as never);
     vi.mocked(api.settings).mockResolvedValue({ repo: "/tmp/repo" } as never);
     vi.mocked(api.getCursorCliStatus).mockResolvedValue({ installed: true, authenticated: false } as never);
-    vi.mocked(api.getAuthPools).mockResolvedValue(pools as never);
+    vi.mocked(api.getAuthPools).mockResolvedValue(pools);
     vi.mocked(api.getBedrockStatus).mockResolvedValue({ configured: false, has_key: false } as never);
     vi.mocked(api.getPlatform).mockResolvedValue({ adapters });
     vi.mocked(api.probeAccount).mockResolvedValue({ row: accounts[1] } as never);
@@ -173,28 +195,50 @@ describe("AccountsSettingsPage", () => {
   });
 });
 
-describe("Extra API keys", () => {
+describe("Stored keys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(api.getAccounts).mockResolvedValue({ accounts: [] });
     vi.mocked(api.providers).mockResolvedValue([]);
     vi.mocked(api.config).mockResolvedValue({} as never);
     vi.mocked(api.getCursorCliStatus).mockResolvedValue(null as never);
-    vi.mocked(api.getAuthPools).mockResolvedValue(pools as never);
+    vi.mocked(api.getAuthPools).mockResolvedValue(pools);
     vi.mocked(api.getBedrockStatus).mockResolvedValue({ configured: false, has_key: false } as never);
     vi.mocked(api.getPlatform).mockResolvedValue({ adapters: [] });
   });
 
-  it("lists only pools with two or more keys, one row each, with the entries", async () => {
+  const poolRow = async (name: string): Promise<HTMLElement> => {
+    const rows = await screen.findAllByTestId("credential-pool-row");
+    const row = rows.find((r) => r.textContent?.startsWith(name));
+    if (!row) throw new Error(`no pool row ${name}`);
+    return row;
+  };
+
+  it("lists each pool that holds a credential, with the count and each entry", async () => {
     render(<AccountsSettingsPage />);
     const rows = await screen.findAllByTestId("credential-pool-row");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toHaveTextContent("openrouter");
-    expect(rows[0]).toHaveTextContent("2 credentials");
-    expect(rows[0]).toHaveTextContent("sk-or-****2222");
-    expect(rows[0]).toHaveTextContent("Limit reached");
-    // A one-key pool is the provider row in the list above.
-    expect(screen.queryByText("crsr****0000")).toBeNull();
+    // openai holds nothing. A pool with one key is in the list too.
+    expect(rows).toHaveLength(3);
+    const openrouter = await poolRow("OpenRouter");
+    expect(openrouter).toHaveTextContent("2 credentials, 1 not usable. Order: First key until it fails.");
+    expect(openrouter).toHaveTextContent("sk-or-****2222");
+    expect(openrouter).toHaveTextContent("Limit reached");
+    const cursor = await poolRow("cursor");
+    expect(cursor).toHaveTextContent("1 credential.");
+    expect(cursor).toHaveTextContent("From the environment (CURSOR_API_KEY)");
+    // One key has no order to set.
+    expect(within(cursor).queryByRole("combobox")).toBeNull();
+  });
+
+  it("shows the order, the state of each key, and the provider's reason for a rejected key", async () => {
+    render(<AccountsSettingsPage />);
+    const entries = within(await poolRow("OpenCode Go")).getAllByTestId("credential-pool-entry");
+    expect(entries.map((e) => e.getAttribute("data-state"))).toEqual(["in_use", "rejected"]);
+    expect(entries[0]).toHaveTextContent("1.Saved in Settingssk-n…DQ-7In useAPI key, 0 requests");
+    expect(entries[1]).toHaveTextContent("2.From the key filesk-o…KeKeRejectedAPI key, 95 requests");
+    expect(entries[1]).toHaveTextContent(
+      "HTTP 403: An active OpenCode Go subscription is required to use OpenCode Go models.",
+    );
   });
 
   it("sets the key order with setAuthPoolStrategy", async () => {
@@ -205,24 +249,71 @@ describe("Extra API keys", () => {
     await waitFor(() => expect(api.setAuthPoolStrategy).toHaveBeenCalledWith("openrouter", "round_robin"));
   });
 
-  it("removes one entry with removeAuthPoolEntry", async () => {
+  it("removes one entry only after the confirm", async () => {
     vi.mocked(api.removeAuthPoolEntry).mockResolvedValue({} as never);
     render(<AccountsSettingsPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "Remove plan-b from openrouter" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove plan-b (sk-or-****2222) from openrouter" }));
+    expect(api.removeAuthPoolEntry).not.toHaveBeenCalled();
+    expect(screen.getByText(/It stays valid at the provider/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm: remove plan-b (sk-or-****2222) from openrouter" }));
     await waitFor(() => expect(api.removeAuthPoolEntry).toHaveBeenCalledWith("openrouter", "e2"));
+    // The list loads again after the removal.
+    await waitFor(() => expect(api.getAuthPools).toHaveBeenCalledTimes(2));
   });
 
-  it("adds a key with addAuthPoolKey", async () => {
+  it("does not remove when the confirm is cancelled", async () => {
+    render(<AccountsSettingsPage />);
+    const row = await poolRow("OpenRouter");
+    fireEvent.click(within(row).getByRole("button", { name: "Remove plan-a (sk-or-****1111) from openrouter" }));
+    fireEvent.click(within(row).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/It stays valid at the provider/)).toBeNull();
+    expect(api.removeAuthPoolEntry).not.toHaveBeenCalled();
+  });
+
+  it("checks one key and shows the provider's answer on that key", async () => {
+    vi.mocked(api.checkAuthPoolEntry).mockResolvedValue({
+      provider: "opencode-go", strategy: "fill_first", entries: [],
+      check: { entry_id: "old", ok: false, status: 403, message: "An active OpenCode Go subscription is required.", at: 1795400000 },
+    });
+    render(<AccountsSettingsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Check From the key file (sk-o…KeKe) of opencode-go" }));
+    await waitFor(() => expect(api.checkAuthPoolEntry).toHaveBeenCalledWith("opencode-go", "old"));
+    const line = await screen.findByTestId("credential-pool-check");
+    expect(line).toHaveTextContent("failed (HTTP 403, An active OpenCode Go subscription is required.)");
+    expect(line.getAttribute("role")).toBe("alert");
+  });
+
+  it("says so when a provider has no check", async () => {
+    vi.mocked(api.checkAuthPoolEntry).mockResolvedValue({
+      provider: "cursor", strategy: "fill_first", entries: [], error: "No check for this provider.",
+    });
+    render(<AccountsSettingsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^Check From the environment/ }));
+    expect(await screen.findByTestId("credential-pool-check")).toHaveTextContent("No check for this provider.");
+  });
+
+  it("loads the list again when a provider row saves a key", async () => {
+    render(<AccountsSettingsPage />);
+    await screen.findAllByTestId("credential-pool-row");
+    expect(api.getAuthPools).toHaveBeenCalledTimes(1);
+    window.dispatchEvent(new Event("harness-config-changed"));
+    await waitFor(() => expect(api.getAuthPools).toHaveBeenCalledTimes(2));
+  });
+
+  it("adds a key to a provider that the server names, with addAuthPoolKey", async () => {
     vi.mocked(api.addAuthPoolKey).mockResolvedValue({} as never);
     render(<AccountsSettingsPage />);
     const group = await screen.findByTestId("credential-pools");
+    await screen.findAllByTestId("credential-pool-row");
     fireEvent.click(within(group).getByRole("button", { name: "Add key" }));
-    fireEvent.change(screen.getByLabelText("Provider for the extra key"), { target: { value: "openai" } });
+    const select = screen.getByLabelText("Provider for the extra key");
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["OpenAI", "OpenCode Go", "OpenRouter"]);
+    fireEvent.change(select, { target: { value: "opencode-go" } });
     fireEvent.change(screen.getByLabelText("Extra API key"), { target: { value: " sk-extra " } });
     fireEvent.change(screen.getByLabelText("Key name"), { target: { value: "plan-c" } });
     fireEvent.click(within(group).getByRole("button", { name: "Save key" }));
-    await waitFor(() => expect(api.addAuthPoolKey).toHaveBeenCalledWith("openai", "sk-extra", "plan-c"));
-    expect(await within(group).findByText("Key added to openai.")).toBeTruthy();
+    await waitFor(() => expect(api.addAuthPoolKey).toHaveBeenCalledWith("opencode-go", "sk-extra", "plan-c"));
+    expect(await within(group).findByText("Key added to opencode-go.")).toBeTruthy();
   });
 });
 

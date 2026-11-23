@@ -18,6 +18,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -55,6 +56,7 @@ _NAMES: Dict[str, str] = {
     "openai-codex": "ChatGPT Codex",
     "claude-code": "Claude Code CLI",
     "cursor-cli": "Cursor CLI",
+    "cursor": "Cursor API key",
     "nous": "Nous Portal",
     "xai": "xAI Grok",
 }
@@ -280,18 +282,31 @@ def sign_out_account(provider_name: str) -> Dict[str, Any]:
 _PROBE_TIMEOUT = 15
 
 
-def _http_status(url: str, headers: Dict[str, str]) -> Tuple[Optional[int], str]:
-    req = urllib.request.Request(url, headers=headers, method="GET")
+def _provider_message(exc: urllib.error.HTTPError) -> str:
+    """The message of an error body: ``{"error": {"message": ...}}`` or ``{"error": "..."}``."""
+    try:
+        error = json.loads(exc.read().decode("utf-8", "replace")).get("error")
+    except Exception:
+        return ""
+    if isinstance(error, dict):
+        error = error.get("message")
+    return str(error or "")[:200]
+
+
+def _http_status(url: str, headers: Dict[str, str],
+                 body: Optional[Dict[str, Any]] = None) -> Tuple[Optional[int], str]:
+    """(HTTP status, provider message) of one GET, or of one JSON POST with ``body``."""
+    if body is None:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+    else:
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode("utf-8"),
+            headers={**headers, "Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT) as resp:
             return int(resp.status), ""
     except urllib.error.HTTPError as exc:
-        try:
-            body = exc.read().decode("utf-8", "replace")
-            message = str((json.loads(body).get("error") or {}).get("message") or "")
-        except Exception:
-            message = ""
-        return int(exc.code), message[:200]
+        return int(exc.code), _provider_message(exc)
     except Exception as exc:
         return None, f"{type(exc).__name__}: network error"
 
@@ -314,7 +329,13 @@ def _probe_request(provider, token: str) -> Tuple[Optional[int], str]:
                             {"Authorization": f"Bearer {token}"})
     if name == "openai-codex":
         from .model_fetch import _fetch_codex_oauth_models
-        return (200, "") if _fetch_codex_oauth_models(token) else (None, "no models returned")
+        try:
+            models = _fetch_codex_oauth_models(token)
+        except urllib.error.HTTPError as exc:
+            return int(exc.code), _provider_message(exc)
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: network error"
+        return (200, "") if models else (None, "no models returned")
     if name == "gemini":
         return _http_status("https://generativelanguage.googleapis.com/v1beta/models",
                             {"x-goog-api-key": token})
@@ -322,8 +343,18 @@ def _probe_request(provider, token: str) -> Tuple[Optional[int], str]:
     if not base or getattr(provider, "api_mode", "") == "anthropic_messages":
         return None, "no probe for this provider"
     if name in ("opencode-go", "opencode-zen"):
-        from .opencode_go import driver_base_url
+        from .opencode_go import WIRE_FLASH_MODEL, driver_base_url
         base = driver_base_url(base).rstrip("/")
+        if name == "opencode-go":
+            # Go answers /models with 200 for a key whose workspace has no
+            # active plan (seen 2026-11-22). Only a model request shows it.
+            return _http_status(
+                base + "/chat/completions",
+                {"Authorization": f"Bearer {token}", "User-Agent": "Marionette",
+                 "x-opencode-session": uuid.uuid4().hex},
+                {"model": WIRE_FLASH_MODEL, "max_tokens": 1,
+                 "messages": [{"role": "user", "content": "ok"}]},
+            )
     return _http_status(base + "/models",
                         {"Authorization": f"Bearer {token}", "User-Agent": "Marionette"})
 
@@ -331,6 +362,67 @@ def _probe_request(provider, token: str) -> Tuple[Optional[int], str]:
 def _record_check(name: str, ok: bool, status: Optional[int], message: str) -> None:
     with _checks_lock:
         _checks[name] = {"ok": ok, "status": status, "message": message, "at": time.time()}
+
+
+def _probe_entry(provider, entry: cp.PooledCredential) -> Tuple[Optional[int], str]:
+    """Send one request with ``entry`` and record the answer on the entry.
+
+    A 401 or 403 goes through ``report_failure``: a sign-in renews or turns
+    expired, a key turns refused. A success clears an old failure mark.
+    """
+    if entry.auth_type == cp.AUTH_TYPE_OAUTH and cp._expires_soon(entry):
+        cp.refresh_oauth_entry(entry)
+    status, message = _probe_request(provider, entry.runtime_token)
+    if status in (401, 403):
+        renewed = cp.report_failure(entry.provider, entry.id, status_code=status,
+                                    message=message or f"HTTP {status}")
+        if renewed and renewed == entry.runtime_token:
+            status, message = _probe_request(provider, renewed)
+    if status is not None and 200 <= status < 300 and entry.last_status != cp.STATUS_OK:
+        with cp._lock:
+            entry.last_status = cp.STATUS_OK
+            entry.last_status_at = None
+            entry.last_error_code = None
+            entry.last_error_message = None
+            cp._persist_all()
+    return status, message
+
+
+def pool_key_providers() -> List[str]:
+    """Pools that take one more API key: the pilot reads them for the provider."""
+    names = {"cursor"}
+    for provider in _providers():
+        if _API_KEY not in _METHODS.get(provider.name, (_API_KEY,)):
+            continue
+        if any(cp.provider_for_env_var(env) == provider.name for env in provider.env_vars):
+            names.add(provider.name)
+    return sorted(names)
+
+
+def pool_display_name(pool_name: str) -> str:
+    """The Accounts row name of the provider that owns a pool."""
+    owner = cp.pool_owner(pool_name)
+    provider = find_provider(owner)
+    return _NAMES.get(owner) or getattr(provider, "display_name", "") or pool_name
+
+
+def check_pool_entry(pool_name: str, entry_id: str) -> Dict[str, Any]:
+    """Send one request with one stored credential. ``{"check": ...}`` or ``{"error": ...}``."""
+    entry = next((e for e in cp.load_pool(pool_name).entries() if e.id == entry_id), None)
+    if entry is None:
+        return {"error": "This key is not in the pool."}
+    provider = find_provider(cp.pool_owner(pool_name))
+    if provider is None or not entry.runtime_token:
+        return {"error": "No check for this provider."}
+    status, message = _probe_entry(provider, entry)
+    if status is None and message == "no probe for this provider":
+        return {"error": "No check for this provider."}
+    ok = status is not None and 200 <= status < 300
+    return {"check": {
+        "entry_id": entry.id, "ok": ok, "status": status,
+        "message": "" if ok else (message or (f"HTTP {status}" if status else "no answer")),
+        "at": time.time(),
+    }}
 
 
 def probe_account(provider_name: str) -> Dict[str, Any]:
@@ -370,24 +462,12 @@ def probe_account(provider_name: str) -> Dict[str, Any]:
     if not token:
         _record_check(name, False, None, "No credential to check.")
         return {"row": account_row(provider).to_dict()}
-    if entry is not None and entry.auth_type == cp.AUTH_TYPE_OAUTH and cp._expires_soon(entry):
-        cp.refresh_oauth_entry(entry)
-        token = entry.runtime_token
 
-    status, message = _probe_request(provider, token)
-    if status in (401, 403) and entry is not None:
-        renewed = cp.report_failure(entry.provider, entry.id, status_code=status,
-                                    message=message or f"HTTP {status}")
-        if renewed and renewed == entry.runtime_token:
-            status, message = _probe_request(provider, renewed)
+    if entry is not None:
+        status, message = _probe_entry(provider, entry)
+    else:
+        status, message = _probe_request(provider, token)
     if status is not None and 200 <= status < 300:
-        if entry is not None and entry.last_status != cp.STATUS_OK:
-            with cp._lock:
-                entry.last_status = cp.STATUS_OK
-                entry.last_status_at = None
-                entry.last_error_code = None
-                entry.last_error_message = None
-                cp._persist_all()
         _record_check(name, True, status, "")
     elif status is None and message == "no probe for this provider":
         with _checks_lock:

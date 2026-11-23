@@ -388,7 +388,10 @@ def clear_bedrock_credentials() -> dict:
     return get_bedrock_status()
 
 def _write_keys(keys: dict):
-    path = get_keys_file_path()
+    _write_keys_file(get_keys_file_path(), keys)
+
+
+def _write_keys_file(path: str, keys: dict):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix="keys_")
     try:
@@ -719,15 +722,34 @@ def set_api_key(reach: str, value: str):
                     pass
             # Reconnecting clears the explicit-disconnect flag.
             unmark_disconnected(reach)
-            # Keep the credential pool in sync so multi-key rotation can include
-            # keys pasted via the classic Settings form.
+            # The pilot reads the pool before the env. The key the user saves
+            # here is the key of the provider, so the pool tries it first. An
+            # older key stays behind it as the next key.
             try:
                 from .credential_pool import add_api_key
-                add_api_key(reach, value, label=f"{reach}-settings")
+                add_api_key(reach, value, label=f"{reach}-settings", first=True)
             except Exception:
                 pass
     else:
         clear_api_key(reach)
+
+def forget_stored_key(reach: str, token: str) -> None:
+    """Remove ``token`` as the stored key of ``reach`` from each keys file.
+
+    ``_read_keys`` reads the legacy file under the state file. A copy that
+    stays in the legacy file is the stored key again on the next read.
+    """
+    keys = _read_keys()
+    if not token or keys.get(reach) != token:
+        return
+    del keys[reach]
+    _write_keys(keys)
+    legacy_path = legacy_keys_file_path()
+    legacy = _read_keys_file(legacy_path)
+    if legacy.get(reach) == token:
+        del legacy[reach]
+        _write_keys_file(legacy_path, legacy)
+
 
 def forget_stored_sign_in_token(reach: str) -> bool:
     """Drop a sign-in access token that an older build copied into keys.json.

@@ -198,6 +198,19 @@ def is_plan_limit_message(message: str) -> bool:
     return is_quota_message(message)
 
 
+def _fixed_order_pick(healthy: List[PooledCredential], strategy: str) -> Optional[PooledCredential]:
+    """The entry the next request takes, or None when the strategy has no fixed order.
+
+    ``select`` and the Settings list use this one function, so the entry that
+    Settings marks as first is the entry that the pilot takes.
+    """
+    if not healthy or strategy in (STRATEGY_ROUND_ROBIN, STRATEGY_RANDOM):
+        return None
+    if strategy == STRATEGY_LEAST_USED:
+        return min(healthy, key=lambda e: (e.request_count, e.priority))
+    return min(healthy, key=lambda e: e.priority)
+
+
 class CredentialPool:
     def __init__(self, provider: str, entries: Optional[List[PooledCredential]] = None):
         self.provider = provider
@@ -255,13 +268,10 @@ class CredentialPool:
                 idx = _rr_index.get(self.provider, 0) % len(healthy)
                 _rr_index[self.provider] = idx + 1
                 chosen = healthy[idx]
-            elif strategy == STRATEGY_LEAST_USED:
-                chosen = min(healthy, key=lambda e: e.request_count)
             elif strategy == STRATEGY_RANDOM:
                 chosen = random.choice(healthy)
             else:
-                # fill_first: lowest priority number first (insertion order via priority)
-                chosen = sorted(healthy, key=lambda e: e.priority)[0]
+                chosen = _fixed_order_pick(healthy, strategy)
             chosen.request_count += 1
             return chosen
 
@@ -422,13 +432,43 @@ def get_strategy(provider: str) -> str:
 
 
 def list_pool_public(provider: str) -> Dict[str, Any]:
-    pool = load_pool(provider)
+    """Every entry of one pool in the order the pilot tries them.
+
+    ``usable`` is false while an entry is refused or on a cooldown. ``first``
+    marks the entry that the next request takes. No entry is ``first`` when the
+    strategy has no fixed order (round robin, random).
+    """
+    with _lock:
+        pool = load_pool(provider)
+        now = time.time()
+        strategy = get_strategy(provider)
+        ordered = sorted(pool.entries(), key=lambda e: e.priority)
+        usable = [e for e in ordered if e.runtime_token and pool._healthy(e, now)]
+        first = _fixed_order_pick(usable, strategy)
+        usable_ids = {e.id for e in usable}
+        entries = [
+            {**e.to_public_dict(), "usable": e.id in usable_ids, "first": e is first}
+            for e in ordered
+        ]
     return {
         "provider": provider,
-        "strategy": get_strategy(provider),
+        "strategy": strategy,
         "oauth_capable": provider in OAUTH_CAPABLE or provider == "anthropic",
-        "entries": [e.to_public_dict() for e in pool.entries()],
+        "entries": entries,
     }
+
+
+def _move_first(pool: CredentialPool, entry: PooledCredential) -> None:
+    """Put ``entry`` before every other entry and clear its failure mark."""
+    others = [e.priority for e in pool.entries() if e.id != entry.id]
+    if others and entry.priority >= min(others):
+        entry.priority = min(others) - 1
+    entry.last_status = STATUS_OK
+    entry.last_status_at = None
+    entry.last_error_code = None
+    entry.last_error_message = None
+    entry.extra = {k: v for k, v in entry.extra.items() if k != MODEL_COOLDOWNS}
+    _persist_all()
 
 
 def add_api_key(
@@ -436,14 +476,22 @@ def add_api_key(
     api_key: str,
     *,
     label: str = "",
+    first: bool = False,
 ) -> PooledCredential:
+    """Add a key to the pool. The same key is stored one time only.
+
+    ``first`` is for the key that the user saves as the key of the provider:
+    the pilot tries it before the older keys. Without it the key goes last.
+    """
     key = (api_key or "").strip()
     if not key:
         raise ValueError("api_key required")
     pool = load_pool(provider)
-    # Dedup: return existing entry if the same token is already pooled.
     for existing in pool.entries():
         if existing.runtime_token == key:
+            if first:
+                with _lock:
+                    _move_first(pool, existing)
             return existing
     entry = PooledCredential(
         provider=provider,
@@ -452,29 +500,58 @@ def add_api_key(
         auth_type=_auth_type_for(provider, key),
         source="manual",
         access_token=key,
-        priority=len(pool.entries()),
+        priority=max((e.priority for e in pool.entries()), default=-1) + 1,
     )
     with _lock:
         pool.add_entry(entry)
+        if first:
+            _move_first(pool, entry)
     return entry
 
 
+def _forget_stored_token(provider: str, token: str) -> None:
+    """Drop the keys.json copy of a token that left the pool."""
+    try:
+        from .keys import forget_stored_key
+        forget_stored_key(provider, token)
+    except Exception as e:
+        _diag("credential_pool.forget_stored_token", e)
+
+
 def remove_entry(provider: str, entry_id: str) -> bool:
+    """Remove one entry. The env and keys.json copies of its token go too.
+
+    A copy that stays would bring the removed key back: the pool seeds itself
+    from keys.json when it is empty.
+    """
     with _lock:
         pool = load_pool(provider)
+        removed = next((e.runtime_token for e in pool.entries() if e.id == entry_id), "")
         ok = pool.remove_entry(entry_id)
-        if ok:
-            if pool.entries():
-                _mirror_pool_token_to_env(provider, pool)
-            else:
-                _clear_mirrored_env_for_provider(provider)
-        return ok
+        if not ok:
+            return False
+        rest = sorted(pool.entries(), key=lambda e: e.priority)
+        if rest:
+            nxt = peek_token(provider) or rest[0].runtime_token
+            if removed and nxt:
+                _replace_mirrored_token(provider, removed, nxt)
+            _mirror_pool_token_to_env(provider, pool)
+        else:
+            _clear_mirrored_env_for_provider(provider, removed)
+            _forget_stored_token(provider, removed)
+        return True
 
 
 def list_all_pools_public() -> Dict[str, Any]:
-    """Public snapshot of every known pool (empty pools omitted unless seeded)."""
+    """Public snapshot of every pool that holds a credential."""
+    with _lock:
+        names = set(known_pool_providers()) | set(_pools)
+        names.update(
+            prov for prov, entries in (_load_store().get("pools") or {}).items()
+            if isinstance(entries, list) and entries
+        )
     out = []
-    for prov in known_pool_providers():
+    for prov in sorted(names):
         pub = list_pool_public(prov)
         if pub["entries"]:
             out.append(pub)
@@ -557,10 +634,8 @@ def peek_token(provider: str) -> Optional[str]:
         if not healthy:
             return None
         strategy = _strategies.get(provider, STRATEGY_FILL_FIRST)
-        if strategy == STRATEGY_LEAST_USED:
-            chosen = min(healthy, key=lambda e: e.request_count)
-        else:
-            chosen = sorted(healthy, key=lambda e: e.priority)[0]
+        chosen = (_fixed_order_pick(healthy, strategy)
+                  or min(healthy, key=lambda e: e.priority))
         return chosen.runtime_token
 
 
@@ -880,6 +955,11 @@ _PROVIDER_TO_ENV_EXTRAS: Dict[str, tuple[str, ...]] = {
 _POOL_OWNER: Dict[str, str] = {"xai-oauth": "xai"}
 
 
+def pool_owner(pool_name: str) -> str:
+    """The Settings provider that owns ``pool_name``."""
+    return _POOL_OWNER.get(pool_name, pool_name)
+
+
 def _turned_off(pool_name: str) -> bool:
     """True when the user turned off the provider that owns this pool.
 
@@ -891,7 +971,7 @@ def _turned_off(pool_name: str) -> bool:
         off = get_disconnected()
     except Exception:
         return False
-    return pool_name in off or _POOL_OWNER.get(pool_name, pool_name) in off
+    return pool_name in off or pool_owner(pool_name) in off
 
 
 def provider_for_env_var(env_name: str) -> Optional[str]:
@@ -977,12 +1057,16 @@ def _mirror_pool_token_to_env(provider: str, pool: Optional[CredentialPool] = No
         _diag("credential_pool.mirror_env", e)
 
 
-def _clear_mirrored_env_for_provider(provider: str) -> None:
+def _clear_mirrored_env_for_provider(provider: str, removed: str = "") -> None:
     """Clear env vars owned by ``provider`` after its pool becomes empty.
 
     Only clears an env var when no other known pool still has a healthy token
     that mirrors into the same name (avoids wiping XAI_API_KEY when removing
     an empty ``xai`` remirror while ``xai-oauth`` is still signed in).
+
+    The env copy of the ``removed`` token goes before the other pools are
+    read. An empty pool seeds itself from the env, so a copy that stays there
+    becomes the token of that pool and keeps the env var.
     """
     owned: List[str] = []
     primary = env_var_for_provider(provider)
@@ -991,6 +1075,9 @@ def _clear_mirrored_env_for_provider(provider: str) -> None:
     for extra in _PROVIDER_TO_ENV_EXTRAS.get(provider, ()):
         if extra not in owned:
             owned.append(extra)
+    for env_name in owned:
+        if removed and os.environ.get(env_name) == removed:
+            os.environ.pop(env_name, None)
     for env_name in owned:
         still_needed = False
         for other in known_pool_providers():
@@ -1006,6 +1093,8 @@ def _clear_mirrored_env_for_provider(provider: str) -> None:
             try:
                 if has_healthy_credential(other):
                     still_needed = True
+                    if not os.environ.get(env_name):
+                        _mirror_pool_token_to_env(other)
                     break
             except Exception:
                 continue

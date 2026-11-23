@@ -1036,7 +1036,7 @@ class OpenAICompatDriver:
         """On 429 plan-limit / 402 / auth fail, rotate pool and return next key."""
         if not self._pool_provider or not self._pool_entry_id:
             return None
-        if code not in (401, 402, 429):
+        if not error_classifier.key_scoped_failure(code, detail):
             return None
         try:
             from harness.credential_pool import report_failure

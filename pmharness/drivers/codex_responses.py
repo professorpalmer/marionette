@@ -1268,11 +1268,11 @@ class CodexResponsesDriver(CacheRefreshDriver):
     def _pool_rotate_on_http_error(self, code: int, detail: str) -> Optional[str]:
         if not self._pool_provider or not self._pool_entry_id:
             return None
-        if code not in (401, 402, 429):
-            return None
         try:
             from harness.credential_pool import report_failure
-            from .error_classifier import parse_retry_after
+            from .error_classifier import key_scoped_failure, parse_retry_after
+            if not key_scoped_failure(code, detail):
+                return None
             nxt = report_failure(
                 self._pool_provider,
                 self._pool_entry_id,

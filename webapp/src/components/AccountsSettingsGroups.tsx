@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   api,
   type AuthPoolPublic,
@@ -6,7 +6,11 @@ import {
   type BedrockCredentials,
   type BedrockStatus,
   type PlatformAdapter,
+  type PoolEntryCheck,
+  type PoolEntryPublic,
 } from "../lib/api";
+import { ACCOUNTS_CHANGED_EVENT } from "../lib/pilotModelFacts";
+import { checkLine } from "./AccountsList";
 import { SwitchTrack } from "./ui/Switch";
 import {
   SETTINGS_PRIMARY_BUTTON,
@@ -31,11 +35,8 @@ function Result({ note }: { note: { ok: boolean; text: string } | null }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Extra API keys (credential pools)                                    */
+/* Stored keys (credential pools)                                       */
 /* ------------------------------------------------------------------ */
-
-/** Providers that take extra API keys here. Sign-in pools fill from Accounts. */
-export const POOL_KEY_PROVIDERS = ["openrouter", "openai", "cursor"] as const;
 
 const STRATEGY_TEXT: Record<string, string> = {
   fill_first: "First key until it fails",
@@ -48,30 +49,133 @@ function strategyText(strategy: string): string {
   return STRATEGY_TEXT[strategy] || strategy;
 }
 
-function entryStatusText(status: string | undefined): string {
-  if (status === "exhausted") return "Limit reached";
-  if (status === "dead") return "Rejected";
-  return "OK";
+/** What one stored credential does now. The server sets `usable` and `first`. */
+type EntryState = "in_use" | "ready" | "rejected" | "limited";
+
+function entryState(entry: PoolEntryPublic): EntryState {
+  if (entry.first) return "in_use";
+  if (entry.usable) return "ready";
+  const refused = entry.last_status === "dead" || entry.last_error_code === 401 || entry.last_error_code === 403;
+  return refused ? "rejected" : "limited";
 }
 
+function entryStateText(state: EntryState): string {
+  switch (state) {
+    case "in_use":
+      return "In use";
+    case "ready":
+      return "Ready";
+    case "rejected":
+      return "Rejected";
+    case "limited":
+      return "Limit reached";
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
+function entryTone(state: EntryState): string {
+  switch (state) {
+    case "in_use":
+      return "bg-good";
+    case "ready":
+      return "bg-faint";
+    case "rejected":
+      return "bg-risk";
+    case "limited":
+      return "bg-warn";
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+}
+
+/** A name a person knows. Stored labels often name the source of the key. */
+function entryName(entry: PoolEntryPublic, provider: string): string {
+  const label = entry.label || "";
+  if (label === `${provider}-settings`) return "Saved in Settings";
+  if (label === "keys.json" || entry.source === "keys.json") return "From the key file";
+  if (label.startsWith("env:")) return `From the environment (${label.slice(4)})`;
+  return label || entry.id;
+}
+
+/** The provider's words from a stored failure. The pool stores the raw response body. */
+function providerMessage(raw: string | null | undefined): string {
+  const text = (raw || "").trim();
+  if (!text.startsWith("{")) return text;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const error = parsed.error;
+      if (typeof error === "string") return error;
+      if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+        return error.message;
+      }
+    }
+  } catch {
+    /* A cut body is not JSON: show the text. */
+  }
+  return text;
+}
+
+function failureText(entry: PoolEntryPublic): string {
+  if (entry.usable) return "";
+  const code = entry.last_error_code ? `HTTP ${entry.last_error_code}` : "";
+  return [code, providerMessage(entry.last_error_message)].filter(Boolean).join(": ");
+}
+
+function poolSummary(pool: AuthPoolPublic): string {
+  const count = pool.entries.length;
+  const down = pool.entries.filter((e) => !e.usable).length;
+  const total = `${count} credential${count === 1 ? "" : "s"}`;
+  const usable = down ? `, ${down} not usable` : "";
+  const order = count > 1 ? ` Order: ${strategyText(pool.strategy || "fill_first")}.` : "";
+  return `${total}${usable}.${order}`;
+}
+
+/** The answer to a Check: the provider's answer, or the reason no request went out. */
+type CheckResult =
+  | { kind: "checked"; check: PoolEntryCheck }
+  | { kind: "not_checked"; text: string };
+
+/**
+ * Every credential that Marionette holds, by provider, in the order the pilot
+ * tries them. Each one has its state, a live Check, and Remove.
+ */
 export function CredentialPoolsGroup() {
   const [pools, setPools] = useState<AuthPoolsResponse | null>(null);
   const [busy, setBusy] = useState("");
   const [adding, setAdding] = useState(false);
-  const [provider, setProvider] = useState<string>(POOL_KEY_PROVIDERS[0]);
+  const [provider, setProvider] = useState("");
   const [key, setKey] = useState("");
   const [label, setLabel] = useState("");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [checks, setChecks] = useState<Record<string, CheckResult>>({});
+  const [confirming, setConfirming] = useState("");
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       setPools(await api.getAuthPools());
     } catch (e: unknown) {
-      setNote({ ok: false, text: `Extra keys did not load: ${errorText(e, "no answer")}` });
+      setNote({ ok: false, text: `Stored keys did not load: ${errorText(e, "no answer")}` });
     }
-  };
+  }, []);
 
-  useEffect(() => { void refresh(); }, []);
+  // A key saved in a provider row changes the pool, so the list loads again.
+  useEffect(() => {
+    void refresh();
+    const onChanged = () => { void refresh(); };
+    window.addEventListener("harness-config-changed", onChanged);
+    return () => window.removeEventListener("harness-config-changed", onChanged);
+  }, [refresh]);
+
+  const changed = () => {
+    window.dispatchEvent(new Event(ACCOUNTS_CHANGED_EVENT));
+    window.dispatchEvent(new Event("harness-config-changed"));
+  };
 
   const work = async (id: string, fn: () => Promise<void>) => {
     setBusy(id);
@@ -85,21 +189,34 @@ export function CredentialPoolsGroup() {
     }
   };
 
+  const keyProviders = pools?.key_providers ?? [];
+  const addTo = provider || keyProviders[0]?.provider || "";
+
   const add = () => work("add", async () => {
     const value = key.trim();
-    if (!value) return;
-    await api.addAuthPoolKey(provider, value, label.trim() || undefined);
+    if (!value || !addTo) return;
+    await api.addAuthPoolKey(addTo, value, label.trim() || undefined);
     setKey("");
     setLabel("");
     setAdding(false);
-    setNote({ ok: true, text: `Key added to ${provider}.` });
-    await refresh();
-    window.dispatchEvent(new Event("harness-config-changed"));
+    setNote({ ok: true, text: `Key added to ${addTo}.` });
+    changed();
   });
 
-  const remove = (pool: AuthPoolPublic, entryId: string) => work(pool.provider, async () => {
-    await api.removeAuthPoolEntry(pool.provider, entryId);
-    await refresh();
+  const remove = (pool: AuthPoolPublic, entry: PoolEntryPublic) => work(entry.id, async () => {
+    await api.removeAuthPoolEntry(pool.provider, entry.id);
+    setConfirming("");
+    setNote({ ok: true, text: `Credential removed from ${pool.name || pool.provider}.` });
+    changed();
+  });
+
+  const check = (pool: AuthPoolPublic, entry: PoolEntryPublic) => work(entry.id, async () => {
+    const res = await api.checkAuthPoolEntry(pool.provider, entry.id);
+    const result: CheckResult = res.check
+      ? { kind: "checked", check: res.check }
+      : { kind: "not_checked", text: res.error || "The provider did not answer." };
+    setChecks((prev) => ({ ...prev, [entry.id]: result }));
+    changed();
   });
 
   const setStrategy = (pool: AuthPoolPublic, strategy: string) => work(pool.provider, async () => {
@@ -108,24 +225,23 @@ export function CredentialPoolsGroup() {
   });
 
   const strategies = pools?.strategies?.length ? pools.strategies : Object.keys(STRATEGY_TEXT);
-  // One credential is the provider row above. A pool adds a choice only with two or more.
-  const filled = (pools?.pools || []).filter((p) => (p.entries || []).length > 1);
+  const filled = (pools?.pools || []).filter((p) => (p.entries || []).length > 0);
 
   return (
     <SettingsGroup
-      title="Extra API keys"
-      description="Optional. When a key reaches a plan limit (HTTP 429 or 402), the pilot uses the next key of the same provider. The prompt cache can reset then."
+      title="Stored keys"
+      description="Every credential that Marionette holds, one row for each provider. The pilot takes the first usable one. When a provider refuses a key, the pilot takes the next key of that provider."
       testId="credential-pools"
     >
       {filled.map((pool) => {
-        const count = pool.entries.length;
+        const poolName = pool.name || pool.provider;
         return (
           <SettingsRow
             key={pool.provider}
             testId="credential-pool-row"
-            label={pool.provider}
-            description={`${count} credential${count === 1 ? "" : "s"}. Order: ${strategyText(pool.strategy || "fill_first")}.`}
-            control={(
+            label={poolName}
+            description={poolSummary(pool)}
+            control={pool.entries.length > 1 ? (
               <select
                 aria-label={`Key order for ${pool.provider}`}
                 value={pool.strategy || "fill_first"}
@@ -135,38 +251,104 @@ export function CredentialPoolsGroup() {
               >
                 {strategies.map((s) => <option key={s} value={s}>{strategyText(s)}</option>)}
               </select>
-            )}
+            ) : null}
           >
-            <ul className="space-y-0.5">
-              {pool.entries.map((entry) => (
-                <li key={entry.id} className="flex items-center justify-between gap-2 text-ui-10">
-                  <span className="min-w-0 truncate">
-                    <span className="text-txt">{entry.label || entry.id}</span>
-                    {entry.masked ? <span className="text-faint font-mono ml-1.5">{entry.masked}</span> : null}
-                    <span className={`ml-1.5 ${entry.last_status === "exhausted" || entry.last_status === "dead" ? "text-risk" : "text-muted"}`}>
-                      {entryStatusText(entry.last_status)}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    className={SETTINGS_QUIET_BUTTON}
-                    disabled={busy === pool.provider}
-                    aria-label={`Remove ${entry.label || entry.id} from ${pool.provider}`}
-                    onClick={() => { void remove(pool, entry.id); }}
+            <ol className="space-y-1">
+              {pool.entries.map((entry, index) => {
+                const state = entryState(entry);
+                const name = entryName(entry, pool.provider);
+                const spoken = `${name}${entry.masked ? ` (${entry.masked})` : ""}`;
+                const failure = failureText(entry);
+                const result = checks[entry.id];
+                const isBusy = busy === entry.id;
+                return (
+                  <li
+                    key={entry.id}
+                    data-testid="credential-pool-entry"
+                    data-state={state}
+                    className="text-ui-10"
                   >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${entryTone(state)}`} aria-hidden />
+                        <span className="text-faint tabular-nums shrink-0">{index + 1}.</span>
+                        <span className="text-txt truncate">{name}</span>
+                        {entry.masked ? <span className="text-faint font-mono shrink-0">{entry.masked}</span> : null}
+                        <span className={`shrink-0 ${state === "rejected" ? "text-risk" : "text-muted"}`}>
+                          {entryStateText(state)}
+                        </span>
+                        <span className="text-faint shrink-0 tabular-nums">
+                          {entry.auth_type === "oauth" ? "Sign-in" : "API key"}
+                          {`, ${entry.request_count ?? 0} request${entry.request_count === 1 ? "" : "s"}`}
+                        </span>
+                      </span>
+                      <span className="flex items-center gap-3 shrink-0">
+                        <button
+                          type="button"
+                          className={SETTINGS_QUIET_BUTTON}
+                          disabled={isBusy}
+                          aria-label={`Check ${spoken} of ${pool.provider}`}
+                          onClick={() => { void check(pool, entry); }}
+                        >
+                          {isBusy && confirming !== entry.id ? "Checking..." : "Check"}
+                        </button>
+                        <button
+                          type="button"
+                          className={SETTINGS_QUIET_BUTTON}
+                          disabled={isBusy || confirming === entry.id}
+                          aria-label={`Remove ${spoken} from ${pool.provider}`}
+                          onClick={() => setConfirming(entry.id)}
+                        >
+                          Remove
+                        </button>
+                      </span>
+                    </div>
+                    {failure && !result ? <p className="text-risk mt-0.5 break-words">{failure}</p> : null}
+                    {result ? (
+                      <p
+                        className={`mt-0.5 break-words ${result.kind === "checked" && !result.check.ok ? "text-risk" : "text-muted"}`}
+                        role={result.kind === "checked" && !result.check.ok ? "alert" : "status"}
+                        data-testid="credential-pool-check"
+                      >
+                        {result.kind === "checked" ? checkLine(result.check) : result.text}
+                      </p>
+                    ) : null}
+                    {confirming === entry.id ? (
+                      <div className="flex flex-wrap items-center gap-3 mt-0.5">
+                        <span className="text-muted">
+                          Remove this credential from Marionette? It stays valid at the provider.
+                        </span>
+                        <button
+                          type="button"
+                          className="text-risk hover:underline text-ui-10 disabled:opacity-30"
+                          disabled={isBusy}
+                          aria-label={`Confirm: remove ${spoken} from ${pool.provider}`}
+                          onClick={() => { void remove(pool, entry); }}
+                        >
+                          Remove it
+                        </button>
+                        <button type="button" className={SETTINGS_QUIET_BUTTON} onClick={() => setConfirming("")}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
           </SettingsRow>
         );
       })}
       <SettingsRow
         label="Add a key"
-        description={filled.length === 0 ? "No provider has an extra key." : "Add one more key to a provider."}
+        description={`${pools && filled.length === 0 ? "No provider has a stored credential. " : ""}One more key goes after the keys that the provider has. To put a key first, save it in the provider row.`}
         control={adding ? null : (
-          <button type="button" className={SETTINGS_PRIMARY_BUTTON} onClick={() => setAdding(true)}>
+          <button
+            type="button"
+            className={SETTINGS_PRIMARY_BUTTON}
+            disabled={keyProviders.length === 0}
+            onClick={() => setAdding(true)}
+          >
             Add key
           </button>
         )}
@@ -177,11 +359,11 @@ export function CredentialPoolsGroup() {
               <div className="flex flex-wrap items-center gap-2">
                 <select
                   aria-label="Provider for the extra key"
-                  value={provider}
+                  value={addTo}
                   onChange={(e) => setProvider(e.target.value)}
                   className="bg-panel border border-edge rounded px-1.5 py-1 text-ui-11 text-txt"
                 >
-                  {POOL_KEY_PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  {keyProviders.map((p) => <option key={p.provider} value={p.provider}>{p.name}</option>)}
                 </select>
                 <input
                   type="password"
