@@ -56,6 +56,7 @@ _NAMES: Dict[str, str] = {
     "openai-codex": "ChatGPT Codex",
     "claude-code": "Claude Code CLI",
     "cursor-cli": "Cursor CLI",
+    "cursor": "Cursor API key",
     "nous": "Nous Portal",
     "xai": "xAI Grok",
 }
@@ -281,6 +282,17 @@ def sign_out_account(provider_name: str) -> Dict[str, Any]:
 _PROBE_TIMEOUT = 15
 
 
+def _provider_message(exc: urllib.error.HTTPError) -> str:
+    """The message of an error body: ``{"error": {"message": ...}}`` or ``{"error": "..."}``."""
+    try:
+        error = json.loads(exc.read().decode("utf-8", "replace")).get("error")
+    except Exception:
+        return ""
+    if isinstance(error, dict):
+        error = error.get("message")
+    return str(error or "")[:200]
+
+
 def _http_status(url: str, headers: Dict[str, str],
                  body: Optional[Dict[str, Any]] = None) -> Tuple[Optional[int], str]:
     """(HTTP status, provider message) of one GET, or of one JSON POST with ``body``."""
@@ -294,12 +306,7 @@ def _http_status(url: str, headers: Dict[str, str],
         with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT) as resp:
             return int(resp.status), ""
     except urllib.error.HTTPError as exc:
-        try:
-            body = exc.read().decode("utf-8", "replace")
-            message = str((json.loads(body).get("error") or {}).get("message") or "")
-        except Exception:
-            message = ""
-        return int(exc.code), message[:200]
+        return int(exc.code), _provider_message(exc)
     except Exception as exc:
         return None, f"{type(exc).__name__}: network error"
 
@@ -322,7 +329,13 @@ def _probe_request(provider, token: str) -> Tuple[Optional[int], str]:
                             {"Authorization": f"Bearer {token}"})
     if name == "openai-codex":
         from .model_fetch import _fetch_codex_oauth_models
-        return (200, "") if _fetch_codex_oauth_models(token) else (None, "no models returned")
+        try:
+            models = _fetch_codex_oauth_models(token)
+        except urllib.error.HTTPError as exc:
+            return int(exc.code), _provider_message(exc)
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: network error"
+        return (200, "") if models else (None, "no models returned")
     if name == "gemini":
         return _http_status("https://generativelanguage.googleapis.com/v1beta/models",
                             {"x-goog-api-key": token})

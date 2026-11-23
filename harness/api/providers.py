@@ -304,11 +304,9 @@ def post_auth_pools_add(body: dict, svc: ProviderServices) -> tuple[int, dict]:
     # has_key and env paths see it. One more key goes behind the keys that
     # are there: set_api_key would put it first.
     try:
-        if only_key and pname in (
-            "openrouter", "openai", "anthropic", "xai", "google",
-            "groq", "deepseek", "mistral", "cursor", "opencode-go",
-            "opencode-zen",
-        ):
+        from ..accounts import pool_key_providers
+        from ..credential_pool import API_KEY_PROVIDERS
+        if only_key and (pname in API_KEY_PROVIDERS or pname in pool_key_providers()):
             set_api_key(pname, key)
     except Exception as e:
         svc.diag("server.auth_pool_mirror_key", e)

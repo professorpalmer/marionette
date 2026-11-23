@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -180,7 +181,6 @@ def test_removing_the_stored_key_points_the_key_file_at_the_next_key(state, monk
     assert cp.remove_entry("opencode-go", new.id)
 
     assert state["opencode-go"] == "sk-old-aaaaaaaaaaaa"
-    import os
     assert os.environ["OPENCODE_GO_API_KEY"] == "sk-old-aaaaaaaaaaaa"
 
 
@@ -193,7 +193,6 @@ def test_removing_the_last_key_does_not_bring_it_back(state):
 
     assert "opencode-go" not in state
     assert cp.load_pool("opencode-go").entries() == []
-    import os
     assert not os.environ.get("OPENCODE_GO_API_KEY")
 
 
@@ -262,7 +261,7 @@ def test_the_pool_listing_names_the_providers_that_take_one_more_key(state):
     assert code == 200
     takes = {row["provider"]: row["name"] for row in listing["key_providers"]}
     assert takes["opencode-go"] == "OpenCode Go"
-    assert "openrouter" in takes and "cursor" in takes
+    assert "openrouter" in takes and takes["cursor"] == "Cursor API key"
     # Sign-in only, or a pool that no account row reads.
     assert "openai-codex" not in takes and "gemini" not in takes
 
@@ -279,3 +278,119 @@ def test_the_check_route_returns_the_answer_and_the_pool(state, monkeypatch):
     assert reply["check"] == {**reply["check"], "ok": False, "status": 403, "message": "no plan"}
     assert reply["entries"][0]["usable"] is False
     assert api.post_auth_pools_check({"provider": "opencode-go"})[0] == 400
+
+
+# Findings of the release audit of this change (hpf, 2026-11-23).
+
+
+def test_a_new_key_goes_last_after_older_keys_were_removed(state):
+    first = cp.add_api_key("openrouter", "sk-pool-aaaaaaaaaa")
+    second = cp.add_api_key("openrouter", "sk-pool-bbbbbbbbbb")
+    cp.add_api_key("openrouter", "sk-pool-cccccccccc")
+    cp.remove_entry("openrouter", first.id)
+    cp.remove_entry("openrouter", second.id)
+
+    cp.add_api_key("openrouter", "sk-pool-dddddddddd")
+
+    assert cp.resolve_entry("openrouter").runtime_token == "sk-pool-cccccccccc"
+
+
+def test_least_used_marks_the_key_that_the_next_request_takes(state):
+    cp.add_api_key("opencode-go", "sk-old-aaaaaaaaaaaa")
+    cp.add_api_key("opencode-go", "sk-new-bbbbbbbbbbbb", first=True)
+    cp.set_strategy("opencode-go", cp.STRATEGY_LEAST_USED)
+
+    marked = [e["id"] for e in cp.list_pool_public("opencode-go")["entries"] if e["first"]]
+
+    assert marked == [cp.resolve_entry("opencode-go").id]
+
+
+def test_a_key_that_goes_first_has_no_model_cooldown_left(state):
+    one = cp.add_api_key("opencode-go", "sk-one-aaaaaaaaaaaa")
+    cp.add_api_key("opencode-go", "sk-two-bbbbbbbbbbbb")
+    cp.load_pool("opencode-go").mark_model_cooldown_and_rotate(one.id, "flash", seconds=600)
+    assert cp.resolve_entry("opencode-go", "flash").id != one.id
+
+    keys_mod.set_api_key("opencode-go", "sk-one-aaaaaaaaaaaa")
+
+    assert cp.resolve_entry("opencode-go", "flash").id == one.id
+
+
+def test_removing_the_last_sign_in_clears_its_env_copies(state, monkeypatch):
+    # The pool seeds itself from the env only out of a test run. That seed
+    # kept the removed token as the token of the xai pool.
+    for name in ("XAI_API_KEY", "XAI_OAUTH_TOKEN", "PYTEST_CURRENT_TEST"):
+        monkeypatch.delenv(name, raising=False)
+    entry = cp.add_oauth_entry("xai-oauth", access_token="tok-oauth-1234567890",
+                               refresh_token="r")
+    assert os.environ["XAI_API_KEY"] == "tok-oauth-1234567890"
+
+    assert cp.remove_entry("xai-oauth", entry.id)
+
+    assert "XAI_API_KEY" not in os.environ and "XAI_OAUTH_TOKEN" not in os.environ
+    assert cp.load_pool("xai").entries() == []
+
+
+def test_removing_a_sign_in_gives_the_shared_env_var_to_the_key_pool(state, monkeypatch):
+    for name in ("XAI_API_KEY", "XAI_OAUTH_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    cp.add_api_key("xai", "xai-key-aaaaaaaaaaaa")
+    entry = cp.add_oauth_entry("xai-oauth", access_token="tok-oauth-1234567890",
+                               refresh_token="r")
+    assert os.environ["XAI_API_KEY"] == "tok-oauth-1234567890"
+
+    assert cp.remove_entry("xai-oauth", entry.id)
+
+    assert os.environ["XAI_API_KEY"] == "xai-key-aaaaaaaaaaaa"
+
+
+def test_a_forgotten_key_leaves_the_legacy_key_file_too(tmp_path, monkeypatch):
+    legacy = tmp_path / "keys.json"
+    legacy.write_text(json.dumps({"openrouter": "sk-or-abc", "zai": "zai-keep"}),
+                      encoding="utf-8")
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(keys_mod, "legacy_keys_file_path", lambda: str(legacy))
+
+    keys_mod.forget_stored_key("openrouter", "sk-or-abc")
+
+    assert keys_mod._read_keys() == {"zai": "zai-keep"}
+    assert json.loads(legacy.read_text(encoding="utf-8")) == {"zai": "zai-keep"}
+
+
+def test_the_first_zai_key_through_the_api_is_also_the_key_file_key(state, monkeypatch):
+    from types import SimpleNamespace
+
+    from harness.api import providers as api
+
+    for name in ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+    code, _ = api.post_auth_pools_add(
+        {"provider": "zai", "api_key": "zai-key-aaaaaaaaaaaa"},
+        SimpleNamespace(diag=lambda *a, **k: None))
+
+    assert code == 200
+    assert state["zai"] == "zai-key-aaaaaaaaaaaa"
+
+
+def test_a_text_error_body_gives_the_provider_message(monkeypatch):
+    def refuse(req, timeout=None):
+        raise _HTTPError(401, json.dumps({"error": "Invalid API key"}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    assert accounts._http_status("https://example.test/v1/models", {}) == (401, "Invalid API key")
+
+
+def test_a_refused_codex_sign_in_is_a_check_result(state, monkeypatch):
+    cp.add_oauth_entry("openai-codex", access_token="codex-access",
+                       refresh_token="codex-refresh", label="a@example.com")
+
+    def refuse(req, timeout=None):
+        raise _HTTPError(401, json.dumps({"error": {"message": "token expired"}}))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    check = accounts.probe_account("openai-codex")["row"]["check"]
+
+    assert (check["ok"], check["status"], check["message"]) == (False, 401, "token expired")
