@@ -417,7 +417,23 @@ def test_agent_acp_gets_the_agent_child_env(monkeypatch):
         env = captured["env"]
         assert env["CURSOR_API_KEY"] == "key-abc-1234567890"
         assert env["MARIONETTE_TRACKABLE_SWARMS"] == "1"
-        assert env["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).resolve().parent)
+        assert env["PATH"].split(os.pathsep)[0] == os.path.dirname(os.path.abspath(sys.executable))
     finally:
         transport._own_group = False  # the fake child has no process group
         transport.close()
+
+
+@_posix_only
+def test_agent_child_env_puts_the_venv_folder_first_not_the_symlink_target(tmp_path, monkeypatch):
+    from pmharness.drivers import cursor_cli
+
+    base = tmp_path / "base" / "bin"
+    venv = tmp_path / "venv" / "bin"
+    base.mkdir(parents=True)
+    venv.mkdir(parents=True)
+    (base / "python3").write_text("", encoding="utf-8")
+    (venv / "python").symlink_to(base / "python3")
+    monkeypatch.setattr(sys, "executable", str(venv / "python"))
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert cursor_cli._agent_child_env()["PATH"].split(os.pathsep)[0] == str(venv)

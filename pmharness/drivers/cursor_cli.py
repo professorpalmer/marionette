@@ -129,10 +129,9 @@ def _agent_child_env() -> dict:
     predates the ``swarm`` verb (invalid choice) and the pilot thrash-loops.
     """
     env = dict(os.environ)
-    try:
-        scripts = str(Path(sys.executable).resolve().parent)
-    except OSError:
-        return env
+    # The folder of the venv python, not of the interpreter that its symlink
+    # points to: only the venv folder has the harness packages and scripts.
+    scripts = os.path.dirname(os.path.abspath(sys.executable))
     if not scripts:
         return env
     path = env.get("PATH") or env.get("Path") or ""
