@@ -10,9 +10,11 @@ Wire format (Cursor docs): JSON-RPC 2.0, newline-delimited, over stdio.
   initialize → authenticate(cursor_login) → session/new → session/prompt*
 """
 
+import atexit
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -343,11 +345,35 @@ def _extract_tool_event(update: Any) -> Optional[dict]:
     return out
 
 
+# Each transport that is not closed. After its handshake ``agent acp`` does not
+# exit at stdin EOF, so a process that exits with an open transport leaves the
+# agent and its MCP servers alive with parent pid 1.
+_OPEN_TRANSPORTS: "set[AcpTransport]" = set()
+_OPEN_TRANSPORTS_LOCK = threading.Lock()
+
+
+def close_open_transports() -> None:
+    """Interpreter exit: end each ``agent acp`` child that no owner closed."""
+    with _OPEN_TRANSPORTS_LOCK:
+        open_now = list(_OPEN_TRANSPORTS)
+    for transport in open_now:
+        try:
+            transport.close()
+        except Exception:
+            pass
+
+
+atexit.register(close_open_transports)
+
+
 class AcpTransport:
     """JSON-RPC NDJSON client over a subprocess stdin/stdout pair."""
 
-    def __init__(self, proc: subprocess.Popen) -> None:
+    def __init__(self, proc: subprocess.Popen, *, own_group: bool = False) -> None:
         self.proc = proc
+        # True only for a child that _spawn_transport started as the leader of
+        # its own process group (POSIX). Never true for an injected process.
+        self._own_group = own_group
         self._lock = threading.Lock()
         self._next_id = 1
         self._pending: Dict[int, "queue.Queue[dict]"] = {}
@@ -358,6 +384,27 @@ class AcpTransport:
             target=self._read_loop, name="cursor-acp-reader", daemon=True
         )
         self._reader.start()
+        with _OPEN_TRANSPORTS_LOCK:
+            _OPEN_TRANSPORTS.add(self)
+
+    def _signal_group(self, *, kill: bool = False) -> bool:
+        """Signal the process group of the child. False when there is none.
+
+        The group holds the agent, its node workers and its MCP servers.
+        """
+        if not self._own_group:
+            return False
+        sig = signal.SIGKILL if kill else signal.SIGTERM
+        try:
+            # Popen.poll and Popen.wait use this lock. A child that is not
+            # reaped keeps its pid, so no other job can have this group id.
+            with self.proc._waitpid_lock:
+                if self.proc.returncode is not None:
+                    return False
+                os.killpg(self.proc.pid, sig)
+        except (AttributeError, OSError):
+            return False
+        return True
 
     def set_session_update_handler(
         self, handler: Optional[Callable[[dict], None]]
@@ -375,10 +422,12 @@ class AcpTransport:
                 pass
 
     def close(self) -> None:
-        """Idempotent teardown of the ACP stdio process (and Windows child tree)."""
+        """Idempotent teardown of the ACP stdio process and its child tree."""
         if self._closed:
             return
         self._closed = True
+        with _OPEN_TRANSPORTS_LOCK:
+            _OPEN_TRANSPORTS.discard(self)
         pid = None
         try:
             pid = getattr(self.proc, "pid", None)
@@ -393,17 +442,19 @@ class AcpTransport:
         # children detach and linger. Reap the owned pid tree first, then
         # still terminate() so local stdio handles/reader threads unblock.
         _reap_acp_child_tree(pid)
-        try:
-            self.proc.terminate()
-        except Exception:
-            pass
+        if not self._signal_group():
+            try:
+                self.proc.terminate()
+            except Exception:
+                pass
         try:
             self.proc.wait(timeout=3)
         except Exception:
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
+            if not self._signal_group(kill=True):
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
 
     def alive(self) -> bool:
         return (not self._closed) and (self.proc.poll() is None)
@@ -707,8 +758,12 @@ class WarmAcpSession:
             # CREATE_NO_WINDOW; that must be fixed upstream in Cursor — Python
             # creationflags on this Popen cannot reach those grandchildren.
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            # Own process group: close() signals the agent and each process it
+            # started, and never the group of this process.
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **popen_kwargs)
-        return AcpTransport(proc)
+        return AcpTransport(proc, own_group=sys.platform != "win32")
 
     def _handshake(self, transport: AcpTransport) -> str:
         """Run ACP initialize/session/new. Returns session id; does not publish

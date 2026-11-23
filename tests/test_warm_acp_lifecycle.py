@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import json
+import os
+import signal
+import subprocess
+import sys
 import threading
+import time
+from pathlib import Path
 from typing import List, Optional
+
+import pytest
 
 from harness.busy_control import BusyControlMixin
 from harness.session_runners import SessionRunnerRegistry
-from pmharness.drivers.cursor_acp import WarmAcpSession
+from pmharness.drivers import cursor_acp
+from pmharness.drivers.cursor_acp import AcpTransport, WarmAcpSession
 
 
 class _FakeRunner(BusyControlMixin):
@@ -178,3 +188,139 @@ def test_ensure_after_close_still_warms_normally():
     assert other_created[-1].close_calls == 0
     other.close()
     assert other_created[-1].close_calls == 1
+
+
+# Stands in for ``agent acp``: it completes the handshake, starts a helper
+# (the real agent starts MCP servers), and does not exit at stdin EOF.
+_STAND_IN_AGENT = """
+import json, os, subprocess, sys, time
+
+helper = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(120)"],
+    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+)
+with open("pids.json", "w", encoding="utf-8") as fh:
+    json.dump({"agent": os.getpid(), "helper": helper.pid}, fh)
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" in msg:
+        result = {"sessionId": "s1"} if msg["method"] == "session/new" else {}
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}) + "\\n")
+        sys.stdout.flush()
+time.sleep(120)
+"""
+
+# A process that warms a session and exits with no close call.
+_EXIT_WITH_NO_CLOSE = """
+import sys
+from pmharness.drivers import cursor_acp
+
+cursor_acp.keychain_missing_reason = lambda: None
+cursor_acp.resolve_agent_exec = lambda: [sys.executable, sys.argv[1]]
+cursor_acp.WarmAcpSession(model="m", cwd=sys.argv[2]).ensure()
+"""
+
+_posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+
+
+def _running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True,
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def _still_running(pids: dict, timeout: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and any(_running(p) for p in pids.values()):
+        time.sleep(0.05)
+    return {name: pid for name, pid in pids.items() if _running(pid)}
+
+
+def _stop(workspace: Path) -> None:
+    try:
+        pids = json.loads((workspace / "pids.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for pid in pids.values():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+@_posix_only
+def test_interpreter_exit_ends_agent_and_its_children(tmp_path):
+    """A process that exits with a warm session must not leave ``agent acp``."""
+    agent = tmp_path / "stand_in_agent.py"
+    agent.write_text(_STAND_IN_AGENT, encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", _EXIT_WITH_NO_CLOSE, str(agent), str(workspace)],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            capture_output=True, text=True, timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        pids = json.loads((workspace / "pids.json").read_text(encoding="utf-8"))
+        assert _still_running(pids) == {}
+    finally:
+        _stop(workspace)
+
+
+@_posix_only
+def test_close_ends_agent_and_its_children(tmp_path, monkeypatch):
+    """Close must end the helpers of the agent, not only the top process."""
+    agent = tmp_path / "stand_in_agent.py"
+    agent.write_text(_STAND_IN_AGENT, encoding="utf-8")
+    monkeypatch.setattr(cursor_acp, "keychain_missing_reason", lambda: None)
+    monkeypatch.setattr(
+        cursor_acp, "resolve_agent_exec", lambda: [sys.executable, str(agent)],
+    )
+    session = WarmAcpSession(model="m", cwd=str(tmp_path))
+    try:
+        session.ensure()
+        pids = json.loads((tmp_path / "pids.json").read_text(encoding="utf-8"))
+        assert _still_running(pids, timeout=0.0) == pids
+        session.close()
+        assert _still_running(pids) == {}
+    finally:
+        session.close()
+        _stop(tmp_path)
+
+
+class _IdleProc:
+    """A child that stays alive until terminate."""
+
+    def __init__(self) -> None:
+        self.pid = None
+        self.stdin = None
+        self.stdout = None
+        self.terminated = False
+
+    def poll(self) -> Optional[int]:
+        return 0 if self.terminated else None
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        return 0
+
+
+def test_exit_hook_closes_transport_that_no_owner_closed():
+    proc = _IdleProc()
+    transport = AcpTransport(proc)  # type: ignore[arg-type]
+    assert transport.alive()
+    cursor_acp.close_open_transports()
+    assert proc.terminated
+    assert not transport.alive()
+    assert transport not in cursor_acp._OPEN_TRANSPORTS
+
