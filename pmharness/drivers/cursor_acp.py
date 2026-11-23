@@ -26,6 +26,7 @@ from .base import SYSTEM_PROMPT, DriverResponse
 from .cursor_cli import (
     INSTALL_HINT,
     CursorCliDriver,
+    _agent_child_env,
     _canonicalize_tool_kind,
     _messages_to_prompt,
     goal_from_tool_args,
@@ -388,21 +389,28 @@ class AcpTransport:
             _OPEN_TRANSPORTS.add(self)
 
     def _signal_group(self, *, kill: bool = False) -> bool:
-        """Signal the process group of the child. False when there is none.
+        """Signal the process group of the child. False when the group is gone.
 
-        The group holds the agent, its node workers and its MCP servers.
+        The group holds the agent, its node workers and its MCP servers. The
+        members can live after the leader exits. A pid is not given to a new
+        process while a process group with that id has a member, so the group
+        id stays safe to signal while the group lives.
         """
         if not self._own_group:
             return False
         sig = signal.SIGKILL if kill else signal.SIGTERM
         try:
-            # Popen.poll and Popen.wait use this lock. A child that is not
-            # reaped keeps its pid, so no other job can have this group id.
-            with self.proc._waitpid_lock:
-                if self.proc.returncode is not None:
-                    return False
-                os.killpg(self.proc.pid, sig)
-        except (AttributeError, OSError):
+            os.killpg(self.proc.pid, sig)
+        except OSError:
+            return False
+        return True
+
+    def _group_alive(self) -> bool:
+        if not self._own_group:
+            return False
+        try:
+            os.killpg(self.proc.pid, 0)
+        except OSError:
             return False
         return True
 
@@ -447,14 +455,19 @@ class AcpTransport:
                 self.proc.terminate()
             except Exception:
                 pass
+        deadline = time.monotonic() + 3
         try:
             self.proc.wait(timeout=3)
         except Exception:
-            if not self._signal_group(kill=True):
-                try:
-                    self.proc.kill()
-                except Exception:
-                    pass
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        # A member that ignores SIGTERM (an MCP server, a node worker) lives
+        # after the leader exits. It gets the rest of the 3 s, then SIGKILL.
+        while self._group_alive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self._signal_group(kill=True)
 
     def alive(self) -> bool:
         return (not self._closed) and (self.proc.poll() is None)
@@ -751,6 +764,9 @@ class WarmAcpSession:
             "encoding": "utf-8",
             "errors": "replace",
             "bufsize": 1,
+            # The env of each Agent CLI child: harness python first on PATH,
+            # CURSOR_CLI_LOGIN forwarded as CURSOR_API_KEY, trackable swarms.
+            "env": _agent_child_env(),
         }
         if sys.platform == "win32":
             # Hide the top-level `agent acp` console only. Cursor Agent's Node

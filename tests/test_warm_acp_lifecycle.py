@@ -324,3 +324,100 @@ def test_exit_hook_closes_transport_that_no_owner_closed():
     assert not transport.alive()
     assert transport not in cursor_acp._OPEN_TRANSPORTS
 
+
+
+# Findings of the release audit of the acp teardown (hpf, 2026-11-23).
+
+_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+@_posix_only
+def test_close_ends_the_group_after_the_leader_was_reaped():
+    leader = subprocess.Popen(
+        ["sh", "-c", "sleep 30 & exit 0"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+    leader.wait()
+    assert _group_alive(leader.pid)
+    try:
+        AcpTransport(leader, own_group=True).close()
+        deadline = time.monotonic() + 2
+        while _group_alive(leader.pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _group_alive(leader.pid)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+@_posix_only
+def test_close_kills_a_group_member_that_ignores_sigterm(tmp_path):
+    pid_file = tmp_path / "pid"
+    # The member writes its pid only after it ignores SIGTERM.
+    member_code = (
+        "import os, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(60)"
+    )
+    code = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {member_code!r}])\n"
+        "time.sleep(60)\n"
+    )
+    leader = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, text=True, start_new_session=True)
+    deadline = time.monotonic() + 10
+    while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    member = int(pid_file.read_text())
+    try:
+        AcpTransport(leader, own_group=True).close()
+        deadline = time.monotonic() + 2
+        while _alive(member) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(member)
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def test_agent_acp_gets_the_agent_child_env(monkeypatch):
+    captured = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return _IdleProc()
+
+    monkeypatch.setenv("CURSOR_CLI_LOGIN", "key-abc-1234567890")
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setattr(cursor_acp, "keychain_missing_reason", lambda *a, **k: None)
+    monkeypatch.setattr(cursor_acp, "resolve_agent_exec", lambda: ["agent"])
+    monkeypatch.setattr(cursor_acp.subprocess, "Popen", fake_popen)
+
+    transport = WarmAcpSession(model="m", cwd=None)._spawn_transport()
+    try:
+        env = captured["env"]
+        assert env["CURSOR_API_KEY"] == "key-abc-1234567890"
+        assert env["MARIONETTE_TRACKABLE_SWARMS"] == "1"
+        assert env["PATH"].split(os.pathsep)[0] == str(Path(sys.executable).resolve().parent)
+    finally:
+        transport._own_group = False  # the fake child has no process group
+        transport.close()
