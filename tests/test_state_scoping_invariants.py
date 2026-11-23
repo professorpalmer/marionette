@@ -582,6 +582,34 @@ def test_remove_session_transcript_is_idempotent(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name != "posix", reason="shell script stand-in")
+def test_installed_cursor_cli_does_not_start_under_pytest(monkeypatch, tmp_path):
+    """A launch of the installed Cursor CLI fails as a missing binary."""
+    import subprocess
+
+    import conftest
+
+    started = tmp_path / "started"
+    cli = tmp_path / "cursor-agent"
+    cli.write_text('#!/bin/sh\necho run > "$1"\n', encoding="utf-8")
+    cli.chmod(0o755)
+    link = tmp_path / "agent"
+    link.symlink_to(cli)
+
+    subprocess.run([str(link), str(started)], check=True)
+    assert started.exists()
+    started.unlink()
+
+    monkeypatch.setattr(
+        conftest, "_INSTALLED_CURSOR_CLI", frozenset({os.path.realpath(str(cli))}),
+    )
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    for argv in ([str(link), str(started)], ["agent", str(started)]):
+        with pytest.raises(FileNotFoundError):
+            subprocess.run(argv, check=True)
+    assert not started.exists()
+
+
 def test_force_throwaway_harness_state_dir_overrides_live_preset(monkeypatch, tmp_path):
     """Contaminated HARNESS_STATE_DIR under ~/.pmharness must be overwritten."""
     from conftest import force_throwaway_harness_state_dir, _path_under_dir

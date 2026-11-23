@@ -327,9 +327,8 @@ def test_agent_child_env_puts_harness_python_first(monkeypatch, tmp_path):
     stale system install missing the swarm verb."""
     from pmharness.drivers.cursor_cli import _agent_child_env
     import sys
-    from pathlib import Path
 
-    scripts = str(Path(sys.executable).resolve().parent)
+    scripts = os.path.dirname(os.path.abspath(sys.executable))
     monkeypatch.setenv("PATH", f"C:\\stale-python{os.pathsep}C:\\Windows\\System32")
     env = _agent_child_env()
     parts = (env.get("PATH") or "").split(os.pathsep)

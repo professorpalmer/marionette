@@ -8,11 +8,13 @@ Wave 6 offline full-auto safety gate: modules listed in
 ``_FULL_AUTO_SAFETY_MODULES`` are auto-tagged ``full_auto_safety`` so CI can
 run ``pytest -m full_auto_safety`` as a named invariant gate without live keys.
 """
+import errno
 import socket
 import socketserver
 import os
 import shutil
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -148,6 +150,71 @@ os.environ["PUPPETMASTER_MODELS_PATH"] = os.path.join(
 os.environ["PUPPETMASTER_APP_STATE_ROOT"] = os.path.join(
     os.environ["HARNESS_STATE_DIR"], "puppetmaster-app-state",
 )
+# The Cursor Agent CLI on a developer machine is a real program with the login
+# of the developer. `agent models` and `agent status` call the Cursor service,
+# and each `agent acp` starts the MCP servers of the developer and stays alive
+# after the run. CI has no such binary. Here a launch of the installed CLI
+# fails as a missing binary, the error the product handles on a machine
+# without the CLI. Installed before the first harness import: test modules
+# list models while pytest collects them.
+_real_popen_init = subprocess.Popen.__init__
+_real_which = shutil.which
+_INSTALLED_CURSOR_CLI = frozenset()
+
+
+def _installed_cursor_cli() -> frozenset:
+    """Real paths that start the Cursor Agent CLI the product finds here."""
+    from pmharness.drivers.cursor_cli import resolve_agent_binary, resolve_agent_exec
+
+    binary = resolve_agent_binary()
+    if not binary:
+        return frozenset()
+    return frozenset(
+        os.path.realpath(entry) for entry in [binary, *resolve_agent_exec(binary)]
+    )
+
+
+def _starts_installed_cursor_cli(args, executable) -> bool:
+    try:
+        argv = list(args[:2]) if isinstance(args, (list, tuple)) else [args]
+        program = os.fsdecode(executable or argv[0])
+        entries = [_real_which(program) or program] + [os.fsdecode(a) for a in argv[1:]]
+        return any(os.path.realpath(entry) in _INSTALLED_CURSOR_CLI for entry in entries)
+    except Exception:
+        return False
+
+
+def _popen_init_without_cursor_cli(self, args, *rest, **kwargs):
+    if _INSTALLED_CURSOR_CLI and _starts_installed_cursor_cli(args, kwargs.get("executable")):
+        raise FileNotFoundError(
+            errno.ENOENT,
+            "the installed Cursor Agent CLI does not start in tests (stub the CLI)",
+            str(args[0] if isinstance(args, (list, tuple)) else args),
+        )
+    _real_popen_init(self, args, *rest, **kwargs)
+
+
+def _install_cursor_cli_guard() -> None:
+    """Put the guard under the Windows hidden-console hook when it is there.
+
+    ``harness.win_console`` replaces ``Popen.__init__`` with its hook when
+    ``harness`` is imported. When that came first, the guard goes in as the
+    init that the hook calls, so the hook stays the outer layer.
+    """
+    global _real_popen_init
+    import sys
+
+    win_console = sys.modules.get("harness.win_console")
+    if win_console is not None and subprocess.Popen.__init__ is win_console._hidden_popen_init:
+        _real_popen_init = win_console._original_popen_init
+        win_console._original_popen_init = _popen_init_without_cursor_cli
+        return
+    subprocess.Popen.__init__ = _popen_init_without_cursor_cli
+
+
+_install_cursor_cli_guard()
+_INSTALLED_CURSOR_CLI = _installed_cursor_cli()
+
 from harness import model_visibility as _model_visibility
 
 _model_visibility._store_path = lambda: os.path.join(
